@@ -17,7 +17,7 @@ class GeneticAlgorithmCV:
         cv=None,
         pop_size=25,
         generations=15,
-        early_stopping_rounds=3,
+        early_stopping_rounds=1,
         crossover_initial=0.1,
         crossover_end=0.9,
         mutation_initial=0.1,
@@ -30,6 +30,8 @@ class GeneticAlgorithmCV:
         verbose=False,
         alpha=1.0,
         beta=1.0,
+        crossover_method='uniform',
+        num_crossover_points=2
     ):
         self.model_type = model_type
         self.estimator = estimator
@@ -54,6 +56,8 @@ class GeneticAlgorithmCV:
         self.beta = beta
         self.fitness_history = []
         self.diversity_history = []
+        self.crossover_method = crossover_method
+        self.num_crossover_points = num_crossover_points
 
     def sigmoid(self, x):
         return 1 / (1 + np.exp(-x))
@@ -79,24 +83,29 @@ class GeneticAlgorithmCV:
 
     def evaluate_population(self, population, X_train, y_train):
         def evaluate_individual(chromosome):
-            params = self.decode_chromosome(chromosome)
-            scores_f1 = []
-            scores_auc = []
-            for train_idx, val_idx in self.cv.split(X_train, y_train):
-                X_tr, X_val = X_train[train_idx], X_train[val_idx]
-                y_tr, y_val = y_train[train_idx], y_train[val_idx]
-                model = clone(self.estimator)
-                model.set_params(**params)
-                model.fit(X_tr, y_tr)
-                y_pred = model.predict(X_val)
-                y_pred_prob = model.predict_proba(X_val)[:, 1]
-                score_f1 = f1_score(y_val, y_pred, average='binary')
-                score_auc = roc_auc_score(y_val, y_pred_prob)
-                scores_f1.append(score_f1)
-                scores_auc.append(score_auc)
-            fitness_f1 = np.mean(scores_f1)
-            fitness_auc = np.mean(scores_auc)
-            fitness = (fitness_f1 + fitness_auc) / 2
+            try:
+                params = self.decode_chromosome(chromosome)
+                scores_f1 = []
+                scores_auc = []
+                for train_idx, val_idx in self.cv.split(X_train, y_train):
+                    X_tr, X_val = X_train[train_idx], X_train[val_idx]
+                    y_tr, y_val = y_train[train_idx], y_train[val_idx]
+                    model = clone(self.estimator)
+                    model.set_params(**params)
+                    model.fit(X_tr, y_tr)
+                    y_pred = model.predict(X_val)
+                    y_pred_prob = model.predict_proba(X_val)[:, 1]
+                    score_f1 = f1_score(y_val, y_pred, average='binary')
+                    score_auc = roc_auc_score(y_val, y_pred_prob)
+                    scores_f1.append(score_f1)
+                    scores_auc.append(score_auc)
+                fitness_f1 = np.mean(scores_f1)
+                fitness_auc = np.mean(scores_auc)
+                fitness = (fitness_f1 + fitness_auc) / 2
+            except Exception as e:
+                if self.verbose:
+                    print(f"Error evaluando el individuo: {e}")
+                return -np.inf
             return fitness
 
         if self.n_jobs == -1:
@@ -114,6 +123,8 @@ class GeneticAlgorithmCV:
             sorted_indices = np.argsort(fitnesses)[::-1]
             elites = population[sorted_indices[:self.elite_size]]
             selected.extend(elites.tolist())
+            if self.verbose:
+                print(f"[select_parents]: num_selected_elites: {len(selected)}")
             non_elite_indices = sorted_indices[self.elite_size:]
             non_elite_population = population[non_elite_indices]
             non_elite_fitnesses = fitnesses[non_elite_indices]
@@ -133,21 +144,43 @@ class GeneticAlgorithmCV:
         selected = np.vstack(selected)
         return selected
 
-    def crossover(self, parents, crossover_rate):
+    def crossover(self, parents, crossover_rate, method='uniform', num_crossover_points=2):
         offspring = []
-        for i in range(0, len(parents) - 1, 2):
+        num_parents = len(parents)
+        for i in range(0, num_parents - 1, 2):
             parent1 = parents[i].copy()
-            parent2 = parents[(i+1) % len(parents)].copy()
+            parent2 = parents[i + 1].copy()
             if np.random.rand() < crossover_rate:
-                point = np.random.randint(1, len(parent1))
-                child1 = np.concatenate((parent1[:point], parent2[point:]))
-                child2 = np.concatenate((parent2[:point], parent1[point:]))
+                if method == 'uniform':
+                    # Cruce uniforme
+                    mask = np.random.rand(len(parent1)) < 0.5
+                    child1 = np.where(mask, parent1, parent2)
+                    child2 = np.where(mask, parent2, parent1)
+                elif method == 'multi_point':
+                    # Cruce de múltiples puntos
+                    points = sorted(np.random.choice(range(1, len(parent1)), size=num_crossover_points, replace=False))
+                    child1 = parent1.copy()
+                    child2 = parent2.copy()
+                    swap = False
+                    prev_point = 0
+                    for point in points + [len(parent1)]:
+                        if swap:
+                            child1[prev_point:point], child2[prev_point:point] = parent2[prev_point:point], parent1[prev_point:point]
+                        swap = not swap
+                        prev_point = point
+                elif method == 'one_point':
+                    # Cruce de un punto
+                    point = np.random.randint(1, len(parent1))
+                    child1 = np.concatenate((parent1[:point], parent2[point:]))
+                    child2 = np.concatenate((parent2[:point], parent1[point:]))
+                else:
+                    raise ValueError(f"Método de cruce no reconocido: {method}")
                 offspring.append(child1)
                 offspring.append(child2)
             else:
                 offspring.append(parent1)
                 offspring.append(parent2)
-        if len(parents) % 2 != 0:
+        if num_parents % 2 != 0:
             offspring.append(parents[-1])
         return np.vstack(offspring)
 
@@ -253,7 +286,12 @@ class GeneticAlgorithmCV:
             # Seleccionar padres
             parents = self.select_parents(population, fitnesses)
             # Generar descendencia mediante cruza
-            offspring = self.crossover(parents, crossover_rate=crossover_rate)
+            offspring = self.crossover(
+                parents,
+                crossover_rate=crossover_rate,
+                method=self.crossover_method,
+                num_crossover_points=self.num_crossover_points
+            )
             # Aplicar mutaciones a la descendencia
             offspring = self.mutate(offspring, mutation_rate=mutation_rate)
             # Ajustar el tamaño final de la población a pop_size

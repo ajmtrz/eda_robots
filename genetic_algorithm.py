@@ -123,8 +123,6 @@ class GeneticAlgorithmCV:
             sorted_indices = np.argsort(fitnesses)[::-1]
             elites = population[sorted_indices[:self.elite_size]]
             selected.extend(elites.tolist())
-            if self.verbose:
-                print(f"[select_parents]: num_selected_elites: {len(selected)}")
             non_elite_indices = sorted_indices[self.elite_size:]
             non_elite_population = population[non_elite_indices]
             non_elite_fitnesses = fitnesses[non_elite_indices]

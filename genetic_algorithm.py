@@ -4,7 +4,7 @@ import numpy as np
 import multiprocessing
 from joblib import Parallel, delayed
 from sklearn.base import clone
-from sklearn.metrics import f1_score, roc_auc_score
+from sklearn.metrics import f1_score, roc_auc_score, accuracy_score
 from tqdm.notebook import tqdm
 from scipy.spatial.distance import pdist
 
@@ -15,23 +15,21 @@ class GeneticAlgorithmCV:
         estimator,
         param_grid,
         cv=None,
-        pop_size=75,
-        generations=15,
-        early_stopping_rounds=5,
+        pop_size=25,
+        generations=5,
+        early_stopping_rounds=2,
         crossover_initial=0.9,
         crossover_end=0.1,
         mutation_initial=0.1,
         mutation_end=0.9,
         elitism=True,
         elite_size=3,
-        tournament_size=5,
+        tournament_size=3,
         n_random=5,
         n_jobs=-1,
         verbose=False,
         alpha=1.0,
-        beta=1.0,
-        crossover_method='uniform',
-        num_crossover_points=2
+        beta=1.0
     ):
         self.model_type = model_type
         self.estimator = estimator
@@ -56,8 +54,6 @@ class GeneticAlgorithmCV:
         self.beta = beta
         self.fitness_history = []
         self.diversity_history = []
-        self.crossover_method = crossover_method
-        self.num_crossover_points = num_crossover_points
 
     def sigmoid(self, x):
         return 1 / (1 + np.exp(-x))
@@ -87,6 +83,7 @@ class GeneticAlgorithmCV:
                 params = self.decode_chromosome(chromosome)
                 scores_f1 = []
                 scores_auc = []
+                scores_acur = []
                 for train_idx, val_idx in self.cv.split(X_train, y_train):
                     X_tr, X_val = X_train[train_idx], X_train[val_idx]
                     y_tr, y_val = y_train[train_idx], y_train[val_idx]
@@ -97,11 +94,14 @@ class GeneticAlgorithmCV:
                     y_pred_prob = model.predict_proba(X_val)[:, 1]
                     score_f1 = f1_score(y_val, y_pred, average='binary')
                     score_auc = roc_auc_score(y_val, y_pred_prob)
+                    score_acur = accuracy_score(y_val, y_pred)
                     scores_f1.append(score_f1)
                     scores_auc.append(score_auc)
+                    scores_acur.append(score_acur)
                 fitness_f1 = np.mean(scores_f1)
                 fitness_auc = np.mean(scores_auc)
-                fitness = (fitness_f1 + fitness_auc) / 2
+                fitness_acur = np.mean(scores_acur)
+                fitness = (fitness_f1 + fitness_auc + fitness_acur) / 3
             except Exception as e:
                 if self.verbose:
                     print(f"Error evaluando el individuo: {e}")
@@ -142,37 +142,16 @@ class GeneticAlgorithmCV:
         selected = np.vstack(selected)
         return selected
 
-    def crossover(self, parents, crossover_rate, method='uniform', num_crossover_points=2):
+    def crossover(self, parents, crossover_rate):
         offspring = []
         num_parents = len(parents)
         for i in range(0, num_parents - 1, 2):
             parent1 = parents[i].copy()
             parent2 = parents[i + 1].copy()
             if np.random.rand() < crossover_rate:
-                if method == 'uniform':
-                    # Cruce uniforme
-                    mask = np.random.rand(len(parent1)) < 0.5
-                    child1 = np.where(mask, parent1, parent2)
-                    child2 = np.where(mask, parent2, parent1)
-                elif method == 'multi_point':
-                    # Cruce de múltiples puntos
-                    points = sorted(np.random.choice(range(1, len(parent1)), size=num_crossover_points, replace=False))
-                    child1 = parent1.copy()
-                    child2 = parent2.copy()
-                    swap = False
-                    prev_point = 0
-                    for point in points + [len(parent1)]:
-                        if swap:
-                            child1[prev_point:point], child2[prev_point:point] = parent2[prev_point:point], parent1[prev_point:point]
-                        swap = not swap
-                        prev_point = point
-                elif method == 'one_point':
-                    # Cruce de un punto
-                    point = np.random.randint(1, len(parent1))
-                    child1 = np.concatenate((parent1[:point], parent2[point:]))
-                    child2 = np.concatenate((parent2[:point], parent1[point:]))
-                else:
-                    raise ValueError(f"Método de cruce no reconocido: {method}")
+                mask = np.random.rand(len(parent1)) < 0.5
+                child1 = np.where(mask, parent1, parent2)
+                child2 = np.where(mask, parent2, parent1)
                 offspring.append(child1)
                 offspring.append(child2)
             else:

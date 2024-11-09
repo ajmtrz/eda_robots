@@ -264,9 +264,7 @@ class GeneticAlgorithmCV:
             # Generar descendencia mediante cruza
             offspring = self.crossover(
                 parents,
-                crossover_rate=crossover_rate,
-                method=self.crossover_method,
-                num_crossover_points=self.num_crossover_points
+                crossover_rate=crossover_rate
             )
             # Aplicar mutaciones a la descendencia
             offspring = self.mutate(offspring, mutation_rate=mutation_rate)

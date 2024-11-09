@@ -7,12 +7,13 @@ from sklearn.base import clone
 from sklearn.metrics import f1_score, roc_auc_score, accuracy_score
 from tqdm.notebook import tqdm
 from scipy.spatial.distance import pdist
+from sklearn.pipeline import Pipeline
 
 class GeneticAlgorithmCV:
     def __init__(
         self,
         model_type,
-        estimator,
+        pipeline,
         param_grid,
         cv=None,
         pop_size=25,
@@ -32,7 +33,7 @@ class GeneticAlgorithmCV:
         beta=1.0
     ):
         self.model_type = model_type
-        self.estimator = estimator
+        self.pipeline = pipeline
         self.param_grid = param_grid
         self.cv = cv
         self.pop_size = pop_size
@@ -108,7 +109,7 @@ class GeneticAlgorithmCV:
                 for train_idx, val_idx in self.cv.split(X_train, y_train):
                     X_tr, X_val = X_train[train_idx], X_train[val_idx]
                     y_tr, y_val = y_train[train_idx], y_train[val_idx]
-                    model = clone(self.estimator)
+                    model = clone(self.pipeline)
                     model.set_params(**params)
                     model.fit(X_tr, y_tr)
                     y_pred = model.predict(X_val)
@@ -329,11 +330,32 @@ class GeneticAlgorithmCV:
             # Actualizar la población para la siguiente generación
             population = offspring
 
+        # Dentro del método fit de la clase GeneticAlgorithmCV
         if best_overall_chromosome is not None:
             self.best_score_ = best_overall_fitness
             self.best_params_ = self.decode_chromosome(best_overall_chromosome)
-            self.best_estimator_ = clone(self.estimator)
-            self.best_estimator_.set_params(**self.best_params_)
+            
+            # Reconstruir el pipeline excluyendo pasos en 'passthrough'
+            new_steps = []
+            for name, step in self.pipeline.steps:
+                # Verificar si el paso está configurado como 'passthrough'
+                if name in self.best_params_ and self.best_params_[name] == 'passthrough':
+                    continue  # Omitir este paso
+                else:
+                    # Obtener los parámetros específicos para este paso
+                    step_params = {
+                        key.split('__', 1)[1]: value
+                        for key, value in self.best_params_.items()
+                        if key.startswith(f"{name}__")
+                    }
+                    # Actualizar el estimador del paso si es necesario
+                    if step_params:
+                        step = clone(step)
+                        step.set_params(**step_params)
+                    new_steps.append((name, step))
+            
+            # Crear el nuevo pipeline con los pasos actualizados
+            self.best_estimator_ = Pipeline(new_steps)
             self.best_estimator_.fit(X_train, y_train)
         else:
             if self.verbose:

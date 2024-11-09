@@ -60,16 +60,37 @@ class GeneticAlgorithmCV:
     
     def decode_chromosome(self, chromosome):
         param_values = {}
+        skip_steps = set()
         for i, key in enumerate(self.param_grid.keys()):
             gene = chromosome[i]
             param_info = self.param_grid[key]
-            low = param_info['low']
-            high = param_info['high']
             if param_info['type'] == 'int':
+                low = param_info['low']
+                high = param_info['high']
                 value = int(np.round(gene * (high - low) + low))
+                param_values[key] = value
             elif param_info['type'] == 'float':
+                low = param_info['low']
+                high = param_info['high']
                 value = gene * (high - low) + low
-            param_values[key] = value
+                param_values[key] = value
+            elif param_info['type'] == 'categorical':
+                categories = param_info['values']
+                k = len(categories)
+                index = int(np.floor(gene * k))
+                if index >= k:
+                    index = k - 1
+                value = categories[index]
+                param_values[key] = value
+                if value == 'passthrough':
+                    step_name = key.split('__')[0]
+                    skip_steps.add(step_name)
+            else:
+                raise ValueError(f"Tipo de parámetro no soportado: {param_info['type']}")
+        for step in skip_steps:
+            keys_to_remove = [k for k in param_values if k.startswith(f"{step}__") and k != step]
+            for k in keys_to_remove:
+                del param_values[k]
         return param_values
 
     def initialize_population(self):
@@ -163,11 +184,30 @@ class GeneticAlgorithmCV:
 
     def mutate(self, offspring, mutation_rate, mutation_scale=0.1):
         for chromosome in offspring:
-            for gene_idx in range(len(chromosome)):
+            for gene_idx, key in enumerate(self.param_grid.keys()):
                 if np.random.rand() < mutation_rate:
-                    mutation = np.random.normal(0, mutation_scale)
-                    chromosome[gene_idx] += mutation
-                    chromosome[gene_idx] = np.clip(chromosome[gene_idx], 0.0, 1.0)
+                    param_info = self.param_grid[key]
+                    if param_info['type'] in ['int', 'float']:
+                        mutation = np.random.normal(0, mutation_scale)
+                        chromosome[gene_idx] += mutation
+                        chromosome[gene_idx] = np.clip(chromosome[gene_idx], 0.0, 1.0)
+                    elif param_info['type'] == 'categorical':
+                        categories = param_info['values']
+                        k = len(categories)
+                        current_gene_value = chromosome[gene_idx]
+                        current_index = int(np.floor(current_gene_value * k))
+                        if current_index >= k:
+                            current_index = k - 1
+                        possible_indices = list(range(k))
+                        possible_indices.remove(current_index)
+                        if possible_indices:
+                            new_index = np.random.choice(possible_indices)
+                            if k > 1:
+                                chromosome[gene_idx] = new_index / (k - 1)
+                            else:
+                                chromosome[gene_idx] = 0.0
+                    else:
+                        raise ValueError(f"Tipo de parámetro no soportado: {param_info['type']}")
         return offspring
 
     def generate_random_individuals(self, n_random):
@@ -175,15 +215,26 @@ class GeneticAlgorithmCV:
         random_chromosomes = np.empty((n_random, chromosome_length), dtype=np.float32)
         for i, key in enumerate(self.param_grid.keys()):
             grid = self.param_grid[key]
-            low = grid['low']
-            high = grid['high']
             if grid['type'] == 'int':
+                low = grid['low']
+                high = grid['high']
                 sampled = np.random.randint(low, high + 1, size=n_random)
                 normalized = (sampled - low) / (high - low)
                 random_chromosomes[:, i] = normalized.astype(np.float32)
             elif grid['type'] == 'float':
+                low = grid['low']
+                high = grid['high']
                 sampled = np.random.uniform(low, high, size=n_random)
                 normalized = (sampled - low) / (high - low)
+                random_chromosomes[:, i] = normalized.astype(np.float32)
+            elif grid['type'] == 'categorical':
+                categories = grid['values']
+                k = len(categories)
+                sampled_indices = np.random.randint(0, k, size=n_random)
+                if k > 1:
+                    normalized = sampled_indices / (k - 1)
+                else:
+                    normalized = np.zeros(n_random)
                 random_chromosomes[:, i] = normalized.astype(np.float32)
             else:
                 raise ValueError(f"Tipo de parámetro no soportado: {grid['type']}")

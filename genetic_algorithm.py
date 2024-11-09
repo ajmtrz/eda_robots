@@ -15,16 +15,16 @@ class GeneticAlgorithmCV:
         estimator,
         param_grid,
         cv=None,
-        pop_size=25,
+        pop_size=75,
         generations=15,
-        early_stopping_rounds=1,
-        crossover_initial=0.1,
-        crossover_end=0.9,
+        early_stopping_rounds=5,
+        crossover_initial=0.9,
+        crossover_end=0.1,
         mutation_initial=0.1,
         mutation_end=0.9,
         elitism=True,
-        elite_size=2,
-        tournament_size=3,
+        elite_size=3,
+        tournament_size=5,
         n_random=5,
         n_jobs=-1,
         verbose=False,
@@ -253,9 +253,8 @@ class GeneticAlgorithmCV:
             combined_metric = self.alpha * fitness_improvement_norm + self.beta * diversity_norm
             sigmoid_value = self.sigmoid(combined_metric)
             # Ajustar tasas de cruce y mutación
-            # Ajustar tasas de cruce y mutación
             crossover_rate = self.crossover_initial + (self.crossover_end - self.crossover_initial) * sigmoid_value
-            mutation_rate = self.mutation_initial + (self.mutation_end - self.mutation_initial) * (1 - sigmoid_value)
+            mutation_rate = self.mutation_initial + (self.mutation_end - self.mutation_initial) * sigmoid_value
             # Asegurar que las tasas estén dentro de [0,1]
             crossover_rate = np.clip(crossover_rate, 0.0, 1.0)
             mutation_rate = np.clip(mutation_rate, 0.0, 1.0)

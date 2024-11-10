@@ -280,12 +280,16 @@ class GeneticAlgorithmCV:
             # Normalizar métricas
             fitness_improvement_norm = self.normalize_metric(self.fitness_history)
             diversity_norm = self.normalize_metric(self.diversity_history)
-            # Combinar métricas y aplicar sigmoide
-            combined_metric = self.alpha * fitness_improvement_norm + self.beta * diversity_norm
-            sigmoid_value = self.sigmoid(combined_metric)
-            # Ajustar tasas de cruce y mutación
-            crossover_rate = self.crossover_initial + (self.crossover_end - self.crossover_initial) * sigmoid_value
-            mutation_rate = self.mutation_initial + (self.mutation_end - self.mutation_initial) * sigmoid_value
+            if(fitness_improvement_norm != 0 or diversity_norm != 0):
+                # Combinar métricas y aplicar sigmoide
+                combined_metric = self.alpha * fitness_improvement_norm + self.beta * diversity_norm
+                sigmoid_value = self.sigmoid(combined_metric)
+                # Ajustar tasas de cruce y mutación
+                crossover_rate = self.crossover_initial + (self.crossover_end - self.crossover_initial) * sigmoid_value
+                mutation_rate = self.mutation_initial + (self.mutation_end - self.mutation_initial) * sigmoid_value
+            else:
+                crossover_rate = self.crossover_initial * ((self.crossover_end / self.crossover_initial) ** (generation / self.generations))
+                mutation_rate = self.mutation_initial * ((self.mutation_end / self.mutation_initial) ** (generation / self.generations))
             # Asegurar que las tasas estén dentro de [0,1]
             crossover_rate = np.clip(crossover_rate, 0.0, 1.0)
             mutation_rate = np.clip(mutation_rate, 0.0, 1.0)

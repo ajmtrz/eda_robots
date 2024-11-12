@@ -338,7 +338,7 @@ class GeneticAlgorithmCV:
         if best_overall_chromosome is not None:
             self.best_score_ = best_overall_fitness
             self.best_params_ = self.decode_chromosome(best_overall_chromosome)
-            
+
             # Reconstruir el pipeline excluyendo pasos en 'passthrough'
             new_steps = []
             for name, step in self.pipeline.steps:
@@ -346,18 +346,24 @@ class GeneticAlgorithmCV:
                 if name in self.best_params_ and self.best_params_[name] == 'passthrough':
                     continue  # Omitir este paso
                 else:
+                    # Si el estimador del paso ha sido especificado en best_params_
+                    if name in self.best_params_:
+                        step = self.best_params_[name]
+                        del self.best_params_[name]
+                    else:
+                        # Clonar el paso original
+                        step = clone(step)
                     # Obtener los parámetros específicos para este paso
                     step_params = {
                         key.split('__', 1)[1]: value
                         for key, value in self.best_params_.items()
                         if key.startswith(f"{name}__")
                     }
-                    # Actualizar el estimador del paso si es necesario
+                    # Actualizar los parámetros del paso si es necesario
                     if step_params:
-                        step = clone(step)
                         step.set_params(**step_params)
                     new_steps.append((name, step))
-            
+
             # Crear el nuevo pipeline con los pasos actualizados
             self.best_estimator_ = Pipeline(new_steps)
             self.best_estimator_.fit(X_train, y_train)

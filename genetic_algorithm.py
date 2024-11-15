@@ -15,6 +15,7 @@ class GeneticAlgorithmCV:
         model_type,
         pipeline,
         param_grid,
+        estimator_map,
         cv=None,
         pop_size=25,
         generations=5,
@@ -35,6 +36,7 @@ class GeneticAlgorithmCV:
         self.model_type = model_type
         self.pipeline = pipeline
         self.param_grid = param_grid
+        self.estimator_map = estimator_map
         self.cv = cv
         self.pop_size = pop_size
         self.generations = generations
@@ -49,6 +51,7 @@ class GeneticAlgorithmCV:
         self.n_random = n_random
         self.n_jobs = n_jobs
         self.verbose = verbose
+        self.best_params_full_ = None
         self.best_params_ = None
         self.best_score_ = None
         self.alpha = alpha
@@ -61,6 +64,7 @@ class GeneticAlgorithmCV:
     
     def decode_chromosome(self, chromosome):
         param_values = {}
+        param_estimators = {}
         skip_steps = set()
         for i, key in enumerate(self.param_grid.keys()):
             gene = chromosome[i]
@@ -82,17 +86,21 @@ class GeneticAlgorithmCV:
                 if index >= k:
                     index = k - 1
                 value = categories[index]
-                param_values[key] = value
-                if value == 'passthrough':
-                    step_name = key.split('__')[0]
-                    skip_steps.add(step_name)
+                param_values[key] = value  # Guardamos el nombre del estimador
+                if key in self.estimator_map:
+                    estimator = self.estimator_map[key][value]
+                    param_estimators[key] = estimator  # Guardamos el objeto estimador
+                    if estimator == 'passthrough':
+                        skip_steps.add(key)
+                else:
+                    param_values[key] = value
             else:
                 raise ValueError(f"Tipo de parámetro no soportado: {param_info['type']}")
         for step in skip_steps:
             keys_to_remove = [k for k in param_values if k.startswith(f"{step}__") and k != step]
             for k in keys_to_remove:
                 del param_values[k]
-        return param_values
+        return param_values, param_estimators
 
     def initialize_population(self):
         chromosome_length = len(self.param_grid)
@@ -102,7 +110,11 @@ class GeneticAlgorithmCV:
     def evaluate_population(self, population, X_train, y_train):
         def evaluate_individual(chromosome):
             try:
-                params = self.decode_chromosome(chromosome)
+                # Desempaquetar los valores retornados
+                param_values, param_estimators = self.decode_chromosome(chromosome)
+                # Combinar los diccionarios en uno solo
+                params = param_values.copy()
+                params.update(param_estimators)
                 scores_f1 = []
                 scores_auc = []
                 scores_acur = []
@@ -110,20 +122,22 @@ class GeneticAlgorithmCV:
                     X_tr, X_val = X_train[train_idx], X_train[val_idx]
                     y_tr, y_val = y_train[train_idx], y_train[val_idx]
                     model = clone(self.pipeline)
+                    # Establecer los parámetros
                     model.set_params(**params)
                     model.fit(X_tr, y_tr)
                     y_pred = model.predict(X_val)
-                    y_pred_prob = model.predict_proba(X_val)[:, 1]
-                    score_f1 = f1_score(y_val, y_pred, average='binary')
-                    score_auc = roc_auc_score(y_val, y_pred_prob)
+                    #y_pred_prob = model.predict_proba(X_val)[:, 1]
+                    #score_f1 = f1_score(y_val, y_pred, average='binary')
+                    #score_auc = roc_auc_score(y_val, y_pred_prob)
                     score_acur = accuracy_score(y_val, y_pred)
-                    scores_f1.append(score_f1)
-                    scores_auc.append(score_auc)
+                    #scores_f1.append(score_f1)
+                    #scores_auc.append(score_auc)
                     scores_acur.append(score_acur)
-                fitness_f1 = np.mean(scores_f1)
-                fitness_auc = np.mean(scores_auc)
+                #fitness_f1 = np.mean(scores_f1)
+                #fitness_auc = np.mean(scores_auc)
                 fitness_acur = np.mean(scores_acur)
-                fitness = (fitness_f1 + fitness_auc + fitness_acur) / 3
+                #fitness = (fitness_f1 + fitness_auc + fitness_acur) / 3
+                fitness = fitness_acur
             except Exception as e:
                 if self.verbose:
                     print(f"Error evaluando el individuo: {e}")
@@ -334,36 +348,39 @@ class GeneticAlgorithmCV:
             # Actualizar la población para la siguiente generación
             population = offspring
 
-        # Dentro del método fit de la clase GeneticAlgorithmCV
+        # Devolver el mejor pipeline
         if best_overall_chromosome is not None:
             self.best_score_ = best_overall_fitness
-            self.best_params_ = self.decode_chromosome(best_overall_chromosome)
-
+            self.best_params_, self.best_estimators_ = self.decode_chromosome(best_overall_chromosome)
+            self.best_params_full_ = self.best_params_.copy()  # Guardamos una copia antes de modificar
             # Reconstruir el pipeline excluyendo pasos en 'passthrough'
             new_steps = []
             for name, step in self.pipeline.steps:
                 # Verificar si el paso está configurado como 'passthrough'
-                if name in self.best_params_ and self.best_params_[name] == 'passthrough':
+                if name in self.best_estimators_ and self.best_estimators_[name] == 'passthrough':
                     continue  # Omitir este paso
                 else:
-                    # Si el estimador del paso ha sido especificado en best_params_
-                    if name in self.best_params_:
-                        step = self.best_params_[name]
-                        del self.best_params_[name]
+                    # Si el estimador del paso ha sido especificado en best_estimators_
+                    if name in self.best_estimators_:
+                        # Usar el estimador seleccionado
+                        step = self.best_estimators_[name]
                     else:
-                        # Clonar el paso original
+                        # Clonar el paso original para preservar los parámetros predeterminados
                         step = clone(step)
-                    # Obtener los parámetros específicos para este paso
-                    step_params = {
+                    # Obtener los parámetros específicos para este paso que están en param_grid
+                    optimized_params = {
                         key.split('__', 1)[1]: value
                         for key, value in self.best_params_.items()
                         if key.startswith(f"{name}__")
                     }
+                    # Remover estos parámetros de best_params_ para evitar duplicados
+                    for key in list(self.best_params_.keys()):
+                        if key.startswith(f"{name}__"):
+                            del self.best_params_[key]
                     # Actualizar los parámetros del paso si es necesario
-                    if step_params:
-                        step.set_params(**step_params)
+                    if optimized_params:
+                        step.set_params(**optimized_params)
                     new_steps.append((name, step))
-
             # Crear el nuevo pipeline con los pasos actualizados
             self.best_estimator_ = Pipeline(new_steps)
             self.best_estimator_.fit(X_train, y_train)

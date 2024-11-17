@@ -1,8 +1,9 @@
 # genetic_algorithm.py
-
+import os
+import tempfile
 import numpy as np
-import multiprocessing
-from joblib import Parallel, delayed
+from memory_profiler import profile
+from joblib import Parallel, delayed, parallel_backend
 from sklearn.base import clone
 from sklearn.metrics import f1_score, roc_auc_score, accuracy_score
 from tqdm.notebook import tqdm
@@ -107,50 +108,32 @@ class GeneticAlgorithmCV:
         population = np.random.uniform(low=0.0, high=1.0, size=(self.pop_size, chromosome_length))
         return population
 
-    def evaluate_population(self, population, X_train, y_train):
+    def evaluate_population(self, population, X_train_memmap, y_train_memmap):
+        @profile
         def evaluate_individual(chromosome):
             try:
-                # Desempaquetar los valores retornados
                 param_values, param_estimators = self.decode_chromosome(chromosome)
-                # Combinar los diccionarios en uno solo
                 params = param_values.copy()
                 params.update(param_estimators)
-                scores_f1 = []
-                scores_auc = []
+                model = clone(self.pipeline)
+                model.set_params(**params)
                 scores_acur = []
-                for train_idx, val_idx in self.cv.split(X_train, y_train):
-                    X_tr, X_val = X_train[train_idx], X_train[val_idx]
-                    y_tr, y_val = y_train[train_idx], y_train[val_idx]
-                    model = clone(self.pipeline)
-                    # Establecer los parámetros
-                    model.set_params(**params)
-                    model.fit(X_tr, y_tr)
-                    y_pred = model.predict(X_val)
-                    #y_pred_prob = model.predict_proba(X_val)[:, 1]
-                    #score_f1 = f1_score(y_val, y_pred, average='binary')
-                    #score_auc = roc_auc_score(y_val, y_pred_prob)
-                    score_acur = accuracy_score(y_val, y_pred)
-                    #scores_f1.append(score_f1)
-                    #scores_auc.append(score_auc)
+                for train_idx, val_idx in self.cv.split(X_train_memmap, y_train_memmap):
+                    model.fit(X_train_memmap[train_idx], y_train_memmap[train_idx])
+                    y_pred = model.predict(X_train_memmap[val_idx])
+                    score_acur = accuracy_score(y_train_memmap[val_idx], y_pred)
                     scores_acur.append(score_acur)
-                #fitness_f1 = np.mean(scores_f1)
-                #fitness_auc = np.mean(scores_auc)
                 fitness_acur = np.mean(scores_acur)
-                #fitness = (fitness_f1 + fitness_auc + fitness_acur) / 3
-                fitness = fitness_acur
             except Exception as e:
                 if self.verbose:
                     print(f"Error evaluando el individuo: {e}")
                 return -np.inf
-            return fitness
+            return fitness_acur
 
-        if self.n_jobs == -1:
-            n_jobs = multiprocessing.cpu_count()
-        else:
-            n_jobs = self.n_jobs
-        fitnesses = Parallel(n_jobs=n_jobs)(
-            delayed(evaluate_individual)(chromosome) for chromosome in population
-        )
+        with parallel_backend("loky", inner_max_num_threads=1):
+            fitnesses = Parallel(n_jobs=self.n_jobs)(
+                delayed(evaluate_individual)(chromosome) for chromosome in population
+            )
         return np.array(fitnesses)
 
     def select_parents(self, population, fitnesses):
@@ -271,6 +254,22 @@ class GeneticAlgorithmCV:
             return (history[-1] - min_val) / (max_val - min_val)
 
     def fit(self, X_train, y_train):
+        # Crear archivos temporales utilizando NamedTemporaryFile
+        with tempfile.NamedTemporaryFile(suffix='.npy', delete=False) as X_temp_file:
+            # Guardar X_train en el archivo temporal
+            np.save(X_temp_file, X_train)
+            X_temp_path = X_temp_file.name  # Obtener el nombre del archivo temporal
+
+        with tempfile.NamedTemporaryFile(suffix='.npy', delete=False) as y_temp_file:
+            # Guardar y_train en el archivo temporal
+            np.save(y_temp_file, y_train)
+            y_temp_path = y_temp_file.name  # Obtener el nombre del archivo temporal
+
+        # Cargar los datos como memmap
+        X_train_memmap = np.load(X_temp_path, mmap_mode='r')
+        y_train_memmap = np.load(y_temp_path, mmap_mode='r')
+
+        # Ahora, utiliza X_train_memmap e y_train_memmap en lugar de X_train e y_train
         population = self.initialize_population()
         best_overall_fitness = -np.inf
         best_overall_chromosome = None
@@ -278,7 +277,7 @@ class GeneticAlgorithmCV:
 
         for generation in tqdm(range(self.generations), desc=f"Generaciones {self.model_type}", unit="gen"):
             # Evaluar la población
-            fitnesses = self.evaluate_population(population, X_train, y_train)
+            fitnesses = self.evaluate_population(population, X_train_memmap, y_train_memmap)
             # Capturar máximo y mínimo
             current_best_fitness = np.max(fitnesses)
             # Añadir el mejor fitness al historial
@@ -348,6 +347,9 @@ class GeneticAlgorithmCV:
             # Actualizar la población para la siguiente generación
             population = offspring
 
+        # Eliminar los archivos temporales
+        os.unlink(X_temp_path)
+        os.unlink(y_temp_path)
         # Devolver el mejor pipeline
         if best_overall_chromosome is not None:
             self.best_score_ = best_overall_fitness

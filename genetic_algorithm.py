@@ -5,10 +5,9 @@ import numpy as np
 from memory_profiler import profile
 from joblib import Parallel, delayed, parallel_backend
 from sklearn.base import clone
-from sklearn.metrics import f1_score, roc_auc_score, accuracy_score
+from sklearn.metrics import accuracy_score
 from tqdm.notebook import tqdm
 from scipy.spatial.distance import pdist
-from sklearn.pipeline import Pipeline
 
 class GeneticAlgorithmCV:
     def __init__(

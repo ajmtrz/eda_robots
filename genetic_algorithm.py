@@ -93,14 +93,43 @@ class GeneticAlgorithmCV:
                     param_estimators[key] = estimator  # Guardamos el objeto estimador
                     if estimator == 'passthrough':
                         skip_steps.add(key)
-                else:
-                    param_values[key] = value
             else:
                 raise ValueError(f"Tipo de parámetro no soportado: {param_info['type']}")
+
+        if self.verbose:
+            print(f"Before removing params, param_values: {param_values}")
+
+        # Eliminar parámetros asociados a pasos en 'passthrough'
         for step in skip_steps:
-            keys_to_remove = [k for k in param_values if k.startswith(f"{step}__") and k != step]
+            keys_to_remove = [k for k in list(param_values.keys()) if k.startswith(f"{step}__")]
             for k in keys_to_remove:
                 del param_values[k]
+
+        if self.verbose:
+            print(f"After removing params, param_values: {param_values}")
+
+        # Verificar parámetros específicos del estimador
+        for key in list(param_values.keys()):
+            if '__' in key:
+                step_name, param_name = key.split('__', 1)
+                # Si el paso está en param_estimators, es un estimador seleccionado dinámicamente
+                if step_name in param_estimators:
+                    estimator = param_estimators[step_name]
+                    if estimator == 'passthrough':
+                        # Ya hemos eliminado los parámetros asociados
+                        continue
+                    elif not hasattr(estimator, param_name):
+                        # El estimador no tiene este parámetro, eliminarlo
+                        del param_values[key]
+                else:
+                    # El paso usa el estimador por defecto en el pipeline; verificar si tiene el parámetro
+                    estimator = dict(self.pipeline.named_steps)[step_name]
+                    if not hasattr(estimator, param_name):
+                        del param_values[key]
+
+        if self.verbose:
+            print(f"After verifying estimator parameters, param_values: {param_values}")
+
         return param_values, param_estimators
 
     def initialize_population(self):

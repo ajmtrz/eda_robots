@@ -4,6 +4,7 @@ import tempfile
 import numpy as np
 from memory_profiler import profile
 from joblib import Parallel, delayed, parallel_backend
+from sklearn.pipeline import Pipeline
 from sklearn.base import clone
 from sklearn.metrics import accuracy_score
 from tqdm.notebook import tqdm
@@ -108,7 +109,7 @@ class GeneticAlgorithmCV:
         return population
 
     def evaluate_population(self, population, X_train_memmap, y_train_memmap):
-        @profile
+        #@profile
         def evaluate_individual(chromosome):
             try:
                 param_values, param_estimators = self.decode_chromosome(chromosome)

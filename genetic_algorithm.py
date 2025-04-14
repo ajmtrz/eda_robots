@@ -16,7 +16,7 @@ class GeneticAlgorithmCV:
         model_type,
         pipeline,
         param_grid,
-        estimator_map,
+        estimator_map=None,
         cv=None,
         pop_size=25,
         generations=5,
@@ -37,7 +37,6 @@ class GeneticAlgorithmCV:
         self.model_type = model_type
         self.pipeline = pipeline
         self.param_grid = param_grid
-        self.estimator_map = estimator_map
         self.cv = cv
         self.pop_size = pop_size
         self.generations = generations
@@ -59,6 +58,12 @@ class GeneticAlgorithmCV:
         self.beta = beta
         self.fitness_history = []
         self.diversity_history = []
+        if estimator_map is None:
+            estimator_map = {}
+            self.estimator_map = estimator_map
+            self.estimator_map = estimator_map
+        else:
+            self.estimator_map = estimator_map
 
     def sigmoid(self, x):
         return 1 / (1 + np.exp(-x))

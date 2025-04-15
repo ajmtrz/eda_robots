@@ -111,12 +111,8 @@ class GeneticAlgorithmCV:
                     estimator = param_estimators[step_name]
                     if estimator == 'passthrough':
                         continue
-                    elif not hasattr(estimator, param_name):
-                        del param_values[key]
                 else:
                     estimator = dict(self.pipeline.named_steps)[step_name]
-                    if not hasattr(estimator, param_name):
-                        del param_values[key]
         return param_values, param_estimators
 
     def initialize_population(self):

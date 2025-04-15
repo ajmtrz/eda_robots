@@ -3,3 +3,4 @@
 [0-9]*
 !*[.]*
 __pycache__
+catboost_info/

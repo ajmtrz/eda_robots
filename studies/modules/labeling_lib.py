@@ -1150,20 +1150,22 @@ def get_labels_filter_bidirectional(dataset, rolling1=200, rolling2=200, quantil
 
 # ONE DIRECTION LABELING
 @njit
-def calculate_labels_one_direction(close_data, markup, min, max, direction):
+def calculate_labels_one_direction(close_data, markup, min_val, max_val, direction):
     labels = []
-    for i in range(len(close_data) - max):
-        rand = random.randint(min, max)
+    for i in range(len(close_data) - max_val):
+        rand = random.randint(min_val, max_val)
         curr_pr = close_data[i]
         future_pr = close_data[i + rand]
-
-        if direction == "sell":
-            if (future_pr + markup) < curr_pr:
+        
+        if direction == "buy":
+            # Label 1 si el precio sube MÁS que el markup (trade positivo)
+            if (future_pr - markup) > curr_pr:
                 labels.append(1.0)
             else:
                 labels.append(0.0)
-        if direction == "buy":
-            if (future_pr - markup) > curr_pr:
+        elif direction == "sell":
+            # Label 1 si el precio baja MÁS que el markup (trade positivo)
+            if (future_pr + markup) < curr_pr:
                 labels.append(1.0)
             else:
                 labels.append(0.0)

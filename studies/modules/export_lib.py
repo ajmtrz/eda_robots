@@ -37,8 +37,8 @@ def skl2onnx_convert_catboost(scope, operator, container):
         **{att.name: get_attribute_value(att) for att in node.attribute}
     )
 
-def export_model_to_ONNX(**kwargs):
-    models = kwargs.get('best_models')
+def export_model_to_ONNX(best_models, **kwargs):
+    models = best_models
     symbol = kwargs.get('symbol')
     timeframe = kwargs.get('timeframe')
     periods = kwargs.get('periods')
@@ -59,10 +59,10 @@ def export_model_to_ONNX(**kwargs):
     
     # Modelo señal
     model_onnx = convert_sklearn(
-        models[1],
-        initial_types=[('input', FloatTensorType([None, len(models[1].feature_names_)]))],
+        models[0],
+        initial_types=[('input', FloatTensorType([None, len(models[0].feature_names_)]))],
         target_opset={"": 18, "ai.onnx.ml": 2},
-        options={id(models[1]): {'zipmap': True}}
+        options={id(models[0]): {'zipmap': True}}
     )
     filename_model = f"dmitrievsky_model_{symbol}_{timeframe}_{model_number}.onnx"
     filepath_model = os.path.join(models_export_path, filename_model)
@@ -72,10 +72,10 @@ def export_model_to_ONNX(**kwargs):
     
     # Modelo meta
     model_onnx = convert_sklearn(
-        models[2],
-        initial_types=[('input', FloatTensorType([None, len(models[2].feature_names_)]))],
+        models[1],
+        initial_types=[('input', FloatTensorType([None, len(models[1].feature_names_)]))],
         target_opset={"": 18, "ai.onnx.ml": 2},
-        options={id(models[2]): {'zipmap': True}}
+        options={id(models[1]): {'zipmap': True}}
     )
     filename_model_m = f"dmitrievsky_model_m_{symbol}_{timeframe}_{model_number}.onnx"
     filepath_model_m = os.path.join(models_export_path, filename_model_m)
@@ -93,30 +93,55 @@ def export_model_to_ONNX(**kwargs):
         '] = {' + ','.join(map(str, periods)) + '};'
     code += '\n'
     code += 'int Periods_m_' + str(model_number) + '[' + str(len(periods_meta)) + \
-        '] = {' + ','.join(map(str, periods_meta)) + '};'
-    code += '\n\n'
-
+        '] = {' + ','.join(map(str, periods_meta)) + '};\n'
+    code += "datetime fecha_hora_inspeccion = D'2020.03.26 01:00';\n"
+    code += 'double stat_std(const double &a[]) { return MathStandardDeviation(a); }\n'
+    code += 'double stat_cv(const double &a[])  { return MathStandardDeviation(a) / MathMean(a); }\n'
+    code += 'double stat_rng(const double &a[]) { return ArrayMaximum(a) - ArrayMinimum(a); }\n'
+    code += 'double stat_sk(const double &a[])  { return MathSkewness(a); }\n'
+    code += 'double stat_kur(const double &a[]) { return MathKurtosis(a); }\n'
+    code += 'typedef double (*StatFunc)(const double &[]);\n'
+    code += 'StatFunc stat_ptr[] = { stat_std, stat_cv, stat_rng, stat_sk, stat_kur };\n'
     # get features
-    code += 'void fill_arays_' + str(model_number) + '( double &features[]) {\n'
-    code += '   double pr[], ret[];\n'
-    code += '   ArrayResize(ret, 1);\n'
-    code += '   for(int i=ArraySize(Periods_' + str(model_number) + ')-1; i>=0; i--) {\n'
-    code += '       CopyClose(NULL,PERIOD_' + timeframe + ',1,Periods_' + str(model_number) + '[i],pr);\n'
-    code += '       ret[0] = MathStandardDeviation(pr);\n'
-    code += '       ArrayInsert(features, ret, ArraySize(features), 0, WHOLE_ARRAY); }\n'
+    code += 'void fill_arays(double &features[])\n'
+    code += '  {\n'
+    code += '   double pr[];\n'
+    code += '   double stat_value;\n'
+    code += '    datetime current_bar_time = iTime(NULL, PERIOD_' + str(timeframe) + ', 0);\n'
+    code += '   for(int i=ArraySize(Periods_0)-1; i>=0; i--)\n'
+    code += '     {\n'
+    code += '      CopyClose(NULL, PERIOD_H1, 1, Periods_0[i], pr);\n'
+    code += '      stat_value = MathStandardDeviation(pr);\n'
+    code += '      ArrayResize(features, ArraySize(features) + 1);\n'
+    code += '      features[ArraySize(features) - 1] = stat_value;\n'
+    code += '     }\n'
     code += '   ArraySetAsSeries(features, true);\n'
+    code += '   if(current_bar_time == fecha_hora_inspeccion)\n'
+    code += '   {\n'
+    code += '   Print("Características MAIN en [" + TimeToString(fecha_hora_inspeccion, TIME_DATE|TIME_MINUTES) + "]:");\n'
+    code += '   ArrayPrint(features);\n'
+    code += '   }\n'
     code += '}\n\n'
-
     # get features
-    code += 'void fill_arays_m_' + str(model_number) + '( double &features[]) {\n'
-    code += '   double pr[], ret[];\n'
-    code += '   ArrayResize(ret, 1);\n'
-    code += '   for(int i=ArraySize(Periods_m_' + str(model_number) + ')-1; i>=0; i--) {\n'
-    code += '       CopyClose(NULL,PERIOD_' + timeframe + ',1,Periods_m_' + str(model_number) + '[i],pr);\n'
-    code += '       ret[0] = MathStandardDeviation(pr);\n'
-    code += '       ArrayInsert(features, ret, ArraySize(features), 0, WHOLE_ARRAY); }\n'
+    code += 'void fill_arays_m(double &features[])\n'
+    code += '  {\n'
+    code += '   double pr[];\n'
+    code += '   double stat_value;\n'
+    code += '    datetime current_bar_time = iTime(NULL, PERIOD_' + str(timeframe) + ', 0);\n'
+    code += '   for(int i = ArraySize(Periods_m_0) - 1; i >= 0; i--)\n'
+    code += '     {\n'
+    code += '      CopyClose(NULL, PERIOD_H1, 1, Periods_m_0[i], pr);\n'
+    code += '      stat_value = MathStandardDeviation(pr);\n'
+    code += '      ArrayResize(features, ArraySize(features) + 1);\n'
+    code += '      features[ArraySize(features) - 1] = stat_value;\n'
+    code += '     }\n'
     code += '   ArraySetAsSeries(features, true);\n'
-    code += '}\n\n'
+    code += '   if(current_bar_time == fecha_hora_inspeccion)\n'
+    code += '   {\n'
+    code += '   Print("Características META en [" + TimeToString(fecha_hora_inspeccion, TIME_DATE|TIME_MINUTES) + "]:");\n'
+    code += '   ArrayPrint(features);\n'
+    code += '   }\n'
+    code += '  }\n\n'
 
     file_name = os.path.join(include_export_path, f"{symbol}_{timeframe}_ONNX_include_{model_number}.mqh")
     with open(file_name, "w") as file:
@@ -139,109 +164,3 @@ def remove_inner_braces_and_second_bracket(text):
     result = pattern.sub(replace_inner_braces_and_second_bracket, text)
 
     return result
-
-def export_model_to_MQL4_code(**kwargs):
-    model = kwargs.get('model')
-    symbol = kwargs.get('symbol')
-    periods = kwargs.get('periods')
-    periods_meta = kwargs.get('periods_meta')
-    model_number = kwargs.get('model_number')
-    export_path = kwargs.get('export_path')
-
-    model[1].save_model('catmodel.h',
-                     format="cpp",
-                     export_parameters=None,
-                     pool=None)
-    model[2].save_model('meta_catmodel.h',
-                     format="cpp",
-                     export_parameters=None,
-                     pool=None)
-    
-    # add variables
-    code = 'int Periods' + '[' + str(len(periods)) + \
-        '] = {' + ','.join(map(str, periods)) + '};'
-    code += '\n'
-    code += 'int Periods_m' + '[' + str(len(periods_meta)) + \
-        '] = {' + ','.join(map(str, periods_meta)) + '};'
-    code += '\n\n'
-
-    # get features
-    code += 'void fill_arays' + '( double &features[]) {\n'
-    code += '   double pr[];\n'
-    code += '   ArrayResize(features, ArraySize(Periods));\n'
-    code += '   for(int i=ArraySize(Periods)-1; i>=0; i--) {\n'
-    code += '       int copyed = CopyClose(NULL,PERIOD_H1,1,Periods[i],pr);\n'
-    code += '       if (copyed != Periods[i]) break;\n'
-    code += '       features[i] = MathMean(pr);\n'
-    code += '}\n'
-    code += '}\n\n'
-
-    # get features
-    code += 'void fill_arays_m' + '( double &features[]) {\n'
-    code += '   double pr[];\n'
-    code += '   ArrayResize(features, ArraySize(Periods_m));\n'
-    code += '   for(int i=ArraySize(Periods_m)-1; i>=0; i--) {\n'
-    code += '       int copyed = CopyClose(NULL,PERIOD_H1,1,Periods_m[i],pr);\n'
-    code += '       if (copyed != Periods_m[i]) break;\n'
-    code += '       features[i] = MathSkewness(pr);\n'
-    code += '}\n'
-    code += '}\n\n'
-
-    # add CatBosst base model
-    code += 'double catboost_model' + str(model_number) + '(const double &features[]) { \n'
-    code += '    '
-    with open('catmodel.h', 'r') as file:
-        data = file.read()
-        parsed_model_tree = data[data.find("unsigned int TreeDepth")
-                               :data.find("double Scale = 1;")]
-        code += remove_inner_braces_and_second_bracket(parsed_model_tree)
-    code += '\n\n'
-    code += 'return ' + \
-        'ApplyCatboostModel' + str(model_number) + '(features, TreeDepth, TreeSplits , BorderCounts, Borders, LeafValues); } \n\n'
-
-    # add CatBosst meta model
-    code += 'double catboost_meta_model' + str(model_number) + '(const double &features[]) { \n'
-    code += '    '
-    with open('meta_catmodel.h', 'r') as file:
-        data = file.read()
-        parsed_model_tree = data[data.find("unsigned int TreeDepth")
-                               :data.find("double Scale = 1;")]
-        code += remove_inner_braces_and_second_bracket(parsed_model_tree)
-    code += '\n\n'
-    code += 'return ' + \
-        'ApplyCatboostModel' + str(model_number) + '(features, TreeDepth, TreeSplits , BorderCounts, Borders, LeafValues); } \n\n'
-
-    code += 'double ApplyCatboostModel' + str(model_number) + '(const double &features[],uint &TreeDepth_[],uint &TreeSplits_[],uint &BorderCounts_[],float &Borders_[],double &LeafValues_[]) {\n\
-    uint FloatFeatureCount=ArrayRange(BorderCounts_,0);\n\
-    uint BinaryFeatureCount=ArrayRange(Borders_,0);\n\
-    uint TreeCount=ArrayRange(TreeDepth_,0);\n\
-    bool     binaryFeatures[];\n\
-    ArrayResize(binaryFeatures,BinaryFeatureCount);\n\
-    uint binFeatureIndex=0;\n\
-    for(uint i=0; i<FloatFeatureCount; i++) {\n\
-       for(uint j=0; j<BorderCounts_[i]; j++) {\n\
-          binaryFeatures[binFeatureIndex]=features[i]>Borders_[binFeatureIndex];\n\
-          binFeatureIndex++;\n\
-       }\n\
-    }\n\
-    double result=0.0;\n\
-    uint treeSplitsPtr=0;\n\
-    uint leafValuesForCurrentTreePtr=0;\n\
-    for(uint treeId=0; treeId<TreeCount; treeId++) {\n\
-       uint currentTreeDepth=TreeDepth_[treeId];\n\
-       uint index=0;\n\
-       for(uint depth=0; depth<currentTreeDepth; depth++) {\n\
-          index|=(binaryFeatures[TreeSplits_[treeSplitsPtr+depth]]<<depth);\n\
-       }\n\
-       result+=LeafValues_[leafValuesForCurrentTreePtr+index];\n\
-       treeSplitsPtr+=currentTreeDepth;\n\
-       leafValuesForCurrentTreePtr+=(1<<currentTreeDepth);\n\
-    }\n\
-    return 1.0/(1.0+MathPow(M_E,-result));\n\
-    }\n\n'
-
-    file = open(export_path + str(symbol) + '_model_MQL_code_' + str(model_number) + '.mqh', "w")
-    file.write(code)
-
-    file.close()
-    print('The file ' + 'cat_model' + '.mqh ' + 'has been written to disc')

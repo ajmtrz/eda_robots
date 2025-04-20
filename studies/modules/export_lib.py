@@ -260,7 +260,10 @@ def export_model_to_ONNX(best_models, **kwargs):
         '] = {' + ','.join(map(str, periods_meta)) + '};\n\n'
     code += '#define NUM_STATS           (ArraySize(stat_ptr))\n'
     code += '#define NUM_FEATURES        (ArraySize(Periods_))\n'
-    code += '#define NUM_META_FEATURES   (ArraySize(Periods_m_))\n\n'
+    code += '#define NUM_META_FEATURES   (ArraySize(Periods_m_))\n'
+    code += f'#define SYMBOL              "{str(symbol)}"\n'
+    code += f'#define TIMEFRAME           "{str(timeframe)}"\n'
+    code += f'#define MODEL_NUMBER        "{str(model_number)}"\n\n'
     if "mean" not in stats:
         code += stat_function_templates["mean"] + "\n"
     if "std" not in stats:

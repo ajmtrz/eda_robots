@@ -104,7 +104,6 @@ def tester(dataset, forward, backward, markup, plot=False):
 
     return lr.score(X, y) * sign
 
-
 def tester_one_direction(dataset, forward, backward,
                          markup, direction='buy', plot=False):
     forw = dataset.index.get_indexer([forward],  method='nearest')[0]

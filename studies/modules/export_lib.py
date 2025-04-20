@@ -39,11 +39,12 @@ def skl2onnx_convert_catboost(scope, operator, container):
 
 def export_model_to_ONNX(best_models, **kwargs):
     models = best_models
+    model_number = kwargs.get('model_number')
     symbol = kwargs.get('symbol')
     timeframe = kwargs.get('timeframe')
+    stats = kwargs.get('stats')
     periods = kwargs.get('periods')
     periods_meta = kwargs.get('periods_meta')
-    model_number = kwargs.get('model_number')
     models_export_path = kwargs.get('models_export_path')
     include_export_path = kwargs.get('include_export_path')
 
@@ -83,6 +84,169 @@ def export_model_to_ONNX(best_models, **kwargs):
         f.write(model_onnx.SerializeToString())
     print(f"Modelo {filepath_model_m} ONNX exportado correctamente")
 
+    stat_function_templates = {
+        "std": """
+            double stat_std(const double &a[])
+            {
+            int n = ArraySize(a);
+            if(n <= 1) return 0.0;
+            double sum = 0.0, sum_sq = 0.0;
+            for(int i = 0; i < n; i++)
+                {
+                sum += a[i];
+                sum_sq += a[i] * a[i];
+                }
+            double mean = sum / n;
+            return MathSqrt((sum_sq - n * mean * mean) / (n - 1));
+            }
+            """,
+        "skew": """
+            double stat_skew(const double &a[])
+            {
+            int n = ArraySize(a);
+            if(n <= 1) return 0.0;
+            double sum = 0.0, m3 = 0.0;
+            for(int i = 0; i < n; i++) sum += a[i];
+            double mean = sum / n;
+            double std = stat_std(a);
+            if(std == 0.0) return 0.0;
+            for(int i = 0; i < n; i++)
+                m3 += MathPow((a[i] - mean) / std, 3);
+            return m3 / n;
+            }
+            """,
+        "kurt": """
+            double stat_kurt(const double &a[])
+            {
+            int n = ArraySize(a);
+            if(n <= 1) return 0.0;
+            double sum = 0.0, m4 = 0.0;
+            for(int i = 0; i < n; i++) sum += a[i];
+            double mean = sum / n;
+            double std = stat_std(a);
+            if(std == 0.0) return 0.0;
+            for(int i = 0; i < n; i++)
+                m4 += MathPow((a[i] - mean) / std, 4);
+            return m4 / n - 3.0;
+            }
+            """,
+        "zscore": """
+            double stat_zscore(const double &a[])
+            {
+            int n = ArraySize(a);
+            if(n <= 1) return 0.0;
+            double sum = 0.0;
+            for(int i = 0; i < n; i++) sum += a[i];
+            double mean = sum / n;
+            double std = stat_std(a);
+            return std == 0.0 ? 0.0 : (a[0] - mean) / std;
+            }
+            """,
+        "mean": """
+            double stat_mean(const double &a[])
+            {
+            double sum = 0.0;
+            for(int i = 0; i < ArraySize(a); i++)
+                sum += a[i];
+            return sum / ArraySize(a);
+            }
+            """,
+                "range": """
+            double stat_range(const double &a[])
+            {
+            double minv = a[0], maxv = a[0];
+            for(int i = 1; i < ArraySize(a); i++)
+                {
+                if(a[i] < minv) minv = a[i];
+                if(a[i] > maxv) maxv = a[i];
+                }
+            return maxv - minv;
+            }
+            """,
+        "median": """
+            double stat_median(const double &a[])
+            {
+            double tmp[];
+            ArrayCopy(tmp, a);
+            ArraySort(tmp);
+            int n = ArraySize(tmp);
+            if(n % 2 == 0)
+                return (tmp[n/2 - 1] + tmp[n/2]) / 2.0;
+            else
+                return tmp[n/2];
+            }
+            """,
+        "mad": """
+            double stat_mad(const double &a[])
+            {
+            double mean = stat_mean(a);
+            double sum = 0.0;
+            for(int i = 0; i < ArraySize(a); i++)
+                sum += MathAbs(a[i] - mean);
+            return sum / ArraySize(a);
+            }
+            """,
+        "var": """
+            double stat_var(const double &a[])
+            {
+            double mean = stat_mean(a);
+            double sum = 0.0;
+            for(int i = 0; i < ArraySize(a); i++)
+                sum += (a[i] - mean) * (a[i] - mean);
+            return sum / (ArraySize(a));
+            }
+            """,
+        "entropy": """
+            double stat_entropy(const double &a[])
+            {
+            int bins = 10;
+            double minv = a[0], maxv = a[0];
+            for(int i = 1; i < ArraySize(a); i++)
+                {
+                if(a[i] < minv) minv = a[i];
+                if(a[i] > maxv) maxv = a[i];
+                }
+            double width = (maxv - minv) / bins;
+            if(width == 0) return 0.0;
+            double hist[10] = {0};
+            for(int i = 0; i < ArraySize(a); i++)
+                {
+                int idx = int((a[i] - minv) / width);
+                if(idx == bins) idx--; // borde superior
+                hist[idx]++;
+                }
+            double total = ArraySize(a);
+            double entropy = 0.0;
+            for(int i = 0; i < bins; i++)
+                {
+                if(hist[i] > 0)
+                    entropy -= (hist[i] / total) * MathLog(hist[i] / total);
+                }
+            return entropy;
+            }
+            """,
+        "slope": """
+            double stat_slope(const double &a[])
+                {
+                    int n = ArraySize(a);
+                    if(n <= 1) return 0.0;
+                    double x_mean = (n - 1) / 2.0;
+                    double y_mean = 0.0;
+                    for(int i = 0; i < n; i++)
+                        y_mean += a[i];
+                    y_mean /= n;
+
+                    double num = 0.0, den = 0.0;
+                    for(int i = 0; i < n; i++)
+                    {
+                        num += (i - x_mean) * (a[i] - y_mean);
+                        den += (i - x_mean) * (i - x_mean);
+                    }
+
+                    return den == 0.0 ? 0.0 : num / den;
+                }
+            """
+    }
     code = r"#include <Math\Stat\Math.mqh>"
     code += '\n'
     code += rf'#resource "\\Files\\{filename_model}" as uchar ExtModel_[]'
@@ -97,51 +261,14 @@ def export_model_to_ONNX(best_models, **kwargs):
     code += '#define NUM_STATS           (ArraySize(stat_ptr))\n'
     code += '#define NUM_FEATURES        (ArraySize(Periods_))\n'
     code += '#define NUM_META_FEATURES   (ArraySize(Periods_m_))\n\n'
-    code += 'double stat_std(const double &a[])\n'
-    code += '  {\n'
-    code += '   int n = ArraySize(a);\n'
-    code += '   if(n <= 1) return 0.0;\n'
-    code += '   double sum = 0.0, sum_sq = 0.0;\n'
-    code += '   for(int i = 0; i < n; i++)\n'
-    code += '     {\n'
-    code += '      sum += a[i];\n'
-    code += '      sum_sq += a[i] * a[i];\n'
-    code += '     }\n'
-    code += '   double mean = sum / n;\n'
-    code += '   return MathSqrt((sum_sq - n * mean * mean) / (n - 1));\n'
-    code += '  }\n\n'
-
-    code += 'double stat_sk(const double &a[])\n'
-    code += '  {\n'
-    code += '   int n = ArraySize(a);\n'
-    code += '   if(n <= 1) return 0.0;\n'
-    code += '   double sum = 0.0, m3 = 0.0;\n'
-    code += '   for(int i = 0; i < n; i++) sum += a[i];\n'
-    code += '   double mean = sum / n;\n'
-    code += '   double std = stat_std(a);\n'
-    code += '   if(std == 0.0) return 0.0;\n'
-    code += '   for(int i = 0; i < n; i++)\n'
-    code += '      m3 += MathPow((a[i] - mean) / std, 3);\n'
-    code += '   return m3 / n;\n'
-    code += '  }\n\n'
-
-    code += 'double stat_kur(const double &a[])\n'
-    code += '  {\n'
-    code += '   int n = ArraySize(a);\n'
-    code += '   if(n <= 1) return 0.0;\n'
-    code += '   double sum = 0.0, m4 = 0.0;\n'
-    code += '   for(int i = 0; i < n; i++) sum += a[i];\n'
-    code += '   double mean = sum / n;\n'
-    code += '   double std = stat_std(a);\n'
-    code += '   if(std == 0.0) return 0.0;\n'
-    code += '   for(int i = 0; i < n; i++)\n'
-    code += '      m4 += MathPow((a[i] - mean) / std, 4);\n'
-    code += '   return m4 / n - 3.0;\n'
-    code += '  }\n\n'
-
-    code += 'typedef double (*StatFunc)(const double &[]);\n'
-    code += 'StatFunc stat_ptr[] = { stat_std, stat_sk, stat_kur };\n\n'
-
+    if "mean" not in stats:
+        code += stat_function_templates["mean"] + "\n"
+    if "std" not in stats:
+        code += stat_function_templates["std"] + "\n"
+    for stat in stats:
+        code += stat_function_templates[stat] + "\n"
+    code += "\ntypedef double (*StatFunc)(const double &[]);\n"
+    code += "StatFunc stat_ptr[] = { " + ", ".join(f"stat_{s}" for s in stats) + " };\n\n"
     code += 'void fill_arays(double &features[])\n'
     code += '  {\n'
     code += '   double pr[];\n'
@@ -149,7 +276,7 @@ def export_model_to_ONNX(best_models, **kwargs):
     code += '   int index = 0;\n'
     code += '   for(int i=0; i<ArraySize(Periods_); i++)\n'
     code += '     {\n'
-    code += '      CopyClose(NULL, PERIOD_H1, 1, Periods_[i], pr);\n'
+    code += '      CopyClose(NULL, PERIOD_'+timeframe+ ', 1, Periods_[i], pr);\n'
     code += '      ArraySetAsSeries(pr, true);\n'
     code += '      for(int j = 0; j < ArraySize(stat_ptr); j++)\n'
     code += '        {\n'
@@ -165,9 +292,9 @@ def export_model_to_ONNX(best_models, **kwargs):
     code += '   double stat_value;\n'
     code += '   for(int i=0; i<ArraySize(Periods_m_); i++)\n'
     code += '     {\n'
-    code += '      CopyClose(NULL, PERIOD_H1, 1, Periods_m_[i], pr);\n'
+    code += '      CopyClose(NULL, PERIOD_'+timeframe+ ', 1, Periods_m_[i], pr);\n'
     code += '      ArraySetAsSeries(pr, true);\n'
-    code += '      stat_value = stat_ptr[0](pr);\n'
+    code += '      stat_value = stat_std(pr);\n'
     code += '      features[i] = stat_value;\n'
     code += '     }\n'
     code += '  }\n\n'

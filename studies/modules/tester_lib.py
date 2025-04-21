@@ -74,6 +74,75 @@ def process_data_one_direction(close, labels, metalabels,
 
     return np.array(report), np.array(chart), line_f, line_b
 
+def evaluate_report(report: np.ndarray, r2_raw: float) -> float:
+    if len(report) < 2:
+        return -1.0
+
+    returns = np.diff(report)
+    num_trades = len(returns)
+    if num_trades < 5:
+        return -1.0
+
+    # ────────────────────────
+    # MÉTRICAS BASE
+    mean_return = np.mean(returns)
+    std_return = np.std(returns)
+    sharpe = mean_return / std_return if std_return != 0 else 0.0
+
+    gains = returns[returns > 0]
+    losses = -returns[returns < 0]
+    profit_factor = np.sum(gains) / np.sum(losses) if np.sum(losses) > 0 else 0.0
+
+    equity_curve = report
+    peak = equity_curve[0]
+    max_dd = 0.0
+    for x in equity_curve:
+        peak = max(peak, x)
+        max_dd = max(max_dd, peak - x)
+    total_return = equity_curve[-1] - equity_curve[0]
+    return_dd_ratio = total_return / max_dd if max_dd > 0 else 0.0
+
+    # ────────────────────────
+    # PUNTAJE COMPUESTO BASE
+    base_score = (
+        (sharpe * 0.2) +  # Menor peso al Sharpe
+        (profit_factor * 0.3) +  # Menor peso al profit factor
+        (return_dd_ratio * 0.5)  # Mayor peso al return/DD
+    )
+
+    # Penalizaciones por métricas débiles
+    penalization = 1.0
+    if sharpe < 1.0: penalization *= 0.7  # Penalización moderada
+    if profit_factor < 2.0: penalization *= 0.8  # Umbral más alto
+    if return_dd_ratio < 2.0: penalization *= 0.7  # Umbral más alto
+
+    # ────────────────────────
+    # AJUSTE POR TRADES
+    min_trades = 20  # Mínimo de trades deseado
+    trade_weight = min(1.0, num_trades / min_trades)  # Penalización lineal
+    if num_trades > 50:
+        trade_weight = min(2.0, 1.0 + (num_trades - 50) / 100)  # Bonus gradual
+    
+    base_score *= penalization * trade_weight
+
+    # ────────────────────────
+    # R² y pendiente
+    r2_weight = max(min(r2_raw, 1.0), -1.0)
+    if r2_weight <= 0:
+        return -1.0
+    
+    if r2_weight > 0.8:
+        r2_weight *= 1.1  # Bonus moderado
+
+    # ────────────────────────
+    # Score final
+    final_score = 0.7 * base_score + 0.3 * r2_weight  # Mayor peso al desempeño base
+
+    # Normalización del score final
+    normalized_score = min(5.0, final_score)  # Limitar score máximo a 5.0
+    
+    return round(normalized_score, 2) if normalized_score > 0.5 else -1.0
+
 # ───────────────────────────────────────────────────────────────────
 # 2)  Wrappers del tester
 # ───────────────────────────────────────────────────────────────────
@@ -89,7 +158,7 @@ def tester(dataset, forward, backward, markup, plot=False):
 
     # regresión lineal sobre el equity
     y = rpt.reshape(-1, 1)
-    X = np.arange(len(rpt)).reshape(-1, 1)
+    X = np.ascontiguousarray(np.arange(len(rpt))).reshape(-1, 1)
     lr = LinearRegression().fit(X, y)
     sign = 1 if lr.coef_[0][0] >= 0 else -1
 
@@ -117,7 +186,7 @@ def tester_one_direction(dataset, forward, backward,
         close, lab, meta, markup, forw, back, direction)
 
     y = rpt.reshape(-1, 1)
-    X = np.arange(len(rpt)).reshape(-1, 1)
+    X = np.ascontiguousarray(np.arange(len(rpt))).reshape(-1, 1)
     lr = LinearRegression().fit(X, y)
     sign = 1 if lr.coef_[0][0] >= 0 else -1
 
@@ -129,7 +198,9 @@ def tester_one_direction(dataset, forward, backward,
         plt.title(f"R² {lr.score(X, y) * sign:.2f}")
         plt.show()
 
-    return lr.score(X, y) * sign
+    r2_raw = lr.score(X, y) * sign
+    #return lr.score(X, y) * sign
+    return evaluate_report(rpt, r2_raw)
 
 # ─────────────────────────────────────────────
 # tester_slow  (mantenerlo o borrarlo)

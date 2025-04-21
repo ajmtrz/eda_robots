@@ -245,6 +245,88 @@ def export_model_to_ONNX(best_models, **kwargs):
 
                     return den == 0.0 ? 0.0 : num / den;
                 }
+            """,
+        "momentum": """
+            double stat_momentum(const double &x[])
+            {
+                int size = ArraySize(x);
+                if(size == 0 || x[size-1] == 0) return 0.0;
+                return (x[0] / x[size-1]) - 1.0;
+            }
+            """,
+        "roc": """
+            double stat_roc(const double &x[])
+            {
+                int size = ArraySize(x);
+                if(size < 2 || x[size-1] == 0) return 0.0;
+                return ((x[0] - x[size-1]) / x[size-1]) * 100;
+            }
+            """,
+        "fractal": """
+            double stat_fractal(const double &x[])
+            {
+                int size = ArraySize(x);
+                if(size < 2) return 1.0;
+                
+                double mean = 0.0;
+                for(int i = 0; i < size; i++) mean += x[i];
+                mean /= size;
+                
+                double std_dev = 0.0;
+                for(int i = 0; i < size; i++) std_dev += MathPow(x[i] - mean, 2);
+                std_dev = MathSqrt(std_dev / (size-1));
+                
+                double eps = std_dev / 4.0;
+                int count = 0;
+                
+                for(int i = 0; i < size-1; i++) {
+                    if(MathAbs(x[i] - x[i+1]) > eps) count++;
+                }
+                
+                if(count == 0) return 1.0;
+                return 1.0 + MathLog(count) / MathLog(size);
+            }
+            """,
+        "hurst": """
+            double stat_hurst(const double &x[])
+            {
+                int n = ArraySize(x);
+                if(n < 4) return 0.5;
+                
+                int lags = MathMin(n-1, 20);
+                double rs[];
+                ArrayResize(rs, lags);
+                ArrayInitialize(rs, 0.0);
+                
+                for(int lag = 1; lag <= lags; lag++) {
+                    int window_size = n - lag;
+                    if(window_size < 1) continue;
+                    
+                    double mean = 0.0;
+                    for(int i = 0; i < window_size; i++) mean += x[i];
+                    mean /= window_size;
+                    
+                    double std_dev = 0.0;
+                    for(int i = 0; i < window_size; i++) 
+                        std_dev += MathPow(x[i] - mean, 2);
+                    std_dev = MathSqrt(std_dev / (window_size-1));
+                    
+                    if(std_dev == 0) continue;
+                    
+                    double max_val = x[0];
+                    for(int i = 1; i < window_size; i++)
+                        if(x[i] > max_val) max_val = x[i];
+                    
+                    rs[lag-1] = max_val / std_dev;
+                }
+                
+                int valid_count = 0;
+                for(int i = 0; i < lags; i++)
+                    if(rs[i] != 0) valid_count++;
+                
+                if(valid_count < 2) return 0.5;
+                return 0.5;
+            }
             """
     }
     code = r"#include <Math\Stat\Math.mqh>"

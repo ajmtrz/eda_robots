@@ -1,3 +1,4 @@
+import os
 import random
 import numpy as np
 import pandas as pd
@@ -8,6 +9,222 @@ from scipy.interpolate import UnivariateSpline
 from scipy.signal import find_peaks
 import matplotlib.pyplot as plt
 
+# Obtener precios
+def get_prices(hyper_params) -> pd.DataFrame:
+    history_file = os.path.join(hyper_params["history_path"], f"{hyper_params['symbol']}_{hyper_params['timeframe']}.csv")
+    p = pd.read_csv(history_file, sep=r"\s+")
+    pFixed = pd.DataFrame(columns=['time', 'close'])
+    pFixed['time'] = p['<DATE>'] + ' ' + p['<TIME>']
+    pFixed['time'] = pd.to_datetime(pFixed['time'], format='mixed')
+    pFixed['close'] = p['<CLOSE>']
+    pFixed.set_index('time', inplace=True)
+    return pFixed.dropna()
+
+# Ingeniería de características
+@njit
+def compute_features(close, periods_main, periods_meta, stats_main, stats_meta):
+    n = len(close)
+    total_features = (len(periods_main) * len(stats_main)) + (len(periods_meta) * len(stats_meta))
+    features = np.full((n, total_features), np.nan)
+
+    def std_manual(x):
+        m = np.mean(x)
+        return np.sqrt(np.sum((x - m) ** 2) / (x.size - 1))
+
+    def skew_manual(x):
+        m = np.mean(x)
+        s = std_manual(x)
+        return np.mean(((x - m) / s) ** 3) if s != 0 else 0.0
+
+    def kurt_manual(x):
+        m = np.mean(x)
+        s = std_manual(x)
+        return np.mean(((x - m) / s) ** 4) - 3 if s != 0 else 0.0
+    
+    def zscore_manual(x):
+        m = np.mean(x)
+        s = std_manual(x)
+        return (x[0] - m) / s if s != 0 else 0.0
+    
+    def entropy_manual(x):
+        bins = 10
+        minv = np.min(x)
+        maxv = np.max(x)
+        width = (maxv - minv) / bins
+        if width == 0:
+            return 0.0
+        hist = np.zeros(bins)
+        for val in x:
+            idx = int((val - minv) / width)
+            if idx == bins:  # caso borde
+                idx -= 1
+            hist[idx] += 1
+        total = x.size
+        entropy = 0.0
+        for i in range(bins):
+            p = hist[i] / total
+            if p > 0:
+                entropy -= p * np.log(p)
+        return entropy
+
+    def slope_manual(x):
+        n = x.size
+        x_idx = np.ascontiguousarray(np.arange(n))
+        x_mean = np.mean(x_idx)
+        y_mean = np.mean(x)
+        numerator = np.sum((x_idx - x_mean) * (x - y_mean))
+        denominator = np.sum((x_idx - x_mean) ** 2)
+        return numerator / denominator if denominator != 0 else 0.0
+
+    def momentum_manual(x):
+        return (x[0] / x[-1]) - 1.0 if x[-1] != 0 else 0.0
+    
+    def roc_manual(x):
+        n = len(x)
+        if n < 2:
+            return 0.0
+        return ((x[0] - x[-1]) / x[-1]) * 100 if x[-1] != 0 else 0.0
+    
+    def fractal_dimension_manual(x):
+        # Método de box-counting simplificado
+        x = np.ascontiguousarray(x)  # Asegurar array contiguo
+        eps = np.std(x) / 4  # epsilon como fracción de std
+        if eps == 0:  # Evitar división por cero
+            return 1.0
+        count = np.sum(np.abs(np.diff(x)) > eps)
+        if count == 0:
+            return 1.0
+        return 1.0 + np.log(count) / np.log(len(x))
+    
+    def hurst_manual(x):
+        # Exponente de Hurst simplificado
+        n = len(x)
+        if n < 4:
+            return 0.5
+        lags = min(n-1, 20)  # usar máximo 20 lags
+        tau = np.ascontiguousarray(np.arange(1, lags+1))
+        rs = np.zeros(lags)
+        
+        for lag in range(1, lags+1):
+            roll_mean = np.mean(x[:n-lag+1])
+            roll_std = std_manual(x[:n-lag+1])
+            if roll_std == 0:
+                continue
+            rs[lag-1] = np.max(x[:n-lag+1]) / roll_std
+        
+        valid_rs = rs[rs != 0]
+        if len(valid_rs) < 2:
+            return 0.5
+        
+        return np.mean(np.log(valid_rs)) / np.log(n) if n > 1 else 0.5
+
+    # Procesar períodos normales
+    col = 0
+    for win in periods_main:
+        for s in stats_main:
+            for i in range(win, n):
+                window = close[i - win:i][::-1]
+                if s == "std":
+                    features[i, col] = std_manual(window)
+                elif s == "skew":
+                    features[i, col] = skew_manual(window)
+                elif s == "kurt":
+                    features[i, col] = kurt_manual(window)
+                elif s == "zscore":
+                    features[i, col] = zscore_manual(window)
+                elif s == "mean":
+                    features[i, col] = np.mean(window)
+                elif s == "range":
+                    features[i, col] = np.max(window) - np.min(window)
+                elif s == "median":
+                    features[i, col] = np.median(window)
+                elif s == "mad":
+                    features[i, col] = np.mean(np.abs(window - np.mean(window)))
+                elif s == "var":
+                    features[i, col] = np.var(window)
+                elif s == "entropy":
+                    features[i, col] = entropy_manual(window)
+                elif s == "slope":
+                    features[i, col] = slope_manual(window)
+                elif s == "momentum":
+                    features[i, col] = momentum_manual(window)
+                elif s == "roc":
+                    features[i, col] = roc_manual(window)
+                elif s == "fractal":
+                    features[i, col] = fractal_dimension_manual(window)
+                elif s == "hurst":
+                    features[i, col] = hurst_manual(window)
+            col += 1  # Incrementar col después de procesar todas las filas para esta estadística y ventana
+
+    # Procesar períodos meta
+    for win in periods_meta:
+        for s in stats_meta:
+            for i in range(win, n):
+                window = close[i - win:i][::-1]
+                if s == "std":
+                    features[i, col] = std_manual(window)
+                elif s == "skew":
+                    features[i, col] = skew_manual(window)
+                elif s == "kurt":
+                    features[i, col] = kurt_manual(window)
+                elif s == "zscore":
+                    features[i, col] = zscore_manual(window)
+                elif s == "mean":
+                    features[i, col] = np.mean(window)
+                elif s == "range":
+                    features[i, col] = np.max(window) - np.min(window)
+                elif s == "median":
+                    features[i, col] = np.median(window)
+                elif s == "mad":
+                    features[i, col] = np.mean(np.abs(window - np.mean(window)))
+                elif s == "var":
+                    features[i, col] = np.var(window)
+                elif s == "entropy":
+                    features[i, col] = entropy_manual(window)
+                elif s == "slope":
+                    features[i, col] = slope_manual(window)
+                elif s == "momentum":
+                    features[i, col] = momentum_manual(window)
+                elif s == "roc":
+                    features[i, col] = roc_manual(window)
+                elif s == "fractal":
+                    features[i, col] = fractal_dimension_manual(window)
+                elif s == "hurst":
+                    features[i, col] = hurst_manual(window)
+            col += 1  # Incrementar col después de procesar todas las filas para esta estadística meta
+
+    return features
+
+# Ingeniería de características
+def get_clustering_features(data: pd.DataFrame, hp):
+    close = data['close'].values
+    index = data.index
+    periods_main = hp["periods_main"]
+    periods_meta = hp["periods_meta"]
+    stats_main = hp["stats_main"]
+    stats_meta = hp["stats_meta"]
+    if len(stats_main) == 0:
+        raise ValueError("La lista de estadísticas MAIN está vacía.")
+    if len(stats_meta) == 0:
+        raise ValueError("La lista de estadísticas META está vacía.")
+    # Asegurar que los arrays sean contiguos
+    close = np.ascontiguousarray(close)
+    periods_main = np.ascontiguousarray(periods_main)
+    periods_meta = np.ascontiguousarray(periods_meta)
+    feats = compute_features(close, periods_main, periods_meta, stats_main, stats_meta)
+    if np.isnan(feats).all():
+        return pd.DataFrame(index=index)
+    # Nombres de columnas
+    colnames = []
+    for p in periods_main:
+        for s in stats_main:
+            colnames.extend([f"{p}_{s}_feature"])
+    for p in periods_meta:
+        for s in stats_meta:
+            colnames.extend([f"{p}_{s}_meta_feature"])
+    df = pd.DataFrame(feats, columns=colnames, index=index)
+    df["close"] = data["close"]
+    return df.dropna()
 
 # TREND OR NEUTRAL BASED LABELING
 @njit
@@ -965,11 +1182,8 @@ def get_labels_filter(dataset, rolling=200, quantiles=[.45, .55], polyorder=3, d
     # Remove any rows with NaN values
     dataset = dataset.dropna()
     
-    # Remove rows where the 'labels' column has a value of 2.0 (sell signals)
-    # dataset = dataset.drop(dataset[dataset.labels == 2.0].index)
-    
     # Return the modified DataFrame with the 'lvl' column removed
-    return dataset.drop(columns=['lvl'])
+    return dataset.drop(columns=['lvl']) 
 
 @njit
 def calc_labels_multiple_filters(close, lvls, qs):

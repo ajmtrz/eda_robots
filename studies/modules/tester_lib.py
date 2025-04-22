@@ -74,75 +74,6 @@ def process_data_one_direction(close, labels, metalabels,
 
     return np.array(report), np.array(chart), line_f, line_b
 
-def evaluate_report(report: np.ndarray, r2_raw: float) -> float:
-    if len(report) < 2:
-        return -1.0
-
-    returns = np.diff(report)
-    num_trades = len(returns)
-    if num_trades < 5:
-        return -1.0
-
-    # ────────────────────────
-    # MÉTRICAS BASE
-    mean_return = np.mean(returns)
-    std_return = np.std(returns)
-    sharpe = mean_return / std_return if std_return != 0 else 0.0
-
-    gains = returns[returns > 0]
-    losses = -returns[returns < 0]
-    profit_factor = np.sum(gains) / np.sum(losses) if np.sum(losses) > 0 else 0.0
-
-    equity_curve = report
-    peak = equity_curve[0]
-    max_dd = 0.0
-    for x in equity_curve:
-        peak = max(peak, x)
-        max_dd = max(max_dd, peak - x)
-    total_return = equity_curve[-1] - equity_curve[0]
-    return_dd_ratio = total_return / max_dd if max_dd > 0 else 0.0
-
-    # ────────────────────────
-    # PUNTAJE COMPUESTO BASE
-    base_score = (
-        (sharpe * 0.2) +  # Menor peso al Sharpe
-        (profit_factor * 0.3) +  # Menor peso al profit factor
-        (return_dd_ratio * 0.5)  # Mayor peso al return/DD
-    )
-
-    # Penalizaciones por métricas débiles
-    penalization = 1.0
-    if sharpe < 1.0: penalization *= 0.7  # Penalización moderada
-    if profit_factor < 2.0: penalization *= 0.8  # Umbral más alto
-    if return_dd_ratio < 2.0: penalization *= 0.7  # Umbral más alto
-
-    # ────────────────────────
-    # AJUSTE POR TRADES
-    min_trades = 20  # Mínimo de trades deseado
-    trade_weight = min(1.0, num_trades / min_trades)  # Penalización lineal
-    if num_trades > 50:
-        trade_weight = min(2.0, 1.0 + (num_trades - 50) / 100)  # Bonus gradual
-    
-    base_score *= penalization * trade_weight
-
-    # ────────────────────────
-    # R² y pendiente
-    r2_weight = max(min(r2_raw, 1.0), -1.0)
-    if r2_weight <= 0:
-        return -1.0
-    
-    if r2_weight > 0.8:
-        r2_weight *= 1.1  # Bonus moderado
-
-    # ────────────────────────
-    # Score final
-    final_score = 0.7 * base_score + 0.3 * r2_weight  # Mayor peso al desempeño base
-
-    # Normalización del score final
-    normalized_score = min(5.0, final_score)  # Limitar score máximo a 5.0
-    
-    return round(normalized_score, 2) if normalized_score > 0.5 else -1.0
-
 # ───────────────────────────────────────────────────────────────────
 # 2)  Wrappers del tester
 # ───────────────────────────────────────────────────────────────────
@@ -173,6 +104,64 @@ def tester(dataset, forward, backward, markup, plot=False):
 
     return lr.score(X, y) * sign
 
+def evaluate_report(report: np.ndarray, r2_raw: float) -> float:
+    if len(report) < 2:
+        return -1.0
+
+    returns = np.diff(report)
+    num_trades = len(returns)
+    if num_trades < 5:
+        return -1.0
+
+    # ────────────────────────
+    # MÉTRICAS BASE
+    gains = returns[returns > 0]
+    losses = -returns[returns < 0]
+    profit_factor = np.sum(gains) / np.sum(losses) if np.sum(losses) > 0 else 0.0
+
+    equity_curve = report
+    peak = equity_curve[0]
+    max_dd = 0.0
+    for x in equity_curve:
+        peak = max(peak, x)
+        max_dd = max(max_dd, peak - x)
+    total_return = equity_curve[-1] - equity_curve[0]
+    return_dd_ratio = total_return / max_dd if max_dd > 0 else 0.0
+
+    # ────────────────────────
+    # PUNTAJE COMPUESTO BASE
+    base_score = (
+        (profit_factor * 0.5) +  # Menor peso al profit factor
+        (return_dd_ratio * 0.5)  # Mayor peso al return/DD
+    )
+
+    # Penalizaciones por métricas débiles
+    penalization = 1.0
+    if profit_factor < 2.0: penalization *= 0.8  # Umbral más alto
+    if return_dd_ratio < 2.0: penalization *= 0.8  # Umbral más alto
+
+    # ────────────────────────
+    # AJUSTE POR TRADES
+    min_trades = 200  # Mínimo de trades deseado
+    trade_weight = min(1.0, num_trades / min_trades)  # Penalización lineal
+    if num_trades > 50:
+        trade_weight = min(2.0, 1.0 + (num_trades - 50) / 100)  # Bonus gradual
+    
+    base_score *= penalization * trade_weight
+
+    # ────────────────────────
+    # R² y pendiente
+    if r2_raw > 0:
+        r2_raw *= 1.0
+    else:
+        return -1.0
+
+    # ────────────────────────
+    # Score final
+    final_score = 0.5 * base_score + 0.5 * r2_raw
+    
+    return final_score
+
 def tester_one_direction(dataset, forward, backward,
                          markup, direction='buy', plot=False):
     forw = dataset.index.get_indexer([forward],  method='nearest')[0]
@@ -201,6 +190,28 @@ def tester_one_direction(dataset, forward, backward,
     r2_raw = lr.score(X, y) * sign
     #return lr.score(X, y) * sign
     return evaluate_report(rpt, r2_raw)
+
+def test_model_one_direction_clustering(
+        dataset: pd.DataFrame,
+        result:  list,
+        forward: datetime,
+        backward: datetime,
+        markup:  float,
+        direction: str,
+        plt: bool = False):
+
+    pr_tst = dataset.copy()
+    X = pr_tst.drop(columns=['close'])
+    X_meta = X.loc[:,  X.columns.str.contains('meta_feature')]
+    X      = X.loc[:, ~X.columns.str.contains('meta_feature')]
+
+    pr_tst['labels']      = result[0].predict_proba(X)[:,1]
+    pr_tst['meta_labels'] = result[1].predict_proba(X_meta)[:,1]
+
+    # Corrección aquí:
+    pr_tst[['labels', 'meta_labels']] = (pr_tst[['labels', 'meta_labels']] > 0.5).astype(float)
+
+    return tester_one_direction(pr_tst, forward, backward, markup, direction, plt)
 
 # ─────────────────────────────────────────────
 # tester_slow  (mantenerlo o borrarlo)

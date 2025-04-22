@@ -42,8 +42,9 @@ def export_model_to_ONNX(best_models, **kwargs):
     model_number = kwargs.get('model_number')
     symbol = kwargs.get('symbol')
     timeframe = kwargs.get('timeframe')
-    stats = kwargs.get('stats')
-    periods = kwargs.get('periods')
+    stats_main = kwargs.get('stats_main')
+    stats_meta = kwargs.get('stats_meta')
+    periods_main = kwargs.get('periods_main')
     periods_meta = kwargs.get('periods_meta')
     models_export_path = kwargs.get('models_export_path')
     include_export_path = kwargs.get('include_export_path')
@@ -335,37 +336,40 @@ def export_model_to_ONNX(best_models, **kwargs):
     code += '\n'
     code += rf'#resource "\\Files\\{filename_model_m}" as uchar ExtModel_m_[]'
     code += '\n\n'
-    code += 'int Periods_' + '[' + str(len(periods)) + \
-        '] = {' + ','.join(map(str, periods)) + '};'
+    code += 'int periods_main' + '[' + str(len(periods_main)) + \
+        '] = {' + ','.join(map(str, periods_main)) + '};'
     code += '\n'
-    code += 'int Periods_m_' + '[' + str(len(periods_meta)) + \
+    code += 'int periods_meta' + '[' + str(len(periods_meta)) + \
         '] = {' + ','.join(map(str, periods_meta)) + '};\n\n'
-    code += '#define NUM_STATS           (ArraySize(stat_ptr))\n'
-    code += '#define NUM_FEATURES        (ArraySize(Periods_))\n'
-    code += '#define NUM_META_FEATURES   (ArraySize(Periods_m_))\n'
+    code += '#define NUM_STATS_MAIN       (ArraySize(stat_main_ptr))\n'
+    code += '#define NUM_STATS_META       (ArraySize(stat_meta_ptr))\n'
+    code += '#define NUM_MAIN_FEATURES    (ArraySize(periods_main))\n'
+    code += '#define NUM_META_FEATURES   (ArraySize(periods_meta))\n'
     code += f'#define SYMBOL              "{str(symbol)}"\n'
     code += f'#define TIMEFRAME           "{str(timeframe)}"\n'
     code += f'#define MODEL_NUMBER        "{str(model_number)}"\n\n'
-    if "mean" not in stats:
+    stats_total = set(stats_main + stats_meta)
+    if "mean" not in stats_total:
         code += stat_function_templates["mean"] + "\n"
-    if "std" not in stats:
+    if "std" not in stats_total:
         code += stat_function_templates["std"] + "\n"
-    for stat in stats:
+    for stat in stats_total:
         code += stat_function_templates[stat] + "\n"
     code += "\ntypedef double (*StatFunc)(const double &[]);\n"
-    code += "StatFunc stat_ptr[] = { " + ", ".join(f"stat_{s}" for s in stats) + " };\n\n"
+    code += "StatFunc stat_main_ptr[] = { " + ", ".join(f"stat_{s}" for s in stats_main) + " };\n\n"
+    code += "StatFunc stat_meta_ptr[] = { " + ", ".join(f"stat_{s}" for s in stats_meta) + " };\n\n"
     code += 'void fill_arays(double &features[])\n'
     code += '  {\n'
     code += '   double pr[];\n'
     code += '   double stat_value;\n'
     code += '   int index = 0;\n'
-    code += '   for(int i=0; i<ArraySize(Periods_); i++)\n'
+    code += '   for(int i=0; i<ArraySize(periods_main); i++)\n'
     code += '     {\n'
-    code += '      CopyClose(NULL, PERIOD_'+timeframe+ ', 1, Periods_[i], pr);\n'
+    code += '      CopyClose(NULL, PERIOD_'+timeframe+ ', 1, periods_main[i], pr);\n'
     code += '      ArraySetAsSeries(pr, true);\n'
-    code += '      for(int j = 0; j < ArraySize(stat_ptr); j++)\n'
+    code += '      for(int j = 0; j < ArraySize(stat_main_ptr); j++)\n'
     code += '        {\n'
-    code += '         stat_value = stat_ptr[j](pr);\n'
+    code += '         stat_value = stat_main_ptr[j](pr);\n'
     code += '         features[index++] = stat_value;\n'
     code += '        }\n'
     code += '     }\n'
@@ -375,11 +379,11 @@ def export_model_to_ONNX(best_models, **kwargs):
     code += '  {\n'
     code += '   double pr[];\n'
     code += '   double stat_value;\n'
-    code += '   for(int i=0; i<ArraySize(Periods_m_); i++)\n'
+    code += '   for(int i=0; i<ArraySize(periods_meta); i++)\n'
     code += '     {\n'
-    code += '      CopyClose(NULL, PERIOD_'+timeframe+ ', 1, Periods_m_[i], pr);\n'
+    code += '      CopyClose(NULL, PERIOD_'+timeframe+ ', 1, periods_meta[i], pr);\n'
     code += '      ArraySetAsSeries(pr, true);\n'
-    code += '      stat_value = stat_std(pr);\n'
+    code += '      stat_value = stat_meta_ptr[0](pr);\n'
     code += '      features[i] = stat_value;\n'
     code += '     }\n'
     code += '  }\n\n'

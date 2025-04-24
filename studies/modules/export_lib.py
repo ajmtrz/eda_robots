@@ -358,7 +358,7 @@ def export_model_to_ONNX(best_models, **kwargs):
     code += "\ntypedef double (*StatFunc)(const double &[]);\n"
     code += "StatFunc stat_main_ptr[] = { " + ", ".join(f"stat_{s}" for s in stats_main) + " };\n\n"
     code += "StatFunc stat_meta_ptr[] = { " + ", ".join(f"stat_{s}" for s in stats_meta) + " };\n\n"
-    code += 'void fill_arays(double &features[])\n'
+    code += 'void fill_arays_main(double &features[])\n'
     code += '  {\n'
     code += '   double pr[];\n'
     code += '   double stat_value;\n'
@@ -375,16 +375,20 @@ def export_model_to_ONNX(best_models, **kwargs):
     code += '     }\n'
     code += '  }\n\n'
 
-    code += 'void fill_arays_m(double &features[])\n'
+    code += 'void fill_arays_meta(double &features[])\n'
     code += '  {\n'
     code += '   double pr[];\n'
     code += '   double stat_value;\n'
+    code += '   int index = 0;\n'
     code += '   for(int i=0; i<ArraySize(periods_meta); i++)\n'
     code += '     {\n'
     code += '      CopyClose(NULL, PERIOD_'+timeframe+ ', 1, periods_meta[i], pr);\n'
     code += '      ArraySetAsSeries(pr, true);\n'
-    code += '      stat_value = stat_meta_ptr[0](pr);\n'
-    code += '      features[i] = stat_value;\n'
+    code += '      for(int j = 0; j < ArraySize(stat_meta_ptr); j++)\n'
+    code += '        {\n'
+    code += '         stat_value = stat_meta_ptr[j](pr);\n'
+    code += '         features[index++] = stat_value;\n'
+    code += '        }\n'
     code += '     }\n'
     code += '  }\n\n'
 

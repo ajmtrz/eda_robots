@@ -116,7 +116,7 @@ def compute_features(close, periods_main, periods_meta, stats_main, stats_meta):
         
         return np.mean(np.log(valid_rs)) / np.log(n) if n > 1 else 0.5
 
-    # Procesar períodos normales
+    # Procesar períodos main
     col = 0
     for win in periods_main:
         for s in stats_main:

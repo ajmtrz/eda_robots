@@ -5,8 +5,8 @@ from catboost import CatBoostClassifier
 from sklearn.model_selection import train_test_split
 from sklearn.model_selection import cross_val_predict
 from sklearn.model_selection import StratifiedKFold
-from bots.botlibs.labeling_lib import *
-from bots.botlibs.tester_lib import test_model_one_direction
+from modules.labeling_lib import *
+from modules.tester_lib import test_model_one_direction
 
 def get_prices() -> pd.DataFrame:
     p = pd.read_csv('files/'+hyper_params['symbol']+'.csv', sep='\s+')

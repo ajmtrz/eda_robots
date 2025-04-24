@@ -29,7 +29,7 @@ def compute_features(close, periods_main, periods_meta, stats_main, stats_meta):
 
     def std_manual(x):
         m = np.mean(x)
-        return np.sqrt(np.sum((x - m) ** 2) / (x.size - 1))
+        return np.sqrt(np.sum((x - m) ** 2) / (x.size - 1)) if x.size > 1 else 0.0
 
     def skew_manual(x):
         m = np.mean(x)
@@ -81,15 +81,14 @@ def compute_features(close, periods_main, periods_meta, stats_main, stats_meta):
     
     def roc_manual(x):
         n = len(x)
-        if n < 2:
+        if n < 2 or x[-1] == 0:
             return 0.0
-        return ((x[0] - x[-1]) / x[-1]) * 100 if x[-1] != 0 else 0.0
+        return ((x[0] - x[-1]) / x[-1]) * 100
     
     def fractal_dimension_manual(x):
-        # Método de box-counting simplificado
-        x = np.ascontiguousarray(x)  # Asegurar array contiguo
-        eps = np.std(x) / 4  # epsilon como fracción de std
-        if eps == 0:  # Evitar división por cero
+        x = np.ascontiguousarray(x)
+        eps = np.std(x) / 4
+        if eps == 0:
             return 1.0
         count = np.sum(np.abs(np.diff(x)) > eps)
         if count == 0:
@@ -97,11 +96,10 @@ def compute_features(close, periods_main, periods_meta, stats_main, stats_meta):
         return 1.0 + np.log(count) / np.log(len(x))
     
     def hurst_manual(x):
-        # Exponente de Hurst simplificado
         n = len(x)
         if n < 4:
             return 0.5
-        lags = min(n-1, 20)  # usar máximo 20 lags
+        lags = min(n-1, 20)
         tau = np.ascontiguousarray(np.arange(1, lags+1))
         rs = np.zeros(lags)
         
@@ -124,74 +122,82 @@ def compute_features(close, periods_main, periods_meta, stats_main, stats_meta):
         for s in stats_main:
             for i in range(win, n):
                 window = close[i - win:i][::-1]
-                if s == "std":
-                    features[i, col] = std_manual(window)
-                elif s == "skew":
-                    features[i, col] = skew_manual(window)
-                elif s == "kurt":
-                    features[i, col] = kurt_manual(window)
-                elif s == "zscore":
-                    features[i, col] = zscore_manual(window)
-                elif s == "mean":
-                    features[i, col] = np.mean(window)
-                elif s == "range":
-                    features[i, col] = np.max(window) - np.min(window)
-                elif s == "median":
-                    features[i, col] = np.median(window)
-                elif s == "mad":
-                    features[i, col] = np.mean(np.abs(window - np.mean(window)))
-                elif s == "var":
-                    features[i, col] = np.var(window)
-                elif s == "entropy":
-                    features[i, col] = entropy_manual(window)
-                elif s == "slope":
-                    features[i, col] = slope_manual(window)
-                elif s == "momentum":
-                    features[i, col] = momentum_manual(window)
-                elif s == "roc":
-                    features[i, col] = roc_manual(window)
-                elif s == "fractal":
-                    features[i, col] = fractal_dimension_manual(window)
-                elif s == "hurst":
-                    features[i, col] = hurst_manual(window)
-            col += 1  # Incrementar col después de procesar todas las filas para esta estadística y ventana
+                try:
+                    if s == "std":
+                        features[i, col] = std_manual(window)
+                    elif s == "skew":
+                        features[i, col] = skew_manual(window)
+                    elif s == "kurt":
+                        features[i, col] = kurt_manual(window)
+                    elif s == "zscore":
+                        features[i, col] = zscore_manual(window)
+                    elif s == "mean":
+                        features[i, col] = np.mean(window)
+                    elif s == "range":
+                        features[i, col] = np.max(window) - np.min(window)
+                    elif s == "median":
+                        features[i, col] = np.median(window)
+                    elif s == "mad":
+                        features[i, col] = np.mean(np.abs(window - np.mean(window)))
+                    elif s == "var":
+                        features[i, col] = np.var(window)
+                    elif s == "entropy":
+                        features[i, col] = entropy_manual(window)
+                    elif s == "slope":
+                        features[i, col] = slope_manual(window)
+                    elif s == "momentum":
+                        features[i, col] = momentum_manual(window)
+                    elif s == "roc":
+                        features[i, col] = roc_manual(window)
+                    elif s == "fractal":
+                        features[i, col] = fractal_dimension_manual(window)
+                    elif s == "hurst":
+                        features[i, col] = hurst_manual(window)
+                except:
+                    # Si hay cualquier error en el cálculo, devolvemos un array de NaN
+                    return np.full((n, total_features), np.nan)
+            col += 1
 
     # Procesar períodos meta
     for win in periods_meta:
         for s in stats_meta:
             for i in range(win, n):
                 window = close[i - win:i][::-1]
-                if s == "std":
-                    features[i, col] = std_manual(window)
-                elif s == "skew":
-                    features[i, col] = skew_manual(window)
-                elif s == "kurt":
-                    features[i, col] = kurt_manual(window)
-                elif s == "zscore":
-                    features[i, col] = zscore_manual(window)
-                elif s == "mean":
-                    features[i, col] = np.mean(window)
-                elif s == "range":
-                    features[i, col] = np.max(window) - np.min(window)
-                elif s == "median":
-                    features[i, col] = np.median(window)
-                elif s == "mad":
-                    features[i, col] = np.mean(np.abs(window - np.mean(window)))
-                elif s == "var":
-                    features[i, col] = np.var(window)
-                elif s == "entropy":
-                    features[i, col] = entropy_manual(window)
-                elif s == "slope":
-                    features[i, col] = slope_manual(window)
-                elif s == "momentum":
-                    features[i, col] = momentum_manual(window)
-                elif s == "roc":
-                    features[i, col] = roc_manual(window)
-                elif s == "fractal":
-                    features[i, col] = fractal_dimension_manual(window)
-                elif s == "hurst":
-                    features[i, col] = hurst_manual(window)
-            col += 1  # Incrementar col después de procesar todas las filas para esta estadística meta
+                try:
+                    if s == "std":
+                        features[i, col] = std_manual(window)
+                    elif s == "skew":
+                        features[i, col] = skew_manual(window)
+                    elif s == "kurt":
+                        features[i, col] = kurt_manual(window)
+                    elif s == "zscore":
+                        features[i, col] = zscore_manual(window)
+                    elif s == "mean":
+                        features[i, col] = np.mean(window)
+                    elif s == "range":
+                        features[i, col] = np.max(window) - np.min(window)
+                    elif s == "median":
+                        features[i, col] = np.median(window)
+                    elif s == "mad":
+                        features[i, col] = np.mean(np.abs(window - np.mean(window)))
+                    elif s == "var":
+                        features[i, col] = np.var(window)
+                    elif s == "entropy":
+                        features[i, col] = entropy_manual(window)
+                    elif s == "slope":
+                        features[i, col] = slope_manual(window)
+                    elif s == "momentum":
+                        features[i, col] = momentum_manual(window)
+                    elif s == "roc":
+                        features[i, col] = roc_manual(window)
+                    elif s == "fractal":
+                        features[i, col] = fractal_dimension_manual(window)
+                    elif s == "hurst":
+                        features[i, col] = hurst_manual(window)
+                except:
+                    # Si hay cualquier error en el cálculo, devolvemos un array de NaN
+                    return np.full((n, total_features), np.nan)
+            col += 1
 
     return features
 

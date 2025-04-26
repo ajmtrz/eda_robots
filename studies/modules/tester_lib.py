@@ -4,6 +4,7 @@ import pandas as pd
 from datetime import datetime
 from sklearn.linear_model import LinearRegression
 import matplotlib.pyplot as plt
+from typing import Any, Tuple, List
 
 
 @jit(nopython=True)
@@ -103,6 +104,8 @@ def tester(dataset, forward, backward, markup, plot=False):
         plt.show()
 
     return lr.score(X, y) * sign
+
+import numpy as np
 
 def evaluate_report(report: np.ndarray, r2_raw: float) -> float:
     if len(report) < 2:

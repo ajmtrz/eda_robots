@@ -42,6 +42,7 @@ def export_model_to_ONNX(best_models, **kwargs):
     model_number = kwargs.get('model_number')
     symbol = kwargs.get('symbol')
     timeframe = kwargs.get('timeframe')
+    direction = kwargs.get('direction')
     stats_main = kwargs.get('best_stats_main')
     stats_meta = kwargs.get('best_stats_meta')
     periods_main = kwargs.get('best_periods_main')
@@ -66,7 +67,7 @@ def export_model_to_ONNX(best_models, **kwargs):
         target_opset={"": 18, "ai.onnx.ml": 2},
         options={id(models[0]): {'zipmap': True}}
     )
-    filename_model = f"dmitrievsky_model_{symbol}_{timeframe}_{model_number}.onnx"
+    filename_model = f"dmitrievsky_model_{symbol}_{timeframe}_{direction}_{model_number}.onnx"
     filepath_model = os.path.join(models_export_path, filename_model)
     with open(filepath_model, "wb") as f:
         f.write(model_onnx.SerializeToString())
@@ -79,7 +80,7 @@ def export_model_to_ONNX(best_models, **kwargs):
         target_opset={"": 18, "ai.onnx.ml": 2},
         options={id(models[1]): {'zipmap': True}}
     )
-    filename_model_m = f"dmitrievsky_model_m_{symbol}_{timeframe}_{model_number}.onnx"
+    filename_model_m = f"dmitrievsky_model_m_{symbol}_{timeframe}_{direction}_{model_number}.onnx"
     filepath_model_m = os.path.join(models_export_path, filename_model_m)
     with open(filepath_model_m, "wb") as f:
         f.write(model_onnx.SerializeToString())
@@ -347,6 +348,7 @@ def export_model_to_ONNX(best_models, **kwargs):
     code += '#define NUM_META_FEATURES   (ArraySize(periods_meta))\n'
     code += f'#define SYMBOL              "{str(symbol)}"\n'
     code += f'#define TIMEFRAME           "{str(timeframe)}"\n'
+    code += f'#define DIRECTION           "{str(direction)}"\n'
     code += f'#define MODEL_NUMBER        "{str(model_number)}"\n\n'
     stats_total = set(stats_main + stats_meta)
     if "mean" not in stats_total:
@@ -392,7 +394,7 @@ def export_model_to_ONNX(best_models, **kwargs):
     code += '     }\n'
     code += '  }\n\n'
 
-    file_name = os.path.join(include_export_path, f"{symbol}_{timeframe}_ONNX_include_{model_number}.mqh")
+    file_name = os.path.join(include_export_path, f"{symbol}_{timeframe}_{direction}_ONNX_include_{model_number}.mqh")
     with open(file_name, "w") as file:
         file.write(code)
     print('The file ' + file_name + ' has been written to disk')

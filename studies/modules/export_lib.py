@@ -345,7 +345,7 @@ def export_model_to_ONNX(best_models, **kwargs):
     code += '#define NUM_STATS_MAIN       (ArraySize(stat_main_ptr))\n'
     code += '#define NUM_STATS_META       (ArraySize(stat_meta_ptr))\n'
     code += '#define NUM_MAIN_FEATURES    (ArraySize(periods_main))\n'
-    code += '#define NUM_META_FEATURES   (ArraySize(periods_meta))\n'
+    code += '#define NUM_META_FEATURES    (ArraySize(periods_meta))\n'
     code += f'#define SYMBOL              "{str(symbol)}"\n'
     code += f'#define TIMEFRAME           "{str(timeframe)}"\n'
     code += f'#define DIRECTION           "{str(direction)}"\n'

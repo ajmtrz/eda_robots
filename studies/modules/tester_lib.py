@@ -134,8 +134,8 @@ def evaluate_report(report: np.ndarray, r2_raw: float) -> float:
     # ────────────────────────
     # PUNTAJE COMPUESTO BASE
     base_score = (
-        (profit_factor * 0.5) +  # Menor peso al profit factor
-        (return_dd_ratio * 0.5)  # Mayor peso al return/DD
+        (profit_factor * 0.4) +  # Menor peso al profit factor
+        (return_dd_ratio * 0.6)  # Mayor peso al return/DD
     )
 
     # Penalizaciones por métricas débiles

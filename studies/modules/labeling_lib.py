@@ -665,42 +665,51 @@ def get_labels_clusters(dataset, markup, num_clusters=20) -> pd.DataFrame:
     dataset = dataset.drop(columns=['cluster'])
     return dataset
 
-def sliding_window_clustering(dataset, n_clusters, window_size):
-    meta_X = dataset.loc[:, dataset.columns.str.contains('meta_feature')]
-    
-    # Сначала создаем глобальные эталонные центроиды
-    global_kmeans = KMeans(n_clusters=n_clusters).fit(meta_X)
-    global_centroids = global_kmeans.cluster_centers_
-    
-    clusters = np.zeros(len(dataset))
-    
-    # Применяем кластеризацию в скользящем окне
-    for i in range(window_size, len(dataset) - window_size + 1, window_size):
-        window_data = meta_X.iloc[i:i+window_size]
-        
-        # Обучаем KMeans на текущем окне
-        local_kmeans = KMeans(n_clusters=n_clusters).fit(window_data)
-        local_centroids = local_kmeans.cluster_centers_
-        
-        # Сопоставляем локальные центроиды с глобальными
-        # для обеспечения согласованности меток кластеров
-        centroid_mapping = {}
-        for local_idx in range(n_clusters):
-            # Находим ближайший глобальный центроид к данному локальному
-            distances = np.linalg.norm(local_centroids[local_idx] - global_centroids, axis=1)
-            global_idx = np.argmin(distances)
-            centroid_mapping[local_idx] = global_idx + 1  # +1 для начала нумерации с 1
-        
-        # Получаем метки для текущего окна
-        local_labels = local_kmeans.predict(window_data)
-        
-        # Преобразуем локальные метки в согласованные глобальные метки
-        for j in range(window_size):
-            if i+j < len(clusters):  # Проверка на выход за границы
-                clusters[i+j] = centroid_mapping[local_labels[j]]
-    
-    dataset = dataset.assign(clusters=clusters)
-    return dataset
+def sliding_window_clustering(ds, n_clusters, window_size, step=None, seed=42):
+    step = step or window_size               # permite stride configurable
+    meta_X = ds.filter(regex='meta_feature')
+
+    # volatilidad normalizada
+    vol = ds['close'].pct_change().rolling(20).std()
+    vmin, vmax = vol.min(skipna=True), vol.max(skipna=True)
+    norm_vol   = ((vol - vmin) / (vmax - vmin)).fillna(0).clip(0, 1)
+
+    dyn_win = (window_size * (1 + norm_vol)).astype(int).clip(window_size//2,
+                                                              window_size*2)
+
+    global_km = KMeans(n_clusters, random_state=seed).fit(meta_X)
+    global_ctr = global_km.cluster_centers_
+
+    clusters  = np.zeros(len(ds), dtype=int)
+
+    for i in range(window_size, len(ds)-window_size, step):
+        w = dyn_win.iat[i]
+        w0 = max(0, i - w)
+        w1 = min(len(ds), i + w)
+        win_X = meta_X.iloc[w0:w1]
+
+        loc_km  = KMeans(n_clusters, random_state=seed).fit(win_X)
+        loc_ctr = loc_km.cluster_centers_
+
+        # asignación 1-a-1 sencilla
+        mapping = {}
+        taken   = set()
+        for li, lctr in enumerate(loc_ctr):
+            gi = np.argmin(np.linalg.norm(lctr - global_ctr, axis=1))
+            while gi in taken:              # colisión → busca el siguiente
+                gi = (gi + 1) % n_clusters
+            taken.add(gi)
+            mapping[li] = gi + 1
+
+        labels = loc_km.predict(win_X)
+        clusters[w0:w1] = [mapping[l] for l in labels]
+
+    # rellena ceros iniciales/finales con predicción global
+    zeros = np.flatnonzero(clusters == 0)
+    if zeros.size:
+        clusters[zeros] = global_km.predict(meta_X.iloc[zeros]) + 1
+
+    return ds.assign(clusters=clusters)
 
 @njit
 def calculate_signals(prices, window_sizes, threshold_pct):

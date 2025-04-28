@@ -4,6 +4,7 @@ import numpy as np
 import pandas as pd
 from numba import njit
 from sklearn.cluster import KMeans
+from scipy.optimize import linear_sum_assignment
 from scipy.signal import savgol_filter
 from scipy.interpolate import UnivariateSpline
 from scipy.signal import find_peaks
@@ -665,51 +666,71 @@ def get_labels_clusters(dataset, markup, num_clusters=20) -> pd.DataFrame:
     dataset = dataset.drop(columns=['cluster'])
     return dataset
 
-def sliding_window_clustering(ds, n_clusters, window_size, step=None, seed=42):
-    step = step or window_size               # permite stride configurable
-    meta_X = ds.filter(regex='meta_feature')
-
-    # volatilidad normalizada
-    vol = ds['close'].pct_change().rolling(20).std()
-    vmin, vmax = vol.min(skipna=True), vol.max(skipna=True)
-    norm_vol   = ((vol - vmin) / (vmax - vmin)).fillna(0).clip(0, 1)
-
-    dyn_win = (window_size * (1 + norm_vol)).astype(int).clip(window_size//2,
-                                                              window_size*2)
-
-    global_km = KMeans(n_clusters, random_state=seed).fit(meta_X)
-    global_ctr = global_km.cluster_centers_
-
-    clusters  = np.zeros(len(ds), dtype=int)
-
-    for i in range(window_size, len(ds)-window_size, step):
-        w = dyn_win.iat[i]
-        w0 = max(0, i - w)
-        w1 = min(len(ds), i + w)
-        win_X = meta_X.iloc[w0:w1]
-
-        loc_km  = KMeans(n_clusters, random_state=seed).fit(win_X)
-        loc_ctr = loc_km.cluster_centers_
-
-        # asignación 1-a-1 sencilla
-        mapping = {}
-        taken   = set()
-        for li, lctr in enumerate(loc_ctr):
-            gi = np.argmin(np.linalg.norm(lctr - global_ctr, axis=1))
-            while gi in taken:              # colisión → busca el siguiente
-                gi = (gi + 1) % n_clusters
-            taken.add(gi)
-            mapping[li] = gi + 1
-
-        labels = loc_km.predict(win_X)
-        clusters[w0:w1] = [mapping[l] for l in labels]
-
-    # rellena ceros iniciales/finales con predicción global
-    zeros = np.flatnonzero(clusters == 0)
+def sliding_window_clustering(dataset, n_clusters, window_size, step=None, seed=42):
+    # Configuración inicial
+    step = step or window_size
+    meta_X = dataset.filter(regex='meta_feature')
+    clusters = np.zeros(len(dataset), dtype=int)
+    
+    # Cálculo de volatilidad normalizada con manejo de edge cases
+    returns = dataset['close'].pct_change()
+    volatility = returns.rolling(20).std()
+    
+    vol_min = volatility.min(skipna=True)
+    vol_max = volatility.max(skipna=True)
+    
+    if vol_min == vol_max:
+        normalized_vol = pd.Series(0.0, index=volatility.index)
+    else:
+        normalized_vol = ((volatility - vol_min) / (vol_max - vol_min))
+    
+    normalized_vol = normalized_vol.fillna(0).replace([np.inf, -np.inf], 0).clip(0, 1)
+    
+    # Ventana dinámica con límites seguros
+    dynamic_window = (window_size * (1 + normalized_vol)).astype(int)
+    dynamic_window = dynamic_window.clip(window_size//2, window_size*2)
+    
+    # Modelo global
+    global_kmeans = KMeans(n_clusters, random_state=seed).fit(meta_X)
+    global_centroids = global_kmeans.cluster_centers_
+    
+    # Asignación óptima de centroides usando Hungarian Algorithm
+    def create_mapping(local_centroids):
+        cost_matrix = np.linalg.norm(
+            local_centroids[:, np.newaxis] - global_centroids,
+            axis=2
+        )
+        row_ind, col_ind = linear_sum_assignment(cost_matrix)
+        return {local_idx: global_idx + 1 for local_idx, global_idx in zip(row_ind, col_ind)}
+    
+    # Procesamiento por ventanas
+    for i in range(0, len(dataset), step):
+        if i >= len(dynamic_window):
+            continue
+        
+        current_win = dynamic_window.iloc[i]
+        start = max(0, i - current_win)
+        end = min(len(dataset), i + current_win)
+        
+        if start >= end:
+            continue
+        
+        window_data = meta_X.iloc[start:end]
+        
+        if len(window_data) < n_clusters:
+            continue
+        
+        local_kmeans = KMeans(n_clusters, random_state=seed).fit(window_data)
+        mapping = create_mapping(local_kmeans.cluster_centers_)
+        labels = local_kmeans.predict(window_data)
+        clusters[start:end] = [mapping[label] for label in labels]
+    
+    # Rellenar puntos no cubiertos
+    zeros = np.where(clusters == 0)[0]
     if zeros.size:
-        clusters[zeros] = global_km.predict(meta_X.iloc[zeros]) + 1
-
-    return ds.assign(clusters=clusters)
+        clusters[zeros] = global_kmeans.predict(meta_X.iloc[zeros]) + 1
+    
+    return dataset.assign(clusters=clusters)
 
 @njit
 def calculate_signals(prices, window_sizes, threshold_pct):

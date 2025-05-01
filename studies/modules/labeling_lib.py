@@ -25,7 +25,10 @@ def get_prices(hyper_params) -> pd.DataFrame:
 @njit
 def compute_features(close, periods_main, periods_meta, stats_main, stats_meta):
     n = len(close)
-    total_features = (len(periods_main) * len(stats_main)) + (len(periods_meta) * len(stats_meta))
+    # Calcular total de features considerando si hay meta o no
+    total_features = len(periods_main) * len(stats_main)
+    if periods_meta is not None and stats_meta is not None:
+        total_features += len(periods_meta) * len(stats_meta)
     features = np.full((n, total_features), np.nan)
 
     def std_manual(x):
@@ -101,11 +104,9 @@ def compute_features(close, periods_main, periods_meta, stats_main, stats_meta):
         if n < 4:
             return 0.5
         lags = min(n-1, 20)
-        tau = np.ascontiguousarray(np.arange(1, lags+1))
         rs = np.zeros(lags)
         
         for lag in range(1, lags+1):
-            roll_mean = np.mean(x[:n-lag+1])
             roll_std = std_manual(x[:n-lag+1])
             if roll_std == 0:
                 continue
@@ -155,80 +156,88 @@ def compute_features(close, periods_main, periods_meta, stats_main, stats_meta):
                     elif s == "hurst":
                         features[i, col] = hurst_manual(window)
                 except:
-                    # Si hay cualquier error en el cálculo, devolvemos un array de NaN
                     return np.full((n, total_features), np.nan)
             col += 1
 
-    # Procesar períodos meta
-    for win in periods_meta:
-        for s in stats_meta:
-            for i in range(win, n):
-                window = close[i - win:i][::-1]
-                try:
-                    if s == "std":
-                        features[i, col] = std_manual(window)
-                    elif s == "skew":
-                        features[i, col] = skew_manual(window)
-                    elif s == "kurt":
-                        features[i, col] = kurt_manual(window)
-                    elif s == "zscore":
-                        features[i, col] = zscore_manual(window)
-                    elif s == "mean":
-                        features[i, col] = np.mean(window)
-                    elif s == "range":
-                        features[i, col] = np.max(window) - np.min(window)
-                    elif s == "median":
-                        features[i, col] = np.median(window)
-                    elif s == "mad":
-                        features[i, col] = np.mean(np.abs(window - np.mean(window)))
-                    elif s == "var":
-                        features[i, col] = np.var(window)
-                    elif s == "entropy":
-                        features[i, col] = entropy_manual(window)
-                    elif s == "slope":
-                        features[i, col] = slope_manual(window)
-                    elif s == "momentum":
-                        features[i, col] = momentum_manual(window)
-                    elif s == "roc":
-                        features[i, col] = roc_manual(window)
-                    elif s == "fractal":
-                        features[i, col] = fractal_dimension_manual(window)
-                    elif s == "hurst":
-                        features[i, col] = hurst_manual(window)
-                except:
-                    # Si hay cualquier error en el cálculo, devolvemos un array de NaN
-                    return np.full((n, total_features), np.nan)
-            col += 1
+    # Procesar períodos meta solo si existen
+    if periods_meta is not None and stats_meta is not None:
+        for win in periods_meta:
+            for s in stats_meta:
+                for i in range(win, n):
+                    window = close[i - win:i][::-1]
+                    try:
+                        if s == "std":
+                            features[i, col] = std_manual(window)
+                        elif s == "skew":
+                            features[i, col] = skew_manual(window)
+                        elif s == "kurt":
+                            features[i, col] = kurt_manual(window)
+                        elif s == "zscore":
+                            features[i, col] = zscore_manual(window)
+                        elif s == "mean":
+                            features[i, col] = np.mean(window)
+                        elif s == "range":
+                            features[i, col] = np.max(window) - np.min(window)
+                        elif s == "median":
+                            features[i, col] = np.median(window)
+                        elif s == "mad":
+                            features[i, col] = np.mean(np.abs(window - np.mean(window)))
+                        elif s == "var":
+                            features[i, col] = np.var(window)
+                        elif s == "entropy":
+                            features[i, col] = entropy_manual(window)
+                        elif s == "slope":
+                            features[i, col] = slope_manual(window)
+                        elif s == "momentum":
+                            features[i, col] = momentum_manual(window)
+                        elif s == "roc":
+                            features[i, col] = roc_manual(window)
+                        elif s == "fractal":
+                            features[i, col] = fractal_dimension_manual(window)
+                        elif s == "hurst":
+                            features[i, col] = hurst_manual(window)
+                    except:
+                        return np.full((n, total_features), np.nan)
+                col += 1
 
     return features
 
-# Ingeniería de características
-def get_clustering_features(data: pd.DataFrame, hp):
+def get_features(data: pd.DataFrame, hp):
     close = data['close'].values
     index = data.index
     periods_main = hp["periods_main"]
-    periods_meta = hp["periods_meta"]
     stats_main = hp["stats_main"]
-    stats_meta = hp["stats_meta"]
+    
+    # Obtener períodos y estadísticas meta solo si existen
+    periods_meta = hp.get("periods_meta")
+    stats_meta = hp.get("stats_meta")
+    
     if len(stats_main) == 0:
         raise ValueError("La lista de estadísticas MAIN está vacía.")
-    if len(stats_meta) == 0:
-        raise ValueError("La lista de estadísticas META está vacía.")
+    
     # Asegurar que los arrays sean contiguos
     close = np.ascontiguousarray(close)
     periods_main = np.ascontiguousarray(periods_main)
-    periods_meta = np.ascontiguousarray(periods_meta)
+    
+    # Solo hacer contiguos los meta si existen
+    if periods_meta is not None:
+        periods_meta = np.ascontiguousarray(periods_meta)
+    
     feats = compute_features(close, periods_main, periods_meta, stats_main, stats_meta)
     if np.isnan(feats).all():
         return pd.DataFrame(index=index)
+    
     # Nombres de columnas
     colnames = []
     for p in periods_main:
         for s in stats_main:
             colnames.extend([f"{p}_{s}_feature"])
-    for p in periods_meta:
-        for s in stats_meta:
-            colnames.extend([f"{p}_{s}_meta_feature"])
+    
+    # Agregar nombres de columnas meta solo si existen
+    if periods_meta is not None and stats_meta is not None:
+        for p in periods_meta:
+            for s in stats_meta:
+                colnames.extend([f"{p}_{s}_meta_feature"])
     df = pd.DataFrame(feats, columns=colnames, index=index)
     df["close"] = data["close"]
     return df.dropna()
@@ -666,7 +675,7 @@ def get_labels_clusters(dataset, markup, num_clusters=20) -> pd.DataFrame:
     dataset = dataset.drop(columns=['cluster'])
     return dataset
 
-def sliding_window_clustering(dataset, n_clusters, window_size, step=None):
+def sliding_window_clustering(dataset, n_clusters, window_size, step=None, vol_period=20):
     # Configuración inicial
     step = step or window_size
     meta_X = dataset.filter(regex='meta_feature')
@@ -674,7 +683,7 @@ def sliding_window_clustering(dataset, n_clusters, window_size, step=None):
     
     # Cálculo de volatilidad normalizada con manejo de edge cases
     returns = dataset['close'].pct_change()
-    volatility = returns.rolling(20).std()
+    volatility = returns.rolling(vol_period).std()
     
     vol_min = volatility.min(skipna=True)
     vol_max = volatility.max(skipna=True)

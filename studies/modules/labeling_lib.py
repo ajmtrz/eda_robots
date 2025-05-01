@@ -666,7 +666,7 @@ def get_labels_clusters(dataset, markup, num_clusters=20) -> pd.DataFrame:
     dataset = dataset.drop(columns=['cluster'])
     return dataset
 
-def sliding_window_clustering(dataset, n_clusters, window_size, step=None, seed=42):
+def sliding_window_clustering(dataset, n_clusters, window_size, step=None):
     # Configuración inicial
     step = step or window_size
     meta_X = dataset.filter(regex='meta_feature')
@@ -691,7 +691,7 @@ def sliding_window_clustering(dataset, n_clusters, window_size, step=None, seed=
     dynamic_window = dynamic_window.clip(window_size//2, window_size*2)
     
     # Modelo global
-    global_kmeans = KMeans(n_clusters, random_state=seed).fit(meta_X)
+    global_kmeans = KMeans(n_clusters).fit(meta_X)
     global_centroids = global_kmeans.cluster_centers_
     
     # Asignación óptima de centroides usando Hungarian Algorithm
@@ -720,7 +720,7 @@ def sliding_window_clustering(dataset, n_clusters, window_size, step=None, seed=
         if len(window_data) < n_clusters:
             continue
         
-        local_kmeans = KMeans(n_clusters, random_state=seed).fit(window_data)
+        local_kmeans = KMeans(n_clusters).fit(window_data)
         mapping = create_mapping(local_kmeans.cluster_centers_)
         labels = local_kmeans.predict(window_data)
         clusters[start:end] = [mapping[label] for label in labels]

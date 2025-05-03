@@ -21,6 +21,292 @@ def get_prices(hyper_params) -> pd.DataFrame:
     pFixed.set_index('time', inplace=True)
     return pFixed.dropna()
 
+@njit(fastmath=True, cache=True, nogil=True)
+def std_manual(x):
+    m = mean_manual(x)
+    return np.sqrt(np.sum((x - m) ** 2) / (x.size - 1)) if x.size > 1 else 0.0
+
+@njit(fastmath=True, cache=True, nogil=True)
+def skew_manual(x):
+    s = std_manual(x)
+    if s == 0:
+        return 0.0
+    m = mean_manual(x)
+    return mean_manual(((x - m) / s) ** 3)
+
+@njit(fastmath=True, cache=True, nogil=True)
+def kurt_manual(x):
+    s = std_manual(x)
+    if s == 0:
+        return 0.0
+    m = mean_manual(x)
+    return mean_manual(((x - m) / s) ** 4) - 3.0
+
+@njit(fastmath=True, cache=True, nogil=True)
+def zscore_manual(x):
+    s = std_manual(x)
+    if s == 0:
+        return 0.0
+    m = mean_manual(x)
+    return (x[-1] - m) / s
+
+@njit(fastmath=True, cache=True, nogil=True)
+def entropy_manual(x):
+    bins = 10
+    minv = np.min(x)
+    maxv = np.max(x)
+    width = (maxv - minv) / bins
+    if width == 0:
+        return 0.0
+    hist = np.zeros(bins)
+    for val in x:
+        idx = int((val - minv) / width)
+        if idx == bins:  # caso borde
+            idx -= 1
+        hist[idx] += 1
+    total = x.size
+    entropy = 0.0
+    for i in range(bins):
+        p = hist[i] / total
+        if p > 0:
+            entropy -= p * np.log(p)
+    return entropy
+
+@njit(fastmath=True, cache=True, nogil=True)
+def mean_manual(x):
+    if x.size == 0:
+        return 0.0
+    sum_val = 0.0
+    for i in range(x.size):
+        sum_val += x[i]
+    return sum_val / x.size
+
+@njit(fastmath=True, cache=True, nogil=True)
+def slope_manual(x):
+    n = x.size
+    if n <= 1:
+        return 0.0
+    
+    # Crear el vector de índices x
+    x_idx = np.arange(n)
+    
+    # Calcular medias usando la función existente
+    x_mean = mean_manual(x_idx)
+    y_mean = mean_manual(x)
+    
+    # Calcular covarianza
+    cov = 0.0
+    for i in range(n):
+        cov += (x_idx[i] - x_mean) * (x[i] - y_mean)
+    cov /= n
+    
+    # Calcular varianza de x usando std_manual
+    x_std = std_manual(x_idx)
+    var_x = x_std * x_std * (n - 1) / n  # Convertir de varianza muestral a poblacional
+    
+    return cov / var_x if var_x != 0 else 0.0
+
+@njit(fastmath=True, cache=True, nogil=True)
+def momentum_roc(x):
+    if len(x) < 2: return 0.0
+    ratio = x[0]/x[-1]
+    return ratio - 1.0
+
+@njit(fastmath=True, cache=True, nogil=True)
+def fractal_dimension_manual(x):
+    x = np.ascontiguousarray(x)
+    eps = std_manual(x) / 4
+    if eps == 0:
+        return 1.0
+    count = np.sum(np.abs(np.diff(x)) > eps)
+    if count == 0:
+        return 1.0
+    return 1.0 + np.log(count) / np.log(len(x))
+
+@njit(fastmath=True, cache=True, nogil=True)
+def hurst_manual(x):
+    n = x.size
+    if n < 2:
+        return 0.5
+    
+    # Calcular rangos reescalados
+    valid_rs = np.zeros(n-1)
+    for i in range(1, n):
+        # Calcular media y desviación estándar para cada subserie
+        subseries = x[:i+1]
+        m = mean_manual(subseries)
+        s = std_manual(subseries)
+        if s == 0:
+            continue
+            
+        # Calcular rango reescalado
+        max_val = subseries[0]
+        min_val = subseries[0]
+        for j in range(1, subseries.size):
+            if subseries[j] > max_val:
+                max_val = subseries[j]
+            if subseries[j] < min_val:
+                min_val = subseries[j]
+        r = max_val - min_val
+        valid_rs[i-1] = r / s
+    
+    return mean_manual(np.log(valid_rs)) / np.log(n) if n > 1 else 0.5
+
+@njit(fastmath=True, cache=True, nogil=True)
+def autocorr1_manual(x):
+    n = x.size
+    if n < 2:
+        return 0.0
+    xm = mean_manual(x)
+    num = 0.0
+    den = 0.0
+    for i in range(n - 1):
+        a = x[i]   - xm
+        b = x[i+1] - xm
+        num += a * b
+        den += a * a
+    return num / den if den != 0 else 0.0
+
+@njit(fastmath=True, cache=True, nogil=True)
+def max_dd_manual(x):
+    peak = x[0]
+    max_dd = 0.0
+    for i in range(x.size):
+        if x[i] > peak:
+            peak = x[i]
+        dd = (peak - x[i]) / peak
+        if dd > max_dd:
+            max_dd = dd
+    return max_dd
+
+@njit(fastmath=True, cache=True, nogil=True)
+def sharpe_manual(x):
+    if x.size < 2:
+        return 0.0
+    ret_sum = 0.0
+    ret_sq  = 0.0
+    for i in range(1, x.size):
+        r = (x[i]/x[i-1] - 1)
+        ret_sum += r
+        ret_sq  += r*r
+    n = x.size - 1
+    mean = ret_sum / n
+    std = std_manual(x)
+    return mean / std if std != 0 else 0.0
+
+@njit(fastmath=True, cache=True, nogil=True)
+def fisher_transform(x):
+    return 0.5 * np.log((1 + x) / (1 - x))
+
+@njit(fastmath=True, cache=True)
+def chande_momentum(x):
+    returns = np.diff(x)
+    up = np.sum(returns[returns > 0])
+    down = np.abs(np.sum(returns[returns < 0]))
+    return (up - down) / (up + down) if (up + down) != 0 else 0.0
+
+@njit(fastmath=True, cache=True, nogil=True)
+def approximate_entropy(x):
+    n = len(x)
+    m = 2
+    if n <= m + 1:
+        return 0.0
+    sd = std_manual(x)
+    r = 0.2 * sd
+    r *= sd
+    count = 0
+    for i in range(n - 1):
+        for j in range(n - 1):
+            if i != j and abs(x[i] - x[j]) <= r and abs(x[i+1] - x[j+1]) <= r:
+                count += 1
+    phi1 = np.log(count / (n - 1)) if count > 0 else 0.0
+    count = 0
+    for i in range(n - 2):
+        for j in range(n - 2):
+            if i != j and abs(x[i] - x[j]) <= r and abs(x[i+1] - x[j+1]) <= r and abs(x[i+2] - x[j+2]) <= r:
+                count += 1
+    phi2 = np.log(count / (n - 2)) if count > 0 else 0.0
+    return phi1 - phi2
+
+@njit(fastmath=True, cache=True, nogil=True)
+def efficiency_ratio(x):
+    direction = x[-1] - x[0]
+    volatility = np.sum(np.abs(np.diff(x)))
+    return direction/volatility if volatility != 0 else 0.0
+
+@njit(fastmath=True, cache=True, nogil=True)
+def corr_manual(a, b):
+    if a.size != b.size or a.size < 2:
+        return 0.0
+    
+    ma = mean_manual(a)
+    mb = mean_manual(b)
+    
+    # Calcular covarianza
+    cov = 0.0
+    for i in range(a.size):
+        cov += (a[i] - ma) * (b[i] - mb)
+    
+    # Calcular desviaciones estándar
+    sa = std_manual(a)
+    sb = std_manual(b)
+    
+    if sa == 0 or sb == 0:
+        return 0.0
+    
+    return cov / (a.size * sa * sb)
+
+@njit(fastmath=True, cache=True, nogil=True)
+def correlation_skew_manual(x):
+    lag = min(5, x.size // 2)
+    if x.size < lag + 1:
+        return 0.0
+    corr_pos = corr_manual(x[:-lag], x[lag:])
+    corr_neg = corr_manual(-x[:-lag], x[lag:])
+    return corr_pos - corr_neg
+
+@njit(fastmath=True, cache=True, nogil=True)
+def median_manual(a):
+    n = a.size
+    if n == 0:
+        return np.nan
+    
+    # Método más eficiente para ordenar en Numba
+    b = a.copy()
+    b.sort()  # Usar el método sort() del array directamente
+    
+    mid = n // 2
+    if n % 2:
+        return b[mid]
+    else:
+        return 0.5 * (b[mid-1] + b[mid])
+
+@njit(fastmath=True, cache=True, nogil=True)
+def jump_volatility_manual(x):
+    if x.size < 2:
+        return 0.0
+    log_ret = np.log(x[:-1]/x[1:])
+    med     = median_manual(log_ret)
+    abs_dev = np.abs(log_ret - med)
+    mad     = median_manual(abs_dev)
+    thresh  = 3.0 * mad
+    if mad == 0.0:
+        return 0.0
+    jumps = 0
+    for i in range(log_ret.size):
+        if abs_dev[i] > thresh:
+            jumps += 1
+    return jumps / log_ret.size
+
+@njit(fastmath=True, cache=True, nogil=True)
+def volatility_skew(x):
+    n = len(x)
+    if n < 2:
+        return 0.0
+    up_vol = std_manual(np.maximum(x[1:] - x[:-1], 0))
+    down_vol = std_manual(np.maximum(x[:-1] - x[1:], 0))
+    return (up_vol - down_vol)/(up_vol + down_vol) if (up_vol + down_vol) != 0 else 0.0
+
 # Ingeniería de características
 @njit
 def compute_features(close, periods_main, periods_meta, stats_main, stats_meta):
@@ -31,99 +317,12 @@ def compute_features(close, periods_main, periods_meta, stats_main, stats_meta):
         total_features += len(periods_meta) * len(stats_meta)
     features = np.full((n, total_features), np.nan)
 
-    def std_manual(x):
-        m = np.mean(x)
-        return np.sqrt(np.sum((x - m) ** 2) / (x.size - 1)) if x.size > 1 else 0.0
-
-    def skew_manual(x):
-        m = np.mean(x)
-        s = std_manual(x)
-        return np.mean(((x - m) / s) ** 3) if s != 0 else 0.0
-
-    def kurt_manual(x):
-        m = np.mean(x)
-        s = std_manual(x)
-        return np.mean(((x - m) / s) ** 4) - 3 if s != 0 else 0.0
-    
-    def zscore_manual(x):
-        m = np.mean(x)
-        s = std_manual(x)
-        return (x[0] - m) / s if s != 0 else 0.0
-    
-    def entropy_manual(x):
-        bins = 10
-        minv = np.min(x)
-        maxv = np.max(x)
-        width = (maxv - minv) / bins
-        if width == 0:
-            return 0.0
-        hist = np.zeros(bins)
-        for val in x:
-            idx = int((val - minv) / width)
-            if idx == bins:  # caso borde
-                idx -= 1
-            hist[idx] += 1
-        total = x.size
-        entropy = 0.0
-        for i in range(bins):
-            p = hist[i] / total
-            if p > 0:
-                entropy -= p * np.log(p)
-        return entropy
-
-    def slope_manual(x):
-        n = x.size
-        x_idx = np.ascontiguousarray(np.arange(n))
-        x_mean = np.mean(x_idx)
-        y_mean = np.mean(x)
-        numerator = np.sum((x_idx - x_mean) * (x - y_mean))
-        denominator = np.sum((x_idx - x_mean) ** 2)
-        return numerator / denominator if denominator != 0 else 0.0
-
-    def momentum_manual(x):
-        return (x[0] / x[-1]) - 1.0 if x[-1] != 0 else 0.0
-    
-    def roc_manual(x):
-        n = len(x)
-        if n < 2 or x[-1] == 0:
-            return 0.0
-        return ((x[0] - x[-1]) / x[-1]) * 100
-    
-    def fractal_dimension_manual(x):
-        x = np.ascontiguousarray(x)
-        eps = np.std(x) / 4
-        if eps == 0:
-            return 1.0
-        count = np.sum(np.abs(np.diff(x)) > eps)
-        if count == 0:
-            return 1.0
-        return 1.0 + np.log(count) / np.log(len(x))
-    
-    def hurst_manual(x):
-        n = len(x)
-        if n < 4:
-            return 0.5
-        lags = min(n-1, 20)
-        rs = np.zeros(lags)
-        
-        for lag in range(1, lags+1):
-            roll_std = std_manual(x[:n-lag+1])
-            if roll_std == 0:
-                continue
-            rs[lag-1] = np.max(x[:n-lag+1]) / roll_std
-        
-        valid_rs = rs[rs != 0]
-        if len(valid_rs) < 2:
-            return 0.5
-        
-        return np.mean(np.log(valid_rs)) / np.log(n) if n > 1 else 0.5
-
     # Procesar períodos main
     col = 0
     for win in periods_main:
         for s in stats_main:
             for i in range(win, n):
-                window = close[i - win:i][::-1]
+                window = np.ascontiguousarray(close[i - win:i][::-1])
                 try:
                     if s == "std":
                         features[i, col] = std_manual(window)
@@ -133,28 +332,44 @@ def compute_features(close, periods_main, periods_meta, stats_main, stats_meta):
                         features[i, col] = kurt_manual(window)
                     elif s == "zscore":
                         features[i, col] = zscore_manual(window)
-                    elif s == "mean":
-                        features[i, col] = np.mean(window)
                     elif s == "range":
                         features[i, col] = np.max(window) - np.min(window)
-                    elif s == "median":
-                        features[i, col] = np.median(window)
                     elif s == "mad":
-                        features[i, col] = np.mean(np.abs(window - np.mean(window)))
-                    elif s == "var":
-                        features[i, col] = np.var(window)
+                        m = mean_manual(window)
+                        features[i, col] = mean_manual(np.abs(window - m))
                     elif s == "entropy":
                         features[i, col] = entropy_manual(window)
                     elif s == "slope":
                         features[i, col] = slope_manual(window)
                     elif s == "momentum":
-                        features[i, col] = momentum_manual(window)
-                    elif s == "roc":
-                        features[i, col] = roc_manual(window)
+                        features[i, col] = momentum_roc(window)
                     elif s == "fractal":
                         features[i, col] = fractal_dimension_manual(window)
                     elif s == "hurst":
                         features[i, col] = hurst_manual(window)
+                    elif s == "autocorr":
+                        features[i, col] = autocorr1_manual(window)
+                    elif s == "max_dd":
+                        features[i, col] = max_dd_manual(window)
+                    elif s == "sharpe":
+                        features[i, col] = sharpe_manual(window)
+                    elif s == "fisher":
+                        features[i, col] = fisher_transform(momentum_roc(window))
+                    elif s == "chande":
+                        features[i, col] = chande_momentum(window)
+                    elif s == "var":
+                        std = std_manual(window)
+                        features[i, col] = std * std * (window.size - 1) / window.size
+                    elif s == "approx_entropy":
+                        features[i, col] = approximate_entropy(window)
+                    elif s == "eff_ratio":
+                        features[i, col] = efficiency_ratio(window)
+                    elif s == "corr_skew":
+                        features[i, col] = correlation_skew_manual(window)
+                    elif s == "jump_vol":
+                        features[i, col] = jump_volatility_manual(window)
+                    elif s == "vol_skew":
+                        features[i, col] = volatility_skew(window)
                 except:
                     return np.full((n, total_features), np.nan)
             col += 1
@@ -164,7 +379,7 @@ def compute_features(close, periods_main, periods_meta, stats_main, stats_meta):
         for win in periods_meta:
             for s in stats_meta:
                 for i in range(win, n):
-                    window = close[i - win:i][::-1]
+                    window = np.ascontiguousarray(close[i - win:i][::-1])
                     try:
                         if s == "std":
                             features[i, col] = std_manual(window)
@@ -174,28 +389,44 @@ def compute_features(close, periods_main, periods_meta, stats_main, stats_meta):
                             features[i, col] = kurt_manual(window)
                         elif s == "zscore":
                             features[i, col] = zscore_manual(window)
-                        elif s == "mean":
-                            features[i, col] = np.mean(window)
                         elif s == "range":
                             features[i, col] = np.max(window) - np.min(window)
-                        elif s == "median":
-                            features[i, col] = np.median(window)
                         elif s == "mad":
-                            features[i, col] = np.mean(np.abs(window - np.mean(window)))
-                        elif s == "var":
-                            features[i, col] = np.var(window)
+                            m = mean_manual(window)
+                            features[i, col] = mean_manual(np.abs(window - m))
                         elif s == "entropy":
                             features[i, col] = entropy_manual(window)
                         elif s == "slope":
                             features[i, col] = slope_manual(window)
                         elif s == "momentum":
-                            features[i, col] = momentum_manual(window)
-                        elif s == "roc":
-                            features[i, col] = roc_manual(window)
+                            features[i, col] = momentum_roc(window)
                         elif s == "fractal":
                             features[i, col] = fractal_dimension_manual(window)
                         elif s == "hurst":
                             features[i, col] = hurst_manual(window)
+                        elif s == "autocorr":
+                            features[i, col] = autocorr1_manual(window)
+                        elif s == "max_dd":
+                            features[i, col] = max_dd_manual(window)
+                        elif s == "sharpe":
+                            features[i, col] = sharpe_manual(window)
+                        elif s == "fisher":
+                            features[i, col] = fisher_transform(momentum_roc(window))
+                        elif s == "chande":
+                            features[i, col] = chande_momentum(window)
+                        elif s == "var":
+                            std = std_manual(window)
+                            features[i, col] = std * std * (window.size - 1) / window.size
+                        elif s == "approx_entropy":
+                            features[i, col] = approximate_entropy(window)
+                        elif s == "eff_ratio":
+                            features[i, col] = efficiency_ratio(window)
+                        elif s == "corr_skew":
+                            features[i, col] = correlation_skew_manual(window)
+                        elif s == "jump_vol":
+                            features[i, col] = jump_volatility_manual(window)
+                        elif s == "vol_skew":
+                            features[i, col] = volatility_skew(window)
                     except:
                         return np.full((n, total_features), np.nan)
                 col += 1
@@ -1539,3 +1770,78 @@ def get_labels_trend_one_direction(dataset, rolling=50, polyorder=3, threshold=0
     dataset['labels'] = labels
     dataset = dataset.dropna()  # Remove rows with NaN
     return dataset
+
+@njit(fastmath=True, cache=True, nogil=True)
+def calculate_features_manual(data, window_size=20):
+    n = data.size
+    if n < window_size:
+        return np.zeros((1, 10))
+    
+    n_windows = n - window_size + 1
+    features = np.zeros((n_windows, 10))
+    
+    for i in range(n_windows):
+        window = data[i:i+window_size]
+        
+        # 1. Media
+        features[i, 0] = mean_manual(window)
+        
+        # 2. Desviación estándar
+        features[i, 1] = std_manual(window)
+        
+        # 3. MAD (Mean Absolute Deviation)
+        m = mean_manual(window)
+        features[i, 2] = mean_manual(np.abs(window - m))
+        
+        # 4. Rango
+        features[i, 3] = np.max(window) - np.min(window)
+        
+        # 5. Mediana
+        features[i, 4] = np.median(window)
+        
+        # 6. Skewness
+        features[i, 5] = skew_manual(window)
+        
+        # 7. Kurtosis
+        features[i, 6] = kurt_manual(window)
+        
+        # 8. Z-Score
+        features[i, 7] = zscore_manual(window)
+        
+        # 9. Slope
+        features[i, 8] = slope_manual(window)
+        
+        # 10. Hurst Exponent
+        features[i, 9] = hurst_manual(window)
+    
+    return features
+
+@njit(fastmath=True, cache=True, nogil=True)
+def calculate_features_manual_2(data, window_size=20):
+    n = data.size
+    if n < window_size:
+        return np.zeros((1, 5))
+    
+    n_windows = n - window_size + 1
+    features = np.zeros((n_windows, 5))
+    
+    for i in range(n_windows):
+        window = data[i:i+window_size]
+        
+        # 1. Media
+        features[i, 0] = mean_manual(window)
+        
+        # 2. Desviación estándar
+        features[i, 1] = std_manual(window)
+        
+        # 3. MAD (Mean Absolute Deviation)
+        m = mean_manual(window)
+        features[i, 2] = mean_manual(np.abs(window - m))
+        
+        # 4. Rango
+        features[i, 3] = np.max(window) - np.min(window)
+        
+        # 5. Mediana
+        features[i, 4] = np.median(window)
+    
+    return features

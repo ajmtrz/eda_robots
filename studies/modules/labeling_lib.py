@@ -14,10 +14,13 @@ import matplotlib.pyplot as plt
 def get_prices(hyper_params) -> pd.DataFrame:
     history_file = os.path.join(hyper_params["history_path"], f"{hyper_params['symbol']}_{hyper_params['timeframe']}.csv")
     p = pd.read_csv(history_file, sep=r"\s+")
-    pFixed = pd.DataFrame(columns=['time', 'close'])
+    # Crear DataFrame con todas las columnas necesarias
+    pFixed = pd.DataFrame(columns=['time', 'close', 'high', 'low'])
     pFixed['time'] = p['<DATE>'] + ' ' + p['<TIME>']
     pFixed['time'] = pd.to_datetime(pFixed['time'], format='mixed')
     pFixed['close'] = p['<CLOSE>']
+    pFixed['high'] = p['<HIGH>']
+    pFixed['low'] = p['<LOW>']
     pFixed.set_index('time', inplace=True)
     return pFixed.dropna()
 
@@ -194,7 +197,7 @@ def sharpe_manual(x):
     std = std_manual(x)
     return mean / std if std != 0 else 0.0
 
-@njit(fastmath=True, cache=True, nogil=True)
+@njit(fastmath=True, cache=True)
 def fisher_transform(x):
     return 0.5 * np.log((1 + x) / (1 - x))
 
@@ -471,6 +474,8 @@ def get_features(data: pd.DataFrame, hp):
                 colnames.extend([f"{p}_{s}_meta_feature"])
     df = pd.DataFrame(feats, columns=colnames, index=index)
     df["close"] = data["close"]
+    df["high"] = data["high"]
+    df["low"] = data["low"]
     return df.dropna()
 
 # TREND OR NEUTRAL BASED LABELING
@@ -905,72 +910,6 @@ def get_labels_clusters(dataset, markup, num_clusters=20) -> pd.DataFrame:
     dataset = dataset.drop(dataset[dataset.labels == 2.0].index)
     dataset = dataset.drop(columns=['cluster'])
     return dataset
-
-def sliding_window_clustering(dataset, n_clusters, window_size, step=None, vol_period=20):
-    # Configuración inicial
-    step = step or window_size
-    meta_X = dataset.filter(regex='meta_feature')
-    clusters = np.zeros(len(dataset), dtype=int)
-    
-    # Cálculo de volatilidad normalizada con manejo de edge cases
-    returns = dataset['close'].pct_change()
-    volatility = returns.rolling(vol_period).std()
-    
-    vol_min = volatility.min(skipna=True)
-    vol_max = volatility.max(skipna=True)
-    
-    if vol_min == vol_max:
-        normalized_vol = pd.Series(0.0, index=volatility.index)
-    else:
-        normalized_vol = ((volatility - vol_min) / (vol_max - vol_min))
-    
-    normalized_vol = normalized_vol.fillna(0).replace([np.inf, -np.inf], 0).clip(0, 1)
-    
-    # Ventana dinámica con límites seguros
-    dynamic_window = (window_size * (1 + normalized_vol)).astype(int)
-    dynamic_window = dynamic_window.clip(window_size//2, window_size*2)
-    
-    # Modelo global
-    global_kmeans = KMeans(n_clusters).fit(meta_X)
-    global_centroids = global_kmeans.cluster_centers_
-    
-    # Asignación óptima de centroides usando Hungarian Algorithm
-    def create_mapping(local_centroids):
-        cost_matrix = np.linalg.norm(
-            local_centroids[:, np.newaxis] - global_centroids,
-            axis=2
-        )
-        row_ind, col_ind = linear_sum_assignment(cost_matrix)
-        return {local_idx: global_idx + 1 for local_idx, global_idx in zip(row_ind, col_ind)}
-    
-    # Procesamiento por ventanas
-    for i in range(0, len(dataset), step):
-        if i >= len(dynamic_window):
-            continue
-        
-        current_win = dynamic_window.iloc[i]
-        start = max(0, i - current_win)
-        end = min(len(dataset), i + current_win)
-        
-        if start >= end:
-            continue
-        
-        window_data = meta_X.iloc[start:end]
-        
-        if len(window_data) < n_clusters:
-            continue
-        
-        local_kmeans = KMeans(n_clusters).fit(window_data)
-        mapping = create_mapping(local_kmeans.cluster_centers_)
-        labels = local_kmeans.predict(window_data)
-        clusters[start:end] = [mapping[label] for label in labels]
-    
-    # Rellenar puntos no cubiertos
-    zeros = np.where(clusters == 0)[0]
-    if zeros.size:
-        clusters[zeros] = global_kmeans.predict(meta_X.iloc[zeros]) + 1
-    
-    return dataset.assign(clusters=clusters)
 
 @njit
 def calculate_signals(prices, window_sizes, threshold_pct):
@@ -1638,36 +1577,164 @@ def get_labels_filter_bidirectional(dataset, rolling1=200, rolling2=200, quantil
     # Return the DataFrame with temporary columns removed
     return dataset.drop(columns=['lvl1', 'lvl2']) 
 
+@njit
+def calculate_atr_adaptive(high, low, close, base_period=14, max_period=50):
+    n = len(close)
+    tr = np.zeros(n)
+    atr = np.zeros(n)
+    # Calcular True Range
+    for i in range(1, n):
+        hl = high[i] - low[i]
+        hc = abs(high[i] - close[i-1])
+        lc = abs(low[i] - close[i-1])
+        tr[i] = max(hl, hc, lc)
+    # Calcular volatilidad relativa
+    volatility = np.zeros(n)
+    for i in range(base_period, n):
+        window = close[i-base_period:i]
+        mean = np.mean(window)
+        if mean == 0.0:
+            volatility[i] = 0.0
+        else:
+            volatility[i] = np.std(window) / mean
+    # Ajustar período según volatilidad
+    for i in range(base_period, n):
+        period = int(base_period + (max_period - base_period) * (1 - volatility[i]))
+        period = max(base_period, min(period, max_period))
+        # Asegurar que el período no exceda los datos disponibles
+        start_idx = max(0, i - period + 1)
+        atr[i] = np.mean(tr[start_idx:i+1]) if (i - start_idx + 1) >= 1 else 0.0
+    return atr
+
 # ONE DIRECTION LABELING
 @njit
-def calculate_labels_one_direction(close_data, markup, min_val, max_val, direction):
-    labels = []
-    for i in range(len(close_data) - max_val):
-        rand = random.randint(min_val, max_val)
-        curr_pr = close_data[i]
-        future_pr = close_data[i + rand]
-        
-        if direction == "buy":
-            # Label 1 si el precio sube MÁS que el markup (trade positivo)
-            if (future_pr - markup) > curr_pr:
-                labels.append(1.0)
-            else:
-                labels.append(0.0)
-        elif direction == "sell":
-            # Label 1 si el precio baja MÁS que el markup (trade positivo)
-            if (future_pr + markup) < curr_pr:
-                labels.append(1.0)
-            else:
-                labels.append(0.0)
-    return labels
+def calculate_labels_one_direction(high, low, close, markup, min_val, max_val, direction, atr_period=14):
+    # Validar parámetros
+    if min_val > max_val:
+        raise ValueError("min_val debe ser <= max_val")
+    if direction not in ("buy", "sell"):
+        raise ValueError("direction debe ser 'buy' o 'sell'")
+    
+    # Calcular ATR
+    atr = calculate_atr_adaptive(high, low, close, base_period=atr_period)
+    
+    # Calcular matriz forward
+    n = len(close)
+    fwd_matrix = np.zeros((n - max_val, max_val - min_val + 1))
+    for i in range(n - max_val):
+        for j in range(min_val, max_val + 1):
+            fwd_matrix[i, j - min_val] = close[i + j]
+    
+    # Calcular diferencias
+    close_slice = close[:-max_val].reshape(-1, 1)  # Reshape para broadcasting
+    diffs = fwd_matrix - close_slice
+    
+    # Calcular markup dinámico basado en ATR
+    atr_slice = atr[:-max_val].reshape(-1, 1)  # Reshape para broadcasting
+    dyn_mk = markup * atr_slice
+    
+    # Calcular hits
+    hits = (diffs > dyn_mk) if direction=="buy" else (diffs < -dyn_mk)
+    
+    # Implementar any(axis=1) manualmente
+    result = np.zeros(len(hits), dtype=np.float64)
+    for i in range(len(hits)):
+        for j in range(hits.shape[1]):
+            if hits[i, j]:
+                result[i] = 1.0
+                break
+    
+    return result
 
-def get_labels_one_direction(dataset, markup, min = 1, max = 15, direction = 'buy') -> pd.DataFrame:
-    close_data = dataset['close'].values
-    labels = calculate_labels_one_direction(close_data, markup, min, max, direction)
+def get_labels_one_direction(dataset, markup, min_val=1, max_val=15, direction='buy', atr_period=14) -> pd.DataFrame:
+    close_data = np.ascontiguousarray(dataset['close'].values)
+    high_data = np.ascontiguousarray(dataset['high'].values)
+    low_data = np.ascontiguousarray(dataset['low'].values)
+    labels = calculate_labels_one_direction(
+        high_data,
+        low_data,
+        close_data, 
+        markup, min_val, max_val, direction, atr_period
+    )
     dataset = dataset.iloc[:len(labels)].copy()
     dataset['labels'] = labels
     dataset = dataset.dropna()
     return dataset
+
+def sliding_window_clustering(
+        dataset: pd.DataFrame,
+        n_clusters: int,
+        window_size: int,
+        step: int | None = None,
+        atr_period: int = 14) -> pd.DataFrame:
+    """
+    Clustering jerárquico + ventana deslizante con tamaño adaptado al ATR.
+    Retorna el `dataset` con una columna extra `clusters`.
+    """
+    # ---------------- pre-cálculo ----------------------------------
+    step           = step or window_size
+    n_rows         = len(dataset)
+    clusters       = np.zeros(n_rows, dtype=np.int32)
+
+    # --- ATR adaptativo (Numba-accelerated) ------------------------
+    close = np.ascontiguousarray(dataset["close"].values, dtype=np.float64)
+    high  = np.ascontiguousarray(dataset["high"].values,  dtype=np.float64)
+    low   = np.ascontiguousarray(dataset["low"].values,   dtype=np.float64)
+    atr   = calculate_atr_adaptive(high, low, close,
+                                   base_period=atr_period,
+                                   max_period=atr_period*2)
+
+    # --- normalización segura -------------------------------------
+    atr_pos = atr[atr > 0]
+    atr_min = atr_pos.min() if atr_pos.size else 0.0
+    atr_max = atr_pos.max() if atr_pos.size else 1.0
+    scale   = atr_max - atr_min if atr_max != atr_min else 1.0
+    norm_vol= np.clip((atr - atr_min) / scale, 0.0, 1.0)   # 0-1
+
+    # --- ventana dinámica en vector numpy -------------------------
+    dynamic_win = np.clip(
+        (window_size * (1.0 + norm_vol)).astype(np.int32),
+        window_size // 2, window_size * 2
+    )
+
+    # ---------------- K-means global -------------------------------
+    meta_X_np = dataset.filter(regex="meta_feature").to_numpy(np.float32)
+    global_km = KMeans(n_clusters, n_init="auto", random_state=1).fit(meta_X_np)
+    global_ct = global_km.cluster_centers_
+
+    def map_centroids(local_ct: np.ndarray) -> dict[int, int]:
+        """Asigna cada centroide local al global vía Hungarian."""
+        cost = np.linalg.norm(local_ct[:, None] - global_ct, axis=2)
+        row, col = linear_sum_assignment(cost)
+        # +1 para dejar la etiqueta 0 reservada a "sin asignar"
+        return {int(r): int(c) + 1 for r, c in zip(row, col)}
+
+    # ---------------- ventana deslizante ---------------------------
+    for i in range(0, n_rows, step):
+        win = dynamic_win[i]
+        start = max(0, i - win)
+        end = min(n_rows, i + win)
+        if end - start < n_clusters:
+            continue
+
+        local_data = meta_X_np[start:end]             # ndarray slice
+        local_km   = KMeans(n_clusters, n_init="auto",
+                            random_state=1).fit(local_data)
+
+        mapping = map_centroids(local_km.cluster_centers_)
+        lbls    = local_km.labels_
+        clusters[start:end] = [mapping.get(l, 0) for l in lbls]
+
+    # ---------------- rellenar huecos ------------------------------
+    zeros = np.where(clusters == 0)[0]
+    if zeros.size:
+        clusters[zeros] = global_km.predict(meta_X_np[zeros]) + 1
+
+    # ---------------- devolver DataFrame ---------------------------
+    ds_out = dataset.copy()
+    ds_out["clusters"] = clusters
+    return ds_out
+
 
 @njit
 def calculate_labels_filter_one_direction(close, lvl, q, direction):

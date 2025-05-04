@@ -304,11 +304,13 @@ def test_model_one_direction(dataset: pd.DataFrame,
                              plt=False):
 
     ext_dataset = dataset.copy()
-    X = ext_dataset.iloc[:, 1:]
+    # Extraer características en el mismo orden que se usaron en el entrenamiento
+    feature_cols = sorted(ext_dataset.filter(regex='_feature$').columns)
+    X = ext_dataset[feature_cols]
 
-    ext_dataset['labels']      = result[0].predict_proba(X)[:, 1]
+    ext_dataset['labels'] = result[0].predict_proba(X)[:, 1]
     ext_dataset['meta_labels'] = result[1].predict_proba(X)[:, 1]
     ext_dataset[['labels', 'meta_labels']] = ext_dataset[['labels', 'meta_labels']].gt(0.5).astype(float)
 
     return tester_one_direction(ext_dataset, forward, backward, markup,
-                                direction=direction, plot=plt)
+                               direction=direction, plot=plt)

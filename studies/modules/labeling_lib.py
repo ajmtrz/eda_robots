@@ -1577,7 +1577,7 @@ def get_labels_filter_bidirectional(dataset, rolling1=200, rolling2=200, quantil
     # Return the DataFrame with temporary columns removed
     return dataset.drop(columns=['lvl1', 'lvl2']) 
 
-@njit
+@njit(fastmath=True, cache=True, nogil=True)
 def calculate_atr_adaptive(high, low, close, base_period=14, max_period=50):
     n = len(close)
     tr = np.zeros(n)
@@ -1604,38 +1604,34 @@ def calculate_atr_adaptive(high, low, close, base_period=14, max_period=50):
         # Asegurar que el período no exceda los datos disponibles
         start_idx = max(0, i - period + 1)
         atr[i] = np.mean(tr[start_idx:i+1]) if (i - start_idx + 1) >= 1 else 0.0
+    # Calcular media global de ATR (ignorando ceros)
+    non_zero_atr = atr[atr > 0]
+    global_mean = np.mean(non_zero_atr) if len(non_zero_atr) > 0 else 0.0
+    # Reemplazar ceros por la media global
+    for i in range(len(atr)):
+        if atr[i] == 0.0:
+            atr[i] = global_mean
     return atr
 
 # ONE DIRECTION LABELING
-@njit
+@njit(fastmath=True, nogil=True)
 def calculate_labels_one_direction(high, low, close, markup, min_val, max_val, direction, atr_period=14):
-    # Validar parámetros
-    if min_val > max_val:
-        raise ValueError("min_val debe ser <= max_val")
-    if direction not in ("buy", "sell"):
-        raise ValueError("direction debe ser 'buy' o 'sell'")
-    
     # Calcular ATR
     atr = calculate_atr_adaptive(high, low, close, base_period=atr_period)
-    
     # Calcular matriz forward
     n = len(close)
     fwd_matrix = np.zeros((n - max_val, max_val - min_val + 1))
     for i in range(n - max_val):
         for j in range(min_val, max_val + 1):
             fwd_matrix[i, j - min_val] = close[i + j]
-    
     # Calcular diferencias
     close_slice = close[:-max_val].reshape(-1, 1)  # Reshape para broadcasting
     diffs = fwd_matrix - close_slice
-    
     # Calcular markup dinámico basado en ATR
     atr_slice = atr[:-max_val].reshape(-1, 1)  # Reshape para broadcasting
     dyn_mk = markup * atr_slice
-    
     # Calcular hits
     hits = (diffs > dyn_mk) if direction=="buy" else (diffs < -dyn_mk)
-    
     # Implementar any(axis=1) manualmente
     result = np.zeros(len(hits), dtype=np.float64)
     for i in range(len(hits)):
@@ -1643,7 +1639,6 @@ def calculate_labels_one_direction(high, low, close, markup, min_val, max_val, d
             if hits[i, j]:
                 result[i] = 1.0
                 break
-    
     return result
 
 def get_labels_one_direction(dataset, markup, min_val=1, max_val=15, direction='buy', atr_period=14) -> pd.DataFrame:
@@ -1667,14 +1662,11 @@ def sliding_window_clustering(
         window_size: int,
         step: int | None = None,
         atr_period: int = 14) -> pd.DataFrame:
-    """
-    Clustering jerárquico + ventana deslizante con tamaño adaptado al ATR.
-    Retorna el `dataset` con una columna extra `clusters`.
-    """
     # ---------------- pre-cálculo ----------------------------------
     step           = step or window_size
     n_rows         = len(dataset)
-    clusters       = np.zeros(n_rows, dtype=np.int32)
+    votes          = np.zeros((n_rows, n_clusters + 1), dtype=np.int32)
+    eps            = 1e-6
 
     # --- ATR adaptativo (Numba-accelerated) ------------------------
     close = np.ascontiguousarray(dataset["close"].values, dtype=np.float64)
@@ -1683,30 +1675,25 @@ def sliding_window_clustering(
     atr   = calculate_atr_adaptive(high, low, close,
                                    base_period=atr_period,
                                    max_period=atr_period*2)
-
     # --- normalización segura -------------------------------------
     atr_pos = atr[atr > 0]
     atr_min = atr_pos.min() if atr_pos.size else 0.0
     atr_max = atr_pos.max() if atr_pos.size else 1.0
     scale   = atr_max - atr_min if atr_max != atr_min else 1.0
-    norm_vol= np.clip((atr - atr_min) / scale, 0.0, 1.0)   # 0-1
+    norm_vol= np.clip((atr - atr_min) / scale, 0.0, 1.0)
 
     # --- ventana dinámica en vector numpy -------------------------
-    dynamic_win = np.clip(
-        (window_size * (1.0 + norm_vol)).astype(np.int32),
-        window_size // 2, window_size * 2
-    )
+    dynamic_win = (window_size / (norm_vol + eps)).astype(np.int32)
 
     # ---------------- K-means global -------------------------------
     meta_X_np = dataset.filter(regex="meta_feature").to_numpy(np.float32)
     global_km = KMeans(n_clusters, n_init="auto", random_state=1).fit(meta_X_np)
     global_ct = global_km.cluster_centers_
 
+    # Asigna cada centroide local al global vía Hungarian.
     def map_centroids(local_ct: np.ndarray) -> dict[int, int]:
-        """Asigna cada centroide local al global vía Hungarian."""
         cost = np.linalg.norm(local_ct[:, None] - global_ct, axis=2)
         row, col = linear_sum_assignment(cost)
-        # +1 para dejar la etiqueta 0 reservada a "sin asignar"
         return {int(r): int(c) + 1 for r, c in zip(row, col)}
 
     # ---------------- ventana deslizante ---------------------------
@@ -1717,15 +1704,19 @@ def sliding_window_clustering(
         if end - start < n_clusters:
             continue
 
-        local_data = meta_X_np[start:end]             # ndarray slice
+        local_data = meta_X_np[start:end]
         local_km   = KMeans(n_clusters, n_init="auto",
                             random_state=1).fit(local_data)
 
         mapping = map_centroids(local_km.cluster_centers_)
         lbls    = local_km.labels_
-        clusters[start:end] = [mapping.get(l, 0) for l in lbls]
+        for off, lab in enumerate(lbls):
+            idx       = start + off
+            mapped_id = mapping.get(lab, 0)
+            votes[idx, mapped_id] += 1
 
     # ---------------- rellenar huecos ------------------------------
+    clusters = votes.argmax(axis=1).astype(np.int32)
     zeros = np.where(clusters == 0)[0]
     if zeros.size:
         clusters[zeros] = global_km.predict(meta_X_np[zeros]) + 1
@@ -1734,7 +1725,6 @@ def sliding_window_clustering(
     ds_out = dataset.copy()
     ds_out["clusters"] = clusters
     return ds_out
-
 
 @njit
 def calculate_labels_filter_one_direction(close, lvl, q, direction):

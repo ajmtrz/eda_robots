@@ -1660,30 +1660,11 @@ def sliding_window_clustering(
         dataset: pd.DataFrame,
         n_clusters: int,
         window_size: int,
-        step: int | None = None,
-        atr_period: int = 14) -> pd.DataFrame:
+        step: int | None = None) -> pd.DataFrame:
     # ---------------- pre-cálculo ----------------------------------
     step           = step or window_size
     n_rows         = len(dataset)
     votes          = np.zeros((n_rows, n_clusters + 1), dtype=np.int32)
-    eps            = 1e-6
-
-    # --- ATR adaptativo (Numba-accelerated) ------------------------
-    close = np.ascontiguousarray(dataset["close"].values, dtype=np.float64)
-    high  = np.ascontiguousarray(dataset["high"].values,  dtype=np.float64)
-    low   = np.ascontiguousarray(dataset["low"].values,   dtype=np.float64)
-    atr   = calculate_atr_adaptive(high, low, close,
-                                   base_period=atr_period,
-                                   max_period=atr_period*2)
-    # --- normalización segura -------------------------------------
-    atr_pos = atr[atr > 0]
-    atr_min = atr_pos.min() if atr_pos.size else 0.0
-    atr_max = atr_pos.max() if atr_pos.size else 1.0
-    scale   = atr_max - atr_min if atr_max != atr_min else 1.0
-    norm_vol= np.clip((atr - atr_min) / scale, 0.0, 1.0)
-
-    # --- ventana dinámica en vector numpy -------------------------
-    dynamic_win = (window_size / (norm_vol + eps)).astype(np.int32)
 
     # ---------------- K-means global -------------------------------
     meta_X_np = dataset.filter(regex="meta_feature").to_numpy(np.float32)
@@ -1697,10 +1678,9 @@ def sliding_window_clustering(
         return {int(r): int(c) + 1 for r, c in zip(row, col)}
 
     # ---------------- ventana deslizante ---------------------------
-    for i in range(0, n_rows, step):
-        win = dynamic_win[i]
-        start = max(0, i - win)
-        end = min(n_rows, i + win)
+    for i in range(0, n_rows - window_size + 1, step):
+        start = i
+        end = i + window_size
         if end - start < n_clusters:
             continue
 

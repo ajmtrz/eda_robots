@@ -1678,28 +1678,30 @@ def sliding_window_clustering(
         return {int(r): int(c) + 1 for r, c in zip(row, col)}
 
     # ---------------- ventana deslizante ---------------------------
-    for i in range(0, n_rows - window_size + 1, step):
-        start = i
-        end = i + window_size
-        if end - start < n_clusters:
-            continue
+    # Pre-calcular todos los índices de inicio y fin de ventana
+    starts = np.arange(0, n_rows - window_size + 1, step)
+    ends = starts + window_size
+    
+    # Filtrar ventanas que son demasiado pequeñas
+    valid_windows = ends - starts >= n_clusters
+    starts = starts[valid_windows]
+    ends = ends[valid_windows]
 
+    # Procesar todas las ventanas válidas
+    for start, end in zip(starts, ends):
         local_data = meta_X_np[start:end]
-        local_km   = KMeans(n_clusters, n_init="auto",
-                            random_state=1).fit(local_data)
+        local_km = KMeans(n_clusters, n_init="auto", random_state=1).fit(local_data)
 
         mapping = map_centroids(local_km.cluster_centers_)
-        lbls    = local_km.labels_
-        for off, lab in enumerate(lbls):
-            idx       = start + off
-            mapped_id = mapping.get(lab, 0)
-            votes[idx, mapped_id] += 1
+        lbls = local_km.labels_
+        
+        # Vectorizar la asignación de votos
+        indices = np.arange(start, end)
+        mapped_ids = np.array([mapping.get(lab, 0) for lab in lbls])
+        votes[indices, mapped_ids] += 1
 
-    # ---------------- rellenar huecos ------------------------------
+    # ---------------- asignar clusters ------------------------------
     clusters = votes.argmax(axis=1).astype(np.int32)
-    zeros = np.where(clusters == 0)[0]
-    if zeros.size:
-        clusters[zeros] = global_km.predict(meta_X_np[zeros]) + 1
 
     # ---------------- devolver DataFrame ---------------------------
     ds_out = dataset.copy()

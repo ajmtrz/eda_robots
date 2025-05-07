@@ -1578,7 +1578,7 @@ def get_labels_filter_bidirectional(dataset, rolling1=200, rolling2=200, quantil
     return dataset.drop(columns=['lvl1', 'lvl2']) 
 
 @njit(fastmath=True, cache=True, nogil=True)
-def calculate_atr_adaptive(high, low, close, base_period=14, max_period=50):
+def calculate_atr_adaptive(high, low, close, base_period=14, max_period=200):
     n = len(close)
     tr = np.zeros(n)
     atr = np.zeros(n)

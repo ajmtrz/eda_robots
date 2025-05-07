@@ -1615,18 +1615,32 @@ def calculate_atr_adaptive(high, low, close, base_period=14, max_period=200):
 
 # ONE DIRECTION LABELING
 @njit(fastmath=True, nogil=True)
-def calculate_labels_one_direction(high, low, close, markup, min_val, max_val, direction, atr_period=14):
+def calculate_labels_one_direction(high, low, close, markup, min_val, max_val, direction, atr_period=14, deterministic=True):
     # Calcular ATR
     atr = calculate_atr_adaptive(high, low, close, base_period=atr_period)
-    # Calcular matriz forward
     n = len(close)
-    fwd_matrix = np.zeros((n - max_val, max_val - min_val + 1))
-    for i in range(n - max_val):
-        for j in range(min_val, max_val + 1):
-            fwd_matrix[i, j - min_val] = close[i + j]
-    # Calcular diferencias
-    close_slice = close[:-max_val].reshape(-1, 1)  # Reshape para broadcasting
-    diffs = fwd_matrix - close_slice
+    
+    if deterministic:
+        # Calcular matriz forward
+        fwd_matrix = np.zeros((n - max_val, max_val - min_val + 1))
+        for i in range(n - max_val):
+            for j in range(min_val, max_val + 1):
+                fwd_matrix[i, j - min_val] = close[i + j]
+        # Calcular diferencias
+        close_slice = close[:-max_val].reshape(-1, 1)  # Reshape para broadcasting
+        diffs = fwd_matrix - close_slice
+    else:
+        # Generar matriz de precios objetivo aleatorios
+        fwd_matrix = np.zeros((n - max_val, max_val - min_val + 1))
+        for i in range(n - max_val):
+            for j in range(max_val - min_val + 1):
+                # Seleccionar una vela aleatoria entre min_val y max_val
+                random_candle = np.random.randint(min_val, max_val + 1)
+                fwd_matrix[i, j] = close[i + random_candle]
+        # Calcular diferencias
+        close_slice = close[:-max_val].reshape(-1, 1)
+        diffs = fwd_matrix - close_slice
+
     # Calcular markup dinámico basado en ATR
     atr_slice = atr[:-max_val].reshape(-1, 1)  # Reshape para broadcasting
     dyn_mk = markup * atr_slice
@@ -1641,15 +1655,13 @@ def calculate_labels_one_direction(high, low, close, markup, min_val, max_val, d
                 break
     return result
 
-def get_labels_one_direction(dataset, markup, min_val=1, max_val=15, direction='buy', atr_period=14) -> pd.DataFrame:
+def get_labels_one_direction(dataset, markup, min_val=1, max_val=15, direction='buy', atr_period=14, deterministic=True) -> pd.DataFrame:
     close_data = np.ascontiguousarray(dataset['close'].values)
     high_data = np.ascontiguousarray(dataset['high'].values)
     low_data = np.ascontiguousarray(dataset['low'].values)
     labels = calculate_labels_one_direction(
-        high_data,
-        low_data,
-        close_data, 
-        markup, min_val, max_val, direction, atr_period
+        high_data, low_data, close_data, 
+        markup, min_val, max_val, direction, atr_period, deterministic
     )
     dataset = dataset.iloc[:len(labels)].copy()
     dataset['labels'] = labels

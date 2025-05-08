@@ -436,7 +436,39 @@ def compute_features(close, periods_main, periods_meta, stats_main, stats_meta):
                         return np.full((n, total_features), np.nan)
                 col += 1
 
+    # Agregar validación después de calcular las características
+    # validate_features(features, [f"{stat}_{period}" for stat in stats_main for period in periods_main])
+    # validate_features(features, [f"{stat}_{period}" for stat in stats_meta for period in periods_meta])
+    
     return features
+
+def validate_features(features, feature_names):
+    """
+    Valida las características y reporta cualquier valor infinito o demasiado grande.
+    
+    Args:
+        features: Array numpy con las características
+        feature_names: Lista de nombres de las características
+    """
+    for i, name in enumerate(feature_names):
+        feature = features[:, i]
+        inf_mask = np.isinf(feature)
+        nan_mask = np.isnan(feature)
+        large_mask = np.abs(feature) > 1e10
+        
+        if np.any(inf_mask) or np.any(nan_mask) or np.any(large_mask):
+            print(f"\nProblemas encontrados en la característica: {name}")
+            if np.any(inf_mask):
+                print(f"  - Valores infinitos: {np.sum(inf_mask)}")
+                print(f"  - Índices de valores infinitos: {np.where(inf_mask)[0]}")
+            if np.any(nan_mask):
+                print(f"  - Valores NaN: {np.sum(nan_mask)}")
+                print(f"  - Índices de valores NaN: {np.where(nan_mask)[0]}")
+            if np.any(large_mask):
+                print(f"  - Valores muy grandes: {np.sum(large_mask)}")
+                print(f"  - Índices de valores grandes: {np.where(large_mask)[0]}")
+                print(f"  - Valores máximos: {np.max(feature[large_mask])}")
+                print(f"  - Valores mínimos: {np.min(feature[large_mask])}")
 
 def get_features(data: pd.DataFrame, hp):
     close = data['close'].values

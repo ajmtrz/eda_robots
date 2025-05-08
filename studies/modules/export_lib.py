@@ -7,6 +7,9 @@ from skl2onnx.common.data_types import FloatTensorType, Int64TensorType
 from skl2onnx._parse import _apply_zipmap, _get_sklearn_operator_name
 from onnx.helper import get_attribute_value
 from catboost.utils import convert_to_onnx_object
+from onnxmltools.convert.xgboost.operator_converters.XGBoost import convert_xgboost
+from onnxmltools.convert import convert_xgboost as convert_xgboost_booster
+from onnxmltools.convert.lightgbm.operator_converters.LightGbm import convert_lightgbm
 
 # ONNX para Pipeline con Catboost
 def skl2onnx_parser_castboost_classifier(scope, model, inputs, custom_parsers=None):
@@ -61,32 +64,49 @@ def export_model_to_ONNX(best_models, **kwargs):
         parser=skl2onnx_parser_castboost_classifier,
         options={"nocl": [True, False], "zipmap": [True, False]}
     )
-    
-    # Modelo señal
-    model_onnx = convert_sklearn(
-        models[0],
-        initial_types=[('input', FloatTensorType([None, len(models[0].feature_names_)]))],
-        target_opset={"": 18, "ai.onnx.ml": 2},
-        options={id(models[0]): {'zipmap': True}}
+    update_registered_converter(
+        XGBClassifier,
+        'XGBClassifier',
+        calculate_linear_classifier_output_shapes,
+        convert_xgboost,
+        options={'nocl': [True, False], 'zipmap': [True, False]}
     )
-    filename_model = f"dmitrievsky_model_{symbol}_{timeframe}_{direction}_{model_seed}{best_trial}.onnx"
-    filepath_model = os.path.join(models_export_path, filename_model)
-    with open(filepath_model, "wb") as f:
-        f.write(model_onnx.SerializeToString())
-    print(f"Modelo {filepath_model} ONNX exportado correctamente")
-    
-    # Modelo meta
-    model_onnx = convert_sklearn(
-        models[1],
-        initial_types=[('input', FloatTensorType([None, len(models[1].feature_names_)]))],
-        target_opset={"": 18, "ai.onnx.ml": 2},
-        options={id(models[1]): {'zipmap': True}}
+    update_registered_converter(
+        LGBMClassifier,
+        'LGBMClassifier',
+        calculate_linear_classifier_output_shapes,
+        convert_lightgbm,
+        options={'nocl': [True, False], 'zipmap': [True, False]}
     )
-    filename_model_m = f"dmitrievsky_model_m_{symbol}_{timeframe}_{direction}_{model_seed}{best_trial}.onnx"
-    filepath_model_m = os.path.join(models_export_path, filename_model_m)
-    with open(filepath_model_m, "wb") as f:
-        f.write(model_onnx.SerializeToString())
-    print(f"Modelo {filepath_model_m} ONNX exportado correctamente")
+    try:
+        # Convierte los pipelines completos
+        model_main_onnx = convert_sklearn(
+            models[0],
+            initial_types=[('input', FloatTensorType([None, len(models[0].feature_names_)]))],
+            target_opset={"": 18, "ai.onnx.ml": 2},
+            options={id(models[0].named_steps['ensemble']): {'zipmap': True}}
+        )
+        model_meta_onnx = convert_sklearn(
+            models[1],
+            initial_types=[('input', FloatTensorType([None, len(models[1].feature_names_)]))],
+            target_opset={"": 18, "ai.onnx.ml": 2},
+            options={id(models[1].named_steps['ensemble']): {'zipmap': True}}
+        )
+        # Guarda los modelos ONNX
+        filename_model = f"dmitrievsky_model_{symbol}_{timeframe}_{direction}_{model_seed}{best_trial}.onnx"
+        filepath_model = os.path.join(models_export_path, filename_model)
+        with open(filepath_model, "wb") as f:
+            f.write(model_main_onnx.SerializeToString())
+        
+        filename_model_m = f"dmitrievsky_model_m_{symbol}_{timeframe}_{direction}_{model_seed}{best_trial}.onnx"
+        filepath_model_m = os.path.join(models_export_path, filename_model_m)
+        with open(filepath_model_m, "wb") as f:
+            f.write(model_meta_onnx.SerializeToString())
+        print(f"Modelos ONNX exportados correctamente")
+
+    except Exception as e:
+        print(f"Error en exportar los modelos: {e}")
+        raise
 
     stat_function_templates = {
         "std": """

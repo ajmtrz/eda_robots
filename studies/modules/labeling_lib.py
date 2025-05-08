@@ -1578,7 +1578,7 @@ def get_labels_filter_bidirectional(dataset, rolling1=200, rolling2=200, quantil
     return dataset.drop(columns=['lvl1', 'lvl2']) 
 
 @njit(fastmath=True, cache=True, nogil=True)
-def calculate_atr_adaptive(high, low, close, base_period=14, max_period=200):
+def calculate_atr_simple(high, low, close, period=14):
     n = len(close)
     tr = np.zeros(n)
     atr = np.zeros(n)
@@ -1588,22 +1588,9 @@ def calculate_atr_adaptive(high, low, close, base_period=14, max_period=200):
         hc = abs(high[i] - close[i-1])
         lc = abs(low[i] - close[i-1])
         tr[i] = max(hl, hc, lc)
-    # Calcular volatilidad relativa
-    volatility = np.zeros(n)
-    for i in range(base_period, n):
-        window = close[i-base_period:i]
-        mean = np.mean(window)
-        if mean == 0.0:
-            volatility[i] = 0.0
-        else:
-            volatility[i] = np.std(window) / mean
-    # Ajustar período según volatilidad
-    for i in range(base_period, n):
-        period = int(base_period + (max_period - base_period) * (1 - volatility[i]))
-        period = max(base_period, min(period, max_period))
-        # Asegurar que el período no exceda los datos disponibles
-        start_idx = max(0, i - period + 1)
-        atr[i] = np.mean(tr[start_idx:i+1]) if (i - start_idx + 1) >= 1 else 0.0
+    # Calcular ATR simple (media móvil del TR)
+    for i in range(period, n):
+        atr[i] = np.mean(tr[i - period + 1:i + 1])
     # Calcular media global de ATR (ignorando ceros)
     non_zero_atr = atr[atr > 0]
     global_mean = np.mean(non_zero_atr) if len(non_zero_atr) > 0 else 0.0
@@ -1617,29 +1604,23 @@ def calculate_atr_adaptive(high, low, close, base_period=14, max_period=200):
 @njit(fastmath=True, nogil=True)
 def calculate_labels_one_direction(high, low, close, markup, min_val, max_val, direction, atr_period=14, deterministic=True):
     # Calcular ATR
-    atr = calculate_atr_adaptive(high, low, close, base_period=atr_period)
+    atr = calculate_atr_simple(high, low, close, period=atr_period)
     n = len(close)
     
     if deterministic:
-        # Calcular matriz forward
+        # --- exactamente igual que antes ---
         fwd_matrix = np.zeros((n - max_val, max_val - min_val + 1))
         for i in range(n - max_val):
             for j in range(min_val, max_val + 1):
                 fwd_matrix[i, j - min_val] = close[i + j]
-        # Calcular diferencias
-        close_slice = close[:-max_val].reshape(-1, 1)  # Reshape para broadcasting
-        diffs = fwd_matrix - close_slice
-    else:
-        # Generar matriz de precios objetivo aleatorios
-        fwd_matrix = np.zeros((n - max_val, max_val - min_val + 1))
-        for i in range(n - max_val):
-            for j in range(max_val - min_val + 1):
-                # Seleccionar una vela aleatoria entre min_val y max_val
-                random_candle = np.random.randint(min_val, max_val + 1)
-                fwd_matrix[i, j] = close[i + random_candle]
-        # Calcular diferencias
         close_slice = close[:-max_val].reshape(-1, 1)
-        diffs = fwd_matrix - close_slice
+        diffs = fwd_matrix - close_slice          # shape: (n-max_val, n_shifts)
+    else:
+        # --------- una sola vela aleatoria por fila -----------------
+        rand_shift = np.random.randint(min_val, max_val + 1, size=n - max_val)
+        target = close[np.arange(n - max_val) + rand_shift]          # vector
+        diffs = target - close[:-max_val]                            # vector 1-D
+        diffs = diffs.reshape(-1, 1)                                 # → columna
 
     # Calcular markup dinámico basado en ATR
     atr_slice = atr[:-max_val].reshape(-1, 1)  # Reshape para broadcasting
@@ -1676,7 +1657,7 @@ def sliding_window_clustering(
     # ---------------- pre-cálculo ----------------------------------
     step           = step or window_size
     n_rows         = len(dataset)
-    votes          = np.zeros((n_rows, n_clusters + 1), dtype=np.int32)
+    votes          = np.zeros((n_rows, n_clusters + 1), dtype=np.int32)  # +1 para el cluster 0 inválido
 
     # ---------------- K-means global -------------------------------
     meta_X_np = dataset.filter(regex="meta_feature").to_numpy(np.float32)
@@ -1687,6 +1668,7 @@ def sliding_window_clustering(
     def map_centroids(local_ct: np.ndarray) -> dict[int, int]:
         cost = np.linalg.norm(local_ct[:, None] - global_ct, axis=2)
         row, col = linear_sum_assignment(cost)
+        # Mapear a clusters 1-n_clusters (0 reservado para inválidos)
         return {int(r): int(c) + 1 for r, c in zip(row, col)}
 
     # ---------------- ventana deslizante ---------------------------
@@ -1709,10 +1691,12 @@ def sliding_window_clustering(
         
         # Vectorizar la asignación de votos
         indices = np.arange(start, end)
+        # Usar 0 como valor por defecto para labels no mapeados (inválidos)
         mapped_ids = np.array([mapping.get(lab, 0) for lab in lbls])
         votes[indices, mapped_ids] += 1
 
     # ---------------- asignar clusters ------------------------------
+    # El cluster 0 es para inválidos, los clusters válidos empiezan en 1
     clusters = votes.argmax(axis=1).astype(np.int32)
 
     # ---------------- devolver DataFrame ---------------------------

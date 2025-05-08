@@ -1,14 +1,13 @@
-from numba import jit
+from numba import jit, njit
 import numpy as np
 import pandas as pd
 from datetime import datetime
 from sklearn.linear_model import LinearRegression
 import matplotlib.pyplot as plt
-from typing import Any, Tuple, List
 
 
-@jit(nopython=True)
-def process_data(close, labels, metalabels, markup, forward, backward):
+@jit(fastmath=True, cache=True)
+def process_data(close, labels, metalabels, forward, backward):
     last_deal  = 2          # 2 = flat, 0 = short, 1 = long
     last_price = 0.0
     report, chart = [0.0], [0.0]
@@ -29,23 +28,23 @@ def process_data(close, labels, metalabels, markup, forward, backward):
         # ── cerrar por señal opuesta
         if last_deal == 0 and pred > 0.5:
             last_deal = 2
-            profit = -markup + (pr - last_price)
+            profit = (pr - last_price)
             report.append(report[-1] + profit)
             chart.append(chart[-1] + profit)
             continue
 
         if last_deal == 1 and pred < 0.5:
             last_deal = 2
-            profit = -markup + (last_price - pr)
+            profit = (last_price - pr)
             report.append(report[-1] + profit)
             chart.append(chart[-1] + (pr - last_price))
             continue
 
     return np.array(report), np.array(chart), line_f, line_b
 
-@jit(nopython=True)
-def process_data_one_direction(close, labels, metalabels,
-                               markup, forward, backward, direction):
+@jit(fastmath=True, cache=True)
+def process_data_one_direction(close, high, low, labels, metalabels,
+                             forward, backward, direction):
     last_deal = 2           # 2 = flat, 1 = in‑market (única dirección)
     last_price = 0.0
     report, chart = [0.0], [0.0]
@@ -67,8 +66,8 @@ def process_data_one_direction(close, labels, metalabels,
         # ── cerrar al flip de la señal
         if last_deal == 1 and pred < 0.5:
             last_deal = 2
-            profit = (-markup + (pr - last_price)) if long_side \
-                     else (-markup + (last_price - pr))
+            profit = (pr - last_price) if long_side \
+                     else (last_price - pr)
             report.append(report[-1] + profit)
             chart.append(chart[-1] + profit)
             continue
@@ -78,7 +77,7 @@ def process_data_one_direction(close, labels, metalabels,
 # ───────────────────────────────────────────────────────────────────
 # 2)  Wrappers del tester
 # ───────────────────────────────────────────────────────────────────
-def tester(dataset, forward, backward, markup, plot=False):
+def tester(dataset, forward, backward, plot=False):
     forw = dataset.index.get_indexer([forward],  method='nearest')[0]
     back = dataset.index.get_indexer([backward], method='nearest')[0]
 
@@ -86,7 +85,7 @@ def tester(dataset, forward, backward, markup, plot=False):
     lab   = dataset['labels'].to_numpy()
     meta  = dataset['meta_labels'].to_numpy()
 
-    rpt, ch, lf, lb = process_data(close, lab, meta, markup, forw, back)
+    rpt, ch, lf, lb = process_data(close, lab, meta, forw, back)
 
     # regresión lineal sobre el equity
     y = rpt.reshape(-1, 1)
@@ -105,8 +104,7 @@ def tester(dataset, forward, backward, markup, plot=False):
 
     return lr.score(X, y) * sign
 
-import numpy as np
-
+@njit(fastmath=True, cache=True)
 def evaluate_report(report: np.ndarray, r2_raw: float) -> float:
     if len(report) < 2:
         return -1.0
@@ -122,12 +120,14 @@ def evaluate_report(report: np.ndarray, r2_raw: float) -> float:
     losses = -returns[returns < 0]
     profit_factor = np.sum(gains) / np.sum(losses) if np.sum(losses) > 0 else 0.0
 
+    # Calcular max drawdown
     equity_curve = report
     peak = equity_curve[0]
     max_dd = 0.0
     for x in equity_curve:
         peak = max(peak, x)
         max_dd = max(max_dd, peak - x)
+    
     total_return = equity_curve[-1] - equity_curve[0]
     return_dd_ratio = total_return / max_dd if max_dd > 0 else 0.0
 
@@ -166,16 +166,18 @@ def evaluate_report(report: np.ndarray, r2_raw: float) -> float:
     return final_score
 
 def tester_one_direction(dataset, forward, backward,
-                         markup, direction='buy', plot=False):
+                        direction='buy', plot=False):
     forw = dataset.index.get_indexer([forward],  method='nearest')[0]
     back = dataset.index.get_indexer([backward], method='nearest')[0]
 
-    close = dataset['close'].to_numpy()
-    lab   = dataset['labels'].to_numpy()
-    meta  = dataset['meta_labels'].to_numpy()
+    close = np.ascontiguousarray(dataset['close'].values)
+    high = np.ascontiguousarray(dataset['high'].values)
+    low = np.ascontiguousarray(dataset['low'].values)
+    lab = np.ascontiguousarray(dataset['labels'].values)
+    meta = np.ascontiguousarray(dataset['meta_labels'].values)
 
     rpt, ch, lf, lb = process_data_one_direction(
-        close, lab, meta, markup, forw, back, direction)
+        close, high, low, lab, meta, forw, back, direction)
 
     y = rpt.reshape(-1, 1)
     X = np.ascontiguousarray(np.arange(len(rpt))).reshape(-1, 1)
@@ -191,7 +193,6 @@ def tester_one_direction(dataset, forward, backward,
         plt.show()
 
     r2_raw = lr.score(X, y) * sign
-    #return lr.score(X, y) * sign
     return evaluate_report(rpt, r2_raw)
 
 def test_model_one_direction_clustering(
@@ -199,7 +200,6 @@ def test_model_one_direction_clustering(
         result:  list,
         forward: datetime,
         backward: datetime,
-        markup:  float,
         direction: str,
         plt: bool = False):
 
@@ -214,7 +214,7 @@ def test_model_one_direction_clustering(
     # Corrección aquí:
     pr_tst[['labels', 'meta_labels']] = (pr_tst[['labels', 'meta_labels']] > 0.5).astype(float)
 
-    return tester_one_direction(pr_tst, forward, backward, markup, direction, plt)
+    return tester_one_direction(pr_tst, forward, backward, direction, plt)
 
 # ─────────────────────────────────────────────
 # tester_slow  (mantenerlo o borrarlo)
@@ -282,7 +282,6 @@ def test_model(dataset: pd.DataFrame,
                result: list,
                forward: datetime,
                backward: datetime,
-               markup: float,
                plt=False):
 
     ext_dataset = dataset.copy()
@@ -292,16 +291,15 @@ def test_model(dataset: pd.DataFrame,
     ext_dataset['meta_labels'] = result[1].predict_proba(X)[:, 1]
     ext_dataset[['labels', 'meta_labels']] = ext_dataset[['labels', 'meta_labels']].gt(0.5).astype(float)
 
-    return tester(ext_dataset, forward, backward, markup, plot=plt)
+    return tester(ext_dataset, forward, backward, plot=plt)
 
 
 def test_model_one_direction(dataset: pd.DataFrame,
-                             result: list,
-                             forward: datetime,
-                             backward: datetime,
-                             markup: float,
-                             direction: str = 'buy',
-                             plt=False):
+                           result: list,
+                           forward: datetime,
+                           backward: datetime,
+                           direction: str = 'buy',
+                           plt=False):
 
     ext_dataset = dataset.copy()
     # Extraer características en el mismo orden que se usaron en el entrenamiento
@@ -312,5 +310,4 @@ def test_model_one_direction(dataset: pd.DataFrame,
     ext_dataset['meta_labels'] = result[1].predict_proba(X)[:, 1]
     ext_dataset[['labels', 'meta_labels']] = ext_dataset[['labels', 'meta_labels']].gt(0.5).astype(float)
 
-    return tester_one_direction(ext_dataset, forward, backward, markup,
-                               direction=direction, plot=plt)
+    return tester_one_direction(ext_dataset, forward, backward, direction, plot=plt)

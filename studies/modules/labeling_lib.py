@@ -1601,7 +1601,7 @@ def calculate_atr_simple(high, low, close, period=14):
     return atr
 
 # ONE DIRECTION LABELING
-@njit(fastmath=True, nogil=True)
+@njit(fastmath=True, cache=True, nogil=True)
 def calculate_labels_one_direction(high, low, close, markup, min_val, max_val, direction, atr_period=14, deterministic=True):
     # Calcular ATR
     atr = calculate_atr_simple(high, low, close, period=atr_period)

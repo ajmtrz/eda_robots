@@ -15,12 +15,14 @@ def get_prices(hyper_params) -> pd.DataFrame:
     history_file = os.path.join(hyper_params["history_path"], f"{hyper_params['symbol']}_{hyper_params['timeframe']}.csv")
     p = pd.read_csv(history_file, sep=r"\s+")
     # Crear DataFrame con todas las columnas necesarias
-    pFixed = pd.DataFrame(columns=['time', 'close', 'high', 'low'])
+    pFixed = pd.DataFrame(columns=['time', 'open', 'high', 'low', 'close', 'volume'])
     pFixed['time'] = p['<DATE>'] + ' ' + p['<TIME>']
     pFixed['time'] = pd.to_datetime(pFixed['time'], format='mixed')
-    pFixed['close'] = p['<CLOSE>']
+    pFixed['open'] = p['<OPEN>']
     pFixed['high'] = p['<HIGH>']
     pFixed['low'] = p['<LOW>']
+    pFixed['close'] = p['<CLOSE>']
+    pFixed['volume'] = p['<TICKVOL>']
     pFixed.set_index('time', inplace=True)
     return pFixed.dropna()
 
@@ -473,9 +475,11 @@ def get_features(data: pd.DataFrame, hp):
             for s in stats_meta:
                 colnames.extend([f"{p}_{s}_meta_feature"])
     df = pd.DataFrame(feats, columns=colnames, index=index)
-    df["close"] = data["close"]
+    df["open"] = data["open"]
     df["high"] = data["high"]
     df["low"] = data["low"]
+    df["close"] = data["close"]
+    df["volume"] = data["volume"]
     return df.dropna()
 
 # TREND OR NEUTRAL BASED LABELING

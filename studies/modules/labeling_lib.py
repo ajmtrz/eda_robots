@@ -136,6 +136,8 @@ def hurst_manual(x):
     
     # Calcular rangos reescalados
     valid_rs = np.zeros(n-1)
+    valid_count = 0
+    
     for i in range(1, n):
         # Calcular media y desviación estándar para cada subserie
         subseries = x[:i+1]
@@ -153,9 +155,25 @@ def hurst_manual(x):
             if subseries[j] < min_val:
                 min_val = subseries[j]
         r = max_val - min_val
-        valid_rs[i-1] = r / s
+        rs = r / s
+        if rs > 0:  # Solo guardar valores positivos
+            valid_rs[valid_count] = rs
+            valid_count += 1
     
-    return mean_manual(np.log(valid_rs)) / np.log(n) if n > 1 else 0.5
+    # Verificar si tenemos suficientes valores válidos
+    if valid_count == 0:
+        return 0.5
+    
+    # Usar solo los valores válidos para el cálculo
+    log_rs = np.log(valid_rs[:valid_count])
+    mean_log_rs = mean_manual(log_rs)
+    log_n = np.log(n)
+    
+    # Evitar división por valores cercanos a cero
+    if abs(log_n) < 1e-10:
+        return 0.5
+        
+    return mean_log_rs / log_n
 
 @njit(fastmath=True, cache=True, nogil=True)
 def autocorr1_manual(x):
@@ -199,11 +217,11 @@ def sharpe_manual(x):
     std = std_manual(x)
     return mean / std if std != 0 else 0.0
 
-@njit(fastmath=True, cache=True)
+@njit(fastmath=True, cache=True, nogil=True)
 def fisher_transform(x):
     return 0.5 * np.log((1 + x) / (1 - x))
 
-@njit(fastmath=True, cache=True)
+@njit(fastmath=True, cache=True, nogil=True)
 def chande_momentum(x):
     returns = np.diff(x)
     up = np.sum(returns[returns > 0])
@@ -313,7 +331,7 @@ def volatility_skew(x):
     return (up_vol - down_vol)/(up_vol + down_vol) if (up_vol + down_vol) != 0 else 0.0
 
 # Ingeniería de características
-@njit
+@njit(fastmath=True, cache=True, nogil=True)
 def compute_features(close, periods_main, periods_meta, stats_main, stats_meta):
     n = len(close)
     # Calcular total de features considerando si hay meta o no
@@ -436,39 +454,7 @@ def compute_features(close, periods_main, periods_meta, stats_main, stats_meta):
                         return np.full((n, total_features), np.nan)
                 col += 1
 
-    # Agregar validación después de calcular las características
-    # validate_features(features, [f"{stat}_{period}" for stat in stats_main for period in periods_main])
-    # validate_features(features, [f"{stat}_{period}" for stat in stats_meta for period in periods_meta])
-    
     return features
-
-def validate_features(features, feature_names):
-    """
-    Valida las características y reporta cualquier valor infinito o demasiado grande.
-    
-    Args:
-        features: Array numpy con las características
-        feature_names: Lista de nombres de las características
-    """
-    for i, name in enumerate(feature_names):
-        feature = features[:, i]
-        inf_mask = np.isinf(feature)
-        nan_mask = np.isnan(feature)
-        large_mask = np.abs(feature) > 1e10
-        
-        if np.any(inf_mask) or np.any(nan_mask) or np.any(large_mask):
-            print(f"\nProblemas encontrados en la característica: {name}")
-            if np.any(inf_mask):
-                print(f"  - Valores infinitos: {np.sum(inf_mask)}")
-                print(f"  - Índices de valores infinitos: {np.where(inf_mask)[0]}")
-            if np.any(nan_mask):
-                print(f"  - Valores NaN: {np.sum(nan_mask)}")
-                print(f"  - Índices de valores NaN: {np.where(nan_mask)[0]}")
-            if np.any(large_mask):
-                print(f"  - Valores muy grandes: {np.sum(large_mask)}")
-                print(f"  - Índices de valores grandes: {np.where(large_mask)[0]}")
-                print(f"  - Valores máximos: {np.max(feature[large_mask])}")
-                print(f"  - Valores mínimos: {np.min(feature[large_mask])}")
 
 def get_features(data: pd.DataFrame, hp):
     close = data['close'].values
@@ -515,14 +501,13 @@ def get_features(data: pd.DataFrame, hp):
     return df.dropna()
 
 # TREND OR NEUTRAL BASED LABELING
-@njit
+@njit(fastmath=True, cache=True, nogil=True)
 def calculate_labels(close_data, markup, min_val, max_val):
     labels = []
     for i in range(len(close_data) - max_val):
         rand = random.randint(min_val, max_val)
         curr_pr = close_data[i]
         future_pr = close_data[i + rand]
-
         if (future_pr + markup) < curr_pr:
             labels.append(1.0)
         elif (future_pr - markup) > curr_pr:
@@ -573,7 +558,7 @@ def get_labels(dataset, markup, min = 1, max = 15) -> pd.DataFrame:
 
     return dataset
 
-@njit
+@njit(fastmath=True, cache=True, nogil=True)
 def calculate_labels_trend(normalized_trend, threshold):
     labels = np.empty(len(normalized_trend), dtype=np.float64)
     for i in range(len(normalized_trend)):
@@ -701,7 +686,7 @@ def plot_trading_signals(
     plt.tight_layout()
     plt.show()
 
-@njit
+@njit(fastmath=True, cache=True, nogil=True)
 def calculate_labels_trend_with_profit(close, normalized_trend, threshold, markup, min_l, max_l):
     labels = np.empty(len(normalized_trend) - max_l, dtype=np.float64)
     for i in range(len(normalized_trend) - max_l):
@@ -752,7 +737,7 @@ def get_labels_trend_with_profit(dataset, rolling=200, polyorder=3, threshold=0.
     dataset_clean = dataset_clean.dropna()    
     return dataset_clean
 
-@njit
+@njit(fastmath=True, cache=True, nogil=True)
 def calculate_labels_trend_different_filters(close, normalized_trend, threshold, markup, min_l, max_l):
     labels = np.empty(len(normalized_trend) - max_l, dtype=np.float64)
     for i in range(len(normalized_trend) - max_l):
@@ -818,7 +803,7 @@ def get_labels_trend_with_profit_different_filters(dataset, method='savgol', rol
     dataset_clean = dataset_clean.dropna()    
     return dataset_clean
 
-@njit
+@njit(fastmath=True, cache=True, nogil=True)
 def calculate_labels_trend_multi(close, normalized_trends, threshold, markup, min_l, max_l):
     num_periods = normalized_trends.shape[0]  # Number of periods
     labels = np.empty(len(close) - max_l, dtype=np.float64)
@@ -912,7 +897,7 @@ def get_labels_trend_with_profit_multi(dataset, method='savgol', rolling_periods
     dataset_clean = dataset_clean.dropna()
     return dataset_clean
 
-@njit
+@njit(fastmath=True, cache=True, nogil=True)
 def calculate_labels_clusters(close_data, clusters, markup):
     labels = []
     current_cluster = clusters[0]
@@ -947,7 +932,7 @@ def get_labels_clusters(dataset, markup, num_clusters=20) -> pd.DataFrame:
     dataset = dataset.drop(columns=['cluster'])
     return dataset
 
-@njit
+@njit(fastmath=True, cache=True, nogil=True)
 def calculate_signals(prices, window_sizes, threshold_pct):
     max_window = max(window_sizes)
     signals = []
@@ -979,7 +964,7 @@ def get_labels_multi_window(dataset, window_sizes=[20, 50, 100], threshold_pct=0
     dataset = dataset.drop(dataset[dataset.labels == 2.0].index)
     return dataset
 
-@njit
+@njit(fastmath=True, cache=True, nogil=True)
 def calculate_labels_validated_levels(prices, window_size, threshold_pct, min_touches):
     resistance_touches = {}
     support_touches = {}
@@ -1026,7 +1011,7 @@ def get_labels_validated_levels(dataset, window_size=20, threshold_pct=0.02, min
     dataset = dataset.drop(dataset[dataset.labels == 2.0].index)
     return dataset
 
-@njit
+@njit(fastmath=True, cache=True, nogil=True)
 def calculate_labels_zigzag(peaks, troughs, len_close):
     """
     Generates labels based on the occurrence of peaks and troughs in the data.
@@ -1098,7 +1083,7 @@ def get_labels_filter_ZZ(dataset, peak_prominence=0.1) -> pd.DataFrame:
     return dataset
 
 # MEAN REVERSION WITH RESTRICTIONS BASED LABELING
-@njit
+@njit(fastmath=True, cache=True, nogil=True)
 def calculate_labels_mean_reversion(close, lvl, markup, min_l, max_l, q):
     labels = np.empty(len(close) - max_l, dtype=np.float64)
     for i in range(len(close) - max_l):
@@ -1189,7 +1174,7 @@ def get_labels_mean_reversion(dataset, markup, min_l=1, max_l=15, rolling=0.5, q
     dataset = dataset.drop(dataset[dataset.labels == 2.0].index)  # Remove sell signals (if any)
     return dataset.drop(columns=['lvl'])  # Remove the temporary 'lvl' column 
 
-@njit
+@njit(fastmath=True, cache=True, nogil=True)
 def calculate_labels_mean_reversion_multi(close_data, lvl_data, q, markup, min_l, max_l, windows):
     labels = []
     for i in range(len(close_data) - max_l):
@@ -1244,7 +1229,7 @@ def get_labels_mean_reversion_multi(dataset, markup, min_l=1, max_l=15, windows=
     
     return dataset
 
-@njit
+@njit(fastmath=True, cache=True, nogil=True)
 def calculate_labels_mean_reversion_v(close_data, lvl_data, volatility_group, quantile_groups_low, quantile_groups_high, markup, min_l, max_l):
     labels = []
     for i in range(len(close_data) - max_l):
@@ -1358,7 +1343,7 @@ def get_labels_mean_reversion_v(dataset, markup, min_l=1, max_l=15, rolling=0.5,
     return dataset.drop(columns=['lvl', 'volatility', 'volatility_group'])
 
 # FILTERING BASED LABELING W/O RESTRICTIONS
-@njit
+@njit(fastmath=True, cache=True, nogil=True)
 def calculate_labels_filter(close, lvl, q):
     labels = np.empty(len(close), dtype=np.float64)
     for i in range(len(close)):
@@ -1436,7 +1421,7 @@ def get_labels_filter(dataset, rolling=200, quantiles=[.45, .55], polyorder=3, d
     # Return the modified DataFrame with the 'lvl' column removed
     return dataset.drop(columns=['lvl']) 
 
-@njit
+@njit(fastmath=True, cache=True, nogil=True)
 def calc_labels_multiple_filters(close, lvls, qs):
     labels = np.empty(len(close), dtype=np.float64)
     for i in range(len(close)):
@@ -1534,7 +1519,7 @@ def get_labels_multiple_filters(dataset, rolling_periods=[200, 400, 600], quanti
     # Return the DataFrame with the new 'labels' column
     return dataset
 
-@njit
+@njit(fastmath=True, cache=True, nogil=True)
 def calc_labels_bidirectional(close, lvl1, lvl2, q1, q2):
     labels = np.empty(len(close), dtype=np.float64)
     for i in range(len(close)):
@@ -1697,7 +1682,7 @@ def sliding_window_clustering(
 
     # ---------------- K-means global -------------------------------
     meta_X_np = dataset.filter(regex="meta_feature").to_numpy(np.float32)
-    global_km = KMeans(n_clusters, n_init="auto", random_state=1).fit(meta_X_np)
+    global_km = KMeans(n_clusters, n_init="auto").fit(meta_X_np)
     global_ct = global_km.cluster_centers_
 
     # Asigna cada centroide local al global vía Hungarian.
@@ -1720,7 +1705,7 @@ def sliding_window_clustering(
     # Procesar todas las ventanas válidas
     for start, end in zip(starts, ends):
         local_data = meta_X_np[start:end]
-        local_km = KMeans(n_clusters, n_init="auto", random_state=1).fit(local_data)
+        local_km = KMeans(n_clusters, n_init="auto").fit(local_data)
 
         mapping = map_centroids(local_km.cluster_centers_)
         lbls = local_km.labels_
@@ -1740,7 +1725,7 @@ def sliding_window_clustering(
     ds_out["clusters"] = clusters
     return ds_out
 
-@njit
+@njit(fastmath=True, cache=True, nogil=True)
 def calculate_labels_filter_one_direction(close, lvl, q, direction):
     labels = np.empty(len(close), dtype=np.float64)
     for i in range(len(close)):
@@ -1815,7 +1800,7 @@ def get_labels_filter_one_direction(dataset, rolling=200, quantiles=[.45, .55], 
     # Return the modified DataFrame with the 'lvl' column removed
     return dataset.drop(columns=['lvl']) 
 
-@njit
+@njit(fastmath=True, cache=True, nogil=True)
 def calculate_labels_trend_one_direction(normalized_trend, threshold, direction):
     labels = np.empty(len(normalized_trend), dtype=np.float64)
     for i in range(len(normalized_trend)):
@@ -1841,78 +1826,3 @@ def get_labels_trend_one_direction(dataset, rolling=50, polyorder=3, threshold=0
     dataset['labels'] = labels
     dataset = dataset.dropna()  # Remove rows with NaN
     return dataset
-
-@njit(fastmath=True, cache=True, nogil=True)
-def calculate_features_manual(data, window_size=20):
-    n = data.size
-    if n < window_size:
-        return np.zeros((1, 10))
-    
-    n_windows = n - window_size + 1
-    features = np.zeros((n_windows, 10))
-    
-    for i in range(n_windows):
-        window = data[i:i+window_size]
-        
-        # 1. Media
-        features[i, 0] = mean_manual(window)
-        
-        # 2. Desviación estándar
-        features[i, 1] = std_manual(window)
-        
-        # 3. MAD (Mean Absolute Deviation)
-        m = mean_manual(window)
-        features[i, 2] = mean_manual(np.abs(window - m))
-        
-        # 4. Rango
-        features[i, 3] = np.max(window) - np.min(window)
-        
-        # 5. Mediana
-        features[i, 4] = np.median(window)
-        
-        # 6. Skewness
-        features[i, 5] = skew_manual(window)
-        
-        # 7. Kurtosis
-        features[i, 6] = kurt_manual(window)
-        
-        # 8. Z-Score
-        features[i, 7] = zscore_manual(window)
-        
-        # 9. Slope
-        features[i, 8] = slope_manual(window)
-        
-        # 10. Hurst Exponent
-        features[i, 9] = hurst_manual(window)
-    
-    return features
-
-@njit(fastmath=True, cache=True, nogil=True)
-def calculate_features_manual_2(data, window_size=20):
-    n = data.size
-    if n < window_size:
-        return np.zeros((1, 5))
-    
-    n_windows = n - window_size + 1
-    features = np.zeros((n_windows, 5))
-    
-    for i in range(n_windows):
-        window = data[i:i+window_size]
-        
-        # 1. Media
-        features[i, 0] = mean_manual(window)
-        
-        # 2. Desviación estándar
-        features[i, 1] = std_manual(window)
-        
-        # 3. MAD (Mean Absolute Deviation)
-        m = mean_manual(window)
-        features[i, 2] = mean_manual(np.abs(window - m))
-        
-        # 4. Rango
-        features[i, 3] = np.max(window) - np.min(window)
-        
-        # 5. Mediana
-        features[i, 4] = np.median(window)
-    
-    return features

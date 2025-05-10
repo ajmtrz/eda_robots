@@ -1,6 +1,10 @@
 import os
 import re
+from sklearn.base import ClassifierMixin
+from sklearn.ensemble import VotingClassifier
 from catboost import CatBoostClassifier
+from xgboost import XGBClassifier
+from lightgbm import LGBMClassifier
 from skl2onnx import convert_sklearn, update_registered_converter
 from skl2onnx.common.shape_calculator import calculate_linear_classifier_output_shapes
 from skl2onnx.common.data_types import FloatTensorType, Int64TensorType
@@ -10,7 +14,27 @@ from catboost.utils import convert_to_onnx_object
 from onnxmltools.convert.xgboost.operator_converters.XGBoost import convert_xgboost
 from onnxmltools.convert import convert_xgboost as convert_xgboost_booster
 from onnxmltools.convert.lightgbm.operator_converters.LightGbm import convert_lightgbm
+    
+# ---------- XGBoost ----------
+class XGBWithEval(XGBClassifier):
+    def __init__(self, *, eval_set=None, **kw):
+        super().__init__(**kw)
+        self.eval_set = eval_set
+    def fit(self, X, y, **kw):
+        if self.eval_set is not None:
+            kw["eval_set"] = self.eval_set
+        return super().fit(X, y, verbose=0, **kw)
 
+# ---------- LightGBM ----------
+class LGBMWithEval(LGBMClassifier):
+    def __init__(self, *, eval_set=None,**kw):
+        super().__init__(**kw)
+        self.eval_set = eval_set
+    def fit(self, X, y, **kw):
+        if self.eval_set is not None:
+            kw["eval_set"] = self.eval_set
+        return super().fit(X, y, **kw)
+    
 # ONNX para Pipeline con Catboost
 def skl2onnx_parser_castboost_classifier(scope, model, inputs, custom_parsers=None):
     options = scope.get_options(model, dict(zipmap=True))
@@ -65,32 +89,38 @@ def export_model_to_ONNX(best_models, **kwargs):
         options={"nocl": [True, False], "zipmap": [True, False]}
     )
     update_registered_converter(
-        XGBClassifier,
+        XGBWithEval,
         'XGBClassifier',
         calculate_linear_classifier_output_shapes,
         convert_xgboost,
         options={'nocl': [True, False], 'zipmap': [True, False]}
     )
     update_registered_converter(
-        LGBMClassifier,
+        LGBMWithEval,
         'LGBMClassifier',
         calculate_linear_classifier_output_shapes,
         convert_lightgbm,
         options={'nocl': [True, False], 'zipmap': [True, False]}
     )
     try:
+        for idx in range(len(models)):
+            for (name, _), est in zip(models[idx].estimators, models[idx].estimators_):
+                if hasattr(est, "get_booster"):
+                    booster = est.get_booster()
+                    if booster.feature_names is not None:
+                        booster.feature_names = [f"f{j}" for j in range(len(booster.feature_names))]
         # Convierte los pipelines completos
         model_main_onnx = convert_sklearn(
             models[0],
-            initial_types=[('input', FloatTensorType([None, len(models[0].feature_names_)]))],
+            initial_types=[('input', FloatTensorType([None, len(models[0].feature_names_in_)]))],
             target_opset={"": 18, "ai.onnx.ml": 2},
-            options={id(models[0].named_steps['ensemble']): {'zipmap': True}}
+            options={id(models[0]): {'zipmap': True}}
         )
         model_meta_onnx = convert_sklearn(
             models[1],
-            initial_types=[('input', FloatTensorType([None, len(models[1].feature_names_)]))],
+            initial_types=[('input', FloatTensorType([None, len(models[1].feature_names_in_)]))],
             target_opset={"": 18, "ai.onnx.ml": 2},
-            options={id(models[1].named_steps['ensemble']): {'zipmap': True}}
+            options={id(models[1]): {'zipmap': True}}
         )
         # Guarda los modelos ONNX
         filename_model = f"dmitrievsky_model_{symbol}_{timeframe}_{direction}_{model_seed}{best_trial}.onnx"
@@ -346,7 +376,8 @@ def export_model_to_ONNX(best_models, **kwargs):
                     }
                 }
                 
-                if(count == 0) return 0.5;
+                if(count == 0 || MathAbs(MathLog(n)) < 1e-10)
+                    return 0.5;
                 return sum_log / count / MathLog(n);
             }
             """,

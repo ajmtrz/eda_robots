@@ -7,16 +7,12 @@ import matplotlib.pyplot as plt
 
 
 @jit(fastmath=True, cache=True)
-def process_data(close, labels, metalabels, forward, backward):
+def process_data(close, labels, metalabels):
     last_deal  = 2          # 2 = flat, 0 = short, 1 = long
     last_price = 0.0
     report, chart = [0.0], [0.0]
-    line_f = line_b = 0
 
     for i in range(len(close)):
-        line_f = len(report) if i <= forward  else line_f
-        line_b = len(report) if i <= backward else line_b
-
         pred, pr, pred_meta = labels[i], close[i], metalabels[i]
 
         # ── abrir posición
@@ -40,22 +36,16 @@ def process_data(close, labels, metalabels, forward, backward):
             chart.append(chart[-1] + (pr - last_price))
             continue
 
-    return np.array(report), np.array(chart), line_f, line_b
+    return np.array(report), np.array(chart)
 
 @jit(fastmath=True, cache=True)
-def process_data_one_direction(close, labels, metalabels,
-                             forward_idx, backward_idx, direction):
+def process_data_one_direction(close, labels, metalabels, direction):
     last_deal = 2           # 2 = flat, 1 = in‑market (única dirección)
     last_price = 0.0
     report, chart = [0.0], [0.0]
-    line_f = line_b = 0
     long_side = (direction == 'buy')
 
     for i in range(len(close)):
-        # Marcar líneas de corte para gráficos
-        line_f = len(report) if i <= forward_idx else line_f
-        line_b = len(report) if i <= backward_idx else line_b
-
         pred, pr, pred_meta = labels[i], close[i], metalabels[i]
 
         # Abrir posición si:
@@ -76,23 +66,19 @@ def process_data_one_direction(close, labels, metalabels,
             chart.append(chart[-1] + profit)
             continue
 
-    return np.array(report), np.array(chart), line_f, line_b
+    return np.array(report), np.array(chart)
 
 # ───────────────────────────────────────────────────────────────────
 # 2)  Wrappers del tester
 # ───────────────────────────────────────────────────────────────────
-def tester(dataset, forward, backward, plot=False):
-    # Ya que el dataset está filtrado entre backward y forward,
-    # obtenemos los índices correspondientes dentro de este dataset filtrado
-    forw = dataset.index.get_indexer([forward], method='nearest')[0]
-    back = dataset.index.get_indexer([backward], method='nearest')[0]
+def tester(dataset, plot=False):
 
     close = dataset['close'].to_numpy()
     lab   = dataset['labels'].to_numpy()
     meta  = dataset['meta_labels'].to_numpy()
 
     # Pasamos los índices relativos al dataset filtrado
-    rpt, ch, lf, lb = process_data(close, lab, meta, forw, back)
+    rpt, ch= process_data(close, lab, meta)
 
     # regresión lineal sobre el equity
     y = rpt.reshape(-1, 1)
@@ -103,8 +89,6 @@ def tester(dataset, forward, backward, plot=False):
     if plot:
         plt.plot(rpt)
         plt.plot(ch)
-        plt.axvline(lf, color='purple', ls=':')
-        plt.axvline(lb, color='red',    ls=':')
         plt.plot(lr.predict(X))
         plt.title(f"R² {lr.score(X, y) * sign:.2f}")
         plt.show()
@@ -184,11 +168,7 @@ def evaluate_report(report: np.ndarray, r2_raw: float) -> float:
     
     return final_score
 
-def tester_one_direction(dataset, forw, back,
-                        direction='buy', plot=False):
-    # Convertir fechas a índices numéricos
-    forward_idx = dataset.index.get_indexer([forw])[0]
-    backward_idx = dataset.index.get_indexer([back])[0]
+def tester_one_direction(dataset, direction='buy', plot=False):
 
     # Extraer datos necesarios
     close = np.ascontiguousarray(dataset['close'].values)
@@ -196,8 +176,8 @@ def tester_one_direction(dataset, forw, back,
     meta = np.ascontiguousarray(dataset['meta_labels'].values)
 
     # Pasamos los índices numéricos en lugar de fechas
-    rpt, ch, lf, lb = process_data_one_direction(
-        close, lab, meta, forward_idx, backward_idx, direction)
+    rpt, ch= process_data_one_direction(
+        close, lab, meta, direction)
     
     # Si no hay suficientes operaciones, devolver valor negativo
     if len(rpt) < 2:
@@ -214,8 +194,6 @@ def tester_one_direction(dataset, forw, back,
     if plot:
         plt.figure(figsize=(12, 6))
         plt.plot(rpt, label='Equity Curve')
-        plt.axvline(lf, color='purple', ls=':', label='Forward Test')
-        plt.axvline(lb, color='red', ls=':', label='Backward Test')
         plt.plot(lr.predict(X), 'g--', alpha=0.7, label='Regression Line')
         plt.title(f"Strategy Performance: R² {r2_raw:.2f}")
         plt.xlabel("Operations")
@@ -234,17 +212,12 @@ def tester_slow(dataset, forward, markup, plot=False):
     last_deal = 2
     last_price = 0.0
     report, chart = [0.0], [0.0]
-    line_f = line_b = 0
-
-    idx_fwd = dataset.index.get_indexer([forward], method='nearest')[0]
 
     close = dataset['close'].to_numpy()
     labels = dataset['labels'].to_numpy()
     metalabels = dataset['meta_labels'].to_numpy()
 
     for i in range(dataset.shape[0]):
-        line_f = len(report) if i <= idx_fwd else line_f
-
         pred, pr, pred_meta = labels[i], close[i], metalabels[i]
 
         if last_deal == 2 and pred_meta == 1:
@@ -276,8 +249,6 @@ def tester_slow(dataset, forward, markup, plot=False):
     if plot:
         plt.plot(report)
         plt.plot(chart)
-        plt.axvline(x=line_f, color='purple', ls=':', lw=1, label='OOS')
-        plt.axvline(x=line_b, color='red', ls=':', lw=1, label='OOS2')
         plt.plot(lr.predict(X))
         plt.title("Strategy performance R^2 " + str(format(lr.score(X, y) * l, ".2f")))
         plt.xlabel("the number of trades")
@@ -297,14 +268,14 @@ def test_model(dataset: pd.DataFrame,
 
     ext_dataset = dataset.copy()
     mask = (ext_dataset.index > backward) & (ext_dataset.index < forward)
-    ext_dataset = ext_dataset[mask]
+    ext_dataset = ext_dataset[mask].reset_index(drop=True)
     X = ext_dataset.iloc[:, 1:]
 
     ext_dataset['labels']      = result[0].predict_proba(X)[:, 1]
     ext_dataset['meta_labels'] = result[1].predict_proba(X)[:, 1]
     ext_dataset[['labels', 'meta_labels']] = ext_dataset[['labels', 'meta_labels']].gt(0.5).astype(float)
 
-    return tester(ext_dataset, forward, backward, plot=plt)
+    return tester(ext_dataset, plot=plt)
 
 
 def test_model_one_direction(dataset: pd.DataFrame,
@@ -315,12 +286,9 @@ def test_model_one_direction(dataset: pd.DataFrame,
                            plt=False):
     # Copiar dataset para no modificar el original
     ext_dataset = dataset.copy()
-    
-    # Filtrado directo por fechas usando el índice
     mask = (ext_dataset.index > backward) & (ext_dataset.index < forward)
-    ext_dataset = ext_dataset[mask]
-    #print(f"Testing period: {ext_dataset.index[0]} to {ext_dataset.index[-1]}")
-    
+    ext_dataset = ext_dataset[mask]#.reset_index(drop=True)
+
     # Extraer características regulares y meta-features
     X_main = ext_dataset.loc[:, ext_dataset.columns.str.contains('_feature') & ~ext_dataset.columns.str.contains('_meta_feature')]
     X_meta = ext_dataset.loc[:, ext_dataset.columns.str.contains('_meta_feature')]
@@ -332,4 +300,4 @@ def test_model_one_direction(dataset: pd.DataFrame,
     # Convertir probabilidades a señales binarias
     ext_dataset[['labels', 'meta_labels']] = ext_dataset[['labels', 'meta_labels']].gt(0.5).astype(float)
 
-    return tester_one_direction(ext_dataset, forward, backward, direction, plot=plt)
+    return tester_one_direction(ext_dataset, direction, plot=plt)

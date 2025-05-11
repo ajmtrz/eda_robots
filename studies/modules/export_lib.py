@@ -1,7 +1,5 @@
 import os
 import re
-from sklearn.base import ClassifierMixin
-from sklearn.ensemble import VotingClassifier
 from catboost import CatBoostClassifier
 from xgboost import XGBClassifier
 from lightgbm import LGBMClassifier
@@ -14,6 +12,26 @@ from catboost.utils import convert_to_onnx_object
 from onnxmltools.convert.xgboost.operator_converters.XGBoost import convert_xgboost
 from onnxmltools.convert import convert_xgboost as convert_xgboost_booster
 from onnxmltools.convert.lightgbm.operator_converters.LightGbm import convert_lightgbm
+
+# ---------- Catboost ----------
+class CatWithEval(CatBoostClassifier):
+    def __init__(self, **kw):
+        self._eval_set = kw.pop('eval_set', None)
+        super().__init__(**kw)
+    def fit(self, X, y, **kw):
+        if self._eval_set is not None:
+            kw["eval_set"] = self._eval_set
+            kw["use_best_model"] = True
+        return super().fit(X, y, **kw)
+    def get_params(self, deep=True):
+        params = super().get_params(deep)
+        if self._eval_set is not None:
+            params['eval_set'] = self._eval_set
+        return params
+    def set_params(self, **params):
+        if 'eval_set' in params:
+            self._eval_set = params.pop('eval_set')
+        return super().set_params(**params)
     
 # ---------- XGBoost ----------
 class XGBWithEval(XGBClassifier):
@@ -81,7 +99,7 @@ def export_model_to_ONNX(best_models, **kwargs):
 
     # Register the custom converter
     update_registered_converter(
-        CatBoostClassifier,
+        CatWithEval,
         "CatBoostClassifier",
         calculate_linear_classifier_output_shapes,
         skl2onnx_convert_catboost,

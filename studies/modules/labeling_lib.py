@@ -1678,7 +1678,7 @@ def sliding_window_clustering(
     # ---------------- pre-cálculo ----------------------------------
     step           = step or window_size
     n_rows         = len(dataset)
-    votes          = np.zeros((n_rows, n_clusters + 1), dtype=np.int32)  # +1 para el cluster 0 inválido
+    votes          = np.zeros((n_rows, n_clusters + 1), dtype=np.int32)
 
     # ---------------- K-means global -------------------------------
     meta_X_np = dataset.filter(regex="meta_feature").to_numpy(np.float32)

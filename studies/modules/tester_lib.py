@@ -44,7 +44,7 @@ def process_data(close, labels, metalabels, forward, backward):
 
 @jit(fastmath=True, cache=True)
 def process_data_one_direction(close, labels, metalabels,
-                             forward, backward, direction):
+                             forward_idx, backward_idx, direction):
     last_deal = 2           # 2 = flat, 1 = in‑market (única dirección)
     last_price = 0.0
     report, chart = [0.0], [0.0]
@@ -53,8 +53,8 @@ def process_data_one_direction(close, labels, metalabels,
 
     for i in range(len(close)):
         # Marcar líneas de corte para gráficos
-        line_f = len(report) if i <= forward else line_f
-        line_b = len(report) if i <= backward else line_b
+        line_f = len(report) if i <= forward_idx else line_f
+        line_b = len(report) if i <= backward_idx else line_b
 
         pred, pr, pred_meta = labels[i], close[i], metalabels[i]
 
@@ -82,18 +82,10 @@ def process_data_one_direction(close, labels, metalabels,
 # 2)  Wrappers del tester
 # ───────────────────────────────────────────────────────────────────
 def tester(dataset, forward, backward, plot=False):
-    # print(f"\n[DEBUG] Testing with dates:")
-    # print(f"Forward date: {forward}")
-    # print(f"Backward date: {backward}")
-    # print(f"Dataset range: {dataset.index[0]} to {dataset.index[-1]}")
-    
     # Ya que el dataset está filtrado entre backward y forward,
     # obtenemos los índices correspondientes dentro de este dataset filtrado
     forw = dataset.index.get_indexer([forward], method='nearest')[0]
     back = dataset.index.get_indexer([backward], method='nearest')[0]
-    
-    # print(f"Nearest forward index: {forw} (date: {dataset.index[forw]})")
-    # print(f"Nearest backward index: {back} (date: {dataset.index[back]})")
 
     close = dataset['close'].to_numpy()
     lab   = dataset['labels'].to_numpy()
@@ -192,29 +184,20 @@ def evaluate_report(report: np.ndarray, r2_raw: float) -> float:
     
     return final_score
 
-def tester_one_direction(dataset, forward, backward,
+def tester_one_direction(dataset, forw, back,
                         direction='buy', plot=False):
-    # print(f"\n[DEBUG] Testing one direction ({direction}) with dates:")
-    # print(f"Forward date: {forward}")
-    # print(f"Backward date: {backward}")
-    # print(f"Dataset range: {dataset.index[0]} to {dataset.index[-1]}")
-    
-    # Ya que el dataset está filtrado entre backward y forward,
-    # obtenemos los índices correspondientes dentro de este dataset filtrado
-    forw = dataset.index.get_indexer([forward], method='nearest')[0]
-    back = dataset.index.get_indexer([backward], method='nearest')[0]
-    
-    # print(f"Nearest forward index: {forw} (date: {dataset.index[forw]})")
-    # print(f"Nearest backward index: {back} (date: {dataset.index[back]})")
+    # Convertir fechas a índices numéricos
+    forward_idx = dataset.index.get_indexer([forw])[0]
+    backward_idx = dataset.index.get_indexer([back])[0]
 
     # Extraer datos necesarios
     close = np.ascontiguousarray(dataset['close'].values)
     lab = np.ascontiguousarray(dataset['labels'].values)
     meta = np.ascontiguousarray(dataset['meta_labels'].values)
 
-    # Pasamos los índices relativos al dataset filtrado
+    # Pasamos los índices numéricos en lugar de fechas
     rpt, ch, lf, lb = process_data_one_direction(
-        close, lab, meta, forw, back, direction)
+        close, lab, meta, forward_idx, backward_idx, direction)
     
     # Si no hay suficientes operaciones, devolver valor negativo
     if len(rpt) < 2:
@@ -313,6 +296,8 @@ def test_model(dataset: pd.DataFrame,
                plt=False):
 
     ext_dataset = dataset.copy()
+    mask = (ext_dataset.index > backward) & (ext_dataset.index < forward)
+    ext_dataset = ext_dataset[mask]
     X = ext_dataset.iloc[:, 1:]
 
     ext_dataset['labels']      = result[0].predict_proba(X)[:, 1]
@@ -330,6 +315,11 @@ def test_model_one_direction(dataset: pd.DataFrame,
                            plt=False):
     # Copiar dataset para no modificar el original
     ext_dataset = dataset.copy()
+    
+    # Filtrado directo por fechas usando el índice
+    mask = (ext_dataset.index > backward) & (ext_dataset.index < forward)
+    ext_dataset = ext_dataset[mask]
+    #print(f"Testing period: {ext_dataset.index[0]} to {ext_dataset.index[-1]}")
     
     # Extraer características regulares y meta-features
     X_main = ext_dataset.loc[:, ext_dataset.columns.str.contains('_feature') & ~ext_dataset.columns.str.contains('_meta_feature')]

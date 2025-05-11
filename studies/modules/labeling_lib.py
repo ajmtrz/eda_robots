@@ -1673,54 +1673,58 @@ def get_labels_one_direction(dataset, markup, min_val=1, max_val=15, direction='
 def sliding_window_clustering(
         dataset: pd.DataFrame,
         n_clusters: int,
-        window_size: int,
-        step: int | None = None) -> pd.DataFrame:
-    # ---------------- pre-cálculo ----------------------------------
-    step           = step or window_size
-    n_rows         = len(dataset)
-    votes          = np.zeros((n_rows, n_clusters + 1), dtype=np.int32)
-
-    # ---------------- K-means global -------------------------------
+        step: int | None = None,
+        atr_period: int = 14) -> pd.DataFrame:
+    # Ajuste dinámico del tamaño de ventana según ATR local
+    min_window = n_clusters
+    max_window = 200
+    # Calcular ATR local
+    close_data = np.ascontiguousarray(dataset['close'].values)
+    high_data = np.ascontiguousarray(dataset['high'].values)
+    low_data = np.ascontiguousarray(dataset['low'].values)
+    atr = calculate_atr_simple(high_data, low_data, close_data, period=atr_period)
+    # Normalizar ATR local entre min_window y max_window
+    atr_min = np.nanmin(atr)
+    atr_max = np.nanmax(atr)
+    atr_norm = (atr - atr_min) / (atr_max - atr_min + 1e-9)
+    dynamic_windows = (min_window + atr_norm * (max_window - min_window)).astype(int)
+    # Pre-cálculo
+    n_rows = len(dataset)
+    votes = np.zeros((n_rows, n_clusters + 1), dtype=np.int32)
+    # K-means global
     meta_X_np = dataset.filter(regex="meta_feature").to_numpy(np.float32)
     global_km = KMeans(n_clusters, n_init="auto").fit(meta_X_np)
     global_ct = global_km.cluster_centers_
-
-    # Asigna cada centroide local al global vía Hungarian.
     def map_centroids(local_ct: np.ndarray) -> dict[int, int]:
         cost = np.linalg.norm(local_ct[:, None] - global_ct, axis=2)
         row, col = linear_sum_assignment(cost)
-        # Mapear a clusters 1-n_clusters (0 reservado para inválidos)
         return {int(r): int(c) + 1 for r, c in zip(row, col)}
-
-    # ---------------- ventana deslizante ---------------------------
-    # Pre-calcular todos los índices de inicio y fin de ventana
-    starts = np.arange(0, n_rows - window_size + 1, step)
-    ends = starts + window_size
-    
-    # Filtrar ventanas que son demasiado pequeñas
-    valid_windows = ends - starts >= n_clusters
-    starts = starts[valid_windows]
-    ends = ends[valid_windows]
-
+    # Sliding windows dinámicas
+    starts = []
+    ends = []
+    i = 0
+    while i + min_window <= n_rows:
+        win_size = dynamic_windows[i]
+        win_size = int(np.clip(win_size, min_window, max_window))
+        if i + win_size > n_rows:
+            break
+        starts.append(i)
+        ends.append(i + win_size)
+        # Step optimizado o por defecto igual al tamaño de la ventana
+        step_val = step if step is not None else win_size
+        i += step_val
     # Procesar todas las ventanas válidas
     for start, end in zip(starts, ends):
         local_data = meta_X_np[start:end]
+        if len(local_data) < n_clusters:
+            continue
         local_km = KMeans(n_clusters, n_init="auto").fit(local_data)
-
         mapping = map_centroids(local_km.cluster_centers_)
         lbls = local_km.labels_
-        
-        # Vectorizar la asignación de votos
         indices = np.arange(start, end)
-        # Usar 0 como valor por defecto para labels no mapeados (inválidos)
         mapped_ids = np.array([mapping.get(lab, 0) for lab in lbls])
         votes[indices, mapped_ids] += 1
-
-    # ---------------- asignar clusters ------------------------------
-    # El cluster 0 es para inválidos, los clusters válidos empiezan en 1
     clusters = votes.argmax(axis=1).astype(np.int32)
-
-    # ---------------- devolver DataFrame ---------------------------
     ds_out = dataset.copy()
     ds_out["clusters"] = clusters
     return ds_out

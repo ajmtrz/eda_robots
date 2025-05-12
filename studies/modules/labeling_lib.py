@@ -1674,20 +1674,29 @@ def sliding_window_clustering(
         dataset: pd.DataFrame,
         n_clusters: int,
         step: int | None = None,
-        atr_period: int = 14) -> pd.DataFrame:
+        atr_period: int = 14,
+        base_window: int = 100) -> pd.DataFrame:
     # Ajuste dinámico del tamaño de ventana según ATR local
     min_window = n_clusters
-    max_window = 200
+    
     # Calcular ATR local
     close_data = np.ascontiguousarray(dataset['close'].values)
     high_data = np.ascontiguousarray(dataset['high'].values)
     low_data = np.ascontiguousarray(dataset['low'].values)
     atr = calculate_atr_simple(high_data, low_data, close_data, period=atr_period)
-    # Normalizar ATR local entre min_window y max_window
+    
+    # Normalizar ATR local entre 0 y 1 para que solo aumente la ventana
     atr_min = np.nanmin(atr)
     atr_max = np.nanmax(atr)
     atr_norm = (atr - atr_min) / (atr_max - atr_min + 1e-9)
-    dynamic_windows = (min_window + atr_norm * (max_window - min_window)).astype(int)
+    
+    # Calcular ventanas dinámicas desde min_window hasta base_window
+    dynamic_windows = np.clip(
+        (min_window + atr_norm * (base_window - min_window)).astype(int),
+        min_window,
+        base_window
+    )
+    
     # Pre-cálculo
     n_rows = len(dataset)
     votes = np.zeros((n_rows, n_clusters + 1), dtype=np.int32)
@@ -1705,7 +1714,7 @@ def sliding_window_clustering(
     i = 0
     while i + min_window <= n_rows:
         win_size = dynamic_windows[i]
-        win_size = int(np.clip(win_size, min_window, max_window))
+        win_size = int(np.clip(win_size, min_window, base_window))
         if i + win_size > n_rows:
             break
         starts.append(i)

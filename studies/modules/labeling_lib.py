@@ -1644,17 +1644,19 @@ def calculate_labels_one_direction(high, low, close, markup, min_val, max_val, d
         diffs = diffs.reshape(-1, 1)                                 # → columna
 
     # Calcular markup dinámico basado en ATR
-    atr_slice = atr[:-max_val].reshape(-1, 1)  # Reshape para broadcasting
+    atr_slice = atr[:-max_val].reshape(-1, 1)
     dyn_mk = markup * atr_slice
     # Calcular hits
     hits = (diffs > dyn_mk) if direction=="buy" else (diffs < -dyn_mk)
-    # Implementar any(axis=1) manualmente
     result = np.zeros(len(hits), dtype=np.float64)
     for i in range(len(hits)):
+        all_ok = True
         for j in range(hits.shape[1]):
-            if hits[i, j]:
-                result[i] = 1.0
+            if not hits[i, j]:
+                all_ok = False
                 break
+        if all_ok:
+            result[i] = 1.0
     return result
 
 def get_labels_one_direction(dataset, markup, min_val=1, max_val=15, direction='buy', atr_period=14, deterministic=True) -> pd.DataFrame:

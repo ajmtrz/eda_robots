@@ -15,22 +15,25 @@ from onnxmltools.convert.lightgbm.operator_converters.LightGbm import convert_li
 
 # ---------- Catboost ----------
 class CatWithEval(CatBoostClassifier):
-    def __init__(self, **kw):
-        self._eval_set = kw.pop('eval_set', None)
+    def __init__(self, eval_set=None, **kw):
         super().__init__(**kw)
+        self.eval_set = eval_set
+        
     def fit(self, X, y, **kw):
-        if self._eval_set is not None:
-            kw["eval_set"] = self._eval_set
+        if self.eval_set is not None:
+            kw["eval_set"] = self.eval_set
             kw["use_best_model"] = True
         return super().fit(X, y, **kw)
+        
     def get_params(self, deep=True):
         params = super().get_params(deep)
-        if self._eval_set is not None:
-            params['eval_set'] = self._eval_set
+        if self.eval_set is not None:
+            params['eval_set'] = self.eval_set
         return params
+        
     def set_params(self, **params):
         if 'eval_set' in params:
-            self._eval_set = params.pop('eval_set')
+            self.eval_set = params.pop('eval_set')
         return super().set_params(**params)
     
 # ---------- XGBoost ----------

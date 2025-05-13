@@ -1600,25 +1600,29 @@ def get_labels_filter_bidirectional(dataset, rolling1=200, rolling2=200, quantil
 
 @njit(fastmath=True, cache=True, nogil=True)
 def calculate_atr_simple(high, low, close, period=14):
-    n = len(close)
-    tr = np.zeros(n)
-    atr = np.zeros(n)
-    # Calcular True Range
+    n   = len(close)
+    tr  = np.empty(n)
+    atr = np.empty(n)
+    tr[0] = high[0] - low[0]
     for i in range(1, n):
         hl = high[i] - low[i]
         hc = abs(high[i] - close[i-1])
-        lc = abs(low[i] - close[i-1])
+        lc = abs(low[i]  - close[i-1])
         tr[i] = max(hl, hc, lc)
-    # Calcular ATR simple (media móvil del TR)
+    # promedio acumulado para i < period-1
+    cumsum = tr[0]
+    atr[0] = tr[0]
+    for i in range(1, min(period, n)):
+        cumsum += tr[i]
+        atr[i] = cumsum / (i+1)
+    if n <= period-1:
+        return atr
+    # primera media “oficial” (índice period-1)
+    cumsum += tr[period-1]
+    atr[period-1] = cumsum / period
+    # Wilder a partir de aquí
     for i in range(period, n):
-        atr[i] = np.mean(tr[i - period + 1:i + 1])
-    # Calcular media global de ATR (ignorando ceros)
-    non_zero_atr = atr[atr > 0]
-    global_mean = np.mean(non_zero_atr) if len(non_zero_atr) > 0 else 0.0
-    # Reemplazar ceros por la media global
-    for i in range(len(atr)):
-        if atr[i] == 0.0:
-            atr[i] = global_mean
+        atr[i] = (atr[i-1]*(period-1) + tr[i]) / period
     return atr
 
 # ONE DIRECTION LABELING

@@ -1695,6 +1695,7 @@ def sliding_window_clustering(
     
     # Calcular ventanas dinámicas desde min_window hasta base_window
     dynamic_windows = np.clip(
+        # (min_window + (1 - atr_norm) * (base_window - min_window)).astype(int),
         (min_window + atr_norm * (base_window - min_window)).astype(int),
         min_window,
         base_window

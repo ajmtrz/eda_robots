@@ -5,6 +5,7 @@ from datetime import datetime
 from sklearn.linear_model import LinearRegression
 import matplotlib.pyplot as plt
 from typing import Callable, Literal
+from joblib import Parallel, delayed
 
 
 @jit(fastmath=True, cache=True)
@@ -332,16 +333,26 @@ def _equity_from_returns(resampled_returns: np.ndarray) -> np.ndarray:
     return np.insert(resampled_returns.cumsum(), 0, 0.0)
 
 
+@njit(fastmath=True, cache=True)
 def _signed_r2(equity: np.ndarray) -> float:
-    """
-    R² de la recta de regresión con signo de la pendiente.
-    Evita que el MC quede 'dopado' si se invierte la dirección.
-    """
-    y = equity.reshape(-1, 1)
-    X = np.arange(len(equity)).reshape(-1, 1)
-    lr = LinearRegression().fit(X, y)
-    sign = 1 if lr.coef_[0][0] >= 0 else -1
-    return lr.score(X, y) * sign
+    n = equity.size
+    x_mean = (n - 1) * 0.5
+    y_mean = equity.mean()
+    cov = varx = 0.0
+    for i in range(n):
+        dx = i - x_mean
+        cov += dx * (equity[i] - y_mean)
+        varx += dx * dx
+    slope = cov / varx if varx else 0.0
+    sse = sst = 0.0
+    for i in range(n):
+        pred = y_mean + slope * (i - x_mean)
+        diff = equity[i] - pred
+        sse += diff * diff
+        diff2 = equity[i] - y_mean
+        sst += diff2 * diff2
+    r2 = 1.0 - sse / sst if sst else 0.0
+    return r2 if slope >= 0 else -r2
 
 def _make_noisy_inputs(close: np.ndarray,
                        labels: np.ndarray,
@@ -407,7 +418,7 @@ def monte_carlo_full(close: np.ndarray,
     #r2_orig = _signed_r2(report_orig)
 
     scores   = np.empty(n_sim, dtype=np.float64)
-    qntls    = np.zeros((n_sim, report_orig.size), dtype=np.float64)  # opcional para análisis
+    #qntls    = np.zeros((n_sim, report_orig.size), dtype=np.float64)  # opcional para análisis
 
     for i in range(n_sim):
         # 1) añadir ruido si procede --------------------------------
@@ -429,7 +440,7 @@ def monte_carlo_full(close: np.ndarray,
         else:
             rpt_sim = rpt_noise
 
-        qntls[i, : len(rpt_sim)] = rpt_sim  # guarda la trayectoria
+        #qntls[i, : len(rpt_sim)] = rpt_sim  # guarda la trayectoria
 
         # 3) evaluar ------------------------------------------------
         r2_sim = _signed_r2(rpt_sim)
@@ -439,7 +450,7 @@ def monte_carlo_full(close: np.ndarray,
         "scores": scores,
         "p_positive": np.mean(scores > 0),
         "quantiles": np.quantile(scores, [0.05, 0.50, 0.95]),
-        "paths": qntls   # por si quieres graficar abanico de curvas
+        #"paths": qntls   # por si quieres graficar abanico de curvas
     }
 
 # ────────────────────────────────────────────────────────────────
@@ -538,3 +549,77 @@ def robust_oos_score_one_direction(dataset: pd.DataFrame,
         agg       = agg
     )
     return score
+
+def walk_forward_score_one_direction(
+        dataset: pd.DataFrame,
+        models: list,                       # [model_main, model_meta]
+        backward: datetime,
+        forward:  datetime,
+        *,
+        direction: str = "buy",
+        train_window: int = 180,
+        test_window:  int = 30,
+        step_window:  int | None = None,
+        # --- MC params ---
+        n_sim: int = 400,
+        mc_mode: str = "both",
+        block_size: int | None = 20,
+        price_noise_pct: float = 0.001,
+        prob_noise_sd: float = 0.03,
+        agg: str = "q05",                  # p/ cada bloque
+        final_agg: str = "median",         # sobre todos los bloques
+) -> float:
+
+    # 0) recorte global -------------------------------------------------
+    ext_ds = dataset.loc[(dataset.index >= backward) & (dataset.index <= forward)].copy()
+    if ext_ds.empty:
+        return -1.0
+
+    # 1) defaults -------------------------------------------------------
+    if step_window is None:
+        step_window = test_window
+    ext_ds = ext_ds.sort_index()
+
+    idx     = np.arange(len(ext_ds))
+    scores  = []
+
+    # 2) sliding loop ---------------------------------------------------
+    start_train = 0
+    while True:
+        end_train = start_train + train_window
+        end_test  = end_train  + test_window
+        if end_test > len(ext_ds):
+            break
+
+        # límites locales
+        bwd_blk = ext_ds.index[end_train - 1]
+        fwd_blk = ext_ds.index[end_test  - 1]
+
+        score = robust_oos_score_one_direction(
+            ext_ds,
+            models,
+            forward   = fwd_blk,
+            backward  = bwd_blk,
+            direction = direction,
+            n_sim      = n_sim,
+            mc_mode    = mc_mode,
+            block_size = block_size,
+            price_noise_pct = price_noise_pct,
+            prob_noise_sd   = prob_noise_sd,
+            agg       = agg,
+        )
+        scores.append(score)
+        start_train += step_window
+
+    if not scores:
+        return -1.0
+
+    # 3) agregador final -----------------------------------------------
+    if final_agg == "median":
+        return float(np.median(scores))
+    elif final_agg == "q05":
+        return float(np.quantile(scores, 0.05))
+    elif final_agg == "mean":
+        return float(np.mean(scores))
+    else:
+        raise ValueError("final_agg must be 'median', 'q05' or 'mean'")

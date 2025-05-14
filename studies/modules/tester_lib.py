@@ -4,6 +4,7 @@ import pandas as pd
 from datetime import datetime
 from sklearn.linear_model import LinearRegression
 import matplotlib.pyplot as plt
+from typing import Callable, Literal
 
 
 @jit(fastmath=True, cache=True)
@@ -301,3 +302,239 @@ def test_model_one_direction(dataset: pd.DataFrame,
     ext_dataset[['labels', 'meta_labels']] = ext_dataset[['labels', 'meta_labels']].gt(0.5).astype(float)
 
     return tester_one_direction(ext_dataset, direction, plot=plt)
+
+
+
+# ───────────────────────────────────────────────────────────────────
+# Monte-Carlo robustness utilities
+# ───────────────────────────────────────────────────────────────────
+
+# ---------- helpers ------------------------------------------------
+def _bootstrap_returns(returns: np.ndarray,
+                       rng: np.random.Generator,
+                       block_size: int | None = None) -> np.ndarray:
+    """
+    Resamplea los *returns* preservando (opcionalmente) dependencia local
+    mediante bootstrapping por bloques.
+    """
+    n = returns.shape[0]
+    if block_size is None or block_size <= 1 or block_size > n:
+        idx = rng.integers(0, n, size=n)
+        return returns[idx]
+    # ---- block bootstrap  ----------------------------------------
+    starts = rng.integers(0, n - block_size + 1, size=int(np.ceil(n / block_size)) + 1)
+    resampled = np.concatenate([returns[s : s + block_size] for s in starts])
+    return resampled[:n]
+
+
+def _equity_from_returns(resampled_returns: np.ndarray) -> np.ndarray:
+    """Crea curva de equity partiendo de 0."""
+    return np.insert(resampled_returns.cumsum(), 0, 0.0)
+
+
+def _signed_r2(equity: np.ndarray) -> float:
+    """
+    R² de la recta de regresión con signo de la pendiente.
+    Evita que el MC quede 'dopado' si se invierte la dirección.
+    """
+    y = equity.reshape(-1, 1)
+    X = np.arange(len(equity)).reshape(-1, 1)
+    lr = LinearRegression().fit(X, y)
+    sign = 1 if lr.coef_[0][0] >= 0 else -1
+    return lr.score(X, y) * sign
+
+def _make_noisy_inputs(close: np.ndarray,
+                       labels: np.ndarray,
+                       meta: np.ndarray,
+                       rng: np.random.Generator,
+                       price_noise_pct: float,
+                       prob_noise_sd: float) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """
+    Aplica ruido gaussiano:
+      • precios  → desviación porcentual 'price_noise_pct'
+      • probs    → desviación absoluta 'prob_noise_sd' y vuelves a recortar [0,1]
+    """
+    # ------ precios ------------------------------------------------
+    if price_noise_pct > 0:
+        close_noisy = close * (1 + rng.normal(0.0, price_noise_pct, size=close.size))
+    else:
+        close_noisy = close
+
+    # ------ labels / meta_labels -----------------------------------
+    if prob_noise_sd > 0:
+        labels_noisy = np.clip(labels + rng.normal(0.0, prob_noise_sd, size=labels.size), 0.0, 1.0)
+        meta_noisy   = np.clip(meta   + rng.normal(0.0, prob_noise_sd, size=meta.size),   0.0, 1.0)
+    else:
+        labels_noisy, meta_noisy = labels, meta
+
+    # binarizamos tras añadir ruido
+    labels_noisy = (labels_noisy > 0.5).astype(np.float64)
+    meta_noisy   = (meta_noisy   > 0.5).astype(np.float64)
+    return close_noisy, labels_noisy, meta_noisy
+
+# -----------------------------------------------------------
+# interfaz pública
+# -----------------------------------------------------------
+def monte_carlo_full(close: np.ndarray,
+                     labels: np.ndarray,
+                     meta: np.ndarray,
+                     process_fn: Callable[[np.ndarray, np.ndarray, np.ndarray], tuple[np.ndarray, np.ndarray]],
+                     *,
+                     n_sim: int = 1_000,
+                     mode: Literal["bootstrap", "noise", "both"] = "bootstrap",
+                     block_size: int | None = None,
+                     price_noise_pct: float = 0.001,   # 0.1 %
+                     prob_noise_sd: float = 0.05,      # σ de la N(0, ...)
+                     scorer=evaluate_report,
+                     direction: str | None = None      # solo si usas process_data_one_direction
+                     ) -> dict:
+    """
+    Lanza Monte-Carlo con tres variantes:
+
+        mode="bootstrap"  → re-muestra de retornos (clásico)
+        mode="noise"      → ejecuta la estrategia con precios / señales ruidosos
+        mode="both"       → primero añade ruido, luego bootstrapping de retornos
+
+    Parameters
+    ----------
+    • process_fn : función que genere (report, chart).  
+      Ej.:  process_data o  lambda c,l,m: process_data_one_direction(c,l,m,direction)
+    """
+    rng = np.random.default_rng()
+
+    # ---------- curva original ------------------------------------
+    report_orig, _ = process_fn(close, labels, meta)   # para baseline
+    #r2_orig = _signed_r2(report_orig)
+
+    scores   = np.empty(n_sim, dtype=np.float64)
+    qntls    = np.zeros((n_sim, report_orig.size), dtype=np.float64)  # opcional para análisis
+
+    for i in range(n_sim):
+        # 1) añadir ruido si procede --------------------------------
+        if mode in ("noise", "both"):
+            c_n, l_n, m_n = _make_noisy_inputs(
+                close, labels, meta, rng,
+                price_noise_pct=price_noise_pct,
+                prob_noise_sd=prob_noise_sd
+            )
+            rpt_noise, _ = process_fn(c_n, l_n, m_n)
+        else:
+            rpt_noise = report_orig
+
+        # 2) bootstrapping de retornos si procede -------------------
+        if mode in ("bootstrap", "both"):
+            returns = np.diff(rpt_noise)
+            resampled = _bootstrap_returns(returns, rng, block_size)
+            rpt_sim = _equity_from_returns(resampled)
+        else:
+            rpt_sim = rpt_noise
+
+        qntls[i, : len(rpt_sim)] = rpt_sim  # guarda la trayectoria
+
+        # 3) evaluar ------------------------------------------------
+        r2_sim = _signed_r2(rpt_sim)
+        scores[i] = scorer(rpt_sim, r2_sim)
+
+    return {
+        "scores": scores,
+        "p_positive": np.mean(scores > 0),
+        "quantiles": np.quantile(scores, [0.05, 0.50, 0.95]),
+        "paths": qntls   # por si quieres graficar abanico de curvas
+    }
+
+# ────────────────────────────────────────────────────────────────
+# Optuna-friendly robust scorer
+# ────────────────────────────────────────────────────────────────
+def robust_score_with_mc(close: np.ndarray,
+                         labels: np.ndarray,
+                         meta: np.ndarray,
+                         *,
+                         process_fn,
+                         mc_mode: str = "both",
+                         n_sim: int = 400,
+                         block_size: int | None = 20,
+                         price_noise_pct: float = 0.001,
+                         prob_noise_sd: float = 0.03,
+                         scorer=evaluate_report,
+                         direction: str | None = None,
+                         agg: str = "q05") -> float:
+    """
+    Devuelve un solo número robusto para Optuna.
+
+    Parameters
+    ----------
+    agg :  cómo agregamos la distribución de Monte Carlo
+           · "q05"  → cuantil 5 %
+           · "median" → cuantil 50 %
+           · "p_pos"  → prob(score>0)
+    """
+    mc = monte_carlo_full(
+        close, labels, meta,
+        process_fn=process_fn,
+        mode=mc_mode,
+        n_sim=n_sim,
+        block_size=block_size,
+        price_noise_pct=price_noise_pct,
+        prob_noise_sd=prob_noise_sd,
+        scorer=scorer,
+        direction=direction
+    )
+    if agg == "q05":
+        return float(mc["quantiles"][0])
+    elif agg == "median":
+        return float(mc["quantiles"][1])
+    elif agg == "p_pos":
+        return float(mc["p_positive"])
+    else:
+        raise ValueError("agg must be 'q05', 'median' or 'p_pos'")
+    
+# ────────────────────────────────────────────────────────────────
+# Wrapper Optuna-friendly para sistemas one-direction
+# ────────────────────────────────────────────────────────────────
+def robust_oos_score_one_direction(dataset: pd.DataFrame,
+                                   models: list,               # [model_main, model_meta]
+                                   forward: datetime,
+                                   backward: datetime,
+                                   *,
+                                   direction: str = 'buy',
+                                   # --- parámetros MC ------------
+                                   n_sim: int = 400,
+                                   mc_mode: str = "both",       # "bootstrap" | "noise" | "both"
+                                   block_size: int | None = 20,
+                                   price_noise_pct: float = 0.001,
+                                   prob_noise_sd: float = 0.03,
+                                   agg: str = "q05",            # "q05" | "median" | "p_pos"
+                                   ) -> float:
+    """
+    Devuelve un score robusto (float) listo para Optuna.
+    """
+    # 1) filtra ventana OOS ---------------------------------------
+    ext_ds = dataset.loc[(dataset.index > backward) & (dataset.index < forward)].copy()
+
+    # 2) predicciones --------------------------------------------
+    X_main = ext_ds.loc[:, ext_ds.columns.str.contains('_feature') & ~ext_ds.columns.str.contains('_meta_feature')]
+    X_meta = ext_ds.loc[:, ext_ds.columns.str.contains('_meta_feature')]
+
+    labels_prob = models[0].predict_proba(X_main)[:, 1]
+    meta_prob   = models[1].predict_proba(X_meta)[:, 1]
+
+    labels_bin = (labels_prob > 0.5).astype(np.float64)
+    meta_bin   = (meta_prob   > 0.5).astype(np.float64)
+
+    close_arr  = ext_ds['close'].to_numpy(copy=False)
+
+    # 3) función de proceso long-only o short-only ----------------
+    process_fn = lambda c, l, m: process_data_one_direction(c, l, m, direction=direction)
+
+    # 4) Monte Carlo robusto -------------------------------------
+    score = robust_score_with_mc(
+        close_arr, labels_bin, meta_bin,
+        process_fn = process_fn,
+        mc_mode    = mc_mode,
+        n_sim      = n_sim,
+        block_size = block_size,
+        price_noise_pct = price_noise_pct,
+        prob_noise_sd   = prob_noise_sd,
+        agg       = agg
+    )
+    return score

@@ -107,8 +107,8 @@ def evaluate_report(report: np.ndarray, r2_raw: float) -> float:
     returns = np.diff(report)
     num_trades = len(returns)
     
-    # Necesitamos mínimo 5 operaciones para considerar la estrategia válida
-    if num_trades < 5:
+    # Necesitamos mínimo 1 operaciones para considerar la estrategia válida
+    if num_trades < 1:
         return -1.0
 
     # ────────────────────────

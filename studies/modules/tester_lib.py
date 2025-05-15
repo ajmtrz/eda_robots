@@ -5,7 +5,6 @@ from datetime import datetime
 from sklearn.linear_model import LinearRegression
 import matplotlib.pyplot as plt
 from typing import Callable, Literal
-from joblib import Parallel, delayed
 
 
 @jit(fastmath=True, cache=True)
@@ -206,7 +205,7 @@ def tester_one_direction(dataset, direction='buy', plot=False):
 # ─────────────────────────────────────────────
 # tester_slow  (mantenerlo o borrarlo)
 # ─────────────────────────────────────────────
-def tester_slow(dataset, forward, markup, plot=False):
+def tester_slow(dataset, markup, plot=False):
     last_deal = 2
     last_price = 0.0
     report, chart = [0.0], [0.0]
@@ -260,8 +259,8 @@ def tester_slow(dataset, forward, markup, plot=False):
 # ─────────────────────────────────────────────
 def test_model(dataset: pd.DataFrame,
                result: list,
-               forward: datetime,
                backward: datetime,
+               forward: datetime,
                plt=False):
 
     ext_dataset = dataset.copy()
@@ -278,8 +277,8 @@ def test_model(dataset: pd.DataFrame,
 
 def test_model_one_direction(dataset: pd.DataFrame,
                            result: list,
-                           forward: datetime,
                            backward: datetime,
+                           forward: datetime,
                            direction: str = 'buy',
                            plt=False):
     # Copiar dataset para no modificar el original
@@ -307,26 +306,54 @@ def test_model_one_direction(dataset: pd.DataFrame,
 # ───────────────────────────────────────────────────────────────────
 
 # ---------- helpers ------------------------------------------------
+@njit(fastmath=True, cache=True)
 def _bootstrap_returns(returns: np.ndarray,
-                       rng: np.random.Generator,
                        block_size: int | None = None) -> np.ndarray:
     """
     Resamplea los *returns* preservando (opcionalmente) dependencia local
     mediante bootstrapping por bloques.
     """
     n = returns.shape[0]
+    resampled = np.empty_like(returns)
+    
     if block_size is None or block_size <= 1 or block_size > n:
-        idx = rng.integers(0, n, size=n)
-        return returns[idx]
+        # Bootstrap simple
+        for i in range(n):
+            resampled[i] = returns[np.random.randint(0, n)]
+        return resampled
+        
     # ---- block bootstrap  ----------------------------------------
-    starts = rng.integers(0, n - block_size + 1, size=int(np.ceil(n / block_size)) + 1)
-    resampled = np.concatenate([returns[s : s + block_size] for s in starts])
-    return resampled[:n]
+    # Calcular número exacto de bloques necesarios
+    n_blocks = (n + block_size - 1) // block_size  # división entera hacia arriba
+    
+    # Llenar el array resampled bloque por bloque
+    pos = 0
+    while pos < n:
+        # Seleccionar inicio del bloque
+        start = np.random.randint(0, n - block_size + 1)
+        
+        # Calcular cuántos elementos podemos copiar
+        remaining = n - pos
+        to_copy = min(block_size, remaining)
+        
+        # Copiar el bloque
+        resampled[pos:pos + to_copy] = returns[start:start + to_copy]
+        pos += to_copy
+    
+    return resampled
 
 
+@njit(fastmath=True, cache=True)
 def _equity_from_returns(resampled_returns: np.ndarray) -> np.ndarray:
     """Crea curva de equity partiendo de 0."""
-    return np.insert(resampled_returns.cumsum(), 0, 0.0)
+    n = resampled_returns.size
+    equity = np.empty(n + 1, dtype=np.float64)
+    equity[0] = 0.0
+    cumsum = 0.0
+    for i in range(n):
+        cumsum += resampled_returns[i]
+        equity[i + 1] = cumsum
+    return equity
 
 
 @njit(fastmath=True, cache=True)
@@ -350,33 +377,46 @@ def _signed_r2(equity: np.ndarray) -> float:
     r2 = 1.0 - sse / sst if sst else 0.0
     return r2 if slope >= 0 else -r2
 
+@njit(fastmath=True, cache=True)
 def _make_noisy_inputs(close: np.ndarray,
                        labels: np.ndarray,
                        meta: np.ndarray,
-                       rng: np.random.Generator,
-                       price_noise_pct: float,
-                       prob_noise_sd: float) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+                       price_noise_range: tuple[float, float] = (0.0005, 0.002),
+                       prob_noise_range: tuple[float, float] = (0.02, 0.05),
+                       correlation: float = 0.3) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """
-    Aplica ruido gaussiano:
-      • precios  → desviación porcentual 'price_noise_pct'
-      • probs    → desviación absoluta 'prob_noise_sd' y vuelves a recortar [0,1]
+    Aplica ruido gaussiano con rangos aleatorios y correlación:
+      • precios  → rango porcentual 'price_noise_range'
+      • probs    → rango absoluto 'prob_noise_range' y vuelves a recortar [0,1]
     """
+    n = close.size
     # ------ precios ------------------------------------------------
-    if price_noise_pct > 0:
-        close_noisy = close * (1 + rng.normal(0.0, price_noise_pct, size=close.size))
+    price_noise = np.random.uniform(price_noise_range[0], price_noise_range[1])
+    close_noisy = np.empty_like(close)
+    if price_noise > 0:
+        for i in range(n):
+            close_noisy[i] = close[i] * (1 + np.random.normal(0.0, price_noise))
     else:
-        close_noisy = close
+        close_noisy[:] = close
 
     # ------ labels / meta_labels -----------------------------------
-    if prob_noise_sd > 0:
-        labels_noisy = np.clip(labels + rng.normal(0.0, prob_noise_sd, size=labels.size), 0.0, 1.0)
-        meta_noisy   = np.clip(meta   + rng.normal(0.0, prob_noise_sd, size=meta.size),   0.0, 1.0)
+    prob_noise = price_noise * correlation + np.random.uniform(prob_noise_range[0], prob_noise_range[1]) * (1 - correlation)
+    labels_noisy = np.empty_like(labels)
+    meta_noisy = np.empty_like(meta)
+    
+    if prob_noise > 0:
+        for i in range(n):
+            labels_noisy[i] = min(1.0, max(0.0, labels[i] + np.random.normal(0.0, prob_noise)))
+            meta_noisy[i] = min(1.0, max(0.0, meta[i] + np.random.normal(0.0, prob_noise)))
     else:
-        labels_noisy, meta_noisy = labels, meta
+        labels_noisy[:] = labels
+        meta_noisy[:] = meta
 
     # binarizamos tras añadir ruido
-    labels_noisy = (labels_noisy > 0.5).astype(np.float64)
-    meta_noisy   = (meta_noisy   > 0.5).astype(np.float64)
+    for i in range(n):
+        labels_noisy[i] = 1.0 if labels_noisy[i] > 0.5 else 0.0
+        meta_noisy[i] = 1.0 if meta_noisy[i] > 0.5 else 0.0
+        
     return close_noisy, labels_noisy, meta_noisy
 
 # -----------------------------------------------------------
@@ -390,10 +430,11 @@ def monte_carlo_full(close: np.ndarray,
                      n_sim: int = 1_000,
                      mode: Literal["bootstrap", "noise", "both"] = "bootstrap",
                      block_size: int | None = None,
-                     price_noise_pct: float = 0.001,   # 0.1 %
-                     prob_noise_sd: float = 0.05,      # σ de la N(0, ...)
+                     price_noise_range: tuple[float, float] = (0.0005, 0.002),
+                     prob_noise_range: tuple[float, float] = (0.02, 0.05),
+                     correlation: float = 0.3,
                      scorer=evaluate_report,
-                     direction: str | None = None      # solo si usas process_data_one_direction
+                     direction: str | None = None
                      ) -> dict:
     """
     Lanza Monte-Carlo con tres variantes:
@@ -407,22 +448,19 @@ def monte_carlo_full(close: np.ndarray,
     • process_fn : función que genere (report, chart).  
       Ej.:  process_data o  lambda c,l,m: process_data_one_direction(c,l,m,direction)
     """
-    rng = np.random.default_rng()
-
     # ---------- curva original ------------------------------------
     report_orig, _ = process_fn(close, labels, meta)   # para baseline
-    #r2_orig = _signed_r2(report_orig)
 
     scores   = np.empty(n_sim, dtype=np.float64)
-    #qntls    = np.zeros((n_sim, report_orig.size), dtype=np.float64)  # opcional para análisis
 
     for i in range(n_sim):
         # 1) añadir ruido si procede --------------------------------
         if mode in ("noise", "both"):
             c_n, l_n, m_n = _make_noisy_inputs(
-                close, labels, meta, rng,
-                price_noise_pct=price_noise_pct,
-                prob_noise_sd=prob_noise_sd
+                close, labels, meta,
+                price_noise_range=price_noise_range,
+                prob_noise_range=prob_noise_range,
+                correlation=correlation
             )
             rpt_noise, _ = process_fn(c_n, l_n, m_n)
         else:
@@ -431,12 +469,13 @@ def monte_carlo_full(close: np.ndarray,
         # 2) bootstrapping de retornos si procede -------------------
         if mode in ("bootstrap", "both"):
             returns = np.diff(rpt_noise)
-            resampled = _bootstrap_returns(returns, rng, block_size)
+            if returns.size == 0:
+                scores[i] = -1.0
+                continue
+            resampled = _bootstrap_returns(returns, block_size)
             rpt_sim = _equity_from_returns(resampled)
         else:
             rpt_sim = rpt_noise
-
-        #qntls[i, : len(rpt_sim)] = rpt_sim  # guarda la trayectoria
 
         # 3) evaluar ------------------------------------------------
         r2_sim = _signed_r2(rpt_sim)
@@ -446,7 +485,6 @@ def monte_carlo_full(close: np.ndarray,
         "scores": scores,
         "p_positive": np.mean(scores > 0),
         "quantiles": np.quantile(scores, [0.05, 0.50, 0.95]),
-        #"paths": qntls   # por si quieres graficar abanico de curvas
     }
 
 # ────────────────────────────────────────────────────────────────
@@ -460,8 +498,9 @@ def robust_score_with_mc(close: np.ndarray,
                          mc_mode: str = "both",
                          n_sim: int = 400,
                          block_size: int | None = 20,
-                         price_noise_pct: float = 0.001,
-                         prob_noise_sd: float = 0.03,
+                         price_noise_range: tuple[float, float] = (0.0005, 0.002),
+                         prob_noise_range: tuple[float, float] = (0.02, 0.05),
+                         correlation: float = 0.3,
                          scorer=evaluate_report,
                          direction: str | None = None,
                          agg: str = "q05") -> float:
@@ -481,8 +520,9 @@ def robust_score_with_mc(close: np.ndarray,
         mode=mc_mode,
         n_sim=n_sim,
         block_size=block_size,
-        price_noise_pct=price_noise_pct,
-        prob_noise_sd=prob_noise_sd,
+        price_noise_range=price_noise_range,
+        prob_noise_range=prob_noise_range,
+        correlation=correlation,
         scorer=scorer,
         direction=direction
     )
@@ -499,29 +539,34 @@ def robust_score_with_mc(close: np.ndarray,
 # Wrapper Optuna-friendly para sistemas one-direction
 # ────────────────────────────────────────────────────────────────
 def robust_oos_score_one_direction(dataset: pd.DataFrame,
-                                   models: list,               # [model_main, model_meta]
-                                   forward: datetime,
-                                   backward: datetime,
+                                   models: list,
+                                   backward: datetime | None = None,
+                                   forward: datetime | None = None,
                                    *,
                                    direction: str = 'buy',
                                    # --- parámetros MC ------------
                                    n_sim: int = 400,
                                    mc_mode: str = "both",       # "bootstrap" | "noise" | "both"
                                    block_size: int | None = 20,
-                                   price_noise_pct: float = 0.001,
-                                   prob_noise_sd: float = 0.03,
+                                   price_noise_range: tuple[float, float] = (0.0005, 0.002),
+                                   prob_noise_range: tuple[float, float] = (0.02, 0.05),
+                                   correlation: float = 0.3,
                                    agg: str = "q05",            # "q05" | "median" | "p_pos"
                                    ) -> float:
     """
     Devuelve un score robusto (float) listo para Optuna.
     """
     # 1) filtra ventana OOS ---------------------------------------
-    ext_ds = dataset.loc[(dataset.index > backward) & (dataset.index < forward)].copy()
+    if backward is None or forward is None:
+        ext_ds = dataset.copy()
+    else:
+        ext_ds = dataset.loc[(dataset.index >= backward) & (dataset.index <= forward)].copy()
 
     # 2) predicciones --------------------------------------------
     X_main = ext_ds.loc[:, ext_ds.columns.str.contains('_feature') & ~ext_ds.columns.str.contains('_meta_feature')]
     X_meta = ext_ds.loc[:, ext_ds.columns.str.contains('_meta_feature')]
-
+    if X_main.empty or X_meta.empty:
+        return -1.0
     labels_prob = models[0].predict_proba(X_main)[:, 1]
     meta_prob   = models[1].predict_proba(X_meta)[:, 1]
 
@@ -540,17 +585,18 @@ def robust_oos_score_one_direction(dataset: pd.DataFrame,
         mc_mode    = mc_mode,
         n_sim      = n_sim,
         block_size = block_size,
-        price_noise_pct = price_noise_pct,
-        prob_noise_sd   = prob_noise_sd,
+        price_noise_range = price_noise_range,
+        prob_noise_range = prob_noise_range,
+        correlation = correlation,
         agg       = agg
     )
     return score
 
 def walk_forward_score_one_direction(
         dataset: pd.DataFrame,
-        models: list,                       # [model_main, model_meta]
-        backward: datetime,
-        forward:  datetime,
+        models: list,
+        backward: datetime | None = None,
+        forward:  datetime | None = None,
         *,
         direction: str = "buy",
         train_window: int = 180,
@@ -560,14 +606,18 @@ def walk_forward_score_one_direction(
         n_sim: int = 400,
         mc_mode: str = "both",
         block_size: int | None = 20,
-        price_noise_pct: float = 0.001,
-        prob_noise_sd: float = 0.03,
+        price_noise_range: tuple[float, float] = (0.0005, 0.002),
+        prob_noise_range: tuple[float, float] = (0.02, 0.05),
+        correlation: float = 0.3,
         agg: str = "q05",                  # p/ cada bloque
         final_agg: str = "median",         # sobre todos los bloques
 ) -> float:
 
     # 0) recorte global -------------------------------------------------
-    ext_ds = dataset.loc[(dataset.index >= backward) & (dataset.index <= forward)].copy()
+    if backward is None or forward is None:
+        ext_ds = dataset.copy()
+    else:
+        ext_ds = dataset.loc[(dataset.index >= backward) & (dataset.index <= forward)].copy()
     if ext_ds.empty:
         return -1.0
 
@@ -588,20 +638,21 @@ def walk_forward_score_one_direction(
             break
 
         # límites locales
-        bwd_blk = ext_ds.index[end_train - 1]
+        bwd_blk = ext_ds.index[end_train]
         fwd_blk = ext_ds.index[end_test  - 1]
 
         score = robust_oos_score_one_direction(
             ext_ds,
             models,
-            forward   = fwd_blk,
             backward  = bwd_blk,
+            forward   = fwd_blk,
             direction = direction,
             n_sim      = n_sim,
             mc_mode    = mc_mode,
             block_size = block_size,
-            price_noise_pct = price_noise_pct,
-            prob_noise_sd   = prob_noise_sd,
+            price_noise_range = price_noise_range,
+            prob_noise_range = prob_noise_range,
+            correlation = correlation,
             agg       = agg,
         )
         scores.append(score)
@@ -609,7 +660,7 @@ def walk_forward_score_one_direction(
 
     if not scores:
         return -1.0
-
+    scores = [s for s in scores if s > -1.0]
     # 3) agregador final -----------------------------------------------
     if final_agg == "median":
         return float(np.median(scores))

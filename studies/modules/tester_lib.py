@@ -308,7 +308,7 @@ def test_model_one_direction(dataset: pd.DataFrame,
 # ---------- helpers ------------------------------------------------
 @njit(fastmath=True, cache=True)
 def _bootstrap_returns(returns: np.ndarray,
-                       block_size: int | None = None) -> np.ndarray:
+                       block_size: int) -> np.ndarray:
     """
     Resamplea los *returns* preservando (opcionalmente) dependencia local
     mediante bootstrapping por bloques.
@@ -316,7 +316,7 @@ def _bootstrap_returns(returns: np.ndarray,
     n = returns.shape[0]
     resampled = np.empty_like(returns)
     
-    if block_size is None or block_size <= 1 or block_size > n:
+    if block_size <= 1 or block_size > n:
         # Bootstrap simple
         for i in range(n):
             resampled[i] = returns[np.random.randint(0, n)]
@@ -442,16 +442,13 @@ def monte_carlo_full(close: np.ndarray,
         mode="bootstrap"  → re-muestra de retornos (clásico)
         mode="noise"      → ejecuta la estrategia con precios / señales ruidosos
         mode="both"       → primero añade ruido, luego bootstrapping de retornos
-
-    Parameters
-    ----------
-    • process_fn : función que genere (report, chart).  
-      Ej.:  process_data o  lambda c,l,m: process_data_one_direction(c,l,m,direction)
     """
     # ---------- curva original ------------------------------------
     report_orig, _ = process_fn(close, labels, meta)   # para baseline
+    if len(report_orig) < 2:
+        return {"scores": np.array([-1.0]), "p_positive": 0.0, "quantiles": np.array([-1.0, -1.0, -1.0])}
 
-    scores   = np.empty(n_sim, dtype=np.float64)
+    scores = np.empty(n_sim, dtype=np.float64)
 
     for i in range(n_sim):
         # 1) añadir ruido si procede --------------------------------
@@ -472,7 +469,7 @@ def monte_carlo_full(close: np.ndarray,
             if returns.size == 0:
                 scores[i] = -1.0
                 continue
-            resampled = _bootstrap_returns(returns, block_size)
+            resampled = _bootstrap_returns(returns, block_size or 0)
             rpt_sim = _equity_from_returns(resampled)
         else:
             rpt_sim = rpt_noise
@@ -481,10 +478,11 @@ def monte_carlo_full(close: np.ndarray,
         r2_sim = _signed_r2(rpt_sim)
         scores[i] = scorer(rpt_sim, r2_sim)
 
+    valid = scores[scores > -1.0]
     return {
         "scores": scores,
         "p_positive": np.mean(scores > 0),
-        "quantiles": np.quantile(scores, [0.05, 0.50, 0.95]),
+        "quantiles": np.quantile(valid, [0.05, 0.5, 0.95]) if valid.size else [-1,-1,-1],
     }
 
 # ────────────────────────────────────────────────────────────────
@@ -626,41 +624,62 @@ def walk_forward_score_one_direction(
         step_window = test_window
     ext_ds = ext_ds.sort_index()
 
-    idx     = np.arange(len(ext_ds))
-    scores  = []
+    # Pre-calcular índices de características
+    feature_cols = ext_ds.columns.str.contains('_feature')
+    meta_feature_cols = ext_ds.columns.str.contains('_meta_feature')
+    main_feature_cols = feature_cols & ~meta_feature_cols
+
+    # Pre-calcular arrays base
+    close_arr = ext_ds['close'].to_numpy(copy=False)
+    X_main = ext_ds.loc[:, main_feature_cols]
+    X_meta = ext_ds.loc[:, meta_feature_cols]
+
+    # Pre-calcular predicciones base
+    labels_prob = models[0].predict_proba(X_main)[:, 1]
+    meta_prob = models[1].predict_proba(X_meta)[:, 1]
+    labels_bin = (labels_prob > 0.5).astype(np.float64)
+    meta_bin = (meta_prob > 0.5).astype(np.float64)
 
     # 2) sliding loop ---------------------------------------------------
+    scores = []
     start_train = 0
+    
     while True:
         end_train = start_train + train_window
         end_test  = end_train  + test_window
         if end_test > len(ext_ds):
             break
 
-        # límites locales
-        bwd_blk = ext_ds.index[end_train]
-        fwd_blk = ext_ds.index[end_test  - 1]
+        # Extraer ventana de test
+        test_mask = slice(end_train, end_test)
+        test_close = close_arr[test_mask]
+        test_labels = labels_bin[test_mask]
+        test_meta = meta_bin[test_mask]
 
-        score = robust_oos_score_one_direction(
-            ext_ds,
-            models,
-            backward  = bwd_blk,
-            forward   = fwd_blk,
-            direction = direction,
-            n_sim      = n_sim,
-            mc_mode    = mc_mode,
-            block_size = block_size,
-            price_noise_range = price_noise_range,
-            prob_noise_range = prob_noise_range,
-            correlation = correlation,
-            agg       = agg,
+        # Procesar ventana
+        process_fn = lambda c, l, m: process_data_one_direction(c, l, m, direction=direction)
+        
+        score = robust_score_with_mc(
+            test_close, test_labels, test_meta,
+            process_fn=process_fn,
+            mc_mode=mc_mode,
+            n_sim=n_sim,
+            block_size=block_size,
+            price_noise_range=price_noise_range,
+            prob_noise_range=prob_noise_range,
+            correlation=correlation,
+            agg=agg
         )
+        
         scores.append(score)
         start_train += step_window
 
     if not scores:
         return -1.0
     scores = [s for s in scores if s > -1.0]
+    if not scores:
+        return -1.0
+
     # 3) agregador final -----------------------------------------------
     if final_agg == "median":
         return float(np.median(scores))

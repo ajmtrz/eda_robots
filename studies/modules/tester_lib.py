@@ -130,7 +130,7 @@ def evaluate_report(report: np.ndarray, r2_raw: float) -> float:
     
     # Calcular return-to-drawdown ratio
     total_return = equity_curve[-1] - equity_curve[0]
-    return_dd_ratio = total_return / max_dd if max_dd > 0 else 0.0
+    return_dd_ratio = total_return / max(max_dd, 1e-6)
 
     # ────────────────────────
     # PUNTAJE COMPUESTO BASE
@@ -395,7 +395,7 @@ def _make_noisy_inputs(close: np.ndarray,
     close_noisy = np.empty_like(close)
     if price_noise > 0:
         for i in range(n):
-            close_noisy[i] = close[i] * (1 + np.random.normal(0.0, price_noise))
+            close_noisy[i] = close[i] * (1 + np.random.laplace(0.0, price_noise))
     else:
         close_noisy[:] = close
 
@@ -478,7 +478,7 @@ def monte_carlo_full(close: np.ndarray,
         r2_sim = _signed_r2(rpt_sim)
         scores[i] = scorer(rpt_sim, r2_sim)
 
-    valid = scores[scores > -1.0]
+    valid = scores[scores > 0.0]
     return {
         "scores": scores,
         "p_positive": np.mean(scores > 0),
@@ -561,8 +561,16 @@ def robust_oos_score_one_direction(dataset: pd.DataFrame,
         ext_ds = dataset.loc[(dataset.index >= backward) & (dataset.index <= forward)].copy()
 
     # 2) predicciones --------------------------------------------
-    X_main = ext_ds.loc[:, ext_ds.columns.str.contains('_feature') & ~ext_ds.columns.str.contains('_meta_feature')]
-    X_meta = ext_ds.loc[:, ext_ds.columns.str.contains('_meta_feature')]
+    # Pre-calcular índices de características
+    feature_cols = ext_ds.columns.str.contains('_feature')
+    meta_feature_cols = ext_ds.columns.str.contains('_meta_feature')
+    main_feature_cols = feature_cols & ~meta_feature_cols
+
+    # Pre-calcular arrays base
+    close_arr = ext_ds['close'].to_numpy(copy=False)
+    X_main = ext_ds.loc[:, main_feature_cols]
+    X_meta = ext_ds.loc[:, meta_feature_cols]
+
     if X_main.empty or X_meta.empty:
         return -1.0
     labels_prob = models[0].predict_proba(X_main)[:, 1]
@@ -570,8 +578,6 @@ def robust_oos_score_one_direction(dataset: pd.DataFrame,
 
     labels_bin = (labels_prob > 0.5).astype(np.float64)
     meta_bin   = (meta_prob   > 0.5).astype(np.float64)
-
-    close_arr  = ext_ds['close'].to_numpy(copy=False)
 
     # 3) función de proceso long-only o short-only ----------------
     process_fn = lambda c, l, m: process_data_one_direction(c, l, m, direction=direction)
@@ -683,7 +689,7 @@ def walk_forward_score_one_direction(
 
     if not scores:
         return -1.0
-    scores = [s for s in scores if s > -1.0]
+    scores = [s for s in scores if s > 0.0]
     if not scores:
         return -1.0
 

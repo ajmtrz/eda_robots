@@ -1628,9 +1628,13 @@ def calculate_atr_simple(high, low, close, period=14):
 # ONE DIRECTION LABELING
 @njit(fastmath=True, cache=True, nogil=True)
 def calculate_labels_one_direction(high, low, close, markup, min_val, max_val, direction, atr_period=14, deterministic=True):
+    # Verificar que hay suficientes datos
+    n = len(close)
+    if n <= max_val:
+        return np.zeros(0, dtype=np.float64)
+    
     # Calcular ATR
     atr = calculate_atr_simple(high, low, close, period=atr_period)
-    n = len(close)
     
     if deterministic:
         # --- exactamente igual que antes ---
@@ -1678,9 +1682,10 @@ def sliding_window_clustering(
         n_clusters: int,
         step: int | None = None,
         atr_period: int = 14,
-        base_window: int = 100) -> pd.DataFrame:
+        k: int = 3) -> pd.DataFrame:
     # Ajuste dinámico del tamaño de ventana según ATR local
     min_window = n_clusters
+    base_window = min(n_clusters * k, int(len(dataset) * 0.05))
     
     # Calcular ATR local
     close_data = np.ascontiguousarray(dataset['close'].values)

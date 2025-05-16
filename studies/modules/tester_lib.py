@@ -597,8 +597,8 @@ def walk_forward_score_one_direction(
         forward:  datetime | None = None,
         *,
         direction: str = "buy",
-        train_window: int = 180,
-        test_window:  int = 30,
+        train_window: int | None = None,  # Will be set based on dataset size
+        test_window:  int | None = None,  # Will be set based on dataset size
         step_window:  int | None = None,
         # --- MC params ---
         n_sim: int = 400,
@@ -618,12 +618,19 @@ def walk_forward_score_one_direction(
         ext_ds = dataset.loc[(dataset.index >= backward) & (dataset.index <= forward)].copy()
     if ext_ds.empty:
         return -1.0
-
-    # 1) defaults -------------------------------------------------------
-    if step_window is None:
-        step_window = test_window
     ext_ds = ext_ds.sort_index()
 
+    # 1) defaults -------------------------------------------------------
+    n = len(ext_ds)
+    if train_window is None:
+        # Añadir ±10% de variación aleatoria al tamaño de la ventana de entrenamiento
+        train_window = int(0.05 * n * (0.9 + 0.2 * np.random.random()))
+    if test_window is None:
+        # Añadir ±10% de variación aleatoria al tamaño de la ventana de test
+        test_window = int(0.01 * n * (0.9 + 0.2 * np.random.random()))
+    if step_window is None:
+        step_window = test_window
+    
     # Pre-calcular índices de características
     feature_cols = ext_ds.columns.str.contains('_feature')
     meta_feature_cols = ext_ds.columns.str.contains('_meta_feature')

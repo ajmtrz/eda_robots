@@ -549,8 +549,7 @@ def robust_oos_score_one_direction(dataset: pd.DataFrame,
                                    price_noise_range: tuple[float, float] = (0.0005, 0.002),
                                    prob_noise_range: tuple[float, float] = (0.02, 0.05),
                                    correlation: float = 0.3,
-                                   agg: str = "q05",            # "q05" | "median" | "p_pos"
-                                   ) -> float:
+                                   agg: str = "q05") -> float:
     """
     Devuelve un score robusto (float) listo para Optuna.
     """
@@ -603,8 +602,8 @@ def walk_forward_score_one_direction(
         forward:  datetime | None = None,
         *,
         direction: str = "buy",
-        train_window: int | None = None,  # Will be set based on dataset size
-        test_window:  int | None = None,  # Will be set based on dataset size
+        train_window: int | None = None,
+        test_window:  int | None = None,
         step_window:  int | None = None,
         # --- MC params ---
         n_sim: int = 400,
@@ -613,8 +612,8 @@ def walk_forward_score_one_direction(
         price_noise_range: tuple[float, float] = (0.0005, 0.002),
         prob_noise_range: tuple[float, float] = (0.02, 0.05),
         correlation: float = 0.3,
-        agg: str = "q05",                  # p/ cada bloque
-        final_agg: str = "median",         # sobre todos los bloques
+        agg: str = "q05",
+        final_agg: str = "median",
 ) -> float:
 
     # 0) recorte global -------------------------------------------------
@@ -629,10 +628,8 @@ def walk_forward_score_one_direction(
     # 1) defaults -------------------------------------------------------
     n = len(ext_ds)
     if train_window is None:
-        # Añadir ±10% de variación aleatoria al tamaño de la ventana de entrenamiento
         train_window = int(0.05 * n * (0.9 + 0.2 * np.random.random()))
     if test_window is None:
-        # Añadir ±10% de variación aleatoria al tamaño de la ventana de test
         test_window = int(0.01 * n * (0.9 + 0.2 * np.random.random()))
     if step_window is None:
         step_window = test_window
@@ -641,17 +638,6 @@ def walk_forward_score_one_direction(
     feature_cols = ext_ds.columns.str.contains('_feature')
     meta_feature_cols = ext_ds.columns.str.contains('_meta_feature')
     main_feature_cols = feature_cols & ~meta_feature_cols
-
-    # Pre-calcular arrays base
-    close_arr = ext_ds['close'].to_numpy(copy=False)
-    X_main = ext_ds.loc[:, main_feature_cols]
-    X_meta = ext_ds.loc[:, meta_feature_cols]
-
-    # Pre-calcular predicciones base
-    labels_prob = models[0].predict_proba(X_main)[:, 1]
-    meta_prob = models[1].predict_proba(X_meta)[:, 1]
-    labels_bin = (labels_prob > 0.5).astype(np.float64)
-    meta_bin = (meta_prob > 0.5).astype(np.float64)
 
     # 2) sliding loop ---------------------------------------------------
     scores = []
@@ -663,28 +649,56 @@ def walk_forward_score_one_direction(
         if end_test > len(ext_ds):
             break
 
-        # Extraer ventana de test
+        # Extraer ventanas de train y test
+        train_mask = slice(start_train, end_train)
         test_mask = slice(end_train, end_test)
-        test_close = close_arr[test_mask]
-        test_labels = labels_bin[test_mask]
-        test_meta = meta_bin[test_mask]
+        
+        # Datos de entrenamiento
+        train_ds = ext_ds.iloc[train_mask]
+        X_train_main = train_ds.loc[:, main_feature_cols]
+        X_train_meta = train_ds.loc[:, meta_feature_cols]
+        y_train = train_ds['labels'].astype('int16')
+        y_train_meta = train_ds['clusters'].astype('int16')
 
-        # Procesar ventana
-        process_fn = lambda c, l, m: process_data_one_direction(c, l, m, direction=direction)
-        
-        score = robust_score_with_mc(
-            test_close, test_labels, test_meta,
-            process_fn=process_fn,
-            mc_mode=mc_mode,
-            n_sim=n_sim,
-            block_size=block_size,
-            price_noise_range=price_noise_range,
-            prob_noise_range=prob_noise_range,
-            correlation=correlation,
-            agg=agg
-        )
-        
-        scores.append(score)
+        # Datos de test
+        test_ds = ext_ds.iloc[test_mask]
+        test_close = test_ds['close'].to_numpy()
+        X_test_main = test_ds.loc[:, main_feature_cols]
+        X_test_meta = test_ds.loc[:, meta_feature_cols]
+
+        # Reentrenar modelos en la ventana de train
+        try:
+            # Reentrenar modelo principal
+            models[0].fit(X_train_main, y_train)
+            # Reentrenar meta modelo
+            models[1].fit(X_train_meta, y_train_meta)
+
+            # Predecir en ventana de test
+            test_labels_prob = models[0].predict_proba(X_test_main)[:, 1]
+            test_meta_prob = models[1].predict_proba(X_test_meta)[:, 1]
+            test_labels_bin = (test_labels_prob > 0.5).astype(np.float64)
+            test_meta_bin = (test_meta_prob > 0.5).astype(np.float64)
+
+            # Procesar ventana
+            process_fn = lambda c, l, m: process_data_one_direction(c, l, m, direction=direction)
+            
+            score = robust_score_with_mc(
+                test_close, test_labels_bin, test_meta_bin,
+                process_fn=process_fn,
+                mc_mode=mc_mode,
+                n_sim=n_sim,
+                block_size=block_size,
+                price_noise_range=price_noise_range,
+                prob_noise_range=prob_noise_range,
+                correlation=correlation,
+                agg=agg
+            )
+            
+            scores.append(score)
+        except Exception as e:
+            print(f"Error en ventana {start_train}-{end_test}: {str(e)}")
+            continue
+
         start_train += step_window
 
     if not scores:

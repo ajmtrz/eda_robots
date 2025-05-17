@@ -2,7 +2,6 @@ import os
 import re
 from catboost import CatBoostClassifier
 from xgboost import XGBClassifier
-from lightgbm import LGBMClassifier
 from skl2onnx import convert_sklearn, update_registered_converter
 from skl2onnx.common.shape_calculator import calculate_linear_classifier_output_shapes
 from skl2onnx.common.data_types import FloatTensorType, Int64TensorType
@@ -11,7 +10,6 @@ from onnx.helper import get_attribute_value
 from catboost.utils import convert_to_onnx_object
 from onnxmltools.convert.xgboost.operator_converters.XGBoost import convert_xgboost
 from onnxmltools.convert import convert_xgboost as convert_xgboost_booster
-from onnxmltools.convert.lightgbm.operator_converters.LightGbm import convert_lightgbm
 
 # ---------- Catboost ----------
 class CatWithEval(CatBoostClassifier):
@@ -52,16 +50,6 @@ class XGBWithEval(XGBClassifier):
         if self.eval_set is not None:
             kw["eval_set"] = self.eval_set
         return super().fit(X, y, verbose=0, **kw)
-
-# ---------- LightGBM ----------
-class LGBMWithEval(LGBMClassifier):
-    def __init__(self, *, eval_set=None,**kw):
-        super().__init__(**kw)
-        self.eval_set = eval_set
-    def fit(self, X, y, **kw):
-        if self.eval_set is not None:
-            kw["eval_set"] = self.eval_set
-        return super().fit(X, y, **kw)
     
 # ONNX para Pipeline con Catboost
 def skl2onnx_parser_castboost_classifier(scope, model, inputs, custom_parsers=None):
@@ -123,13 +111,7 @@ def export_model_to_ONNX(best_models, **kwargs):
         convert_xgboost,
         options={'nocl': [True, False], 'zipmap': [True, False]}
     )
-    update_registered_converter(
-        LGBMWithEval,
-        'LGBMClassifier',
-        calculate_linear_classifier_output_shapes,
-        convert_lightgbm,
-        options={'nocl': [True, False], 'zipmap': [True, False]}
-    )
+
     try:
         for idx in range(len(models)):
             for (name, _), est in zip(models[idx].estimators, models[idx].estimators_):

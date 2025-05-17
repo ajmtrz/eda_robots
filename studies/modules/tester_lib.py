@@ -1,4 +1,4 @@
-from numba import jit, njit
+from numba import jit, njit, prange
 import numpy as np
 import pandas as pd
 from datetime import datetime
@@ -377,26 +377,6 @@ def _signed_r2(equity: np.ndarray) -> float:
     return r2 if slope >= 0 else -r2
 
 @njit(fastmath=True, cache=True)
-def _make_noisy_features(X: np.ndarray, noise_level: float) -> np.ndarray:
-    """Añade ruido gaussiano a las features basado en su desviación estándar."""
-    X_noisy = X.copy()
-    n, m = X.shape
-    stds = np.empty(m, dtype=X.dtype)
-    for j in range(m):
-        mean = 0.0
-        for i in range(n):
-            mean += X[i, j]
-        mean /= n
-        var = 0.0
-        for i in range(n):
-            var += (X[i, j] - mean) ** 2
-        stds[j] = np.sqrt(var / n)
-    for j in range(m):
-        for i in range(n):
-            X_noisy[i, j] += np.random.normal(0.0, noise_level * stds[j])
-    return X_noisy
-
-@njit(fastmath=True, cache=True)
 def _make_noisy_signals(close: np.ndarray,
                        labels: np.ndarray,
                        meta: np.ndarray,
@@ -434,6 +414,38 @@ def _make_noisy_signals(close: np.ndarray,
 
     return close_noisy, labels_noisy, meta_noisy
 
+@njit(parallel=True, fastmath=True, cache=True)
+def _simulate_batch(close, l_all, m_all, block_size, direction):
+    n_sim, n = l_all.shape
+    scores = np.full(n_sim, -1.0)
+    for i in prange(n_sim):                      # ← paralelo
+        c_n, l_n, m_n = _make_noisy_signals(close, l_all[i], m_all[i])
+        rpt, _ = process_data_one_direction(c_n, l_n, m_n, direction)
+        if rpt.size < 2:
+            continue
+        ret = np.diff(rpt)
+        if ret.size == 0:
+            continue
+        eq  = _equity_from_returns(_bootstrap_returns(ret, block_size))
+        score = evaluate_report(eq, _signed_r2(eq))
+        scores[i] = score
+    return scores
+
+def _predict_batch(model, X_base, noise_levels):
+    """
+    Devuelve (n_sim, n_samples) con las probabilidades para cada ruido.
+    """
+    n_sim, n_samples, n_feat = len(noise_levels), *X_base.shape
+    # 1) replicar matriz base
+    X_big = np.repeat(X_base[None, :, :], n_sim, axis=0)
+    # 2) añadir un ruido distinto por simulación
+    std = X_base.std(axis=0, keepdims=True)     # (1, n_feat)
+    eps = np.random.normal(0.0, std, size=X_big.shape)
+    X_big += eps * noise_levels[:, None, None]  # broadcast n_sim
+    # 3) llamar al modelo **una vez**
+    probs = model.predict_proba(X_big.reshape(-1, n_feat))[:, 1]
+    return probs.reshape(n_sim, n_samples)
+
 def monte_carlo_full(
     close: np.ndarray,
     *,
@@ -460,68 +472,22 @@ def monte_carlo_full(
     # ---------- curva original ------------------------------------
     try:
         # Predecir con los modelos originales
-        if X_main is not None and X_meta is not None:
-            labels = model_main.predict_proba(X_main)[:, 1]
-            meta = model_meta.predict_proba(X_meta)[:, 1]
-            labels = (labels > 0.5).astype(np.float64)
-            meta = (meta > 0.5).astype(np.float64)
-        else:
-            labels = np.zeros_like(close)
-            meta = np.zeros_like(close)
+        labels = model_main.predict_proba(X_main)[:, 1]
+        meta = model_meta.predict_proba(X_meta)[:, 1]
+        labels = (labels > 0.5).astype(np.float64)
+        meta = (meta > 0.5).astype(np.float64)
 
         report_orig, _ = process_data_one_direction(close, labels, meta, direction=direction)
         if len(report_orig) < 2:
             return {"scores": np.array([-1.0]), "p_positive": 0.0, "quantiles": np.array([-1.0, -1.0, -1.0])}
 
         scores = np.empty(n_sim, dtype=np.float64)
-        valid_sims = 0
 
-        for i in range(n_sim):
-            try:
-                # 1) Añadir ruido a features y predecir -----------------
-                if X_main is not None and X_meta is not None:
-                    # Ruido en features
-                    noise_level = np.random.uniform(0.005, 0.02)  # feature_noise_range
-                    X_main_noisy = _make_noisy_features(X_main, noise_level)
-                    X_meta_noisy = _make_noisy_features(X_meta, noise_level)
-                    
-                    # Predecir con features ruidosas
-                    l_n = model_main.predict_proba(X_main_noisy)[:, 1]
-                    m_n = model_meta.predict_proba(X_meta_noisy)[:, 1]
-                    l_n = (l_n > 0.5).astype(np.float64)
-                    m_n = (m_n > 0.5).astype(np.float64)
-                else:
-                    l_n, m_n = labels, meta
+        noise_levels = np.random.uniform(0.005, 0.02, n_sim)
+        l_all = (_predict_batch(model_main, X_main, noise_levels) > 0.5).astype(np.float64)
+        m_all = (_predict_batch(model_meta, X_meta, noise_levels) > 0.5).astype(np.float64)
 
-                # 2) Añadir ruido a precios y señales -----------------
-                c_n, l_n, m_n = _make_noisy_signals(close, l_n, m_n)
-
-                # 3) Procesar trades ----------------------------------
-                rpt_noise, _ = process_data_one_direction(c_n, l_n, m_n, direction=direction)
-                if len(rpt_noise) < 2:
-                    scores[i] = -1.0
-                    continue
-
-                # 4) Bootstrapping de retornos ------------------------
-                returns = np.diff(rpt_noise)
-                if returns.size == 0:
-                    scores[i] = -1.0
-                    continue
-                    
-                resampled = _bootstrap_returns(returns, block_size)
-                rpt_sim = _equity_from_returns(resampled)
-
-                # 5) Evaluar -----------------------------------------
-                r2_sim = _signed_r2(rpt_sim)
-                score = evaluate_report(rpt_sim, r2_sim)
-                
-                if score > 0:
-                    valid_sims += 1
-                scores[i] = score
-
-            except Exception as e:
-                scores[i] = -1.0
-                continue
+        scores = _simulate_batch(close, l_all, m_all, block_size, direction)
 
         valid = scores[scores > 0.0]
         return {

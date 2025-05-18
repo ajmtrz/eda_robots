@@ -27,7 +27,17 @@ from modules.export_lib import (
 )
 
 class StrategySearcher:
-    """Clase unificada para búsqueda de estrategias de trading."""
+    """Clase unificada para búsqueda de estrategias de trading.
+    
+    Esta clase implementa diferentes métodos de búsqueda de estrategias de trading
+    utilizando técnicas de machine learning y optimización bayesiana.
+    
+    Attributes:
+        base_hp (dict): Hiperparámetros base para la búsqueda
+        base_df (pd.DataFrame): DataFrame con datos históricos
+        all_results (dict): Resultados de todas las búsquedas realizadas
+        best_models (list): Lista de los mejores modelos encontrados
+    """
     
     def __init__(
         self,
@@ -44,47 +54,163 @@ class StrategySearcher:
         history_path: str = r"/mnt/c/Users/Administrador/AppData/Roaming/MetaQuotes/Terminal/Common/Files/",
         model_seed: Optional[int] = None
     ):
+        """Inicializa el buscador de estrategias.
+        
+        Args:
+            symbol: Símbolo del activo financiero
+            timeframe: Timeframe de los datos
+            direction: Dirección de trading ('buy' o 'sell')
+            train_start: Fecha de inicio del entrenamiento
+            train_end: Fecha de fin del entrenamiento
+            test_start: Fecha de inicio de prueba
+            test_end: Fecha de fin de prueba
+            n_trials: Número de trials para la optimización
+            models_export_path: Ruta para exportar modelos
+            include_export_path: Ruta para archivos include
+            history_path: Ruta para datos históricos
+            model_seed: Semilla para reproducibilidad
+        """
         self.base_hp = {
-        'symbol': symbol,
-        'timeframe': timeframe,
-        'direction': direction,
-        'train_start': train_start,
-        'train_end': train_end,
-        'test_start': test_start,
-        'test_end': test_end,
-        'model_seed': model_seed,
-        'n_trials': n_trials,
-        'models_export_path': models_export_path,
-        'include_export_path': include_export_path,
-        'history_path': history_path,
-        'stats_main': [],
-        'stats_meta': [],
-        'best_models': [None, None],
-        'markup': 0.20,
-        'label_min'  : 1,
-        'label_max'  : 15,
-        'n_clusters': 30,
-        'window_size': 350,
-        'periods_main': [i for i in range(5, 300, 30)],
-        'periods_meta': [5],
+            'symbol': symbol,
+            'timeframe': timeframe,
+            'direction': direction,
+            'train_start': train_start,
+            'train_end': train_end,
+            'test_start': test_start,
+            'test_end': test_end,
+            'model_seed': model_seed,
+            'n_trials': n_trials,
+            'models_export_path': models_export_path,
+            'include_export_path': include_export_path,
+            'history_path': history_path,
+            'stats_main': [],
+            'stats_meta': [],
+            'best_models': [],
+            'markup': 0.20,
+            'label_min': 1,
+            'label_max': 15,
+            'n_clusters': 30,
+            'window_size': 350,
+            'periods_main': [i for i in range(5, 300, 30)],
+            'periods_meta': [5],
+            'subtype_clustering': 'simple',
         }
         
         # Cargar datos históricos
         self.base_df = get_prices(self.base_hp)
         self.base_hp['base_df'] = self.base_df
         
-        # Configuración de sklearn
+        # Configuración de sklearn y optuna
         set_config(enable_metadata_routing=True, skip_parameter_validation=True)
-        
-        # Configuración de optuna
         optuna.logging.set_verbosity(optuna.logging.WARNING)
         
         # Resultados
         self.all_results = {}
         self.best_models = []
+
+    # =========================================================================
+    # Métodos de búsqueda principales
+    # =========================================================================
+    
+    def run_search(
+        self,
+        search_type: str,
+        n_models: int = 10
+    ) -> None:
+        """Ejecuta la búsqueda de estrategias.
+        
+        Args:
+            search_type: Tipo de búsqueda ('clusters', 'causal', 'filter')
+            n_models: Número de modelos a optimizar
+        """
+        search_funcs = {
+            'clusters': self.search_clusters,
+            'causal': self.search_causal,
+            'filter': self.search_filter
+        }
+        
+        if search_type not in search_funcs:
+            raise ValueError(f"Tipo de búsqueda no válido: {search_type}")
+            
+        search_func = search_funcs[search_type]
+        
+        for i in tqdm(range(n_models), desc=f"Optimizando {self.base_hp['symbol']}/{self.base_hp['timeframe']}", unit="modelo"):
+            try:
+                # Inicializar estudio de Optuna
+                study = optuna.create_study(
+                    direction='maximize',
+                    pruner=HyperbandPruner(),
+                    sampler=optuna.samplers.TPESampler(
+                        n_startup_trials=int(np.sqrt(self.base_hp['n_trials'])),
+                    )
+                )
+                
+                # Optimizar con la función de búsqueda seleccionada
+                study.optimize(
+                    lambda t: search_func(t, study),
+                    n_trials=self.base_hp['n_trials'],
+                    show_progress_bar=True
+                )
+
+                # Verificar y exportar el mejor modelo
+                best_models = study.user_attrs.get("best_models", [])
+                if not (best_models and len(best_models) == 2 and all(best_models)):
+                    print("⚠️  Error: best_models incorrecto")
+                    continue
+
+                export_params = self.base_hp.copy()
+                export_params.update({
+                    "best_trial": study.user_attrs["best_trial_number"],
+                    "best_score": study.user_attrs["best_score"],
+                    "best_periods_main": study.user_attrs.get("best_periods_main"),
+                    "best_periods_meta": study.user_attrs.get("best_periods_meta"),
+                    "best_stats_main": study.user_attrs.get("best_stats_main"),
+                    "best_stats_meta": study.user_attrs.get("best_stats_meta"),
+                    "best_models": best_models,
+                })
+                
+                export_model_to_ONNX(**export_params)
+                
+                self.show_best_summary(study)
+                
+                model_results = {
+                    "r2_ins": study.user_attrs.get("best_metrics", {}).get("r2_ins", float("nan")),
+                    "r2_oos": study.user_attrs.get("best_metrics", {}).get("r2_oos", float("nan")),
+                    "score": study.user_attrs.get("best_metrics", {}).get("score", float("nan")),
+                }
+                
+                self.best_models.append((i, model_results))
+                
+                self.all_results[f"model_{i}"] = {
+                    "success": True,
+                    "r2_ins": model_results["r2_ins"],
+                    "r2_oos": model_results["r2_oos"],
+                    "score": model_results["score"]
+                }
+                
+            except Exception as e:
+                import traceback
+                tqdm.write(f"\nError procesando modelo {i}: {str(e)}")
+                tqdm.write(traceback.format_exc())
+                
+                self.all_results[f"model_{i}"] = {
+                    "success": False,
+                    "error": str(e)
+                }
+                continue
+        
+        self._print_summary()
+
+    # =========================================================================
+    # Métodos de visualización y reportes
+    # =========================================================================
     
     def show_best_summary(self, study: optuna.study.Study) -> None:
-        """Muestra resumen del mejor trial encontrado."""
+        """Muestra resumen del mejor trial encontrado.
+        
+        Args:
+            study: Estudio de Optuna con los resultados
+        """
         m = study.user_attrs.get("best_metrics", {})
         f2 = m.get("r2_ins", float("nan"))
         b2 = m.get("r2_oos", float("nan"))
@@ -101,7 +227,173 @@ class StrategySearcher:
         ]
         print("\n".join(lines))
 
+    def _print_summary(self) -> None:
+        """Imprime un resumen final de la optimización."""
+        print("\n" + "="*50)
+        print(f"RESUMEN DE OPTIMIZACIÓN {self.base_hp['symbol']}/{self.base_hp['timeframe']}")
+        print("="*50)
+        
+        successful_models = [info for model_key, info in self.all_results.items() if info.get("success", False)]
+        print(f"Modelos completados exitosamente: {len(successful_models)}/{len(self.model_range)}")
+        
+        if successful_models:
+            # Calcular estadísticas globales
+            r2_ins_scores = [info["r2_ins"] for info in successful_models]
+            r2_oos_scores = [info["r2_oos"] for info in successful_models]
+            scores = [info["score"] for info in successful_models]
+            
+            print(f"\nEstadísticas de rendimiento:")
+            print(f"  R2 INS promedio: {np.mean(r2_ins_scores):.4f} ± {np.std(r2_ins_scores):.4f}")
+            print(f"  R2 OOS promedio: {np.mean(r2_oos_scores):.4f} ± {np.std(r2_oos_scores):.4f}")
+            print(f"  Puntuación combinada promedio: {np.mean(scores):.4f} ± {np.std(scores):.4f}")
+
+            # Identificar el mejor modelo global
+            successful = [(k, v) for k, v in self.all_results.items() if v.get("success", False)]
+            scores = [v["score"] for _, v in successful]
+            best_model_key, best_info = successful[int(np.argmax(scores))]
+            
+            print(f"\nMejor modelo global: {best_model_key}")
+            print(f"  R2 INS: {best_info['r2_ins']:.4f}")
+            print(f"  R2 OOS: {best_info['r2_oos']:.4f}")
+            print(f"  Puntuación combinada: {best_info['score']:.4f}")
+        
+        print("\nProceso de optimización completado.")
+
+    # =========================================================================
+    # Métodos de búsqueda específicos
+    # =========================================================================
+    
+    def search_clusters(self, trial: optuna.Trial, study: optuna.study.Study) -> float:
+        """Implementa la búsqueda de estrategias usando clustering.
+        
+        Args:
+            trial: Trial actual de Optuna
+            study: Estudio de Optuna
+            
+        Returns:
+            float: Mejor puntuación encontrada
+        """
+        try:
+            gc.collect()
+            best_score = -math.inf
+            hp = self.common_hyper_params(trial)  # Corregido el nombre del método
+            # Parámetros a optimizar
+            hp['n_clusters'] = trial.suggest_int('n_clusters', 5, 50, step=5)
+            hp['k'] = trial.suggest_int('k', 2, 10, step=1)
+            hp['atr_period'] = trial.suggest_int('atr_period', 5, 50, step=5)
+            hp['markup'] = trial.suggest_float("markup", 0.1, 1.0, step=0.1)
+            hp['label_max'] = trial.suggest_int('label_max', 2, 6, step=1, log=True)
+            
+            # Obtener datos de entrenamiento y prueba
+            ds_train, ds_test = self.get_train_test_data(hp)
+            
+            # Clustering
+            ds_train = sliding_window_clustering(
+                ds_train,
+                n_clusters=hp['n_clusters'],
+                step=hp.get('step', None),
+                atr_period=hp['atr_period'],
+                k=hp['k']
+            )
+            # Evaluar clusters ordenados por tamaño
+            cluster_sizes = ds_train['clusters'].value_counts()
+
+            # Filtrar el cluster 0 (inválido) si existe
+            if 0 in cluster_sizes.index:
+                cluster_sizes = cluster_sizes.drop(0)
+            
+            # Evaluar cada cluster
+            for clust in cluster_sizes.index:
+                # Main data
+                main_data = ds_train.loc[ds_train['clusters'] == clust]
+                if len(main_data) <= hp['label_max']:
+                    continue
+                main_data = get_labels_one_direction(
+                    main_data,
+                    markup=hp['markup'],
+                    max_val=hp['label_max'],
+                    direction=hp['direction'],
+                    atr_period=hp['atr_period'],
+                    deterministic=True
+                )
+                if (main_data['labels'].value_counts() < 2).any():
+                    continue
+
+                # Meta data
+                meta_data = ds_train.copy()
+                meta_data['clusters'] = (meta_data['clusters'] == clust).astype(int)
+                if (meta_data['clusters'].value_counts() < 2).any():
+                    continue
+
+                # Evaluación en ambos períodos
+                hp = self.fit_final_models(
+                    main_data=main_data,
+                    meta_data=meta_data,
+                    ds_train=ds_train,
+                    ds_test=ds_test,
+                    hp=hp,
+                    trial=trial
+                )
+                if hp['r2_ins'] == None or hp['r2_oos'] == None or hp['model_main'] == None or hp['model_meta'] == None:
+                    continue
+                # Calcular puntuación combinada (puedes ajustar los pesos según necesites)
+                hp['score'] = self.calc_score(hp['r2_ins'], hp['r2_oos'])
+                if hp['score'] <= -1.0:
+                    continue
+
+                if hp['score'] > best_score:
+                    best_score = hp['score']
+                    # Guardar información del trial actual
+                    self.save_best_trial(trial, study, hp)
+
+        except Exception as e:
+            print(f"Error en trial {trial.number}: {str(e)}")
+            return -1.0
+        
+        # Si no hay ningún cluster válido
+        if best_score == -math.inf:
+            return -1.0
+        
+        # Devolver la mejor puntuación encontrada
+        return best_score
+
+    def search_causal(self, trial: optuna.Trial, study: optuna.study.Study) -> float:
+        """Implementa la búsqueda de estrategias usando causalidad.
+        
+        Args:
+            trial: Trial actual de Optuna
+            study: Estudio de Optuna
+            
+        Returns:
+            float: Mejor puntuación encontrada
+        """
+        raise NotImplementedError("Búsqueda causal no implementada aún")
+
+    def search_filter(self, trial: optuna.Trial, study: optuna.study.Study) -> float:
+        """Implementa la búsqueda de estrategias usando filtros.
+        
+        Args:
+            trial: Trial actual de Optuna
+            study: Estudio de Optuna
+            
+        Returns:
+            float: Mejor puntuación encontrada
+        """
+        raise NotImplementedError("Búsqueda por filtros no implementada aún")
+
+    # =========================================================================
+    # Métodos auxiliares
+    # =========================================================================
+    
     def get_train_test_data(self, hp: Dict[str, Any]) -> Tuple[pd.DataFrame, pd.DataFrame]:
+        """Obtiene los datos de entrenamiento y prueba.
+        
+        Args:
+            hp: Diccionario de hiperparámetros
+            
+        Returns:
+            Tuple[pd.DataFrame, pd.DataFrame]: Datos de entrenamiento y prueba
+        """
         # Dataset completo obtener caracteristicas
         full_ds = get_features(self.base_hp['base_df'], hp)
         # Seccionar dataset de entrenamiento
@@ -112,6 +404,16 @@ class StrategySearcher:
         return ds_train, ds_test
     
     def calc_score(self, fwd: float, bwd: float, eps: float = 1e-9) -> float:
+        """Calcula la puntuación combinada.
+        
+        Args:
+            fwd: Puntuación forward
+            bwd: Puntuación backward
+            eps: Valor epsilon para evitar división por cero
+            
+        Returns:
+            float: Puntuación combinada
+        """
         if (fwd is None or bwd is None or
             not np.isfinite(fwd) or not np.isfinite(bwd) or
             fwd <= 0 or bwd <= 0):
@@ -123,7 +425,16 @@ class StrategySearcher:
         score  = mean * (1.0 - delta)
         return score
     
-    def sample_cat_params(self, trial, prefix: str):
+    def sample_cat_params(self, trial: optuna.Trial, prefix: str) -> Dict[str, Any]:
+        """Muestra parámetros para CatBoost.
+        
+        Args:
+            trial: Trial actual de Optuna
+            prefix: Prefijo para los parámetros
+            
+        Returns:
+            Dict[str, Any]: Parámetros de CatBoost
+        """
         iterations = trial.suggest_int(f"{prefix}_iterations", 100, 500, step=50)
         depth      = trial.suggest_int(f"{prefix}_depth", 3, 6)
         lr         = trial.suggest_float(f"{prefix}_learning_rate", 0.1, 0.3, log=True)
@@ -137,7 +448,16 @@ class StrategySearcher:
             f"{prefix}_early_stopping": es_rounds,
         }
     
-    def sample_xgb_params(self, trial, prefix: str):
+    def sample_xgb_params(self, trial: optuna.Trial, prefix: str) -> Dict[str, Any]:
+        """Muestra parámetros para XGBoost.
+        
+        Args:
+            trial: Trial actual de Optuna
+            prefix: Prefijo para los parámetros
+            
+        Returns:
+            Dict[str, Any]: Parámetros de XGBoost
+        """
         n_estimators = trial.suggest_int(f"{prefix}_estimators", 100, 500, step=50)
         max_depth = trial.suggest_int(f"{prefix}_max_depth", 3, 6)
         lr           = trial.suggest_float(f"{prefix}_learning_rate", 0.1, 0.3, log=True)
@@ -151,7 +471,15 @@ class StrategySearcher:
             f"{prefix}_early_stopping": es_rounds,
         }
     
-    def commom_hyper_params(self, trial: optuna.trial.Trial) -> Dict[str, Any]:
+    def common_hyper_params(self, trial: optuna.Trial) -> Dict[str, Any]:
+        """Obtiene hiperparámetros comunes.
+        
+        Args:
+            trial: Trial actual de Optuna
+            
+        Returns:
+            Dict[str, Any]: Hiperparámetros comunes
+        """
         hp = {k: copy.deepcopy(v) for k, v in self.base_hp.items() if k != 'base_df'}
         # Optimización de hiperparámetros
         hp.update(self.sample_cat_params(trial, "cat_main"))
@@ -208,7 +536,14 @@ class StrategySearcher:
         #print(f"Meta features seleccionadas: {hp['stats_meta']} | Periodo: {hp['periods_meta']}")
         return hp
 
-    def save_best_trial(self, trial: optuna.trial.Trial, study: optuna.study.Study, hp: Dict[str, Any]) -> None:
+    def save_best_trial(self, trial: optuna.Trial, study: optuna.study.Study, hp: Dict[str, Any]) -> None:
+        """Guarda la información del mejor trial.
+        
+        Args:
+            trial: Trial actual de Optuna
+            study: Estudio de Optuna
+            hp: Diccionario de hiperparámetros
+        """
         trial.set_user_attr("r2_ins", hp['r2_ins'])
         trial.set_user_attr("r2_oos", hp['r2_oos'])
         trial.set_user_attr("score", hp['score'])
@@ -241,11 +576,24 @@ class StrategySearcher:
                 study.set_user_attr("best_trial_number", trial.number)
     
     def fit_final_models(self, main_data: pd.DataFrame,
-                         meta_data: pd.DataFrame,
-                         ds_train: pd.DataFrame,
-                         ds_test: pd.DataFrame,
-                         hp: Dict[str, Any],
-                         trial: optuna.trial.Trial) -> Tuple[float, float, Any, Any]:
+                        meta_data: pd.DataFrame,
+                        ds_train: pd.DataFrame,
+                        ds_test: pd.DataFrame,
+                        hp: Dict[str, Any],
+                        trial: optuna.Trial) -> Dict[str, Any]:
+        """Ajusta los modelos finales.
+        
+        Args:
+            main_data: Datos principales
+            meta_data: Datos meta
+            ds_train: Dataset de entrenamiento
+            ds_test: Dataset de prueba
+            hp: Diccionario de hiperparámetros
+            trial: Trial actual de Optuna
+            
+        Returns:
+            Dict[str, Any]: Hiperparámetros actualizados
+        """
         def check_constant_features(X):
             return np.any(np.var(X, axis=0) < 1e-10)
         
@@ -414,252 +762,23 @@ class StrategySearcher:
         )
         # print(f"out-of-sample score calculated in {time.time() - start_time:.2f} seconds\n")
         return hp
-    
-    def search_clusters(self) -> Dict[str, Any]:
-        def objective(trial: optuna.Trial, study: optuna.study.Study) -> float:
-            best_score = -math.inf
-            try:
-                gc.collect()
-                hp = self.commom_hyper_params(trial)
-                # Parámetros a optimizar
-                hp['n_clusters'] = trial.suggest_int('n_clusters', 5, 50, step=5)
-                hp['k'] = trial.suggest_int('k', 2, 10, step=1)
-                hp['atr_period'] = trial.suggest_int('atr_period', 5, 50, step=5)
-                hp['markup'] = trial.suggest_float("markup", 0.1, 1.0, step=0.1)
-                hp['label_max'] = trial.suggest_int('label_max', 2, 6, step=1, log=True)
-                #hp['step'] = trial.suggest_int('step', 1, hp['label_max'])
-                
-                # Obtener datos de entrenamiento y prueba
-                ds_train, ds_test = self.get_train_test_data(hp)
-                
-                # Clustering
-                ds_train = sliding_window_clustering(
-                    ds_train,
-                    n_clusters=hp['n_clusters'],
-                    step=hp.get('step', None),
-                    atr_period=hp['atr_period'],
-                    k=hp['k']
-                )
-                # Evaluar clusters ordenados por tamaño
-                cluster_sizes = ds_train['clusters'].value_counts()
-
-                # Filtrar el cluster 0 (inválido) si existe
-                if 0 in cluster_sizes.index:
-                    cluster_sizes = cluster_sizes.drop(0)
-                
-                # Evaluar cada cluster
-                for clust in cluster_sizes.index:
-                    # Main data
-                    main_data = ds_train.loc[ds_train['clusters'] == clust]
-                    if len(main_data) <= hp['label_max']:
-                        continue
-                    main_data = get_labels_one_direction(
-                        main_data,
-                        markup=hp['markup'],
-                        max_val=hp['label_max'],
-                        direction=hp['direction'],
-                        atr_period=hp['atr_period'],
-                        deterministic=True
-                    )
-                    if (main_data['labels'].value_counts() < 2).any():
-                        continue
-
-                    # Meta data
-                    meta_data = ds_train.copy()
-                    meta_data['clusters'] = (meta_data['clusters'] == clust).astype(int)
-                    if (meta_data['clusters'].value_counts() < 2).any():
-                        continue
-
-                    # Evaluación en ambos períodos
-                    hp = self.fit_final_models(
-                        main_data=main_data,
-                        meta_data=meta_data,
-                        ds_train=ds_train,
-                        ds_test=ds_test,
-                        hp=hp,
-                        trial=trial
-                    )
-                    if hp['r2_ins'] == None or hp['r2_oos'] == None or hp['model_main'] == None or hp['model_meta'] == None:
-                        continue
-                    # Calcular puntuación combinada (puedes ajustar los pesos según necesites)
-                    hp['score'] = self.calc_score(hp['r2_ins'], hp['r2_oos'])
-                    if hp['score'] <= -1.0:
-                        continue
-
-                    if hp['score'] > best_score:
-                        best_score = hp['score']
-                        # Guardar información del trial actual
-                        self.save_best_trial(trial, study, hp)
-
-            except Exception as e:
-                print(f"Error en trial {trial.number}: {str(e)}")
-                return -1.0
-            
-            # Si no hay ningún cluster válido
-            if best_score == -math.inf:
-                return -1.0
-            
-            # Devolver la mejor puntuación encontrada
-            return best_score
-        
-        self.optimize_and_export(objective, "clusters")
-
-    def optimize_and_export(
-        self,
-        objective_func: callable,
-        search_type: str
-    ) -> Optional[Dict[str, float]]:
-        try:
-            # Configurar el pruner inteligente
-            # pruner = SuccessiveHalvingPruner(
-            #     min_resource=1,
-            #     reduction_factor=3,
-            #     min_early_stopping_rate=0
-            # )
-            study = optuna.create_study(
-                direction='maximize',
-                pruner=HyperbandPruner(),
-                sampler=optuna.samplers.TPESampler(
-                    n_startup_trials=int(np.sqrt(self.base_hp['n_trials'])),
-                )
-            )
-            
-            study.optimize(
-                lambda t: objective_func(t, self.base_hp, study),
-                n_trials=self.base_hp['n_trials'],
-                show_progress_bar=True
-            )
-
-            best_models = study.user_attrs.get("best_models")
-            if not (best_models and len(best_models) == 2 and all(best_models)):
-                print("⚠️  Error: best_models incorrecto")
-                return None
-
-            export_params = self.base_hp.copy()
-            export_params.update({
-                "best_trial": study.user_attrs["best_trial_number"],
-                "best_score": study.user_attrs["best_score"],
-                "best_periods_main": study.user_attrs.get("best_periods_main"),
-                "best_periods_meta": study.user_attrs.get("best_periods_meta"),
-                "best_stats_main": study.user_attrs.get("best_stats_main"),
-                "best_stats_meta": study.user_attrs.get("best_stats_meta"),
-                "best_models": best_models,
-            })
-            
-            export_model_to_ONNX(**export_params)
-            
-            self._show_best_summary(study)
-            
-            return {
-                "r2_ins": study.user_attrs.get("best_metrics", {}).get("r2_ins", float("nan")),
-                "r2_oos": study.user_attrs.get("best_metrics", {}).get("r2_oos", float("nan")),
-                "score": study.user_attrs.get("best_metrics", {}).get("score", float("nan")),
-            }
-            
-        except Exception as e:
-            print(f"Error en optimize_and_export: {str(e)}")
-            import traceback
-            print(traceback.format_exc())
-            return None
-
-    def run_search(
-        self,
-        search_type: str,
-        n_models: int = 10
-    ) -> None:
-        """Ejecuta la búsqueda de estrategias.
-        
-        Args:
-            search_type: Tipo de búsqueda ('clusters', 'causal', 'filter')
-            n_models: Número de modelos a optimizar
-        """
-        search_funcs = {
-            'clusters': self.search_clusters,
-            'causal': self.search_causal,
-            'filter': self.search_filter
-        }
-        
-        if search_type not in search_funcs:
-            raise ValueError(f"Tipo de búsqueda no válido: {search_type}")
-            
-        search_func = search_funcs[search_type]
-        
-        for i in tqdm(range(n_models), desc=f"Optimizando {self.base_hp['symbol']}/{self.base_hp['timeframe']}", unit="modelo"):
-            try:
-                model_results = search_func(1)
-                self.best_models.append((i, model_results))
-                
-                self.all_results[f"model_{i}"] = {
-                    "success": True,
-                    "r2_ins": model_results["r2_ins"],
-                    "r2_oos": model_results["r2_oos"],
-                    "score": model_results["score"]
-                }
-                
-            except Exception as e:
-                import traceback
-                tqdm.write(f"\nError procesando modelo {i}: {str(e)}")
-                tqdm.write(traceback.format_exc())
-                
-                self.all_results[f"model_{i}"] = {
-                    "success": False,
-                    "error": str(e)
-                }
-                continue
-        
-        self._print_summary()
-
-    def _print_summary(self) -> None:
-        # Resumen final
-        print("\n" + "="*50)
-        print(f"RESUMEN DE OPTIMIZACIÓN {self.base_hp['symbol']}/{self.base_hp['timeframe']}")
-        print("="*50)
-        
-        successful_models = [info for model_key, info in self.all_results.items() if info.get("success", False)]
-        print(f"Modelos completados exitosamente: {len(successful_models)}/{len(self.model_range)}")
-        
-        if successful_models:
-            # Calcular estadísticas globales
-            r2_ins_scores = [info["r2_ins"] for info in successful_models]
-            r2_oos_scores = [info["r2_oos"] for info in successful_models]
-            scores = [info["score"] for info in successful_models]
-            
-            print(f"\nEstadísticas de rendimiento:")
-            print(f"  R2 INS promedio: {np.mean(r2_ins_scores):.4f} ± {np.std(r2_ins_scores):.4f}")
-            print(f"  R2 OOS promedio: {np.mean(r2_oos_scores):.4f} ± {np.std(r2_oos_scores):.4f}")
-            print(f"  Puntuación combinada promedio: {np.mean(scores):.4f} ± {np.std(scores):.4f}")
-
-            # Identificar el mejor modelo global basado en la puntuación combinada
-            successful = [(k, v) for k, v in self.all_results.items() if v.get("success", False)]
-            scores = [v["score"] for _, v in successful]
-            best_model_key, best_info = successful[int(np.argmax(scores))]
-            
-            print(f"\nMejor modelo global: {best_model_key}")
-            print(f"  R2 INS: {best_info['r2_ins']:.4f}")
-            print(f"  R2 OOS: {best_info['r2_oos']:.4f}")
-            print(f"  Puntuación combinada: {best_info['score']:.4f}")
-        
-        print("\nProceso de optimización completado.")
-
 
 searcher = StrategySearcher(
     symbol='XAUUSD',
     timeframe='H1',
     direction='buy',
-    backward=datetime(2020, 1, 1),
-    forward=datetime(2022, 1, 1),
-    full_forward=datetime(2023, 1, 1),
+    train_start=datetime(2019, 1, 1),
+    train_end=datetime(2025, 1, 1),
+    test_start=datetime(2022, 1, 1),
+    test_end=datetime(2023, 1, 1),
     n_trials=500,
-    models_export_path='models/',
-    include_export_path='includes/',
-    history_path='history/'
 )
 
 # Buscar estrategias usando clustering
-searcher.run_search('clusters', n_models=10)
+searcher.run_search('clusters', n_models=5)
 
 # Buscar estrategias usando causalidad
-searcher.run_search('causal', n_models=10)
+#searcher.run_search('causal', n_models=10)
 
 # Buscar estrategias usando filtros
-searcher.run_search('filter', n_models=10)
+#searcher.run_search('filter', n_models=10)

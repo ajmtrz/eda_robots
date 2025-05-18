@@ -20,9 +20,9 @@ from sklearn.model_selection import train_test_split
 
 from modules.labeling_lib import (
     get_prices, get_features, get_labels_one_direction,
-    sliding_window_clustering, get_labels_filter_one_direction
+    sliding_window_clustering
 )
-from modules.tester_lib import robust_oos_score_one_direction
+from modules.tester_lib import robust_oos_score_one_direction, _ONNX_CACHE
 from modules.export_lib import (
     export_model_to_ONNX, XGBWithEval, CatWithEval
 )
@@ -279,88 +279,88 @@ class StrategySearcher:
         Returns:
             float: Mejor puntuación encontrada
         """
-        gc.collect()
-        best_score = -math.inf
-        hp = self.common_hyper_params(trial)  # Corregido el nombre del método
-        # Parámetros a optimizar
-        hp['n_clusters'] = trial.suggest_int('n_clusters', 5, 50, step=5)
-        hp['k'] = trial.suggest_int('k', 2, 10, step=1)
-        hp['atr_period'] = trial.suggest_int('atr_period', 5, 50, step=5)
-        hp['markup'] = trial.suggest_float("markup", 0.1, 1.0, step=0.1)
-        hp['label_max'] = trial.suggest_int('label_max', 2, 6, step=1, log=True)
-        
-        # Obtener datos de entrenamiento y prueba
-        ds_train, ds_test = self.get_train_test_data(hp)
-        
-        # Clustering
-        ds_train = sliding_window_clustering(
-            ds_train,
-            n_clusters=hp['n_clusters'],
-            step=hp.get('step', None),
-            atr_period=hp['atr_period'],
-            k=hp['k']
-        )
-        # Evaluar clusters ordenados por tamaño
-        cluster_sizes = ds_train['labels_meta'].value_counts()
-
-        # Filtrar el cluster 0 (inválido) si existe
-        if 0 in cluster_sizes.index:
-            cluster_sizes = cluster_sizes.drop(0)
-        
-        # Evaluar cada cluster
-        for clust in cluster_sizes.index:
-            # Main data
-            main_data = ds_train.loc[ds_train['labels_meta'] == clust]
-            if len(main_data) <= hp['label_max']:
-                continue
-            main_data = get_labels_one_direction(
-                main_data,
-                markup=hp['markup'],
-                max_val=hp['label_max'],
-                direction=hp['direction'],
+        try:
+            gc.collect()
+            best_score = -math.inf
+            hp = self.common_hyper_params(trial)  # Corregido el nombre del método
+            # Parámetros a optimizar
+            hp['n_clusters'] = trial.suggest_int('n_clusters', 5, 50, step=5)
+            hp['k'] = trial.suggest_int('k', 2, 10, step=1)
+            hp['atr_period'] = trial.suggest_int('atr_period', 5, 50, step=5)
+            hp['markup'] = trial.suggest_float("markup", 0.1, 1.0, step=0.1)
+            hp['label_max'] = trial.suggest_int('label_max', 2, 6, step=1, log=True)
+            
+            # Obtener datos de entrenamiento y prueba
+            ds_train, ds_test = self.get_train_test_data(hp)
+            
+            # Clustering
+            ds_train = sliding_window_clustering(
+                ds_train,
+                n_clusters=hp['n_clusters'],
+                step=hp.get('step', None),
                 atr_period=hp['atr_period'],
-                deterministic=True
+                k=hp['k']
             )
-            if (main_data['labels_main'].value_counts() < 2).any():
-                continue
+            # Evaluar clusters ordenados por tamaño
+            cluster_sizes = ds_train['labels_meta'].value_counts()
 
-            # Meta data
-            meta_data = ds_train.copy()
-            meta_data['labels_meta'] = (meta_data['labels_meta'] == clust).astype(int)
-            if (meta_data['labels_meta'].value_counts() < 2).any():
-                continue
+            # Filtrar el cluster 0 (inválido) si existe
+            if 0 in cluster_sizes.index:
+                cluster_sizes = cluster_sizes.drop(0)
+            
+            # Evaluar cada cluster
+            for clust in cluster_sizes.index:
+                # Main data
+                main_data = ds_train.loc[ds_train['labels_meta'] == clust]
+                if len(main_data) <= hp['label_max']:
+                    continue
+                main_data = get_labels_one_direction(
+                    main_data,
+                    markup=hp['markup'],
+                    max_val=hp['label_max'],
+                    direction=hp['direction'],
+                    atr_period=hp['atr_period'],
+                    deterministic=True
+                )
+                if (main_data['labels_main'].value_counts() < 2).any():
+                    continue
 
-            # ── Evaluación en ambos períodos ──────────────────────────────
-            hp_models = self.fit_final_models(
-                main_data=main_data,
-                meta_data=meta_data,
-                ds_train=ds_train,
-                ds_test=ds_test,
-                hp=hp,
-                trial=trial
-            )
-            if hp_models is None:
-                continue  # falló fit_final_models
+                # Meta data
+                meta_data = ds_train.copy()
+                meta_data['labels_meta'] = (meta_data['labels_meta'] == clust).astype(int)
+                if (meta_data['labels_meta'].value_counts() < 2).any():
+                    continue
 
-            # robust scores
-            r2_ins = hp_models['r2_ins']
-            r2_oos = hp_models['r2_oos']
-            score  = self.calc_score(r2_ins, r2_oos)
-            if score <= -1.0:
-                continue
+                # ── Evaluación en ambos períodos ──────────────────────────────
+                hp_models = self.fit_final_models(
+                    main_data=main_data,
+                    meta_data=meta_data,
+                    ds_train=ds_train,
+                    ds_test=ds_test,
+                    hp=hp.copy(),
+                    trial=trial
+                )
+                if hp_models is None:
+                    continue
 
-            # guarda si es el mejor
-            if score > best_score:
-                best_score = score
-                hp_models['score'] = score
-                self.save_best_trial(trial, study, hp_models)
-        
-        # Si no hay ningún cluster válido
-        if best_score == -math.inf:
-            return -1.0
-        
-        # Devolver la mejor puntuación encontrada
-        return best_score
+                # robust scores
+                r2_ins = hp_models['r2_ins']
+                r2_oos = hp_models['r2_oos']
+                score  = self.calc_score(r2_ins, r2_oos)
+                if score <= -1.0:
+                    continue
+
+                # guarda si es el mejor
+                if score > best_score:
+                    best_score = score
+                    hp_models['score'] = score
+                    self.save_best_trial(trial, study, hp_models)
+            
+            # Devolver la mejor puntuación encontrada
+            return best_score if best_score != -math.inf else -1.0
+
+        finally:
+            _ONNX_CACHE.clear()
 
     def search_causal(self, trial: optuna.Trial, study: optuna.study.Study) -> float:
         """Implementa la búsqueda de estrategias usando causalidad.
@@ -609,7 +609,7 @@ class StrategySearcher:
         X_main = main_data.loc[:, main_feature_cols].copy()
         X_main.columns = [f'f{i}' for i in range(len(main_feature_cols))]
         if check_constant_features(X_main.to_numpy()):
-                return None
+            return None
         y_main = main_data['labels_main'].astype('int16')
         # Check for inf values in main features
         inf_cols_main = X_main.columns[X_main.isin([np.inf, -np.inf]).any()].tolist()
@@ -654,9 +654,6 @@ class StrategySearcher:
         if len(y_train_meta.value_counts()) < 2 or len(y_val_meta.value_counts()) < 2:
             return None
 
-        # print(f"Main columns: {X_main.columns.tolist()}")
-        # print(f"Meta columns: {X_meta.columns.tolist()}")
-        
         # Main model
         cat_main_params = dict(
             iterations=hp['cat_main_iterations'],
@@ -679,7 +676,7 @@ class StrategySearcher:
             verbosity=0,
             n_jobs=-1,
             tree_method= "hist",
-            device_type="cuda"
+            device_type="cpu"
         )
         base_main_models = [
             ('catboost', CatWithEval(
@@ -728,7 +725,7 @@ class StrategySearcher:
             verbose_eval=False,
             n_jobs=-1,
             tree_method= "hist",
-            device_type="cuda"
+            device_type="cpu"
         )
         base_meta_models = [
             ('catboost', CatWithEval(

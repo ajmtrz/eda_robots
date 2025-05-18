@@ -4,7 +4,18 @@ import pandas as pd
 from datetime import datetime
 from sklearn.linear_model import LinearRegression
 import matplotlib.pyplot as plt
-from typing import Callable, Literal
+import onnxruntime as rt
+from skl2onnx import convert_sklearn, update_registered_converter
+from skl2onnx.common.data_types import FloatTensorType
+from skl2onnx.common.shape_calculator import calculate_linear_classifier_output_shapes
+from modules.export_lib import (
+    skl2onnx_parser_castboost_classifier,
+    skl2onnx_convert_catboost,
+    CatWithEval,
+    XGBWithEval,
+    convert_xgboost,
+)
+rt.set_default_logger_severity(4)
 
 @jit(fastmath=True, cache=True)
 def process_data(close, labels, metalabels):
@@ -434,9 +445,6 @@ def _simulate_batch(close, l_all, m_all, block_size, direction):
 # -----------------------------------------------------------------------------
 #  ONNX-accelerated batch prediction
 # -----------------------------------------------------------------------------
-import onnxruntime as rt
-rt.set_default_logger_severity(4)
-from modules.export_lib import *
 update_registered_converter(
     CatWithEval,
     "CatBoostClassifier",
@@ -455,7 +463,7 @@ update_registered_converter(
 # 1) ───────── cache global de sesiones ───────────────────────────
 _ONNX_CACHE: dict[int, rt.InferenceSession] = {}
 
-def _predict_batch(model, X_base, noise_levels, batch_size: int = 128):
+def _predict_batch(model, X_base, noise_levels):
     """
     Devuelve (n_sim, n_samples) con las probabilidades p(1) usando
     una ÚNICA inferencia ONNX Runtime. La sesión se guarda en un
@@ -561,16 +569,15 @@ def robust_oos_score_one_direction(dataset: pd.DataFrame,
         return -1.0
 
     # 3) preparar datos --------------------------------------------
-    # Pre-calcular índices de características
-    feature_cols = ext_ds.columns.str.contains('_feature')
-    meta_feature_cols = ext_ds.columns.str.contains('_meta_feature')
-    main_feature_cols = feature_cols & ~meta_feature_cols
-
-    # Pre-calcular arrays base
+    # Validar que las características de test coincidan con las de train
+    test_main_cols = ext_ds.columns[ext_ds.columns.str.contains('_feature') & ~ext_ds.columns.str.contains('_meta_feature')] 
+    test_meta_cols = ext_ds.columns[ext_ds.columns.str.contains('_meta_feature')]
+    
+    # Convertir a numpy arrays directamente para evitar problemas con pandas
+    X_main = ext_ds[test_main_cols].to_numpy()
+    X_meta = ext_ds[test_meta_cols].to_numpy()
     close_arr = ext_ds['close'].to_numpy(copy=True)
-    X_main = ext_ds.loc[:, main_feature_cols].to_numpy(copy=True)
-    X_meta = ext_ds.loc[:, meta_feature_cols].to_numpy(copy=True)
-
+    
     if X_main.size == 0 or X_meta.size == 0:
         return -1.0
 

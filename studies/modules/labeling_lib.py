@@ -3,6 +3,7 @@ import random
 import numpy as np
 import pandas as pd
 from numba import njit
+from hdbscan import HDBSCAN
 from sklearn.cluster import KMeans
 from hmmlearn import hmm, vhmm
 from scipy.optimize import linear_sum_assignment
@@ -1618,7 +1619,7 @@ def calculate_atr_simple(high, low, close, period=14):
         atr[i] = cumsum / (i+1)
     if n <= period-1:
         return atr
-    # primera media “oficial” (índice period-1)
+    # primera media "oficial" (índice period-1)
     cumsum += tr[period-1]
     atr[period-1] = cumsum / period
     # Wilder a partir de aquí
@@ -1674,7 +1675,7 @@ def get_labels_one_direction(dataset, markup, min_val=1, max_val=15, direction='
         markup, min_val, max_val, direction, atr_period, deterministic
     )
     dataset = dataset.iloc[:len(labels)].copy()
-    dataset['labels'] = labels
+    dataset['labels_main'] = labels
     dataset = dataset.dropna()
     return dataset
 
@@ -1745,8 +1746,27 @@ def sliding_window_clustering(
         votes[indices, mapped_ids] += 1
     clusters = votes.argmax(axis=1).astype(np.int32)
     ds_out = dataset.copy()
-    ds_out["clusters"] = clusters
+    ds_out["labels_meta"] = clusters
     return ds_out
+
+def clustering(dataset: pd.DataFrame,
+               min_cluster_size: int = 20,
+               min_samples: int | None = None,
+               metric: str = "euclidean") -> pd.DataFrame:
+    
+    meta_X_np = dataset.filter(regex="meta_feature").to_numpy(np.float32)
+
+    clusterer = HDBSCAN(
+        min_cluster_size=min_cluster_size,
+        min_samples=min_samples,
+        metric=metric,
+        core_dist_n_jobs=-1
+    ).fit(meta_X_np)
+
+    raw_labels = clusterer.labels_
+    mapped = (raw_labels + 1).astype(int)
+    dataset['clusters'] = mapped
+    return dataset
 
 @njit(fastmath=True, cache=True, nogil=True)
 def calculate_labels_filter_one_direction(close, lvl, q, direction):

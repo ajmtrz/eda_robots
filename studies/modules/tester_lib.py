@@ -431,32 +431,75 @@ def _simulate_batch(close, l_all, m_all, block_size, direction):
         scores[i] = score
     return scores
 
-def _predict_batch(model, X_base, noise_levels):
+# -----------------------------------------------------------------------------
+#  ONNX-accelerated batch prediction
+# -----------------------------------------------------------------------------
+import onnxruntime as rt
+rt.set_default_logger_severity(4)
+from modules.export_lib import *
+update_registered_converter(
+    CatWithEval,
+    "CatBoostClassifier",
+    calculate_linear_classifier_output_shapes,
+    skl2onnx_convert_catboost,
+    parser=skl2onnx_parser_castboost_classifier,
+    options={"nocl": [True, False], "zipmap": [True, False]}
+)
+update_registered_converter(
+    XGBWithEval,
+    'XGBClassifier',
+    calculate_linear_classifier_output_shapes,
+    convert_xgboost,
+    options={'nocl': [True, False], 'zipmap': [True, False]}
+)
+# 1) ───────── cache global de sesiones ───────────────────────────
+_ONNX_CACHE: dict[int, rt.InferenceSession] = {}
+
+def _predict_batch(model, X_base, noise_levels, batch_size: int = 128):
     """
-    Devuelve (n_sim, n_samples) con las probabilidades para cada ruido.
+    Devuelve (n_sim, n_samples) con las probabilidades p(1) usando
+    una ÚNICA inferencia ONNX Runtime. La sesión se guarda en un
+    cache global para evitar recrearla, sin modificar el objeto modelo.
     """
+    # ── a) build / fetch ONNX session ─────────────────────────────
+    sid = id(model)
+    sess = _ONNX_CACHE.get(sid)
+    if sess is None:                       # primera vez para este modelo
+        onnx_model = convert_sklearn(
+            model,
+            initial_types=[('x', FloatTensorType([None, X_base.shape[1]]))],
+            target_opset={"": 18, "ai.onnx.ml": 2},
+            options={id(model): {'zipmap': False}}
+        )
+
+        providers = (['CPUExecutionProvider'])
+        sess = rt.InferenceSession(
+            onnx_model.SerializeToString(),
+            providers=providers
+        )
+        _ONNX_CACHE[sid] = sess
+
+    iname = sess.get_inputs()[0].name
+    onnx_run = sess.run
+
+    # ── b) construir tensor ruidoso completo ─────────────────────
     n_sim, n_samples, n_feat = len(noise_levels), *X_base.shape
-    # 1) replicar matriz base
     X_big = np.repeat(X_base[None, :, :], n_sim, axis=0)
-    # 2) añadir un ruido distinto por simulación
-    std = X_base.std(axis=0, keepdims=True)     # (1, n_feat)
-    eps = np.random.normal(0.0, std, size=X_big.shape)
-    X_big += eps * noise_levels[:, None, None]  # broadcast n_sim
-    # 3) llamar al modelo **una vez**
-    probs = model.predict_proba(X_big.reshape(-1, n_feat))[:, 1]
-    return probs.reshape(n_sim, n_samples)
+    std   = X_base.std(axis=0, keepdims=True)
+    eps   = np.random.normal(0.0, std, size=X_big.shape)
+    X_big += eps * noise_levels[:, None, None]
+
+    # ── c) inferencia masiva ─────────────────────────────────────
+    proba = onnx_run(None, {iname: X_big.reshape(-1, n_feat).astype(np.float32)})[1][:, 1]
+    return proba.reshape(n_sim, n_samples)
 
 def monte_carlo_full(
     close: np.ndarray,
-    *,
+    X_main: np.ndarray,
+    X_meta: np.ndarray,
+    hp: dict,
     n_sim: int = 100,
-    block_size: int | None = 20,
-    direction: str = 'buy',
-    # --- modelos y features ---
-    model_main=None,
-    model_meta=None,
-    X_main=None,
-    X_meta=None,
+    block_size: int = 20
 ) -> dict:
     """
     Lanza Monte-Carlo combinando ruido en inputs y bootstrapping de retornos.
@@ -466,28 +509,26 @@ def monte_carlo_full(
     if X_main is not None and X_meta is not None:
         if X_main.shape[0] != close.shape[0] or X_meta.shape[0] != close.shape[0]:
             raise ValueError("X_main y X_meta deben tener el mismo número de filas que close")
-        if model_main is None or model_meta is None:
+        if hp['model_main'] is None or hp['model_meta'] is None:
             raise ValueError("Si se pasan features, también deben pasarse los modelos")
 
     # ---------- curva original ------------------------------------
     try:
         # Predecir con los modelos originales
-        labels = model_main.predict_proba(X_main)[:, 1]
-        meta = model_meta.predict_proba(X_meta)[:, 1]
+        labels = hp['model_main'].predict_proba(X_main)[:, 1]
+        meta = hp['model_meta'].predict_proba(X_meta)[:, 1]
         labels = (labels > 0.5).astype(np.float64)
         meta = (meta > 0.5).astype(np.float64)
 
-        report_orig, _ = process_data_one_direction(close, labels, meta, direction=direction)
-        if len(report_orig) < 2:
+        if close.size < 2:
             return {"scores": np.array([-1.0]), "p_positive": 0.0, "quantiles": np.array([-1.0, -1.0, -1.0])}
 
-        scores = np.empty(n_sim, dtype=np.float64)
-
+        # ── predicción batch + cast a float64 (necesario para _make_noisy_signals) ──
         noise_levels = np.random.uniform(0.005, 0.02, n_sim)
-        l_all = (_predict_batch(model_main, X_main, noise_levels) > 0.5).astype(np.float64)
-        m_all = (_predict_batch(model_meta, X_meta, noise_levels) > 0.5).astype(np.float64)
+        l_all = (_predict_batch(hp['model_main'], X_main, noise_levels) > 0.5).astype(np.float64)
+        m_all = (_predict_batch(hp['model_meta'], X_meta, noise_levels) > 0.5).astype(np.float64)
 
-        scores = _simulate_batch(close, l_all, m_all, block_size, direction)
+        scores = _simulate_batch(close, l_all, m_all, block_size, hp['direction'])
 
         valid = scores[scores > 0.0]
         return {
@@ -496,32 +537,30 @@ def monte_carlo_full(
             "quantiles": np.quantile(valid, [0.05, 0.5, 0.95]) if valid.size else [-1,-1,-1],
         }
     except Exception as e:
+        import traceback
+        print(f"\nError en monte_carlo_full:")
+        print(f"Error: {str(e)}")
+        print("Traceback:")
+        print(traceback.format_exc())
         return {"scores": np.array([-1.0]), "p_positive": 0.0, "quantiles": np.array([-1.0, -1.0, -1.0])}
 
 def robust_oos_score_one_direction(dataset: pd.DataFrame,
-                                   models: list,
-                                   backward: datetime | None = None,
-                                   forward: datetime | None = None,
-                                   *,
-                                   direction: str = 'buy',
+                                   hp: dict,
                                    n_sim: int = 100,
-                                   block_size: int | None = 20,
+                                   block_size: int = 20,
                                    agg: str = "q05") -> float:
     """
     Devuelve un score robusto (float) listo para Optuna.
     Solo prepara los datos y pasa los modelos y features a monte_carlo_full,
     que se encargará de aplicar ruido y hacer predicciones en cada simulación.
     """
-    # 1) filtra ventana OOS ---------------------------------------
-    if backward is None or forward is None:
-        ext_ds = dataset.copy()
-    else:
-        ext_ds = dataset.loc[(dataset.index >= backward) & (dataset.index <= forward)].copy()
-
+    # 1) Copiar dataset --------------------------------------------
+    ext_ds = dataset.copy()
+    # 2) Validar dataset --------------------------------------------
     if ext_ds.empty:
         return -1.0
 
-    # 2) preparar datos --------------------------------------------
+    # 3) preparar datos --------------------------------------------
     # Pre-calcular índices de características
     feature_cols = ext_ds.columns.str.contains('_feature')
     meta_feature_cols = ext_ds.columns.str.contains('_meta_feature')
@@ -538,14 +577,12 @@ def robust_oos_score_one_direction(dataset: pd.DataFrame,
     # 3) Monte Carlo robusto -------------------------------------
     try:
         mc = monte_carlo_full(
-            close_arr,
+            close=close_arr,
+            X_main=X_main,
+            X_meta=X_meta,
+            hp=hp,
             n_sim=n_sim,
             block_size=block_size,
-            direction=direction,
-            model_main=models[0],
-            model_meta=models[1],
-            X_main=X_main,
-            X_meta=X_meta
         )
         
         if mc["scores"].size == 0:

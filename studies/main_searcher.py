@@ -1,7 +1,8 @@
 import gc
 import copy
 import math
-import random
+import time
+import warnings
 import numpy as np
 import pandas as pd
 from datetime import datetime
@@ -37,6 +38,7 @@ class StrategySearcher:
         base_df (pd.DataFrame): DataFrame con datos históricos
         all_results (dict): Resultados de todas las búsquedas realizadas
         best_models (list): Lista de los mejores modelos encontrados
+        model_range (list): Rango de modelos a optimizar
     """
     
     def __init__(
@@ -100,7 +102,8 @@ class StrategySearcher:
         self.base_df = get_prices(self.base_hp)
         self.base_hp['base_df'] = self.base_df
         
-        # Configuración de sklearn y optuna
+        # Configuración de warnings, sklearn y optuna
+        warnings.filterwarnings("ignore")
         set_config(enable_metadata_routing=True, skip_parameter_validation=True)
         optuna.logging.set_verbosity(optuna.logging.WARNING)
         
@@ -133,8 +136,9 @@ class StrategySearcher:
             raise ValueError(f"Tipo de búsqueda no válido: {search_type}")
             
         search_func = search_funcs[search_type]
+        self.model_range = list(range(n_models))  # Inicializar model_range
         
-        for i in tqdm(range(n_models), desc=f"Optimizando {self.base_hp['symbol']}/{self.base_hp['timeframe']}", unit="modelo"):
+        for i in tqdm(self.model_range, desc=f"Optimizando {self.base_hp['symbol']}/{self.base_hp['timeframe']}", unit="modelo"):
             try:
                 # Inicializar estudio de Optuna
                 study = optuna.create_study(
@@ -190,7 +194,9 @@ class StrategySearcher:
                 
             except Exception as e:
                 import traceback
-                tqdm.write(f"\nError procesando modelo {i}: {str(e)}")
+                tqdm.write(f"\nError procesando modelo {i}:")
+                tqdm.write(f"Error: {str(e)}")
+                tqdm.write("Traceback:")
                 tqdm.write(traceback.format_exc())
                 
                 self.all_results[f"model_{i}"] = {
@@ -273,82 +279,81 @@ class StrategySearcher:
         Returns:
             float: Mejor puntuación encontrada
         """
-        try:
-            gc.collect()
-            best_score = -math.inf
-            hp = self.common_hyper_params(trial)  # Corregido el nombre del método
-            # Parámetros a optimizar
-            hp['n_clusters'] = trial.suggest_int('n_clusters', 5, 50, step=5)
-            hp['k'] = trial.suggest_int('k', 2, 10, step=1)
-            hp['atr_period'] = trial.suggest_int('atr_period', 5, 50, step=5)
-            hp['markup'] = trial.suggest_float("markup", 0.1, 1.0, step=0.1)
-            hp['label_max'] = trial.suggest_int('label_max', 2, 6, step=1, log=True)
-            
-            # Obtener datos de entrenamiento y prueba
-            ds_train, ds_test = self.get_train_test_data(hp)
-            
-            # Clustering
-            ds_train = sliding_window_clustering(
-                ds_train,
-                n_clusters=hp['n_clusters'],
-                step=hp.get('step', None),
+        gc.collect()
+        best_score = -math.inf
+        hp = self.common_hyper_params(trial)  # Corregido el nombre del método
+        # Parámetros a optimizar
+        hp['n_clusters'] = trial.suggest_int('n_clusters', 5, 50, step=5)
+        hp['k'] = trial.suggest_int('k', 2, 10, step=1)
+        hp['atr_period'] = trial.suggest_int('atr_period', 5, 50, step=5)
+        hp['markup'] = trial.suggest_float("markup", 0.1, 1.0, step=0.1)
+        hp['label_max'] = trial.suggest_int('label_max', 2, 6, step=1, log=True)
+        
+        # Obtener datos de entrenamiento y prueba
+        ds_train, ds_test = self.get_train_test_data(hp)
+        
+        # Clustering
+        ds_train = sliding_window_clustering(
+            ds_train,
+            n_clusters=hp['n_clusters'],
+            step=hp.get('step', None),
+            atr_period=hp['atr_period'],
+            k=hp['k']
+        )
+        # Evaluar clusters ordenados por tamaño
+        cluster_sizes = ds_train['labels_meta'].value_counts()
+
+        # Filtrar el cluster 0 (inválido) si existe
+        if 0 in cluster_sizes.index:
+            cluster_sizes = cluster_sizes.drop(0)
+        
+        # Evaluar cada cluster
+        for clust in cluster_sizes.index:
+            # Main data
+            main_data = ds_train.loc[ds_train['labels_meta'] == clust]
+            if len(main_data) <= hp['label_max']:
+                continue
+            main_data = get_labels_one_direction(
+                main_data,
+                markup=hp['markup'],
+                max_val=hp['label_max'],
+                direction=hp['direction'],
                 atr_period=hp['atr_period'],
-                k=hp['k']
+                deterministic=True
             )
-            # Evaluar clusters ordenados por tamaño
-            cluster_sizes = ds_train['clusters'].value_counts()
+            if (main_data['labels_main'].value_counts() < 2).any():
+                continue
 
-            # Filtrar el cluster 0 (inválido) si existe
-            if 0 in cluster_sizes.index:
-                cluster_sizes = cluster_sizes.drop(0)
-            
-            # Evaluar cada cluster
-            for clust in cluster_sizes.index:
-                # Main data
-                main_data = ds_train.loc[ds_train['clusters'] == clust]
-                if len(main_data) <= hp['label_max']:
-                    continue
-                main_data = get_labels_one_direction(
-                    main_data,
-                    markup=hp['markup'],
-                    max_val=hp['label_max'],
-                    direction=hp['direction'],
-                    atr_period=hp['atr_period'],
-                    deterministic=True
-                )
-                if (main_data['labels'].value_counts() < 2).any():
-                    continue
+            # Meta data
+            meta_data = ds_train.copy()
+            meta_data['labels_meta'] = (meta_data['labels_meta'] == clust).astype(int)
+            if (meta_data['labels_meta'].value_counts() < 2).any():
+                continue
 
-                # Meta data
-                meta_data = ds_train.copy()
-                meta_data['clusters'] = (meta_data['clusters'] == clust).astype(int)
-                if (meta_data['clusters'].value_counts() < 2).any():
-                    continue
+            # ── Evaluación en ambos períodos ──────────────────────────────
+            hp_models = self.fit_final_models(
+                main_data=main_data,
+                meta_data=meta_data,
+                ds_train=ds_train,
+                ds_test=ds_test,
+                hp=hp,
+                trial=trial
+            )
+            if hp_models is None:
+                continue  # falló fit_final_models
 
-                # Evaluación en ambos períodos
-                hp = self.fit_final_models(
-                    main_data=main_data,
-                    meta_data=meta_data,
-                    ds_train=ds_train,
-                    ds_test=ds_test,
-                    hp=hp,
-                    trial=trial
-                )
-                if hp['r2_ins'] == None or hp['r2_oos'] == None or hp['model_main'] == None or hp['model_meta'] == None:
-                    continue
-                # Calcular puntuación combinada (puedes ajustar los pesos según necesites)
-                hp['score'] = self.calc_score(hp['r2_ins'], hp['r2_oos'])
-                if hp['score'] <= -1.0:
-                    continue
+            # robust scores
+            r2_ins = hp_models['r2_ins']
+            r2_oos = hp_models['r2_oos']
+            score  = self.calc_score(r2_ins, r2_oos)
+            if score <= -1.0:
+                continue
 
-                if hp['score'] > best_score:
-                    best_score = hp['score']
-                    # Guardar información del trial actual
-                    self.save_best_trial(trial, study, hp)
-
-        except Exception as e:
-            print(f"Error en trial {trial.number}: {str(e)}")
-            return -1.0
+            # guarda si es el mejor
+            if score > best_score:
+                best_score = score
+                hp_models['score'] = score
+                self.save_best_trial(trial, study, hp_models)
         
         # Si no hay ningún cluster válido
         if best_score == -math.inf:
@@ -397,8 +402,8 @@ class StrategySearcher:
         # Dataset completo obtener caracteristicas
         full_ds = get_features(self.base_hp['base_df'], hp)
         # Seccionar dataset de entrenamiento
-        test_mask  = (full_ds.index >= self.base_hp["test_start"]) & (full_ds.index <= self.base_hp["test_end"])
-        train_mask = (full_ds.index >= self.base_hp["train_start"]) & (full_ds.index <= self.base_hp["train_end"]) & ~test_mask
+        test_mask  = (full_ds.index >= hp["test_start"]) & (full_ds.index <= hp["test_end"])
+        train_mask = (full_ds.index >= hp["train_start"]) & (full_ds.index <= hp["train_end"]) & ~test_mask
         ds_train = full_ds[train_mask]
         ds_test  = full_ds[test_mask]
         return ds_train, ds_test
@@ -599,9 +604,12 @@ class StrategySearcher:
         
         gc.collect()
         # ---------- 1) main model_main ----------
-        X_main = main_data.loc[:, main_data.columns.str.contains('_feature') & ~main_data.columns.str.contains('_meta_feature')]
+        # Get feature columns and rename them to follow f%d pattern
+        main_feature_cols = main_data.columns[main_data.columns.str.contains('_feature') & ~main_data.columns.str.contains('_meta_feature')]
+        X_main = main_data.loc[:, main_feature_cols].copy()
+        X_main.columns = [f'f{i}' for i in range(len(main_feature_cols))]
         if check_constant_features(X_main.to_numpy()):
-                return None, None, None, None
+                return None
         y_main = main_data['labels_main'].astype('int16')
         # Check for inf values in main features
         inf_cols_main = X_main.columns[X_main.isin([np.inf, -np.inf]).any()].tolist()
@@ -619,12 +627,14 @@ class StrategySearcher:
         )
         # ── descartar clusters problemáticos ────────────────────────────
         if len(y_train_main.value_counts()) < 2 or len(y_val_main.value_counts()) < 2:
-            return None, None, None, None
+            return None
         
         # ---------- 2) meta‑modelo ----------
-        X_meta = meta_data.loc[:, meta_data.columns.str.contains('_meta_feature')]
+        meta_feature_cols = meta_data.columns[meta_data.columns.str.contains('_meta_feature')]
+        X_meta = meta_data.loc[:, meta_feature_cols].copy()
+        X_meta.columns = [f'f{i}' for i in range(len(meta_feature_cols))]
         if check_constant_features(X_meta.to_numpy()):
-            return None, None, None, None
+            return None
         y_meta = meta_data['labels_meta'].astype('int16')
         # Check for inf values in meta features
         inf_cols_meta = X_meta.columns[X_meta.isin([np.inf, -np.inf]).any()].tolist()
@@ -642,7 +652,7 @@ class StrategySearcher:
         )
         # ── descartar clusters problemáticos ────────────────────────────
         if len(y_train_meta.value_counts()) < 2 or len(y_val_meta.value_counts()) < 2:
-            return None, None, None, None
+            return None
 
         # print(f"Main columns: {X_main.columns.tolist()}")
         # print(f"Meta columns: {X_meta.columns.tolist()}")
@@ -668,7 +678,7 @@ class StrategySearcher:
             eval_metric='logloss',
             verbosity=0,
             n_jobs=-1,
-            tree_method= "gpu_hist",
+            tree_method= "hist",
             device_type="cuda"
         )
         base_main_models = [
@@ -688,10 +698,10 @@ class StrategySearcher:
                 flatten_transform=False,
                 n_jobs=1
             )
-        # print("training main model...")
-        # start_time = time.time()
+        print("training main model...")
+        start_time = time.time()
         hp['model_main'].fit(X_train_main, y_train_main)
-        # print(f"main model trained in {time.time() - start_time:.2f} seconds")
+        print(f"main model trained in {time.time() - start_time:.2f} seconds")
 
         gc.collect()
 
@@ -717,7 +727,7 @@ class StrategySearcher:
             verbosity=0,
             verbose_eval=False,
             n_jobs=-1,
-            tree_method= "gpu_hist",
+            tree_method= "hist",
             device_type="cuda"
         )
         base_meta_models = [
@@ -737,48 +747,32 @@ class StrategySearcher:
                 flatten_transform=False,
                 n_jobs=1
             )
-        # print("training meta model...")
-        # start_time = time.time()
+        print("training meta model...")
+        start_time = time.time()
         hp['model_meta'].fit(X_train_meta, y_train_meta)
-        # print(f"meta model trained in {time.time() - start_time:.2f} seconds")
+        print(f"meta model trained in {time.time() - start_time:.2f} seconds")
 
         # ── evaluación ───────────────────────────────────────────────
         test_len = len(ds_test)
         train_indices = np.random.choice(len(ds_train), size=test_len, replace=False)
         ds_train_eval = ds_train.iloc[train_indices].copy()
         
-        # print("evaluating in-sample...")
-        # start_time = time.time()
+        print("evaluating in-sample...")
+        start_time = time.time()
         hp['r2_ins'] = robust_oos_score_one_direction(
-            ds_train_eval,
-            n_sim = 100, agg="q05"
+            dataset=ds_train_eval,
+            hp=hp,
+            n_sim=100,
+            agg="q05"
         )
-        # print(f"in-sample score calculated in {time.time() - start_time:.2f} seconds")
-        # print("evaluating out-of-sample...")
-        # start_time = time.time()
+        print(f"in-sample score calculated in {time.time() - start_time:.2f} seconds")
+        print("evaluating out-of-sample...")
+        start_time = time.time()
         hp['r2_oos'] = robust_oos_score_one_direction(
-            ds_test,
-            n_sim = 100, agg="q05"
+            dataset=ds_test,
+            hp=hp,
+            n_sim=100,
+            agg="q05"
         )
-        # print(f"out-of-sample score calculated in {time.time() - start_time:.2f} seconds\n")
+        print(f"out-of-sample score calculated in {time.time() - start_time:.2f} seconds\n")
         return hp
-
-searcher = StrategySearcher(
-    symbol='XAUUSD',
-    timeframe='H1',
-    direction='buy',
-    train_start=datetime(2019, 1, 1),
-    train_end=datetime(2025, 1, 1),
-    test_start=datetime(2022, 1, 1),
-    test_end=datetime(2023, 1, 1),
-    n_trials=500,
-)
-
-# Buscar estrategias usando clustering
-searcher.run_search('clusters', n_models=5)
-
-# Buscar estrategias usando causalidad
-#searcher.run_search('causal', n_models=10)
-
-# Buscar estrategias usando filtros
-#searcher.run_search('filter', n_models=10)

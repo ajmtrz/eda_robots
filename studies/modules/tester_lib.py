@@ -17,7 +17,7 @@ from modules.export_lib import (
 )
 rt.set_default_logger_severity(4)
 
-@jit(fastmath=True, cache=True)
+@jit(fastmath=True)
 def process_data(close, labels, metalabels):
     last_deal  = 2          # 2 = flat, 0 = short, 1 = long
     last_price = 0.0
@@ -49,7 +49,7 @@ def process_data(close, labels, metalabels):
 
     return np.array(report), np.array(chart)
 
-@jit(fastmath=True, cache=True)
+@jit(fastmath=True)
 def process_data_one_direction(close, labels, metalabels, direction):
     last_deal = 2           # 2 = flat, 1 = in‑market (única dirección)
     last_price = 0.0
@@ -106,7 +106,7 @@ def tester(dataset, plot=False):
 
     return lr.score(X, y) * sign
 
-@njit(fastmath=True, cache=True)
+@njit(fastmath=True)
 def evaluate_report(report: np.ndarray, r2_raw: float) -> float:
     # Verificación básica - necesitamos al menos 2 puntos para un reporte válido
     if len(report) < 2:
@@ -316,7 +316,7 @@ def test_model_one_direction(dataset: pd.DataFrame,
 # ───────────────────────────────────────────────────────────────────
 
 # ---------- helpers ------------------------------------------------
-@njit(fastmath=True, cache=True)
+@njit(fastmath=True)
 def _bootstrap_returns(returns: np.ndarray,
                        block_size: int) -> np.ndarray:
     """
@@ -353,7 +353,7 @@ def _bootstrap_returns(returns: np.ndarray,
     return resampled
 
 
-@njit(fastmath=True, cache=True)
+@njit(fastmath=True)
 def _equity_from_returns(resampled_returns: np.ndarray) -> np.ndarray:
     """Crea curva de equity partiendo de 0."""
     n = resampled_returns.size
@@ -366,7 +366,7 @@ def _equity_from_returns(resampled_returns: np.ndarray) -> np.ndarray:
     return equity
 
 
-@njit(fastmath=True, cache=True)
+@njit(fastmath=True)
 def _signed_r2(equity: np.ndarray) -> float:
     n = equity.size
     x_mean = (n - 1) * 0.5
@@ -387,7 +387,7 @@ def _signed_r2(equity: np.ndarray) -> float:
     r2 = 1.0 - sse / sst if sst else 0.0
     return r2 if slope >= 0 else -r2
 
-@njit(fastmath=True, cache=True)
+@njit(fastmath=True)
 def _make_noisy_signals(close: np.ndarray,
                        labels: np.ndarray,
                        meta: np.ndarray,
@@ -425,7 +425,7 @@ def _make_noisy_signals(close: np.ndarray,
 
     return close_noisy, labels_noisy, meta_noisy
 
-@njit(parallel=True, fastmath=True, cache=True)
+@njit(parallel=True, fastmath=True)
 def _simulate_batch(close, l_all, m_all, block_size, direction):
     n_sim, n = l_all.shape
     scores = np.full(n_sim, -1.0)

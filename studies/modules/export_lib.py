@@ -744,5 +744,3 @@ def remove_inner_braces_and_second_bracket(text):
     result = pattern.sub(replace_inner_braces_and_second_bracket, text)
 
     return result
-
-    return result

@@ -502,10 +502,12 @@ def _predict_batch(model, X_base, noise_levels):
     return proba.reshape(n_sim, n_samples)
 
 def monte_carlo_full(
+    model_main: object,
+    model_meta: object,
     close: np.ndarray,
     X_main: np.ndarray,
     X_meta: np.ndarray,
-    hp: dict,
+    direction: str,
     n_sim: int = 100,
     block_size: int = 20
 ) -> dict:
@@ -517,14 +519,14 @@ def monte_carlo_full(
     if X_main is not None and X_meta is not None:
         if X_main.shape[0] != close.shape[0] or X_meta.shape[0] != close.shape[0]:
             raise ValueError("X_main y X_meta deben tener el mismo número de filas que close")
-        if hp['model_main'] is None or hp['model_meta'] is None:
+        if model_main is None or model_meta is None:
             raise ValueError("Si se pasan features, también deben pasarse los modelos")
 
     # ---------- curva original ------------------------------------
     try:
         # Predecir con los modelos originales
-        labels = hp['model_main'].predict_proba(X_main)[:, 1]
-        meta = hp['model_meta'].predict_proba(X_meta)[:, 1]
+        labels = model_main.predict_proba(X_main)[:, 1]
+        meta = model_meta.predict_proba(X_meta)[:, 1]
         labels = (labels > 0.5).astype(np.float64)
         meta = (meta > 0.5).astype(np.float64)
 
@@ -533,10 +535,10 @@ def monte_carlo_full(
 
         # ── predicción batch + cast a float64 (necesario para _make_noisy_signals) ──
         noise_levels = np.random.uniform(0.005, 0.02, n_sim)
-        l_all = (_predict_batch(hp['model_main'], X_main, noise_levels) > 0.5).astype(np.float64)
-        m_all = (_predict_batch(hp['model_meta'], X_meta, noise_levels) > 0.5).astype(np.float64)
+        l_all = (_predict_batch(model_main, X_main, noise_levels) > 0.5).astype(np.float64)
+        m_all = (_predict_batch(model_meta, X_meta, noise_levels) > 0.5).astype(np.float64)
 
-        scores = _simulate_batch(close, l_all, m_all, block_size, hp['direction'])
+        scores = _simulate_batch(close, l_all, m_all, block_size, direction)
 
         valid = scores[scores > 0.0]
         return {
@@ -553,7 +555,9 @@ def monte_carlo_full(
         return {"scores": np.array([-1.0]), "p_positive": 0.0, "quantiles": np.array([-1.0, -1.0, -1.0])}
 
 def robust_oos_score_one_direction(dataset: pd.DataFrame,
-                                   hp: dict,
+                                   model_main: object,
+                                   model_meta: object,
+                                   direction: str,
                                    n_sim: int = 100,
                                    block_size: int = 20,
                                    agg: str = "q05") -> float:
@@ -587,7 +591,9 @@ def robust_oos_score_one_direction(dataset: pd.DataFrame,
             close=close_arr,
             X_main=X_main,
             X_meta=X_meta,
-            hp=hp,
+            model_main=model_main,
+            model_meta=model_meta,
+            direction=direction,
             n_sim=n_sim,
             block_size=block_size,
         )

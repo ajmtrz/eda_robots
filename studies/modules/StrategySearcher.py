@@ -17,6 +17,8 @@ from optuna.integration import CatBoostPruningCallback
 from optuna.integration import XGBoostPruningCallback
 from sklearn import set_config
 from sklearn.model_selection import train_test_split
+from functools import lru_cache, partial
+from weakref import WeakValueDictionary
 
 from modules.labeling_lib import (
     get_prices, get_features, get_labels_one_direction,
@@ -41,6 +43,25 @@ class StrategySearcher:
         model_range (list): Rango de modelos a optimizar
     """
     
+    _DF_REGISTRY = WeakValueDictionary()
+
+    @staticmethod
+    @lru_cache()
+    def _cached_features(df_id: int,
+                        start: datetime,
+                        end: datetime,
+                        hkey: tuple):
+        
+        hp_subset = dict(hkey)
+        hp_full = {
+            'periods_main': list(hp_subset['periods_main']),
+            'periods_meta': list(hp_subset['periods_meta']),
+            'stats_main'  : list(hp_subset['stats_main']),
+            'stats_meta'  : list(hp_subset['stats_meta']),
+        }
+        df = StrategySearcher._DF_REGISTRY[df_id]
+        return get_features(df.loc[start:end].copy(), hp_full)
+    
     def __init__(
         self,
         symbol: str,
@@ -52,7 +73,7 @@ class StrategySearcher:
         test_end: datetime,
         n_trials: int = 500,
         n_models: int = 10,
-        n_jobs: int = 1,
+        n_jobs: int = -1,
         models_export_path: str = r'/mnt/c/Users/Administrador/AppData/Roaming/MetaQuotes/Terminal/6C3C6A11D1C3791DD4DBF45421BF8028/MQL5/Files/',
         include_export_path: str = r'/mnt/c/Users/Administrador/AppData/Roaming/MetaQuotes/Terminal/6C3C6A11D1C3791DD4DBF45421BF8028/MQL5/Include/ajmtrz/include/Dmitrievsky',
         history_path: str = r"/mnt/c/Users/Administrador/AppData/Roaming/MetaQuotes/Terminal/Common/Files/",
@@ -108,7 +129,7 @@ class StrategySearcher:
         
         # Cargar datos históricos
         self.base_df = get_prices(self.base_hp)
-        self.base_hp['base_df'] = self.base_df
+        StrategySearcher._DF_REGISTRY[id(self.base_df)] = self.base_df
         
         # Configuración de warnings, sklearn y optuna
         warnings.filterwarnings("ignore")
@@ -255,7 +276,7 @@ class StrategySearcher:
         print("="*50)
         
         successful_models = [info for model_key, info in self.all_results.items() if info.get("success", False)]
-        print(f"Modelos completados exitosamente: {len(successful_models)}/{len(self.model_range)}")
+        print(f"Modelos completados exitosamente: {len(successful_models)}/{self.n_models}")
         
         if successful_models:
             # Calcular estadísticas globales
@@ -309,6 +330,8 @@ class StrategySearcher:
         ds_train, ds_test = self.get_train_test_data(hp)
         
         # Clustering
+        # print("clustering...")
+        # start_time = time.time()
         if self.subtype_clustering == 'advanced':
             ds_train = sliding_window_clustering(
                 ds_train,
@@ -320,9 +343,9 @@ class StrategySearcher:
         else:
             ds_train = clustering_simple(
                 ds_train,
-                min_cluster_size=hp['n_clusters'],
-                n_jobs=self.n_jobs
+                min_cluster_size=hp['n_clusters']
             )
+        # print(f"clustering done in {time.time() - start_time:.2f} seconds")
         # Evaluar clusters ordenados por tamaño
         cluster_sizes = ds_train['labels_meta'].value_counts()
 
@@ -333,9 +356,19 @@ class StrategySearcher:
         # Evaluar cada cluster
         for clust in cluster_sizes.index:
             # Main data
-            main_data = ds_train.loc[ds_train['labels_meta'] == clust]
+            main_cols = [c for c in ds_train.columns if '_feature' in c and '_meta_feature' not in c]
+            meta_cols = [c for c in ds_train.columns if '_meta_feature' in c]
+
+            ohlc_cols = ["open", "high", "low", "close"]          # las que existan
+            present   = [c for c in ohlc_cols if c in ds_train.columns]
+
+            main_data = ds_train.loc[
+                ds_train["labels_meta"] == clust,
+                present + main_cols
+            ].copy()
             if len(main_data) <= hp['label_max']:
-                continue
+               continue
+
             main_data = get_labels_one_direction(
                 main_data,
                 markup=hp['markup'],
@@ -348,39 +381,34 @@ class StrategySearcher:
                 continue
 
             # Meta data
-            meta_data = ds_train.copy()
-            meta_data['labels_meta'] = (meta_data['labels_meta'] == clust).astype(int)
+            meta_data = ds_train[meta_cols].copy()
+            meta_data['labels_meta'] = (ds_train['labels_meta'] == clust).astype(int)
             if (meta_data['labels_meta'].value_counts() < 2).any():
                 continue
 
             # ── Evaluación en ambos períodos ──────────────────────────────
-            hp_models = self.fit_final_models(
-                main_data=main_data,
-                meta_data=meta_data,
-                ds_train=ds_train,
-                ds_test=ds_test,
-                hp=hp.copy(),
-                trial=trial
+            res = self.fit_final_models(
+                main_data, meta_data, ds_train, ds_test, hp.copy(), trial
             )
-            if hp_models is None:
+            if res is None:
                 continue
 
-            # robust scores
-            r2_ins = hp_models['r2_ins']
-            r2_oos = hp_models['r2_oos']
-            score  = self.calc_score(r2_ins, r2_oos)
-            if score <= -1.0:
-                continue
+            metrics, m_main, m_meta = res
 
-            # guarda si es el mejor
-            if score > best_score:
-                best_score = score
-                hp_models['score'] = score
-                self.save_best_trial(trial, study, hp_models)
+            # no guardes modelos si el score no mejora
+            if metrics["score"] > best_score and metrics["score"] > -1.0:
+                best_score = metrics["score"]
+                # guarda métrica + modelos ganadores
+                self.save_best_trial(
+                    trial, study,
+                    metrics=metrics,
+                    models=[m_main, m_meta],
+                )
+            else:
+                # no mejora → descartar enseguida
+                del m_main, m_meta
+                gc.collect()
 
-            # Liberar memoria
-            gc.collect()
-        
         # Devolver la mejor puntuación encontrada
         return best_score if best_score != -math.inf else -1.0
 
@@ -412,23 +440,25 @@ class StrategySearcher:
     # Métodos auxiliares
     # =========================================================================
     
-    def get_train_test_data(self, hp: Dict[str, Any]) -> Tuple[pd.DataFrame, pd.DataFrame]:
-        """Obtiene los datos de entrenamiento y prueba.
-        
-        Args:
-            hp: Diccionario de hiperparámetros
-            
-        Returns:
-            Tuple[pd.DataFrame, pd.DataFrame]: Datos de entrenamiento y prueba
-        """
-        # Dataset completo obtener caracteristicas
-        full_ds = get_features(self.base_hp['base_df'], hp)
-        # Seccionar dataset de entrenamiento
+    # ---------------------------------------------------------------------
+    def get_train_test_data(self, hp):
+        hkey = tuple(sorted({
+            'periods_main': tuple(hp['periods_main']),
+            'periods_meta': tuple(hp['periods_meta']),
+            'stats_main'  : tuple(hp['stats_main']),
+            'stats_meta'  : tuple(hp['stats_meta']),
+        }.items()))
+
+        full_ds = StrategySearcher._cached_features(
+            id(self.base_df),
+            self.base_hp['train_start'],
+            self.base_hp['test_end'],
+            hkey,
+        )
+
         test_mask  = (full_ds.index >= hp["test_start"]) & (full_ds.index <= hp["test_end"])
         train_mask = (full_ds.index >= hp["train_start"]) & (full_ds.index <= hp["train_end"]) & ~test_mask
-        ds_train = full_ds[train_mask]
-        ds_test  = full_ds[test_mask]
-        return ds_train, ds_test
+        return full_ds[train_mask], full_ds[test_mask]
     
     def calc_score(self, fwd: float, bwd: float, eps: float = 1e-9) -> float:
         """Calcula la puntuación combinada.
@@ -563,51 +593,47 @@ class StrategySearcher:
         #print(f"Meta features seleccionadas: {hp['stats_meta']} | Periodo: {hp['periods_meta']}")
         return hp
 
-    def save_best_trial(self, trial: optuna.Trial, study: optuna.study.Study, hp: Dict[str, Any]) -> None:
-        """Guarda la información del mejor trial.
-        
-        Args:
-            trial: Trial actual de Optuna
-            study: Estudio de Optuna
-            hp: Diccionario de hiperparámetros
-        """
-        trial.set_user_attr("r2_ins", hp['r2_ins'])
-        trial.set_user_attr("r2_oos", hp['r2_oos'])
-        trial.set_user_attr("score", hp['score'])
-        trial.set_user_attr("stats_main", hp["stats_main"])
-        trial.set_user_attr("stats_meta", hp["stats_meta"])
-        trial.set_user_attr("periods_main", hp["periods_main"])
-        trial.set_user_attr("periods_meta", hp["periods_meta"])
-        # Guardar parámetros del trial actual (sin fechas)
-        params_to_save = hp.copy()
-        params_to_save.pop('backward', None)
-        params_to_save.pop('forward', None)
-        params_to_save.pop('full_forward', None)
-        trial.set_user_attr("params", params_to_save)
-        # Si existe el estudio, actualizar sus atributos
-        if study is not None:
-            current_best = study.user_attrs.get("best_score", -math.inf)
-            if hp['score'] > current_best:
-                study.set_user_attr("best_params", params_to_save)
-                study.set_user_attr("best_metrics", {
-                    "r2_ins": hp['r2_ins'],
-                    "r2_oos": hp['r2_oos'],
-                    "score": hp['score'],
-                })
-                study.set_user_attr("best_score", hp['score'])
-                study.set_user_attr("best_models", [hp['model_main'], hp['model_meta']])
-                study.set_user_attr("best_stats_main", hp["stats_main"])
-                study.set_user_attr("best_stats_meta", hp["stats_meta"])
-                study.set_user_attr("best_periods_main", hp["periods_main"])
-                study.set_user_attr("best_periods_meta", hp["periods_meta"])
-                study.set_user_attr("best_trial_number", trial.number)
+    def save_best_trial(
+            self,
+            trial: optuna.Trial,
+            study: optuna.study.Study,
+            *,
+            metrics: dict,
+            models: list | None = None,
+    ):
+        """Registra métricas y conserva solo los modelos del mejor score."""
+        # ---- guardar métricas en el trial ---------------------------------
+        for k, v in metrics.items():
+            trial.set_user_attr(k, v)
+
+        if study is None:
+            return
+
+        best = study.user_attrs.get("best_score", -math.inf)
+        if metrics["score"] > best and models is not None:
+            #      ─── nuevo récord global ────────────────────────────
+            # liberar modelos anteriores
+            old = study.user_attrs.get("best_models")
+            if old:
+                old.clear()
+                gc.collect()
+
+            study.set_user_attr("best_score", metrics["score"])
+            study.set_user_attr("best_models", models)
+            study.set_user_attr("best_metrics", metrics)
+            study.set_user_attr("best_trial_number", trial.number)
+        else:
+            # score no mejora -> descartar modelos recibidos
+            if models is not None:
+                del models[:]
+                gc.collect()
     
     def fit_final_models(self, main_data: pd.DataFrame,
                         meta_data: pd.DataFrame,
                         ds_train: pd.DataFrame,
                         ds_test: pd.DataFrame,
                         hp: Dict[str, Any],
-                        trial: optuna.Trial) -> Dict[str, Any]:
+                        trial: optuna.Trial) -> tuple[dict, object, object]:
         """Ajusta los modelos finales.
         
         Args:
@@ -621,179 +647,196 @@ class StrategySearcher:
         Returns:
             Dict[str, Any]: Hiperparámetros actualizados
         """
-        def check_constant_features(X):
-            return np.any(np.var(X, axis=0) < 1e-10)
-        # ---------- 1) main model_main ----------
-        # Get feature columns and rename them to follow f%d pattern
-        main_feature_cols = main_data.columns[main_data.columns.str.contains('_feature') & ~main_data.columns.str.contains('_meta_feature')]
-        X_main = main_data[main_feature_cols]
-        X_main.columns = [f'f{i}' for i in range(len(main_feature_cols))]
-        if check_constant_features(X_main.to_numpy()):
-            return None
-        y_main = main_data['labels_main'].astype('int16')
-        # Check for inf values in main features
-        inf_cols_main = X_main.columns[X_main.isin([np.inf, -np.inf]).any()].tolist()
-        if inf_cols_main:
-            print("Main features with inf values:", inf_cols_main)
-        # Check for NaN values in main features
-        nan_cols_main = X_main.columns[X_main.isna().any()].tolist()
-        if nan_cols_main:
-            print("Main features with NaN values:", nan_cols_main)
-        # División de datos para el modelo principal según fechas
-        X_train_main, X_val_main, y_train_main, y_val_main = train_test_split(
-            X_main, y_main, 
-            test_size=0.2,
-            shuffle=True
-        )
-        # ── descartar clusters problemáticos ────────────────────────────
-        if len(y_train_main.value_counts()) < 2 or len(y_val_main.value_counts()) < 2:
-            return None
-        
-        # ---------- 2) meta‑modelo ----------
-        meta_feature_cols = meta_data.columns[meta_data.columns.str.contains('_meta_feature')]
-        X_meta = meta_data[meta_feature_cols]
-        X_meta.columns = [f'f{i}' for i in range(len(meta_feature_cols))]
-        if check_constant_features(X_meta.to_numpy()):
-            return None
-        y_meta = meta_data['labels_meta'].astype('int16')
-        # Check for inf values in meta features
-        inf_cols_meta = X_meta.columns[X_meta.isin([np.inf, -np.inf]).any()].tolist()
-        if inf_cols_meta:
-            print("Meta features with inf values:", inf_cols_meta)
-        # Check for NaN values in meta features
-        nan_cols_meta = X_meta.columns[X_meta.isna().any()].tolist()
-        if nan_cols_meta:
-            print("Meta features with NaN values:", nan_cols_meta)
-        # División de datos para el modelo principal según fechas
-        X_train_meta, X_val_meta, y_train_meta, y_val_meta = train_test_split(
-            X_meta, y_meta, 
-            test_size=0.2,
-            shuffle=True
-        )
-        # ── descartar clusters problemáticos ────────────────────────────
-        if len(y_train_meta.value_counts()) < 2 or len(y_val_meta.value_counts()) < 2:
-            return None
-
-        # Main model
-        cat_main_params = dict(
-            iterations=hp['cat_main_iterations'],
-            depth=hp['cat_main_depth'],
-            learning_rate=hp['cat_main_learning_rate'],
-            l2_leaf_reg=hp['cat_main_l2_leaf_reg'],
-            early_stopping_rounds=hp['cat_main_early_stopping'],
-            eval_metric='Accuracy',
-            store_all_simple_ctr=False,
-            verbose=False,
-            thread_count=self.n_jobs,
-            task_type='CPU'
-        )
-        xgb_main_params = dict(
-            n_estimators=hp['xgb_main_estimators'],
-            max_depth=hp['xgb_main_max_depth'],
-            learning_rate=hp['xgb_main_learning_rate'],
-            reg_lambda=hp['xgb_main_reg_lambda'],
-            early_stopping_rounds=hp['xgb_main_early_stopping'],
-            eval_metric='logloss',
-            verbosity=0,
-            n_jobs=self.n_jobs,
-            tree_method= "gpu_hist",
-            device_type="cuda"
-        )
-        base_main_models = [
-            ('catboost', CatWithEval(
-                **cat_main_params,
-                eval_set=[(X_val_main, y_val_main)],
-                callbacks=[CatBoostPruningCallback(trial, "Accuracy")]
-            )),
-            ('xgboost', XGBWithEval(
-                **xgb_main_params, 
-                eval_set=[(X_val_main, y_val_main)],
-                callbacks=[XGBoostPruningCallback(trial, "validation_0-logloss")]
-            )),
-        ]
-        hp['model_main'] = VotingClassifier(
-                estimators=base_main_models,
-                voting='soft',
-                flatten_transform=False,
-                n_jobs=1
+        try:
+            def check_constant_features(X):
+                return np.any(np.var(X, axis=0) < 1e-10)
+            # ---------- 1) main model_main ----------
+            # Get feature columns and rename them to follow f%d pattern
+            main_feature_cols = main_data.columns[main_data.columns.str.contains('_feature') & ~main_data.columns.str.contains('_meta_feature')]
+            X_main = main_data[main_feature_cols]
+            X_main.columns = [f'f{i}' for i in range(len(main_feature_cols))]
+            if check_constant_features(X_main.to_numpy()):
+                return None
+            y_main = main_data['labels_main'].astype('int16')
+            # Check for inf values in main features
+            inf_cols_main = X_main.columns[X_main.isin([np.inf, -np.inf]).any()].tolist()
+            if inf_cols_main:
+                print("Main features with inf values:", inf_cols_main)
+            # Check for NaN values in main features
+            nan_cols_main = X_main.columns[X_main.isna().any()].tolist()
+            if nan_cols_main:
+                print("Main features with NaN values:", nan_cols_main)
+            # División de datos para el modelo principal según fechas
+            X_train_main, X_val_main, y_train_main, y_val_main = train_test_split(
+                X_main, y_main, 
+                test_size=0.2,
+                shuffle=True
             )
-        # print("training main model...")
-        # start_time = time.time()
-        hp['model_main'].fit(X_train_main, y_train_main)
-        # print(f"main model trained in {time.time() - start_time:.2f} seconds")
-
-        # Meta-modelo
-        cat_meta_params = dict(
-            iterations=hp['cat_meta_iterations'],
-            depth=hp['cat_meta_depth'],
-            learning_rate=hp['cat_meta_learning_rate'],
-            l2_leaf_reg=hp['cat_meta_l2_leaf_reg'],
-            early_stopping_rounds=hp['cat_meta_early_stopping'],
-            eval_metric='F1',
-            store_all_simple_ctr=False,
-            verbose=False,
-            thread_count=self.n_jobs,
-            task_type='CPU'
-        )
-        xgb_meta_params = dict(
-            n_estimators=hp['xgb_meta_estimators'],
-            max_depth=hp['xgb_meta_max_depth'],
-            learning_rate=hp['xgb_meta_learning_rate'],
-            reg_lambda=hp['xgb_meta_reg_lambda'],
-            early_stopping_rounds=hp['xgb_meta_early_stopping'],
-            eval_metric='logloss',
-            verbosity=0,
-            verbose_eval=False,
-            n_jobs=self.n_jobs,
-            tree_method= "gpu_hist",
-            device_type="cuda"
-        )
-        base_meta_models = [
-            ('catboost', CatWithEval(
-                **cat_meta_params,
-                eval_set=[(X_val_meta, y_val_meta)],
-                callbacks=[CatBoostPruningCallback(trial, "F1")]
-            )),
-            ('xgboost', XGBWithEval(
-                **xgb_meta_params, 
-                eval_set=[(X_val_meta, y_val_meta)],
-                callbacks=[XGBoostPruningCallback(trial, "validation_0-logloss")]
-            )),
-        ]
-
-        hp['model_meta'] = VotingClassifier(
-                estimators=base_meta_models,
-                voting='soft',
-                flatten_transform=False,
-                n_jobs=1
+            # ── descartar clusters problemáticos ────────────────────────────
+            if len(y_train_main.value_counts()) < 2 or len(y_val_main.value_counts()) < 2:
+                return None
+            
+            # ---------- 2) meta‑modelo ----------
+            meta_feature_cols = meta_data.columns[meta_data.columns.str.contains('_meta_feature')]
+            X_meta = meta_data[meta_feature_cols]
+            X_meta.columns = [f'f{i}' for i in range(len(meta_feature_cols))]
+            if check_constant_features(X_meta.to_numpy()):
+                return None
+            y_meta = meta_data['labels_meta'].astype('int16')
+            # Check for inf values in meta features
+            inf_cols_meta = X_meta.columns[X_meta.isin([np.inf, -np.inf]).any()].tolist()
+            if inf_cols_meta:
+                print("Meta features with inf values:", inf_cols_meta)
+            # Check for NaN values in meta features
+            nan_cols_meta = X_meta.columns[X_meta.isna().any()].tolist()
+            if nan_cols_meta:
+                print("Meta features with NaN values:", nan_cols_meta)
+            # División de datos para el modelo principal según fechas
+            X_train_meta, X_val_meta, y_train_meta, y_val_meta = train_test_split(
+                X_meta, y_meta, 
+                test_size=0.2,
+                shuffle=True
             )
-        # print("training meta model...")
-        # start_time = time.time()
-        hp['model_meta'].fit(X_train_meta, y_train_meta)
-        # print(f"meta model trained in {time.time() - start_time:.2f} seconds")
+            # ── descartar clusters problemáticos ────────────────────────────
+            if len(y_train_meta.value_counts()) < 2 or len(y_val_meta.value_counts()) < 2:
+                return None
 
-        # ── evaluación ───────────────────────────────────────────────
-        test_len = len(ds_test)
-        train_indices = np.random.choice(len(ds_train), size=test_len, replace=False)
-        ds_train_eval = ds_train.iloc[train_indices].copy()
-        
-        # print("evaluating in-sample...")
-        # start_time = time.time()
-        hp['r2_ins'] = robust_oos_score_one_direction(
-            dataset=ds_train_eval,
-            hp=hp,
-            n_sim=100,
-            agg="q05"
-        )
-        # print(f"in-sample score calculated in {time.time() - start_time:.2f} seconds")
-        # print("evaluating out-of-sample...")
-        # start_time = time.time()
-        hp['r2_oos'] = robust_oos_score_one_direction(
-            dataset=ds_test,
-            hp=hp,
-            n_sim=100,
-            agg="q05"
-        )
-        # print(f"out-of-sample score calculated in {time.time() - start_time:.2f} seconds\n")
-        _ONNX_CACHE.clear()
-        return hp
+            # Main model
+            cat_main_params = dict(
+                iterations=hp['cat_main_iterations'],
+                depth=hp['cat_main_depth'],
+                learning_rate=hp['cat_main_learning_rate'],
+                l2_leaf_reg=hp['cat_main_l2_leaf_reg'],
+                early_stopping_rounds=hp['cat_main_early_stopping'],
+                eval_metric='Accuracy',
+                store_all_simple_ctr=False,
+                verbose=False,
+                thread_count=self.n_jobs,
+                task_type='CPU'
+            )
+            xgb_main_params = dict(
+                n_estimators=hp['xgb_main_estimators'],
+                max_depth=hp['xgb_main_max_depth'],
+                learning_rate=hp['xgb_main_learning_rate'],
+                reg_lambda=hp['xgb_main_reg_lambda'],
+                early_stopping_rounds=hp['xgb_main_early_stopping'],
+                eval_metric='logloss',
+                verbosity=0,
+                n_jobs=self.n_jobs,
+                tree_method= "gpu_hist",
+                device_type="cuda"
+            )
+            base_main_models = [
+                ('catboost', CatWithEval(
+                    **cat_main_params,
+                    eval_set=[(X_val_main, y_val_main)],
+                    callbacks=[CatBoostPruningCallback(trial, "Accuracy")]
+                )),
+                ('xgboost', XGBWithEval(
+                    **xgb_main_params, 
+                    eval_set=[(X_val_main, y_val_main)],
+                    callbacks=[XGBoostPruningCallback(trial, "validation_0-logloss")]
+                )),
+            ]
+            model_main = VotingClassifier(
+                    estimators=base_main_models,
+                    voting='soft',
+                    flatten_transform=False,
+                    n_jobs=1
+                )
+            # print("training main model...")
+            # start_time = time.time()
+            model_main.fit(X_train_main, y_train_main)
+            # print(f"main model trained in {time.time() - start_time:.2f} seconds")
+
+            # Meta-modelo
+            cat_meta_params = dict(
+                iterations=hp['cat_meta_iterations'],
+                depth=hp['cat_meta_depth'],
+                learning_rate=hp['cat_meta_learning_rate'],
+                l2_leaf_reg=hp['cat_meta_l2_leaf_reg'],
+                early_stopping_rounds=hp['cat_meta_early_stopping'],
+                eval_metric='F1',
+                store_all_simple_ctr=False,
+                verbose=False,
+                thread_count=self.n_jobs,
+                task_type='CPU'
+            )
+            xgb_meta_params = dict(
+                n_estimators=hp['xgb_meta_estimators'],
+                max_depth=hp['xgb_meta_max_depth'],
+                learning_rate=hp['xgb_meta_learning_rate'],
+                reg_lambda=hp['xgb_meta_reg_lambda'],
+                early_stopping_rounds=hp['xgb_meta_early_stopping'],
+                eval_metric='logloss',
+                verbosity=0,
+                verbose_eval=False,
+                n_jobs=self.n_jobs,
+                tree_method= "gpu_hist",
+                device_type="cuda"
+            )
+            base_meta_models = [
+                ('catboost', CatWithEval(
+                    **cat_meta_params,
+                    eval_set=[(X_val_meta, y_val_meta)],
+                    callbacks=[CatBoostPruningCallback(trial, "F1")]
+                )),
+                ('xgboost', XGBWithEval(
+                    **xgb_meta_params, 
+                    eval_set=[(X_val_meta, y_val_meta)],
+                    callbacks=[XGBoostPruningCallback(trial, "validation_0-logloss")]
+                )),
+            ]
+
+            model_meta = VotingClassifier(
+                    estimators=base_meta_models,
+                    voting='soft',
+                    flatten_transform=False,
+                    n_jobs=1
+                )
+            # print("training meta model...")
+            # start_time = time.time()
+            model_meta.fit(X_train_meta, y_train_meta)
+            # print(f"meta model trained in {time.time() - start_time:.2f} seconds")
+
+            # ── evaluación ───────────────────────────────────────────────
+            test_len = len(ds_test)
+            train_indices = np.random.choice(len(ds_train), size=test_len, replace=False)
+            ds_train_eval = ds_train.iloc[train_indices].copy()
+            
+            # print("evaluating in-sample...")
+            # start_time = time.time()
+            r2_ins = robust_oos_score_one_direction(
+                dataset=ds_train_eval,
+                model_main=model_main,
+                model_meta=model_meta,
+                direction=hp['direction'],
+                n_sim=100,
+                agg="q05"
+            )
+            # print(f"in-sample score calculated in {time.time() - start_time:.2f} seconds")
+            # print("evaluating out-of-sample...")
+            # start_time = time.time()
+            r2_oos = robust_oos_score_one_direction(
+                dataset=ds_test,
+                model_main=model_main,
+                model_meta=model_meta,
+                direction=hp['direction'],
+                n_sim=100,
+                agg="q05"
+            )
+            # print(f"out-of-sample score calculated in {time.time() - start_time:.2f} seconds\n")
+
+            metrics = dict(
+                r2_ins=r2_ins,
+                r2_oos=r2_oos,
+                score=self.calc_score(r2_ins, r2_oos),
+                stats_main=hp['stats_main'],
+                stats_meta=hp['stats_meta'],
+                periods_main=hp['periods_main'],
+                periods_meta=hp['periods_meta'],
+            )
+            return metrics, model_main, model_meta
+        finally:
+            _ONNX_CACHE.clear()
+            gc.collect()

@@ -1688,7 +1688,8 @@ def sliding_window_clustering(
     # Ajuste dinámico del tamaño de ventana según ATR local
     min_window = n_clusters
     base_window = min(n_clusters * k, int(len(dataset) * 0.05))
-    
+    if base_window < min_window:
+        base_window = min_window
     # Calcular ATR local
     close_data = np.ascontiguousarray(dataset['close'].values)
     high_data = np.ascontiguousarray(dataset['high'].values)
@@ -1710,10 +1711,11 @@ def sliding_window_clustering(
     
     # Pre-cálculo
     n_rows = len(dataset)
-    votes = np.zeros((n_rows, n_clusters + 1), dtype=np.int32)
+    votes = np.zeros((n_rows, n_clusters + 1), dtype=np.uint8)
     # K-means global
-    meta_X_np = dataset.filter(regex="meta_feature").to_numpy(np.float32)
-    global_km = KMeans(n_clusters, n_init="auto", algorithm='auto').fit(meta_X_np)
+    meta_cols = dataset.columns.str.contains('_meta_feature')
+    meta_X_np = dataset.loc[:, meta_cols].to_numpy(np.float32, copy=False)
+    global_km = KMeans(n_clusters=n_clusters, n_init="auto", algorithm="auto").fit(meta_X_np)
     global_ct = global_km.cluster_centers_
     def map_centroids(local_ct: np.ndarray) -> dict[int, int]:
         cost = np.linalg.norm(local_ct[:, None] - global_ct, axis=2)
@@ -1739,7 +1741,10 @@ def sliding_window_clustering(
         if len(local_data) < n_clusters:
             continue
         local_km = KMeans(n_clusters, n_init="auto", algorithm='auto').fit(local_data)
-        mapping = map_centroids(local_km.cluster_centers_)
+        local_ct = local_km.cluster_centers_
+        if local_ct.shape[0] < global_ct.shape[0]:
+            continue
+        mapping = map_centroids(local_ct)
         lbls = local_km.labels_
         indices = np.arange(start, end)
         mapped_ids = np.array([mapping.get(lab, 0) for lab in lbls])
@@ -1752,16 +1757,14 @@ def sliding_window_clustering(
 def clustering_simple(dataset: pd.DataFrame,
                min_cluster_size: int = 20,
                min_samples: int | None = None,
-               metric: str = "euclidean",
-               n_jobs: int = -1) -> pd.DataFrame:
+               metric: str = "euclidean") -> pd.DataFrame:
     
     meta_X_np = dataset.filter(regex="meta_feature").to_numpy(np.float32)
 
     clusterer = HDBSCAN(
         min_cluster_size=min_cluster_size,
         min_samples=min_samples,
-        metric=metric,
-        core_dist_n_jobs=n_jobs
+        metric=metric
     ).fit(meta_X_np)
 
     raw_labels = clusterer.labels_

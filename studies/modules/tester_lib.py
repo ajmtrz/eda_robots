@@ -13,9 +13,7 @@ from modules.export_lib import (
     skl2onnx_convert_catboost,
     CatWithEval,
     XGBWithEval,
-    LGBMWithEval,
     convert_xgboost,
-    convert_lightgbm,
 )
 rt.set_default_logger_severity(4)
 
@@ -460,13 +458,6 @@ update_registered_converter(
     'XGBClassifier',
     calculate_linear_classifier_output_shapes,
     convert_xgboost,
-    options={'nocl': [True, False], 'zipmap': [True, False]}
-)
-update_registered_converter(
-    LGBMWithEval,
-    'LGBMClassifier',
-    calculate_linear_classifier_output_shapes,
-    convert_lightgbm,
     options={'nocl': [True, False], 'zipmap': [True, False]}
 )
 # 1) ───────── cache global de sesiones ───────────────────────────

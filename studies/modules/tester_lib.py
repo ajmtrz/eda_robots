@@ -1,3 +1,4 @@
+import math
 from numba import jit, njit, prange
 import numpy as np
 import pandas as pd
@@ -106,73 +107,44 @@ def tester(dataset, plot=False):
 
     return lr.score(X, y) * sign
 
+# ───────────────────────────────────────────────
+# NUEVA FUNCIÓN evaluate_report
+# ───────────────────────────────────────────────
 @njit(fastmath=True)
 def evaluate_report(report: np.ndarray, r2_raw: float) -> float:
-    # Verificación básica - necesitamos al menos 2 puntos para un reporte válido
-    if len(report) < 2:
+    # ─── comprobaciones mínimas ──────────────────
+    if report.size < 2 or r2_raw <= 0.0:
         return -1.0
 
-    # Calcular los retornos individuales
-    returns = np.diff(report)
-    num_trades = len(returns)
+    returns    = np.diff(report)
+    n_trades   = returns.size
 
-    # ────────────────────────
-    # MÉTRICAS BASE
-    gains = returns[returns > 0]
-    losses = -returns[returns < 0]
-    
-    # Calcular profit factor (relación entre ganancias y pérdidas)
-    if np.sum(losses) > 0:
-        profit_factor = np.sum(gains) / np.sum(losses)
-    else:
-        profit_factor = 0.0  # Sin pérdidas, consideramos profit factor 0
+    # ─── Return-to-Drawdown ──────────────────────
+    total_ret  = report[-1] - report[0]
 
-    # Calcular maximum drawdown
-    equity_curve = report
-    peak = equity_curve[0]
-    max_dd = 0.0
-    for x in equity_curve:
+    peak, max_dd = report[0], 0.0
+    for x in report:
         if x > peak:
             peak = x
-        current_dd = peak - x
-        if current_dd > max_dd:
-            max_dd = current_dd
-    
-    # Calcular return-to-drawdown ratio
-    total_return = equity_curve[-1] - equity_curve[0]
-    return_dd_ratio = total_return / max(max_dd, 1e-6)
+        dd = peak - x
+        if dd > max_dd:
+            max_dd = dd
 
-    # ────────────────────────
-    # PUNTAJE COMPUESTO BASE
-    base_score = (
-        (profit_factor * 0.4) +  # 40% del peso al profit factor
-        (return_dd_ratio * 0.6)  # 60% del peso al return/DD ratio
-    )
+    dd_norm = max(max_dd, 0.01 * abs(total_ret) + 1e-3)
+    r_dd    = total_ret / dd_norm
 
-    # Penalizaciones por métricas débiles
-    penalization = 1.0
-    if profit_factor < 2.0: penalization *= 0.8  # Penalizamos PF < 2
-    if return_dd_ratio < 2.0: penalization *= 0.8  # Penalizamos RDD < 2
+    # ─── bonus por número de operaciones ─────────
+    trade_bonus = math.sqrt(float(n_trades))
 
-    # ────────────────────────
-    # AJUSTE POR NÚMERO DE TRADES
-    min_trades = 200  # Mínimo de trades deseado
-    trade_weight = min(1.0, num_trades / min_trades)  # Penalización lineal
-    if num_trades > 50:
-        trade_weight = min(2.0, 1.0 + (num_trades - 50) / 100)  # Bonus gradual
-    
-    # Aplicar penalizaciones y ajustes
-    base_score *= penalization * trade_weight
+    # ─── score compuesto ─────────────────────────
+    base_score  = 0.6 * r_dd + 0.4 * trade_bonus
 
-    # ────────────────────────
-    # Verificamos que el R² sea positivo
-    if r2_raw <= 0:
-        return -1.0  # Rechazamos estrategias con tendencia negativa
+    # penalización si el ratio return/DD es pobre
+    if r_dd < 1.2:
+        base_score *= 0.8
 
-    # ────────────────────────
-    # Score final (50% métricas de trading, 50% calidad de regresión)
-    final_score = 0.5 * base_score + 0.5 * r2_raw
-    
+    # mezcla con la calidad de la tendencia
+    final_score = 0.7 * base_score + 0.3 * r2_raw
     return final_score
 
 def tester_one_direction(dataset, direction='buy', plot=False):

@@ -22,7 +22,8 @@ from weakref import WeakValueDictionary
 
 from modules.labeling_lib import (
     get_prices, get_features, get_labels_one_direction,
-    sliding_window_clustering, clustering_simple
+    sliding_window_clustering, clustering_simple,
+    markov_regime_switching_simple, markov_regime_switching_advanced
 )
 from modules.tester_lib import robust_oos_score_one_direction, _ONNX_CACHE
 from modules.export_lib import (
@@ -79,7 +80,7 @@ class StrategySearcher:
         history_path: str = r"/mnt/c/Users/Administrador/AppData/Roaming/MetaQuotes/Terminal/Common/Files/",
         model_seed: Optional[int] = None,
         search_type: str = 'clusters',
-        subtype_clustering: str = 'simple',
+        subtype: str = 'simple',
         tag: str = "",
     ):
         """Inicializa el buscador de estrategias.
@@ -99,7 +100,7 @@ class StrategySearcher:
             model_seed: Semilla para reproducibilidad
         """
         self.search_type = search_type
-        self.subtype_clustering = subtype_clustering
+        self.subtype = subtype
         self.n_trials = n_trials
         self.n_models = n_models
         self.n_jobs = n_jobs
@@ -149,8 +150,7 @@ class StrategySearcher:
         """
         search_funcs = {
             'clusters': self.search_clusters,
-            'causal': self.search_causal,
-            'filter': self.search_filter
+            'markov': self.search_markov,
         }
         
         if self.search_type not in search_funcs:
@@ -305,10 +305,13 @@ class StrategySearcher:
     # Métodos de búsqueda específicos
     # =========================================================================
     
-    def search_clusters(self, trial: optuna.Trial, study: optuna.study.Study) -> float:
-        """Implementa la búsqueda de estrategias usando clustering.
+    def _evaluate_clusters(self, ds_train: pd.DataFrame, ds_test: pd.DataFrame, hp: Dict[str, Any], trial: optuna.Trial, study: optuna.study.Study) -> float:
+        """Función helper para evaluar clusters y entrenar modelos.
         
         Args:
+            ds_train: Dataset de entrenamiento con labels_meta
+            ds_test: Dataset de prueba
+            hp: Hiperparámetros
             trial: Trial actual de Optuna
             study: Estudio de Optuna
             
@@ -316,42 +319,11 @@ class StrategySearcher:
             float: Mejor puntuación encontrada
         """
         best_score = -math.inf
-        hp = self.common_hyper_params(trial)
-
-        # Parámetros a optimizar
-        hp['markup'] = trial.suggest_float("markup", 0.1, 1.0, step=0.1)
-        hp['label_max'] = trial.suggest_int('label_max', 2, 6, step=1, log=True)
-        hp['atr_period'] = trial.suggest_int('atr_period', 5, 50, step=5)
-        hp['n_clusters'] = trial.suggest_int('n_clusters', 5, 50, step=5)
-        if self.subtype_clustering == 'advanced':
-            hp['k'] = trial.suggest_int('k', 3, 10, step=1)
-        
-        # Obtener datos de entrenamiento y prueba
-        ds_train, ds_test = self.get_train_test_data(hp)
-        
-        # Clustering
-        # print("clustering...")
-        # start_time = time.time()
-        if self.subtype_clustering == 'advanced':
-            ds_train = sliding_window_clustering(
-                ds_train,
-                n_clusters=hp['n_clusters'],
-                step=hp.get('step', None),
-                atr_period=hp['atr_period'],
-                k=hp['k']
-            )
-        else:
-            ds_train = clustering_simple(
-                ds_train,
-                min_cluster_size=hp['n_clusters']
-            )
-        # print(f"clustering done in {time.time() - start_time:.2f} seconds")
-        # Evaluar clusters ordenados por tamaño
         cluster_sizes = ds_train['labels_meta'].value_counts()
 
-        # Filtrar el cluster 0 (inválido) si existe
-        if 0 in cluster_sizes.index:
-            cluster_sizes = cluster_sizes.drop(0)
+        # Filtrar el cluster -1 (inválido) si existe
+        if -1 in cluster_sizes.index:
+            cluster_sizes = cluster_sizes.drop(-1)
         
         # Evaluar cada cluster
         for clust in cluster_sizes.index:
@@ -359,7 +331,7 @@ class StrategySearcher:
             main_cols = [c for c in ds_train.columns if '_feature' in c and '_meta_feature' not in c]
             meta_cols = [c for c in ds_train.columns if '_meta_feature' in c]
 
-            ohlc_cols = ["open", "high", "low", "close"]          # las que existan
+            ohlc_cols = ["open", "high", "low", "close"]
             present   = [c for c in ohlc_cols if c in ds_train.columns]
 
             main_data = ds_train.loc[
@@ -409,11 +381,28 @@ class StrategySearcher:
                 del m_main, m_meta
                 gc.collect()
 
-        # Devolver la mejor puntuación encontrada
         return best_score if best_score != -math.inf else -1.0
 
-    def search_causal(self, trial: optuna.Trial, study: optuna.study.Study) -> float:
-        """Implementa la búsqueda de estrategias usando causalidad.
+    def _check_dataset_quality(self, dataset: pd.DataFrame) -> None:
+        """Verifica la calidad de los datasets de entrenamiento y prueba.
+        
+        Args:
+            ds_train: Dataset de entrenamiento
+            ds_test: Dataset de prueba
+        """
+        # Chequea si el dataset contiene nan o inf
+        inf_cols = dataset.columns[dataset.isin([np.inf, -np.inf]).any()].tolist()
+        if inf_cols:
+            print("Dataset features with inf values:", inf_cols)
+        nan_cols = dataset.columns[dataset.isna().any()].tolist()
+        if nan_cols:
+            print("Dataset features with NaN values:", nan_cols)
+    
+    def check_constant_features(self, X):
+        return np.any(np.var(X, axis=0) < 1e-10)
+    
+    def search_clusters(self, trial: optuna.Trial, study: optuna.study.Study) -> float:
+        """Implementa la búsqueda de estrategias usando clustering.
         
         Args:
             trial: Trial actual de Optuna
@@ -422,10 +411,40 @@ class StrategySearcher:
         Returns:
             float: Mejor puntuación encontrada
         """
-        raise NotImplementedError("Búsqueda causal no implementada aún")
+        hp = self.common_hyper_params(trial)
 
-    def search_filter(self, trial: optuna.Trial, study: optuna.study.Study) -> float:
-        """Implementa la búsqueda de estrategias usando filtros.
+        # Parámetros a optimizar
+        hp['markup'] = trial.suggest_float("markup", 0.1, 1.0, step=0.1)
+        hp['label_max'] = trial.suggest_int('label_max', 2, 6, step=1, log=True)
+        hp['atr_period'] = trial.suggest_int('atr_period', 5, 50, step=5)
+        hp['n_clusters'] = trial.suggest_int('n_clusters', 5, 50, step=5)
+        if self.subtype != 'simple':
+            hp['k'] = trial.suggest_int('k', 3, 10, step=1)
+        
+        # Obtener datos de entrenamiento y prueba
+        ds_train, ds_test = self.get_train_test_data(hp)
+        if ds_train is None or ds_test is None:
+            return -1
+        
+        # Clustering
+        if self.subtype == 'simple':
+            ds_train = clustering_simple(
+                ds_train,
+                min_cluster_size=hp['n_clusters']
+            )
+        else:
+            ds_train = sliding_window_clustering(
+                ds_train,
+                n_clusters=hp['n_clusters'],
+                step=hp.get('step', None),
+                atr_period=hp['atr_period'],
+                k=hp['k']
+            )
+            
+        return self._evaluate_clusters(ds_train, ds_test, hp, trial, study)
+
+    def search_markov(self, trial: optuna.Trial, study: optuna.study.Study) -> float:
+        """Implementa la búsqueda de estrategias usando modelos markovianos.
         
         Args:
             trial: Trial actual de Optuna
@@ -434,7 +453,38 @@ class StrategySearcher:
         Returns:
             float: Mejor puntuación encontrada
         """
-        raise NotImplementedError("Búsqueda por filtros no implementada aún")
+        hp = self.common_hyper_params(trial)
+
+        # Parámetros a optimizar
+        hp['markup'] = trial.suggest_float("markup", 0.1, 1.0, step=0.1)
+        hp['label_max'] = trial.suggest_int('label_max', 2, 6, step=1, log=True)
+        hp['atr_period'] = trial.suggest_int('atr_period', 5, 50, step=5)
+        #hp['model_type'] = trial.suggest_categorical('model_type', ['GMMHMM', 'HMM', 'VARHMM'])
+        hp['n_regimes'] = trial.suggest_int('n_regimes', 2, 10, step=1)
+        hp['n_iter'] = trial.suggest_int('n_iter', 10, 100, step=10)
+
+        # Obtener datos de entrenamiento y prueba
+        ds_train, ds_test = self.get_train_test_data(hp)
+        if ds_train is None or ds_test is None:
+            return -1
+        
+        # Markov
+        if self.subtype == 'simple':
+            ds_train = markov_regime_switching_simple(
+                ds_train,
+                # model_type=hp['model_type'],
+                n_regimes=hp['n_regimes'],
+                n_iter=hp['n_iter']
+            )
+        else:
+            ds_train = markov_regime_switching_advanced(
+                ds_train,
+                # model_type=hp['model_type'],
+                n_regimes=hp['n_regimes'],
+                n_iter=hp['n_iter']
+            )
+            
+        return self._evaluate_clusters(ds_train, ds_test, hp, trial, study)
 
     # =========================================================================
     # Métodos auxiliares
@@ -455,7 +505,13 @@ class StrategySearcher:
             self.base_hp['test_end'],
             hkey,
         )
-
+        # Verificar calidad de los datasets
+        feature_cols = full_ds.columns[full_ds.columns.str.contains('feature')]
+        self._check_dataset_quality(full_ds[feature_cols])
+        if self.check_constant_features(full_ds[feature_cols].to_numpy()):
+            return None, None
+        
+        # Obtener datasets de entrenamiento y prueba
         test_mask  = (full_ds.index >= hp["test_start"]) & (full_ds.index <= hp["test_end"])
         train_mask = (full_ds.index >= hp["train_start"]) & (full_ds.index <= hp["train_end"]) & ~test_mask
         return full_ds[train_mask], full_ds[test_mask]
@@ -648,24 +704,12 @@ class StrategySearcher:
             Dict[str, Any]: Hiperparámetros actualizados
         """
         try:
-            def check_constant_features(X):
-                return np.any(np.var(X, axis=0) < 1e-10)
             # ---------- 1) main model_main ----------
             # Get feature columns and rename them to follow f%d pattern
             main_feature_cols = main_data.columns[main_data.columns.str.contains('_feature') & ~main_data.columns.str.contains('_meta_feature')]
             X_main = main_data[main_feature_cols]
             X_main.columns = [f'f{i}' for i in range(len(main_feature_cols))]
-            if check_constant_features(X_main.to_numpy()):
-                return None
             y_main = main_data['labels_main'].astype('int16')
-            # Check for inf values in main features
-            inf_cols_main = X_main.columns[X_main.isin([np.inf, -np.inf]).any()].tolist()
-            if inf_cols_main:
-                print("Main features with inf values:", inf_cols_main)
-            # Check for NaN values in main features
-            nan_cols_main = X_main.columns[X_main.isna().any()].tolist()
-            if nan_cols_main:
-                print("Main features with NaN values:", nan_cols_main)
             # División de datos para el modelo principal según fechas
             X_train_main, X_val_main, y_train_main, y_val_main = train_test_split(
                 X_main, y_main, 
@@ -680,17 +724,7 @@ class StrategySearcher:
             meta_feature_cols = meta_data.columns[meta_data.columns.str.contains('_meta_feature')]
             X_meta = meta_data[meta_feature_cols]
             X_meta.columns = [f'f{i}' for i in range(len(meta_feature_cols))]
-            if check_constant_features(X_meta.to_numpy()):
-                return None
             y_meta = meta_data['labels_meta'].astype('int16')
-            # Check for inf values in meta features
-            inf_cols_meta = X_meta.columns[X_meta.isin([np.inf, -np.inf]).any()].tolist()
-            if inf_cols_meta:
-                print("Meta features with inf values:", inf_cols_meta)
-            # Check for NaN values in meta features
-            nan_cols_meta = X_meta.columns[X_meta.isna().any()].tolist()
-            if nan_cols_meta:
-                print("Meta features with NaN values:", nan_cols_meta)
             # División de datos para el modelo principal según fechas
             X_train_meta, X_val_meta, y_train_meta, y_val_meta = train_test_split(
                 X_meta, y_meta, 

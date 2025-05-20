@@ -5,6 +5,8 @@ import pandas as pd
 from numba import njit
 from hdbscan import HDBSCAN
 from sklearn.cluster import KMeans
+from sklearn.preprocessing import StandardScaler
+from sklearn.covariance import empirical_covariance
 from hmmlearn import hmm, vhmm
 from scipy.optimize import linear_sum_assignment
 from scipy.signal import savgol_filter
@@ -500,7 +502,7 @@ def get_features(data: pd.DataFrame, hp):
     df["low"] = data["low"]
     df["close"] = data["close"]
     df["volume"] = data["volume"]
-    return df.dropna()
+    return df.replace([np.inf, -np.inf], np.nan).dropna()
 
 # TREND OR NEUTRAL BASED LABELING
 @njit(fastmath=True, nogil=True)
@@ -1685,6 +1687,10 @@ def sliding_window_clustering(
         step: int | None = None,
         atr_period: int = 14,
         k: int = 3) -> pd.DataFrame:
+    # Si el dataset está vacío, devuelve un dataset con -1 en la columna labels_meta
+    if dataset.empty:
+        dataset["labels_meta"] = -1
+        return dataset
     # Ajuste dinámico del tamaño de ventana según ATR local
     min_window = n_clusters
     base_window = min(n_clusters * k, int(len(dataset) * 0.05))
@@ -1713,8 +1719,7 @@ def sliding_window_clustering(
     n_rows = len(dataset)
     votes = np.zeros((n_rows, n_clusters + 1), dtype=np.uint8)
     # K-means global
-    meta_cols = dataset.columns.str.contains('_meta_feature')
-    meta_X_np = dataset.loc[:, meta_cols].to_numpy(np.float32, copy=False)
+    meta_X_np = dataset.filter(regex="meta_feature").to_numpy(np.float32)
     global_km = KMeans(n_clusters=n_clusters, n_init="auto", algorithm="auto").fit(meta_X_np)
     global_ct = global_km.cluster_centers_
     def map_centroids(local_ct: np.ndarray) -> dict[int, int]:
@@ -1749,7 +1754,7 @@ def sliding_window_clustering(
         indices = np.arange(start, end)
         mapped_ids = np.array([mapping.get(lab, 0) for lab in lbls])
         votes[indices, mapped_ids] += 1
-    clusters = votes.argmax(axis=1).astype(np.int32)
+    clusters = votes.argmax(axis=1).astype(np.int32) - 1
     ds_out = dataset.copy()
     ds_out["labels_meta"] = clusters
     return ds_out
@@ -1758,18 +1763,18 @@ def clustering_simple(dataset: pd.DataFrame,
                min_cluster_size: int = 20,
                min_samples: int | None = None,
                metric: str = "euclidean") -> pd.DataFrame:
-    
+    # Si el dataset está vacío, devuelve un dataset con -1 en la columna labels_meta
+    if dataset.empty:
+        dataset["labels_meta"] = -1
+        return dataset
     meta_X_np = dataset.filter(regex="meta_feature").to_numpy(np.float32)
-
     clusterer = HDBSCAN(
         min_cluster_size=min_cluster_size,
         min_samples=min_samples,
         metric=metric
     ).fit(meta_X_np)
 
-    raw_labels = clusterer.labels_
-    mapped = (raw_labels + 1).astype(int)
-    dataset['labels_meta'] = mapped
+    dataset["labels_meta"] = clusterer.labels_.astype(int)
     return dataset
 
 @njit(fastmath=True, nogil=True)
@@ -1874,189 +1879,187 @@ def get_labels_trend_one_direction(dataset, rolling=50, polyorder=3, threshold=0
     dataset = dataset.dropna()  # Remove rows with NaN
     return dataset
 
-def markov_regime_switching(dataset, n_regimes: int, model_type="GMMHMM", n_iter = 10) -> pd.DataFrame:
-    data = dataset[(dataset.index < hyper_params['forward']) & (dataset.index > hyper_params['backward'])].copy()
+def markov_regime_switching_simple(dataset, n_regimes: int, model_type="GMMHMM", n_iter = 10, min_covar: float = 1e-3) -> pd.DataFrame:
+    # Si el dataset está vacío, devuelve un dataset con -1 en la columna labels_meta
+    if dataset.empty:
+        dataset["labels_meta"] = -1
+        return dataset
+    meta_X_np = dataset.filter(regex="meta_feature").to_numpy(np.float32)
+    # Features normalization before training
+    scaler = StandardScaler()
+    X_scaled = scaler.fit_transform(meta_X_np)
     
-    # Extract meta features
-    meta_X = data.loc[:, data.columns.str.contains('meta_feature')]
-    
-    if meta_X.shape[1] > 0:
-        # Format data for HMM (requires 2D array)
-        X = meta_X.values
-        # Features normalization before training
-        scaler = StandardScaler()
-        X_scaled = scaler.fit_transform(X)
+    # Create and train the HMM model
+    if model_type == "HMM":
+        model = hmm.GaussianHMM(
+            n_components=n_regimes,
+            covariance_type="full",
+            n_iter=n_iter,
+            min_covar=min_covar,
+            verbose=False
+        )
+    elif model_type == "GMMHMM":
+        model = hmm.GMMHMM(
+            n_components=n_regimes,
+            covariance_type="full",
+            n_iter=n_iter,
+            n_mix=2,
+            min_covar=min_covar,
+            verbose=False
+        )
+    elif model_type == "VARHMM":
+        model = vhmm.VariationalGaussianHMM(
+            n_components=n_regimes,
+            covariance_type="full",
+            n_iter=n_iter,
+            min_covar=min_covar,
+            verbose=False
+        )
         
-        # Create and train the HMM model
-        if model_type == "HMM":
-            model = hmm.GaussianHMM(
-                n_components=n_regimes,
-                covariance_type="full",
-                n_iter=n_iter,
-            )
-        elif model_type == "GMMHMM":
-            model = hmm.GMMHMM(
-                n_components=n_regimes,
-                covariance_type="full",
-                n_iter=n_iter,
-                n_mix=2,
-            )
-        elif model_type == "VARHMM":
-            model = vhmm.VariationalGaussianHMM(
-                n_components=n_regimes,
-                covariance_type="full",
-                n_iter=n_iter,
-            )
-           
-        # Fit the model
-        model.fit(X_scaled)     
-        # Predict the hidden states (regimes)
-        hidden_states = model.predict(X_scaled)
-        # Assign states to clusters
-        data['clusters'] = hidden_states
+    # Fit the model
+    model.fit(X_scaled)     
+    # Predict the hidden states (regimes)
+    hidden_states = model.predict(X_scaled)
+    # Assign states to clusters
+    dataset['labels_meta'] = hidden_states
         
-    return data
+    return dataset
 
-def markov_regime_switching_prior(dataset, n_regimes: int, model_type="HMM", n_iter=100) -> pd.DataFrame:
-    data = dataset[(dataset.index < hyper_params['forward']) & (dataset.index > hyper_params['backward'])].copy()
+def markov_regime_switching_advanced(dataset, n_regimes: int, model_type="HMM", n_iter=100, min_covar: float = 1e-3) -> pd.DataFrame:
+    # Si el dataset está vacío, devuelve un dataset con -1 en la columna labels_meta
+    if dataset.empty:
+        dataset["labels_meta"] = -1
+        return dataset
+    meta_X_np = dataset.filter(regex="meta_feature").to_numpy(np.float32)
+    # Features normalization before training
+    scaler = StandardScaler()
+    X_scaled = scaler.fit_transform(meta_X_np)
     
-    # Extract meta features
-    meta_X = data.loc[:, data.columns.str.contains('meta_feature')]
+    # Use k-means to cluster the data into n_regimes groups
+    kmeans = KMeans(n_clusters=n_regimes, n_init='auto', algorithm='auto')
+    cluster_labels = kmeans.fit_predict(X_scaled)
     
-    if meta_X.shape[1] > 0:
-        # Format data for HMM (requires 2D array)
-        X = meta_X.values
+    # Calculate cluster-specific means and covariances to use as priors
+    prior_means = kmeans.cluster_centers_  # Shape: (n_regimes, n_features)
+    
+    # Calculate empirical covariance for each cluster
+    prior_covs = []
+    
+    for i in range(n_regimes):
+        cluster_data = X_scaled[cluster_labels == i]
+        if len(cluster_data) > 1:  # Need at least 2 points for covariance
+            cluster_cov = empirical_covariance(cluster_data)
+            prior_covs.append(cluster_cov)
+        else:
+            # Fallback to overall covariance if cluster is too small
+            prior_covs.append(empirical_covariance(X_scaled))
+    
+    prior_covs = np.array(prior_covs)  # Shape: (n_regimes, n_features, n_features)
+    
+    # Calculate initial state distribution from cluster proportions
+    initial_probs = np.bincount(cluster_labels, minlength=n_regimes) / len(cluster_labels)
+    
+    # Calculate transition matrix based on cluster sequences
+    trans_mat = np.zeros((n_regimes, n_regimes))
+    for t in range(1, len(cluster_labels)):
+        trans_mat[cluster_labels[t-1], cluster_labels[t]] += 1
         
-        # Features normalization before training
-        scaler = StandardScaler()
-        X_scaled = scaler.fit_transform(X)
+    # Normalize rows to get probabilities
+    row_sums = trans_mat.sum(axis=1, keepdims=True)
+    # Avoid division by zero
+    row_sums[row_sums == 0] = 1
+    trans_mat = trans_mat / row_sums
+
+    # Initialize model parameters based on model type
+    if model_type == "HMM":
+        model_params = {
+            'n_components': n_regimes,
+            'covariance_type': "full",
+            'n_iter': n_iter,
+            'min_covar': min_covar,
+            'init_params': '',  # Don't use default initialization
+            'verbose': False
+        }
         
-        # Calculate priors from meta_features using k-means clustering
-        from sklearn.cluster import KMeans
+        from hmmlearn import hmm
+        model = hmm.GaussianHMM(**model_params)
         
-        # Use k-means to cluster the data into n_regimes groups
-        kmeans = KMeans(n_clusters=n_regimes, n_init=10)
-        cluster_labels = kmeans.fit_predict(X_scaled)
+        # Set the model parameters directly with our k-means derived priors
+        model.startprob_ = initial_probs
+        model.transmat_ = trans_mat
+        model.means_ = prior_means
+        model.covars_ = prior_covs
         
-        # Calculate cluster-specific means and covariances to use as priors
-        prior_means = kmeans.cluster_centers_  # Shape: (n_regimes, n_features)
+    elif model_type == "GMMHMM":
+        model_params = {
+            'n_components': n_regimes,
+            'covariance_type': "full",
+            'n_iter': n_iter,
+            'n_mix': 2,
+            'min_covar': min_covar,
+            'init_params': '',
+            'verbose': False
+        }
         
-        # Calculate empirical covariance for each cluster
-        from sklearn.covariance import empirical_covariance
-        prior_covs = []
+        from hmmlearn import hmm
+        model = hmm.GMMHMM(**model_params)
         
+        # Set initial state distribution and transition matrix
+        model.startprob_ = initial_probs
+        model.transmat_ = trans_mat
+        
+        # For GMMHMM, means_ should have shape (n_components, n_mix, n_features)
+        # Currently prior_means has shape (n_regimes, n_features)
+        # We need to reshape it properly for GMMHMM
+        
+        n_features = X_scaled.shape[1]
+        n_mix = model_params['n_mix']
+        
+        # Initialize means with a different mixture mean for each component
+        # Creating n_mix variations of each cluster center
+        model.means_ = np.zeros((n_regimes, n_mix, n_features))
         for i in range(n_regimes):
-            cluster_data = X_scaled[cluster_labels == i]
-            if len(cluster_data) > 1:  # Need at least 2 points for covariance
-                cluster_cov = empirical_covariance(cluster_data)
-                prior_covs.append(cluster_cov)
-            else:
-                # Fallback to overall covariance if cluster is too small
-                prior_covs.append(empirical_covariance(X_scaled))
+            for j in range(n_mix):
+                # Add some small variation for different mixtures
+                model.means_[i, j] = prior_means[i] + (j - n_mix/2) * 0.2 * np.std(X_scaled, axis=0)
         
-        prior_covs = np.array(prior_covs)  # Shape: (n_regimes, n_features, n_features)
+        # Similarly for covariances, shape should be (n_components, n_mix, n_features, n_features)
+        model.covars_ = np.zeros((n_regimes, n_mix, n_features, n_features))
+        for i in range(n_regimes):
+            for j in range(n_mix):
+                model.covars_[i, j] = prior_covs[i] + np.random.rand(n_features, n_features) * 0.01
         
-        # Calculate initial state distribution from cluster proportions
-        initial_probs = np.bincount(cluster_labels, minlength=n_regimes) / len(cluster_labels)
+    elif model_type == "VARHMM":
+        # For VariationalGaussianHMM
+        n_features = X_scaled.shape[1]
         
-        # Calculate transition matrix based on cluster sequences
-        trans_mat = np.zeros((n_regimes, n_regimes))
-        for t in range(1, len(cluster_labels)):
-            trans_mat[cluster_labels[t-1], cluster_labels[t]] += 1
-            
-        # Normalize rows to get probabilities
-        row_sums = trans_mat.sum(axis=1, keepdims=True)
-        # Avoid division by zero
-        row_sums[row_sums == 0] = 1
-        trans_mat = trans_mat / row_sums
-    
-        # Initialize model parameters based on model type
-        if model_type == "HMM":
-            model_params = {
-                'n_components': n_regimes,
-                'covariance_type': "full",
-                'n_iter': n_iter,
-                'init_params': ''  # Don't use default initialization
-            }
-            
-            from hmmlearn import hmm
-            model = hmm.GaussianHMM(**model_params)
-            
-            # Set the model parameters directly with our k-means derived priors
-            model.startprob_ = initial_probs
-            model.transmat_ = trans_mat
-            model.means_ = prior_means
-            model.covars_ = prior_covs
-            
-        elif model_type == "GMMHMM":
-            model_params = {
-                'n_components': n_regimes,
-                'covariance_type': "full",
-                'n_iter': n_iter,
-                'n_mix': 2,
-                'init_params': '',
-            }
-            
-            from hmmlearn import hmm
-            model = hmm.GMMHMM(**model_params)
-            
-            # Set initial state distribution and transition matrix
-            model.startprob_ = initial_probs
-            model.transmat_ = trans_mat
-            
-            # For GMMHMM, means_ should have shape (n_components, n_mix, n_features)
-            # Currently prior_means has shape (n_regimes, n_features)
-            # We need to reshape it properly for GMMHMM
-            
-            n_features = X_scaled.shape[1]
-            n_mix = model_params['n_mix']
-            
-            # Initialize means with a different mixture mean for each component
-            # Creating n_mix variations of each cluster center
-            model.means_ = np.zeros((n_regimes, n_mix, n_features))
-            for i in range(n_regimes):
-                for j in range(n_mix):
-                    # Add some small variation for different mixtures
-                    model.means_[i, j] = prior_means[i] + (j - n_mix/2) * 0.2 * np.std(X_scaled, axis=0)
-            
-            # Similarly for covariances, shape should be (n_components, n_mix, n_features, n_features)
-            model.covars_ = np.zeros((n_regimes, n_mix, n_features, n_features))
-            for i in range(n_regimes):
-                for j in range(n_mix):
-                    model.covars_[i, j] = prior_covs[i] + np.random.rand(n_features, n_features) * 0.01
-            
-        elif model_type == "VARHMM":
-            # For VariationalGaussianHMM
-            n_features = X_scaled.shape[1]
-            
-            model_params = {
-                'n_components': n_regimes,
-                'covariance_type': "full",
-                'n_iter': n_iter,
-                'init_params': '',
-                # Set priors directly in the parameters
-                'means_prior': prior_means,
-                'beta_prior': np.ones(n_regimes),  # Shape: (n_components,)
-                'dof_prior': np.ones(n_regimes) * (n_features + 2),  # Shape: (n_components,)
-                'scale_prior': prior_covs,  # Shape: (n_components, n_features, n_features)
-            }
-            
-            # Create the VARHMM model
-            model = vhmm.VariationalGaussianHMM(**model_params)
-            
-            # Set initial state distribution and transition matrix
-            model.startprob_ = initial_probs
-            model.transmat_ = trans_mat
+        model_params = {
+            'n_components': n_regimes,
+            'covariance_type': "full",
+            'n_iter': n_iter,
+            'min_covar': min_covar,
+            'init_params': '',
+            # Set priors directly in the parameters
+            'means_prior': prior_means,
+            'beta_prior': np.ones(n_regimes),  # Shape: (n_components,)
+            'dof_prior': np.ones(n_regimes) * (n_features + 2),  # Shape: (n_components,)
+            'scale_prior': prior_covs,  # Shape: (n_components, n_features, n_features)
+            'verbose': False
+        }
+        
+        # Create the VARHMM model
+        model = vhmm.VariationalGaussianHMM(**model_params)
+        
+        # Set initial state distribution and transition matrix
+        model.startprob_ = initial_probs
+        model.transmat_ = trans_mat
 
-                        
-            # Fit the model
-        model.fit(X_scaled)
-        
-        # Predict the hidden states (regimes)
-        hidden_states = model.predict(X_scaled)
-        
-        # Assign states to clusters
-        data['clusters'] = hidden_states    
-        return data
+    # Fit the model
+    model.fit(X_scaled)
     
-    return data
+    # Predict the hidden states (regimes)
+    hidden_states = model.predict(X_scaled)
+    
+    # Assign states to clusters
+    dataset['labels_meta'] = hidden_states    
+    return dataset

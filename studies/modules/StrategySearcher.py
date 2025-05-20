@@ -15,6 +15,7 @@ from modules.export_lib import XGBWithEval
 from modules.export_lib import CatWithEval
 from optuna.integration import CatBoostPruningCallback
 from optuna.integration import XGBoostPruningCallback
+from optuna.integration import LightGBMPruningCallback
 from sklearn import set_config
 from sklearn.model_selection import train_test_split
 from functools import lru_cache, partial
@@ -26,7 +27,7 @@ from modules.labeling_lib import (
 )
 from modules.tester_lib import robust_oos_score_one_direction, _ONNX_CACHE
 from modules.export_lib import (
-    export_model_to_ONNX, XGBWithEval, CatWithEval
+    export_model_to_ONNX, XGBWithEval, CatWithEval, LGBMWithEval
 )
 
 class StrategySearcher:
@@ -528,6 +529,29 @@ class StrategySearcher:
             f"{prefix}_early_stopping": es_rounds,
         }
     
+    def sample_lgbm_params(self, trial: optuna.Trial, prefix: str) -> Dict[str, Any]:
+        """Muestra parámetros para LightGBM.
+        
+        Args:
+            trial: Trial actual de Optuna
+            prefix: Prefijo para los parámetros
+            
+        Returns:
+            Dict[str, Any]: Parámetros de LightGBM
+        """
+        n_estimators = trial.suggest_int(f"{prefix}_estimators", 100, 300, step=50)
+        max_depth    = trial.suggest_int(f"{prefix}_max_depth", 3, 6)
+        lr           = trial.suggest_float(f"{prefix}_learning_rate", 0.15, 0.3, log=True)
+        reg_lambda   = trial.suggest_float(f"{prefix}_reg_lambda", 1.0, 5.0, log=True)
+        es_rounds    = trial.suggest_int(f"{prefix}_early_stopping", 30, 60, step=10)
+        return {
+            f"{prefix}_estimators": n_estimators,
+            f"{prefix}_max_depth": max_depth,
+            f"{prefix}_learning_rate": lr,
+            f"{prefix}_reg_lambda": reg_lambda,
+            f"{prefix}_early_stopping": es_rounds,
+        }
+    
     def common_hyper_params(self, trial: optuna.Trial) -> Dict[str, Any]:
         """Obtiene hiperparámetros comunes.
         
@@ -543,6 +567,8 @@ class StrategySearcher:
         hp.update(self.sample_cat_params(trial, "cat_meta"))
         hp.update(self.sample_xgb_params(trial, "xgb_main"))
         hp.update(self.sample_xgb_params(trial, "xgb_meta"))
+        hp.update(self.sample_lgbm_params(trial, "lgbm_main"))
+        hp.update(self.sample_lgbm_params(trial, "lgbm_meta"))
 
         # Optimización de períodos para el modelo principal
         n_periods_main = trial.suggest_int('n_periods_main', 5, 15, log=True)
@@ -726,6 +752,18 @@ class StrategySearcher:
                 tree_method= "gpu_hist",
                 device_type="cuda"
             )
+            lgbm_main_params = dict(
+                n_estimators=hp['lgbm_main_estimators'],
+                max_depth=hp['lgbm_main_max_depth'],
+                learning_rate=hp['lgbm_main_learning_rate'],
+                reg_lambda=hp['lgbm_main_reg_lambda'],
+                early_stopping_round=hp['lgbm_main_early_stopping'],
+                metric='auc',
+                tree_learner="serial",
+                device="cpu",
+                verbosity=-1,
+                n_jobs=self.n_jobs
+            )
             base_main_models = [
                 ('catboost', CatWithEval(
                     **cat_main_params,
@@ -736,6 +774,11 @@ class StrategySearcher:
                     **xgb_main_params, 
                     eval_set=[(X_val_main, y_val_main)],
                     callbacks=[XGBoostPruningCallback(trial, "validation_0-logloss")]
+                )),
+                ('lightgbm', LGBMWithEval(
+                    **lgbm_main_params,
+                    eval_set=[(X_val_main, y_val_main)],
+                    callbacks=[LightGBMPruningCallback(trial, "auc")]
                 )),
             ]
             model_main = VotingClassifier(
@@ -775,6 +818,18 @@ class StrategySearcher:
                 tree_method= "gpu_hist",
                 device_type="cuda"
             )
+            lgbm_meta_params = dict(
+                n_estimators=hp['lgbm_meta_estimators'],
+                max_depth=hp['lgbm_meta_max_depth'],
+                learning_rate=hp['lgbm_meta_learning_rate'],
+                reg_lambda=hp['lgbm_meta_reg_lambda'],
+                early_stopping_round=hp['lgbm_meta_early_stopping'],
+                metric='auc',
+                tree_learner="serial",
+                device="cpu",
+                verbosity=-1,
+                n_jobs=self.n_jobs
+            )
             base_meta_models = [
                 ('catboost', CatWithEval(
                     **cat_meta_params,
@@ -785,6 +840,11 @@ class StrategySearcher:
                     **xgb_meta_params, 
                     eval_set=[(X_val_meta, y_val_meta)],
                     callbacks=[XGBoostPruningCallback(trial, "validation_0-logloss")]
+                )),
+                ('lightgbm', LGBMWithEval(
+                    **lgbm_meta_params,
+                    eval_set=[(X_val_meta, y_val_meta)],
+                    callbacks=[LightGBMPruningCallback(trial, "binary_logloss")]
                 )),
             ]
 

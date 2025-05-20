@@ -5,7 +5,7 @@ import pandas as pd
 from numba import njit
 from hdbscan import HDBSCAN
 from sklearn.cluster import KMeans
-from sklearn.preprocessing import StandardScaler
+from sklearn.preprocessing import RobustScaler
 from sklearn.covariance import empirical_covariance
 from hmmlearn import hmm, vhmm
 from scipy.optimize import linear_sum_assignment
@@ -1886,8 +1886,19 @@ def markov_regime_switching_simple(dataset, n_regimes: int, model_type="GMMHMM",
         return dataset
     meta_X_np = dataset.filter(regex="meta_feature").to_numpy(np.float32)
     # Features normalization before training
-    scaler = StandardScaler()
+    scaler = RobustScaler()
     X_scaled = scaler.fit_transform(meta_X_np)
+    
+    # 1) Verificar columnas con nan/inf
+    if not np.isfinite(X_scaled).all():
+        dataset["labels_meta"] = -1
+        return dataset
+    
+    # 2) Verificar columnas (casi) constantes
+    stds = np.nanstd(X_scaled, axis=0)
+    if np.any(stds < 1e-10):
+        dataset["labels_meta"] = -1
+        return dataset
     
     # Create and train the HMM model
     if model_type == "HMM":
@@ -1930,10 +1941,22 @@ def markov_regime_switching_advanced(dataset, n_regimes: int, model_type="HMM", 
     if dataset.empty:
         dataset["labels_meta"] = -1
         return dataset
+    
     meta_X_np = dataset.filter(regex="meta_feature").to_numpy(np.float32)
     # Features normalization before training
-    scaler = StandardScaler()
+    scaler = RobustScaler()
     X_scaled = scaler.fit_transform(meta_X_np)
+    
+    # 1) Verificar columnas con nan/inf
+    if not np.isfinite(X_scaled).all():
+        dataset["labels_meta"] = -1
+        return dataset
+    
+    # 2) Verificar columnas (casi) constantes
+    stds = np.nanstd(X_scaled, axis=0)
+    if np.any(stds < 1e-10):
+        dataset["labels_meta"] = -1
+        return dataset
     
     # Use k-means to cluster the data into n_regimes groups
     kmeans = KMeans(n_clusters=n_regimes, n_init='auto', algorithm='auto')

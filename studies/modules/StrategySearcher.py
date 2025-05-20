@@ -2,7 +2,6 @@ import gc
 import copy
 import math
 import time
-import warnings
 import numpy as np
 import pandas as pd
 from datetime import datetime
@@ -132,8 +131,7 @@ class StrategySearcher:
         self.base_df = get_prices(self.base_hp)
         StrategySearcher._DF_REGISTRY[id(self.base_df)] = self.base_df
         
-        # Configuración de warnings, sklearn y optuna
-        warnings.filterwarnings("ignore")
+        # Configuración de sklearn y optuna
         set_config(enable_metadata_routing=True, skip_parameter_validation=True)
         optuna.logging.set_verbosity(optuna.logging.WARNING)
         
@@ -382,24 +380,35 @@ class StrategySearcher:
                 gc.collect()
 
         return best_score if best_score != -math.inf else -1.0
-
-    def _check_dataset_quality(self, dataset: pd.DataFrame) -> None:
-        """Verifica la calidad de los datasets de entrenamiento y prueba.
+    
+    def check_constant_features(self, X: np.ndarray, feature_cols: list, std_epsilon: float = 1e-12) -> bool:
+        """Verifica si hay columnas que podrían causar inestabilidad numérica.
         
         Args:
-            ds_train: Dataset de entrenamiento
-            ds_test: Dataset de prueba
+            X: Array numpy con los datos
+            feature_cols: Lista con nombres de las columnas
+            std_epsilon: Umbral para considerar una columna como constante
+            
+        Returns:
+            bool: True si hay columnas problemáticas, False en caso contrario
         """
-        # Chequea si el dataset contiene nan o inf
-        inf_cols = dataset.columns[dataset.isin([np.inf, -np.inf]).any()].tolist()
-        if inf_cols:
-            print("Dataset features with inf values:", inf_cols)
-        nan_cols = dataset.columns[dataset.isna().any()].tolist()
-        if nan_cols:
-            print("Dataset features with NaN values:", nan_cols)
-    
-    def check_constant_features(self, X):
-        return np.any(np.var(X, axis=0) < 1e-10)
+        problematic_cols = []
+        
+        # 1) Verificar columnas con nan/inf
+        for i, col in enumerate(feature_cols):
+            if not np.isfinite(X[:, i]).all():
+                problematic_cols.append(f"{col} (contiene valores inf/nan)")
+                
+        # 2) Verificar columnas (casi) constantes
+        stds = np.nanstd(X, axis=0)
+        for i, (std, col) in enumerate(zip(stds, feature_cols)):
+            if std < std_epsilon:
+                problematic_cols.append(f"{col} (desviación estándar {std:.2e})")
+                
+        if problematic_cols:
+            return True
+            
+        return False
     
     def search_clusters(self, trial: optuna.Trial, study: optuna.study.Study) -> float:
         """Implementa la búsqueda de estrategias usando clustering.
@@ -505,10 +514,10 @@ class StrategySearcher:
             self.base_hp['test_end'],
             hkey,
         )
+        
         # Verificar calidad de los datasets
         feature_cols = full_ds.columns[full_ds.columns.str.contains('feature')]
-        self._check_dataset_quality(full_ds[feature_cols])
-        if self.check_constant_features(full_ds[feature_cols].to_numpy()):
+        if self.check_constant_features(full_ds[feature_cols].to_numpy('float32'), feature_cols):
             return None, None
         
         # Obtener datasets de entrenamiento y prueba

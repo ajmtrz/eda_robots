@@ -1707,6 +1707,87 @@ def get_labels_trend_one_direction(dataset, rolling=50, polyorder=3, threshold=0
     return dataset
 
 @njit(fastmath=True, nogil=True)
+def calculate_labels_filter_flat(close, lvl, q):
+    labels = np.empty(len(close), dtype=np.float64)
+    for i in range(len(close)):
+        curr_lvl = lvl[i]
+
+        if curr_lvl > q[1]:
+            labels[i] = 1.0
+        elif curr_lvl < q[0]:
+            labels[i] = 0.0
+        else:
+            labels[i] = 2.0
+    return labels
+
+def get_labels_filter_flat(dataset, rolling=200, quantiles=[.45, .55], polyorder=3, decay_factor=0.95) -> pd.DataFrame:
+    """
+    Generates labels for a financial dataset based on price deviation from a Savitzky-Golay filter,
+    with exponential weighting applied to prioritize recent data. Optionally incorporates a 
+    cyclical component to the price deviation.
+
+    Args:
+        dataset (pd.DataFrame): DataFrame containing financial data with a 'close' column.
+        rolling (int, optional): Window size for the Savitzky-Golay filter. Defaults to 200.
+        quantiles (list, optional): Quantiles to define the "reversion zone". Defaults to [.45, .55].
+        polyorder (int, optional): Polynomial order for the Savitzky-Golay filter. Defaults to 3.
+        decay_factor (float, optional): Exponential decay factor for weighting past data. 
+                                        Lower values prioritize recent data more. Defaults to 0.95.
+        cycle_period (int, optional): Period of the cycle in number of data points. If None, 
+                                     no cycle is applied. Defaults to None.
+        cycle_amplitude (float, optional): Amplitude of the cycle. If None, no cycle is applied. 
+                                          Defaults to None.
+
+    Returns:
+        pd.DataFrame: The original DataFrame with a new 'labels' column and filtered rows:
+                       - 'labels' column: 
+                            - 0: Buy
+                            - 1: Sell
+                       - Rows where 'labels' is 2 (no signal) are removed.
+                       - Rows with missing values (NaN) are removed.
+                       - The temporary 'lvl' column is removed. 
+    """
+
+    # Calculate smoothed prices using the Savitzky-Golay filter
+    smoothed_prices = savgol_filter(dataset['close'].values, window_length=rolling, polyorder=polyorder)
+    
+    # Calculate the difference between the actual closing prices and the smoothed prices
+    diff = dataset['close'] - smoothed_prices
+    
+    # Apply exponential weighting to the 'diff' values
+    weighted_diff = diff * np.exp(np.arange(len(diff)) * decay_factor / len(diff)) 
+    
+    dataset['lvl'] = 1/weighted_diff # Add the weighted difference as 'lvl'
+
+    # Remove any rows with NaN values 
+    dataset = dataset.dropna()
+    
+    # Calculate the quantiles of the 'lvl' column (price deviation)
+    q = dataset['lvl'].quantile(quantiles).to_list() 
+
+    # Extract the closing prices and the calculated 'lvl' values as NumPy arrays
+    close = dataset['close'].values
+    lvl = dataset['lvl'].values
+    
+    # Calculate buy/sell labels using the 'calculate_labels_filter' function 
+    labels = calculate_labels_filter_flat(close, lvl, q) 
+
+    # Trim the dataset to match the length of the calculated labels
+    dataset = dataset.iloc[:len(labels)].copy()
+    
+    # Add the calculated labels as a new 'labels' column to the DataFrame
+    dataset['labels'] = labels
+    
+    # Remove any rows with NaN values
+    dataset = dataset.dropna()
+    
+    # Remove rows where the 'labels' column has a value of 2.0 (sell signals)
+    # dataset = dataset.drop(dataset[dataset.labels == 2.0].index)
+    
+    # Return the modified DataFrame with the 'lvl' column removed
+    return dataset.drop(columns=['lvl'])
+
+@njit(fastmath=True, nogil=True)
 def calculate_atr_simple(high, low, close, period=14):
     n   = len(close)
     tr  = np.empty(n)

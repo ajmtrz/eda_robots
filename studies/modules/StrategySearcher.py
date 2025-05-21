@@ -205,6 +205,8 @@ class StrategySearcher:
                     "best_stats_main": study.user_attrs.get("best_stats_main"),
                     "best_stats_meta": study.user_attrs.get("best_stats_meta"),
                     "best_models": best_models,
+                    "search_type": self.search_type,
+                    "subtype": self.subtype,
                 })
                 
                 export_model_to_ONNX(**export_params)

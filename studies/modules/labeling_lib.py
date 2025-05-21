@@ -1,11 +1,12 @@
 import os
 import random
+import logging
 import numpy as np
 import pandas as pd
 from numba import njit
 from hdbscan import HDBSCAN
 from sklearn.cluster import KMeans
-from sklearn.preprocessing import RobustScaler
+from sklearn.preprocessing import StandardScaler
 from sklearn.covariance import empirical_covariance
 from hmmlearn import hmm, vhmm
 from scipy.optimize import linear_sum_assignment
@@ -13,6 +14,7 @@ from scipy.signal import savgol_filter
 from scipy.interpolate import UnivariateSpline
 from scipy.signal import find_peaks
 import matplotlib.pyplot as plt
+logging.getLogger('hmmlearn').setLevel(logging.ERROR)
 
 # Obtener precios
 def get_prices(hyper_params) -> pd.DataFrame:
@@ -1603,181 +1605,6 @@ def get_labels_filter_bidirectional(dataset, rolling1=200, rolling2=200, quantil
     return dataset.drop(columns=['lvl1', 'lvl2']) 
 
 @njit(fastmath=True, nogil=True)
-def calculate_atr_simple(high, low, close, period=14):
-    n   = len(close)
-    tr  = np.empty(n)
-    atr = np.empty(n)
-    tr[0] = high[0] - low[0]
-    for i in range(1, n):
-        hl = high[i] - low[i]
-        hc = abs(high[i] - close[i-1])
-        lc = abs(low[i]  - close[i-1])
-        tr[i] = max(hl, hc, lc)
-    # promedio acumulado para i < period-1
-    cumsum = tr[0]
-    atr[0] = tr[0]
-    for i in range(1, min(period, n)):
-        cumsum += tr[i]
-        atr[i] = cumsum / (i+1)
-    if n <= period-1:
-        return atr
-    # primera media "oficial" (índice period-1)
-    cumsum += tr[period-1]
-    atr[period-1] = cumsum / period
-    # Wilder a partir de aquí
-    for i in range(period, n):
-        atr[i] = (atr[i-1]*(period-1) + tr[i]) / period
-    return atr
-
-# ONE DIRECTION LABELING
-@njit(fastmath=True, nogil=True)
-def calculate_labels_one_direction(high, low, close, markup, min_val, max_val, direction, atr_period=14, deterministic=True):
-    # Verificar que hay suficientes datos
-    n = len(close)
-    if n <= max_val:
-        return np.zeros(0, dtype=np.float64)
-    
-    # Calcular ATR
-    atr = calculate_atr_simple(high, low, close, period=atr_period)
-    
-    if deterministic:
-        # --- exactamente igual que antes ---
-        fwd_matrix = np.zeros((n - max_val, max_val - min_val + 1))
-        for i in range(n - max_val):
-            for j in range(min_val, max_val + 1):
-                fwd_matrix[i, j - min_val] = close[i + j]
-        close_slice = close[:-max_val].reshape(-1, 1)
-        diffs = fwd_matrix - close_slice          # shape: (n-max_val, n_shifts)
-    else:
-        # --------- una sola vela aleatoria por fila -----------------
-        rand_shift = np.random.randint(min_val, max_val + 1, size=n - max_val)
-        target = close[np.arange(n - max_val) + rand_shift]          # vector
-        diffs = target - close[:-max_val]                            # vector 1-D
-        diffs = diffs.reshape(-1, 1)                                 # → columna
-
-    # Calcular markup dinámico basado en ATR
-    atr_slice = atr[:-max_val].reshape(-1, 1)
-    dyn_mk = markup * atr_slice
-    # Calcular hits
-    hits = (diffs > dyn_mk) if direction=="buy" else (diffs < -dyn_mk)
-    result = np.zeros(len(hits), dtype=np.float64)
-    for i in range(len(hits)):
-        for j in range(hits.shape[1]):
-            if hits[i, j]:
-                result[i] = 1.0
-                break
-    return result
-
-def get_labels_one_direction(dataset, markup, min_val=1, max_val=15, direction='buy', atr_period=14, deterministic=True) -> pd.DataFrame:
-    close_data = np.ascontiguousarray(dataset['close'].values)
-    high_data = np.ascontiguousarray(dataset['high'].values)
-    low_data = np.ascontiguousarray(dataset['low'].values)
-    labels = calculate_labels_one_direction(
-        high_data, low_data, close_data, 
-        markup, min_val, max_val, direction, atr_period, deterministic
-    )
-    dataset = dataset.iloc[:len(labels)].copy()
-    dataset['labels_main'] = labels
-    dataset = dataset.dropna()
-    return dataset
-
-def sliding_window_clustering(
-        dataset: pd.DataFrame,
-        n_clusters: int,
-        step: int | None = None,
-        atr_period: int = 14,
-        k: int = 3) -> pd.DataFrame:
-    # Si el dataset está vacío, devuelve un dataset con -1 en la columna labels_meta
-    if dataset.empty:
-        dataset["labels_meta"] = -1
-        return dataset
-    # Ajuste dinámico del tamaño de ventana según ATR local
-    min_window = n_clusters
-    base_window = min(n_clusters * k, int(len(dataset) * 0.05))
-    if base_window < min_window:
-        base_window = min_window
-    # Calcular ATR local
-    close_data = np.ascontiguousarray(dataset['close'].values)
-    high_data = np.ascontiguousarray(dataset['high'].values)
-    low_data = np.ascontiguousarray(dataset['low'].values)
-    atr = calculate_atr_simple(high_data, low_data, close_data, period=atr_period)
-    
-    # Normalizar ATR local entre 0 y 1 para que solo aumente la ventana
-    atr_min = np.nanmin(atr)
-    atr_max = np.nanmax(atr)
-    atr_norm = (atr - atr_min) / (atr_max - atr_min + 1e-9)
-    
-    # Calcular ventanas dinámicas desde min_window hasta base_window
-    dynamic_windows = np.clip(
-        # (min_window + (1 - atr_norm) * (base_window - min_window)).astype(int),
-        (min_window + atr_norm * (base_window - min_window)).astype(int),
-        min_window,
-        base_window
-    )
-    
-    # Pre-cálculo
-    n_rows = len(dataset)
-    votes = np.zeros((n_rows, n_clusters + 1), dtype=np.uint8)
-    # K-means global
-    meta_X_np = dataset.filter(regex="meta_feature").to_numpy(np.float32)
-    global_km = KMeans(n_clusters=n_clusters, n_init="auto", algorithm="auto").fit(meta_X_np)
-    global_ct = global_km.cluster_centers_
-    def map_centroids(local_ct: np.ndarray) -> dict[int, int]:
-        cost = np.linalg.norm(local_ct[:, None] - global_ct, axis=2)
-        row, col = linear_sum_assignment(cost)
-        return {int(r): int(c) + 1 for r, c in zip(row, col)}
-    # Sliding windows dinámicas
-    starts = []
-    ends = []
-    i = 0
-    while i + min_window <= n_rows:
-        win_size = dynamic_windows[i]
-        win_size = int(np.clip(win_size, min_window, base_window))
-        if i + win_size > n_rows:
-            break
-        starts.append(i)
-        ends.append(i + win_size)
-        # Step optimizado o por defecto igual al tamaño de la ventana
-        step_val = step if step is not None else win_size
-        i += step_val
-    # Procesar todas las ventanas válidas
-    for start, end in zip(starts, ends):
-        local_data = meta_X_np[start:end]
-        if len(local_data) < n_clusters:
-            continue
-        local_km = KMeans(n_clusters, n_init="auto", algorithm='auto').fit(local_data)
-        local_ct = local_km.cluster_centers_
-        if local_ct.shape[0] < global_ct.shape[0]:
-            continue
-        mapping = map_centroids(local_ct)
-        lbls = local_km.labels_
-        indices = np.arange(start, end)
-        mapped_ids = np.array([mapping.get(lab, 0) for lab in lbls])
-        votes[indices, mapped_ids] += 1
-    clusters = votes.argmax(axis=1).astype(np.int32) - 1
-    ds_out = dataset.copy()
-    ds_out["labels_meta"] = clusters
-    return ds_out
-
-def clustering_simple(dataset: pd.DataFrame,
-               min_cluster_size: int = 20,
-               min_samples: int | None = None,
-               metric: str = "euclidean") -> pd.DataFrame:
-    # Si el dataset está vacío, devuelve un dataset con -1 en la columna labels_meta
-    if dataset.empty:
-        dataset["labels_meta"] = -1
-        return dataset
-    meta_X_np = dataset.filter(regex="meta_feature").to_numpy(np.float32)
-    clusterer = HDBSCAN(
-        min_cluster_size=min_cluster_size,
-        min_samples=min_samples,
-        metric=metric
-    ).fit(meta_X_np)
-
-    dataset["labels_meta"] = clusterer.labels_.astype(int)
-    return dataset
-
-@njit(fastmath=True, nogil=True)
 def calculate_labels_filter_one_direction(close, lvl, q, direction):
     labels = np.empty(len(close), dtype=np.float64)
     for i in range(len(close)):
@@ -1879,24 +1706,189 @@ def get_labels_trend_one_direction(dataset, rolling=50, polyorder=3, threshold=0
     dataset = dataset.dropna()  # Remove rows with NaN
     return dataset
 
-def markov_regime_switching_simple(dataset, n_regimes: int, model_type="GMMHMM", n_iter = 10, min_covar: float = 1e-3) -> pd.DataFrame:
+@njit(fastmath=True, nogil=True)
+def calculate_atr_simple(high, low, close, period=14):
+    n   = len(close)
+    tr  = np.empty(n)
+    atr = np.empty(n)
+    tr[0] = high[0] - low[0]
+    for i in range(1, n):
+        hl = high[i] - low[i]
+        hc = abs(high[i] - close[i-1])
+        lc = abs(low[i]  - close[i-1])
+        tr[i] = max(hl, hc, lc)
+    # promedio acumulado para i < period-1
+    cumsum = tr[0]
+    atr[0] = tr[0]
+    for i in range(1, min(period, n)):
+        cumsum += tr[i]
+        atr[i] = cumsum / (i+1)
+    if n <= period-1:
+        return atr
+    # primera media "oficial" (índice period-1)
+    cumsum += tr[period-1]
+    atr[period-1] = cumsum / period
+    # Wilder a partir de aquí
+    for i in range(period, n):
+        atr[i] = (atr[i-1]*(period-1) + tr[i]) / period
+    return atr
+
+# ONE DIRECTION LABELING
+@njit(fastmath=True, nogil=True)
+def calculate_labels_one_direction(high, low, close, markup, min_val, max_val, direction, atr_period=14, deterministic=True):
+    # Verificar que hay suficientes datos
+    n = len(close)
+    if n <= max_val:
+        return np.zeros(0, dtype=np.float64)
+    
+    # Calcular ATR
+    atr = calculate_atr_simple(high, low, close, period=atr_period)
+    
+    if deterministic:
+        # --- exactamente igual que antes ---
+        fwd_matrix = np.zeros((n - max_val, max_val - min_val + 1))
+        for i in range(n - max_val):
+            for j in range(min_val, max_val + 1):
+                fwd_matrix[i, j - min_val] = close[i + j]
+        close_slice = close[:-max_val].reshape(-1, 1)
+        diffs = fwd_matrix - close_slice          # shape: (n-max_val, n_shifts)
+    else:
+        # --------- una sola vela aleatoria por fila -----------------
+        rand_shift = np.random.randint(min_val, max_val + 1, size=n - max_val)
+        target = close[np.arange(n - max_val) + rand_shift]          # vector
+        diffs = target - close[:-max_val]                            # vector 1-D
+        diffs = diffs.reshape(-1, 1)                                 # → columna
+
+    # Calcular markup dinámico basado en ATR
+    atr_slice = atr[:-max_val].reshape(-1, 1)
+    dyn_mk = markup * atr_slice
+    # Calcular hits
+    hits = (diffs > dyn_mk) if direction=="buy" else (diffs < -dyn_mk)
+    result = np.zeros(len(hits), dtype=np.float64)
+    for i in range(len(hits)):
+        for j in range(hits.shape[1]):
+            if hits[i, j]:
+                result[i] = 1.0
+                break
+    return result
+
+def get_labels_one_direction(dataset, markup, min_val=1, max_val=15, direction='buy', atr_period=14, deterministic=True) -> pd.DataFrame:
+    close_data = np.ascontiguousarray(dataset['close'].values)
+    high_data = np.ascontiguousarray(dataset['high'].values)
+    low_data = np.ascontiguousarray(dataset['low'].values)
+    labels = calculate_labels_one_direction(
+        high_data, low_data, close_data, 
+        markup, min_val, max_val, direction, atr_period, deterministic
+    )
+    dataset = dataset.iloc[:len(labels)].copy()
+    dataset['labels_main'] = labels
+    dataset = dataset.dropna()
+    return dataset
+
+def sliding_window_clustering(
+        dataset: pd.DataFrame,
+        n_clusters: int,
+        window_size: int = 100,
+        step: int = None) -> pd.DataFrame:
+    
+    if dataset.empty:
+        dataset["labels_meta"] = -1
+        return dataset
+    
+    # Pre-cálculo
+    n_rows = len(dataset)
+    votes = np.zeros((n_rows, n_clusters + 1), dtype=np.uint8)
+    # K-means global
+    meta_X_np = dataset.filter(regex="meta_feature").to_numpy(np.float32)
+    global_km = KMeans(n_clusters=n_clusters, n_init="auto", algorithm="auto").fit(meta_X_np)
+    global_ct = global_km.cluster_centers_
+    
+    def map_centroids(local_ct: np.ndarray) -> dict[int, int]:
+        cost = np.linalg.norm(local_ct[:, None] - global_ct, axis=2)
+        row, col = linear_sum_assignment(cost)
+        return {int(r): int(c) + 1 for r, c in zip(row, col)}
+    
+    # Sliding windows
+    starts = []
+    ends = []
+    i = 0
+    while i + window_size <= n_rows:
+        starts.append(i)
+        ends.append(i + window_size)
+        # Step optimizado o por defecto igual al tamaño de la ventana
+        step_val = step if step is not None else window_size
+        i += step_val
+    
+    # Procesar todas las ventanas válidas
+    for start, end in zip(starts, ends):
+        local_data = meta_X_np[start:end]
+        if len(local_data) < n_clusters:
+            continue
+        local_km = KMeans(n_clusters, n_init="auto", algorithm='auto').fit(local_data)
+        local_ct = local_km.cluster_centers_
+        if local_ct.shape[0] < global_ct.shape[0]:
+            continue
+        mapping = map_centroids(local_ct)
+        lbls = local_km.labels_
+        indices = np.arange(start, end)
+        mapped_ids = np.array([mapping.get(lab, 0) for lab in lbls])
+        votes[indices, mapped_ids] += 1
+    
+    clusters = votes.argmax(axis=1).astype(np.int32) - 1
+    ds_out = dataset.copy()
+    ds_out["labels_meta"] = clusters
+    return ds_out
+
+def clustering_simple(dataset: pd.DataFrame,
+               min_cluster_size: int = 20,
+               min_samples: int | None = None,
+               metric: str = "euclidean") -> pd.DataFrame:
     # Si el dataset está vacío, devuelve un dataset con -1 en la columna labels_meta
     if dataset.empty:
         dataset["labels_meta"] = -1
         return dataset
     meta_X_np = dataset.filter(regex="meta_feature").to_numpy(np.float32)
-    # Features normalization before training
-    scaler = RobustScaler()
-    X_scaled = scaler.fit_transform(meta_X_np)
+    clusterer = HDBSCAN(
+        min_cluster_size=min_cluster_size,
+        min_samples=min_samples,
+        metric=metric
+    ).fit(meta_X_np)
+
+    dataset["labels_meta"] = clusterer.labels_.astype(int)
+    return dataset
+
+def markov_regime_switching_simple(dataset, n_regimes: int, model_type="GMMHMM", n_iter = 10) -> pd.DataFrame:
+    # Si el dataset está vacío, devuelve un dataset con -1 en la columna labels_meta
+    if dataset.empty:
+        dataset["labels_meta"] = -1
+        return dataset
     
-    # 1) Verificar columnas con nan/inf
+    meta_X_np = dataset.filter(regex="meta_feature").to_numpy(np.float32)
+    
+    # Features normalization before training
+    scaler = StandardScaler()
+    try:
+        X_scaled = scaler.fit_transform(meta_X_np)
+    except Exception:
+        dataset["labels_meta"] = -1
+        return dataset
+    
+    # 3) Verificar columnas con nan/inf después del escalado
     if not np.isfinite(X_scaled).all():
         dataset["labels_meta"] = -1
         return dataset
     
-    # 2) Verificar columnas (casi) constantes
+    # 4) Verificar columnas (casi) constantes después del escalado
     stds = np.nanstd(X_scaled, axis=0)
     if np.any(stds < 1e-10):
+        dataset["labels_meta"] = -1
+        return dataset
+    
+    # 5) Verificar que la matriz de covarianza sea definida positiva
+    try:
+        cov = np.cov(X_scaled.T)
+        np.linalg.cholesky(cov)
+    except np.linalg.LinAlgError:
         dataset["labels_meta"] = -1
         return dataset
     
@@ -1906,7 +1898,6 @@ def markov_regime_switching_simple(dataset, n_regimes: int, model_type="GMMHMM",
             n_components=n_regimes,
             covariance_type="full",
             n_iter=n_iter,
-            min_covar=min_covar,
             verbose=False
         )
     elif model_type == "GMMHMM":
@@ -1914,8 +1905,7 @@ def markov_regime_switching_simple(dataset, n_regimes: int, model_type="GMMHMM",
             n_components=n_regimes,
             covariance_type="full",
             n_iter=n_iter,
-            n_mix=2,
-            min_covar=min_covar,
+            n_mix=3,
             verbose=False
         )
     elif model_type == "VARHMM":
@@ -1923,44 +1913,142 @@ def markov_regime_switching_simple(dataset, n_regimes: int, model_type="GMMHMM",
             n_components=n_regimes,
             covariance_type="full",
             n_iter=n_iter,
-            min_covar=min_covar,
             verbose=False
         )
         
     # Fit the model
-    model.fit(X_scaled)     
-    # Predict the hidden states (regimes)
-    hidden_states = model.predict(X_scaled)
-    # Assign states to clusters
-    dataset['labels_meta'] = hidden_states
+    try:
+        model.fit(X_scaled)
+        hidden_states = model.predict(X_scaled)
+        # Assign states to clusters
+        dataset['labels_meta'] = hidden_states
+    except Exception:
+        dataset["labels_meta"] = -1
         
     return dataset
 
-def markov_regime_switching_advanced(dataset, n_regimes: int, model_type="HMM", n_iter=100, min_covar: float = 1e-3) -> pd.DataFrame:
+def markov_regime_switching_sliding(dataset, n_regimes: int, window_size: int = 100, step: int = None, model_type="GMMHMM", n_iter=100) -> pd.DataFrame:
+    if dataset.empty:
+        dataset["labels_meta"] = -1
+        return dataset
+    
+    meta_features = dataset.filter(regex="meta_feature")
+    if meta_features.empty:
+        dataset["labels_meta"] = -1
+        return dataset
+        
+    meta_X_np = meta_features.to_numpy(np.float32)
+    n_samples = len(dataset)
+    
+    step = window_size if step is None else step
+    votes = np.zeros((n_samples, n_regimes + 1), dtype=np.uint8)
+
+    for i in range(0, n_samples - window_size + 1, step):
+        window_data = meta_X_np[i:i + window_size]
+        
+        scaler = StandardScaler()
+        try:
+            X_scaled = scaler.fit_transform(window_data)
+        except Exception:
+            continue
+            
+        # Verificar calidad de datos
+        if not np.isfinite(X_scaled).all():
+            continue
+            
+        stds = np.nanstd(X_scaled, axis=0)
+        if np.any(stds < 1e-10):
+            continue
+            
+        try:
+            cov = np.cov(X_scaled.T)
+            np.linalg.cholesky(cov)
+        except np.linalg.LinAlgError:
+            continue
+        
+        if model_type == "HMM":
+            model = hmm.GaussianHMM(
+                n_components=n_regimes,
+                covariance_type="full",
+                n_iter=n_iter,
+                verbose=False
+            )
+        elif model_type == "GMMHMM":
+            model = hmm.GMMHMM(
+                n_components=n_regimes,
+                covariance_type="full",
+                n_iter=n_iter,
+                n_mix=3,
+                verbose=False
+            )
+        elif model_type == "VARHMM":
+            model = vhmm.VariationalGaussianHMM(
+                n_components=n_regimes,
+                covariance_type="full",
+                n_iter=n_iter,
+                verbose=False
+            )
+        
+        try:
+            model.fit(X_scaled)
+            hidden_states = model.predict(X_scaled)
+            
+            for j, state in enumerate(hidden_states):
+                if i + j < n_samples:
+                    votes[i + j, state + 1] += 1
+        except Exception:
+            continue
+    
+    no_votes = votes.sum(axis=1) == 0
+    clusters = np.zeros(n_samples, dtype=np.int32)
+    clusters[~no_votes] = votes[~no_votes, 1:].argmax(axis=1)
+    clusters[no_votes] = -1
+    
+    dataset['labels_meta'] = clusters
+    return dataset
+
+def markov_regime_switching_advanced(dataset, n_regimes: int, model_type="HMM", n_iter=100) -> pd.DataFrame:
     # Si el dataset está vacío, devuelve un dataset con -1 en la columna labels_meta
     if dataset.empty:
         dataset["labels_meta"] = -1
         return dataset
     
     meta_X_np = dataset.filter(regex="meta_feature").to_numpy(np.float32)
-    # Features normalization before training
-    scaler = RobustScaler()
-    X_scaled = scaler.fit_transform(meta_X_np)
     
-    # 1) Verificar columnas con nan/inf
+    # Features normalization before training
+    scaler = StandardScaler()
+    try:
+        X_scaled = scaler.fit_transform(meta_X_np)
+    except Exception:
+        dataset["labels_meta"] = -1
+        return dataset
+    
+    # 3) Verificar columnas con nan/inf después del escalado
     if not np.isfinite(X_scaled).all():
         dataset["labels_meta"] = -1
         return dataset
     
-    # 2) Verificar columnas (casi) constantes
+    # 4) Verificar columnas (casi) constantes después del escalado
     stds = np.nanstd(X_scaled, axis=0)
     if np.any(stds < 1e-10):
         dataset["labels_meta"] = -1
         return dataset
     
+    # 5) Verificar que la matriz de covarianza sea definida positiva
+    try:
+        cov = np.cov(X_scaled.T)
+        np.linalg.cholesky(cov)
+    except np.linalg.LinAlgError:
+        dataset["labels_meta"] = -1
+        return dataset
+    
     # Use k-means to cluster the data into n_regimes groups
-    kmeans = KMeans(n_clusters=n_regimes, n_init='auto', algorithm='auto')
-    cluster_labels = kmeans.fit_predict(X_scaled)
+    try:
+        kmeans = KMeans(n_clusters=n_regimes, n_init='auto', algorithm='auto')
+        cluster_labels = kmeans.fit_predict(X_scaled)
+    except Exception:
+        dataset["labels_meta"] = -1
+        return dataset
     
     # Calculate cluster-specific means and covariances to use as priors
     prior_means = kmeans.cluster_centers_  # Shape: (n_regimes, n_features)
@@ -1971,8 +2059,14 @@ def markov_regime_switching_advanced(dataset, n_regimes: int, model_type="HMM", 
     for i in range(n_regimes):
         cluster_data = X_scaled[cluster_labels == i]
         if len(cluster_data) > 1:  # Need at least 2 points for covariance
-            cluster_cov = empirical_covariance(cluster_data)
-            prior_covs.append(cluster_cov)
+            try:
+                cluster_cov = empirical_covariance(cluster_data)
+                # Verificar que la covarianza sea definida positiva
+                np.linalg.cholesky(cluster_cov)
+                prior_covs.append(cluster_cov)
+            except np.linalg.LinAlgError:
+                # Fallback to overall covariance if cluster is too small or not positive definite
+                prior_covs.append(empirical_covariance(X_scaled))
         else:
             # Fallback to overall covariance if cluster is too small
             prior_covs.append(empirical_covariance(X_scaled))
@@ -1999,12 +2093,10 @@ def markov_regime_switching_advanced(dataset, n_regimes: int, model_type="HMM", 
             'n_components': n_regimes,
             'covariance_type': "full",
             'n_iter': n_iter,
-            'min_covar': min_covar,
             'init_params': '',  # Don't use default initialization
             'verbose': False
         }
         
-        from hmmlearn import hmm
         model = hmm.GaussianHMM(**model_params)
         
         # Set the model parameters directly with our k-means derived priors
@@ -2018,13 +2110,11 @@ def markov_regime_switching_advanced(dataset, n_regimes: int, model_type="HMM", 
             'n_components': n_regimes,
             'covariance_type': "full",
             'n_iter': n_iter,
-            'n_mix': 2,
-            'min_covar': min_covar,
+            'n_mix': 3,
             'init_params': '',
             'verbose': False
         }
         
-        from hmmlearn import hmm
         model = hmm.GMMHMM(**model_params)
         
         # Set initial state distribution and transition matrix
@@ -2060,7 +2150,6 @@ def markov_regime_switching_advanced(dataset, n_regimes: int, model_type="HMM", 
             'n_components': n_regimes,
             'covariance_type': "full",
             'n_iter': n_iter,
-            'min_covar': min_covar,
             'init_params': '',
             # Set priors directly in the parameters
             'means_prior': prior_means,
@@ -2078,11 +2167,13 @@ def markov_regime_switching_advanced(dataset, n_regimes: int, model_type="HMM", 
         model.transmat_ = trans_mat
 
     # Fit the model
-    model.fit(X_scaled)
-    
-    # Predict the hidden states (regimes)
-    hidden_states = model.predict(X_scaled)
-    
-    # Assign states to clusters
-    dataset['labels_meta'] = hidden_states    
+    try:
+        model.fit(X_scaled)
+        hidden_states = model.predict(X_scaled)
+        
+        # Assign states to clusters
+        dataset['labels_meta'] = hidden_states
+    except Exception:
+        dataset["labels_meta"] = -1
+        
     return dataset

@@ -22,7 +22,7 @@ from weakref import WeakValueDictionary
 from modules.labeling_lib import (
     get_prices, get_features, get_labels_one_direction,
     sliding_window_clustering, clustering_simple,
-    markov_regime_switching_simple, markov_regime_switching_advanced
+    markov_regime_switching_simple, markov_regime_switching_sliding
 )
 from modules.tester_lib import robust_oos_score_one_direction, _ONNX_CACHE
 from modules.export_lib import (
@@ -420,20 +420,19 @@ class StrategySearcher:
         Returns:
             float: Mejor puntuación encontrada
         """
+        # Parámetros base a optimizar
         hp = self.common_hyper_params(trial)
 
-        # Parámetros a optimizar
-        hp['markup'] = trial.suggest_float("markup", 0.1, 1.0, step=0.1)
-        hp['label_max'] = trial.suggest_int('label_max', 2, 6, step=1, log=True)
-        hp['atr_period'] = trial.suggest_int('atr_period', 5, 50, step=5)
-        hp['n_clusters'] = trial.suggest_int('n_clusters', 5, 50, step=5)
-        if self.subtype != 'simple':
-            hp['k'] = trial.suggest_int('k', 3, 10, step=1)
-        
         # Obtener datos de entrenamiento y prueba
         ds_train, ds_test = self.get_train_test_data(hp)
         if ds_train is None or ds_test is None:
             return -1
+
+        # Parámetros a optimizar
+        hp['n_clusters'] = trial.suggest_int('n_clusters', 5, 50, step=5)
+        if self.subtype != 'simple':
+            hp['window_size'] = trial.suggest_int('window_size', 100, 500, step=50)
+            #hp['step'] = trial.suggest_int('step', 1, hp['window_size'], step=10)
         
         # Clustering
         if self.subtype == 'simple':
@@ -441,13 +440,12 @@ class StrategySearcher:
                 ds_train,
                 min_cluster_size=hp['n_clusters']
             )
-        else:
+        elif self.subtype == 'sliding':
             ds_train = sliding_window_clustering(
                 ds_train,
                 n_clusters=hp['n_clusters'],
+                window_size=hp['window_size'],
                 step=hp.get('step', None),
-                atr_period=hp['atr_period'],
-                k=hp['k']
             )
             
         return self._evaluate_clusters(ds_train, ds_test, hp, trial, study)
@@ -462,35 +460,38 @@ class StrategySearcher:
         Returns:
             float: Mejor puntuación encontrada
         """
+        # Parámetros base a optimizar
         hp = self.common_hyper_params(trial)
-
-        # Parámetros a optimizar
-        hp['markup'] = trial.suggest_float("markup", 0.1, 1.0, step=0.1)
-        hp['label_max'] = trial.suggest_int('label_max', 2, 6, step=1, log=True)
-        hp['atr_period'] = trial.suggest_int('atr_period', 5, 50, step=5)
-        #hp['model_type'] = trial.suggest_categorical('model_type', ['GMMHMM', 'HMM', 'VARHMM'])
-        hp['n_regimes'] = trial.suggest_int('n_regimes', 2, 10, step=1)
-        hp['n_iter'] = trial.suggest_int('n_iter', 10, 100, step=10)
 
         # Obtener datos de entrenamiento y prueba
         ds_train, ds_test = self.get_train_test_data(hp)
         if ds_train is None or ds_test is None:
             return -1
         
+        # Parámetros base a optimizar
+        hp['model_type'] = trial.suggest_categorical('model_type', ['GMMHMM', 'HMM', 'VARHMM'])
+        hp['n_regimes'] = trial.suggest_int('n_regimes', 3, 15, step=1)
+        hp['n_iter'] = trial.suggest_int('n_iter', 10, 500, step=10)
+        if self.subtype != 'simple':
+            hp['window_size'] = trial.suggest_int('window_size', hp['n_regimes'] * 10, len(ds_train)//10, step=50)
+            #hp['step'] = trial.suggest_int('step', max(1, hp['window_size']//10), hp['window_size'], step=10)
+        
         # Markov
         if self.subtype == 'simple':
             ds_train = markov_regime_switching_simple(
                 ds_train,
-                # model_type=hp['model_type'],
+                model_type=hp['model_type'],
                 n_regimes=hp['n_regimes'],
                 n_iter=hp['n_iter']
             )
-        else:
-            ds_train = markov_regime_switching_advanced(
+        elif self.subtype == 'sliding':
+            ds_train = markov_regime_switching_sliding(
                 ds_train,
-                # model_type=hp['model_type'],
+                model_type=hp['model_type'],
                 n_regimes=hp['n_regimes'],
-                n_iter=hp['n_iter']
+                n_iter=hp['n_iter'],
+                window_size=hp['window_size'],
+                step=hp.get('step', None)
             )
             
         return self._evaluate_clusters(ds_train, ds_test, hp, trial, study)
@@ -603,7 +604,10 @@ class StrategySearcher:
             Dict[str, Any]: Hiperparámetros comunes
         """
         hp = {k: copy.deepcopy(v) for k, v in self.base_hp.items() if k != 'base_df'}
-        # Optimización de hiperparámetros
+        # Optimización de hiperparámetros comunes
+        hp['markup'] = trial.suggest_float("markup", 0.1, 1.0, step=0.1)
+        hp['label_max'] = trial.suggest_int('label_max', 2, 6, step=1, log=True)
+        hp['atr_period'] = trial.suggest_int('atr_period', 5, 50, step=5)
         hp.update(self.sample_cat_params(trial, "cat_main"))
         hp.update(self.sample_cat_params(trial, "cat_meta"))
         hp.update(self.sample_xgb_params(trial, "xgb_main"))

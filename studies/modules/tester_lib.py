@@ -1,26 +1,22 @@
-import math
 from numba import jit, njit, prange
 import numpy as np
 import pandas as pd
 from datetime import datetime
-from sklearn.linear_model import LinearRegression
 import matplotlib.pyplot as plt
 import onnxruntime as rt
+from catboost import CatBoostClassifier
 from skl2onnx import convert_sklearn, update_registered_converter
 from skl2onnx.common.data_types import FloatTensorType
 from skl2onnx.common.shape_calculator import calculate_linear_classifier_output_shapes
 from modules.export_lib import (
     skl2onnx_parser_castboost_classifier,
     skl2onnx_convert_catboost,
-    CatWithEval,
-    XGBWithEval,
-    convert_xgboost,
 )
 rt.set_default_logger_severity(4)
 
 @jit(fastmath=True)
 def process_data(close, labels, metalabels):
-    last_deal  = 2          # 2 = flat, 0 = short, 1 = long
+    last_deal  = 2
     last_price = 0.0
     report, chart = [0.0], [0.0]
 
@@ -95,7 +91,7 @@ def tester(dataset, plot=False):
     # regresión lineal sobre el equity
     y = rpt.reshape(-1, 1)
     X = np.ascontiguousarray(np.arange(len(rpt))).reshape(-1, 1)
-    lr = LinearRegression().fit(X, y)
+    lr = _signed_r2(rpt)
     sign = 1 if lr.coef_[0][0] >= 0 else -1
 
     if plot:
@@ -118,9 +114,13 @@ def evaluate_report(report: np.ndarray) -> float:
     if len(report) < 2:
         return -1.0
 
-    # Calcular R²
+    # Calcular R² y sea positivo
     r2_raw = _signed_r2(report)
-
+    if r2_raw > 0:
+        r2_raw *= 1.0
+    else:
+        return -1.0
+    
     # Calcular los retornos individuales
     returns = np.diff(report)
     num_trades = len(returns)
@@ -129,9 +129,9 @@ def evaluate_report(report: np.ndarray) -> float:
     
     # ────────────────────────
     # MÉTRICAS BASE
-    gains = returns[returns > 0]
-    losses = -returns[returns < 0]
-    profit_factor = np.sum(gains) / np.sum(losses) if np.sum(losses) > 0 else eps
+    # gains = returns[returns > 0]
+    # losses = -returns[returns < 0]
+    # profit_factor = np.sum(gains) / np.sum(losses) if np.sum(losses) > 0 else eps
 
     equity_curve = report
     peak = equity_curve[0]
@@ -142,31 +142,24 @@ def evaluate_report(report: np.ndarray) -> float:
     total_return = equity_curve[-1] - equity_curve[0]
     return_dd_ratio = total_return / max_dd if max_dd > 0 else eps
 
+    trade_weight = np.sqrt(float(num_trades))
+
     # ────────────────────────
     # PUNTAJE COMPUESTO BASE
     base_score = (
-        (profit_factor * 0.4) +
-        (return_dd_ratio * 0.6)
+        # (profit_factor * 0.3) +
+        (return_dd_ratio * 0.6) +
+        (trade_weight * 0.4)
     )
 
     # Penalizaciones por métricas débiles
     penalization = 1.0
-    if profit_factor < 2.0: penalization *= 0.8
+    # if profit_factor < 2.0: penalization *= 0.8
     if return_dd_ratio < 2.0: penalization *= 0.8
-
-    # ────────────────────────
-    # AJUSTE POR NÚMERO DE TRADES
-    trade_weight = np.sqrt(float(num_trades))
+    if num_trades < 200: penalization *= 0.8
     
     # Aplicar penalizaciones y ajustes
-    base_score *= penalization * trade_weight
-
-    # ────────────────────────
-    # Verificamos que el R² sea positivo
-    if r2_raw > 0:
-        r2_raw *= 1.0
-    else:
-        return -1.0
+    base_score *= penalization
 
     # ────────────────────────
     # Score final
@@ -241,10 +234,9 @@ def tester_slow(dataset, markup, plot=False):
 
     y = np.array(report).reshape(-1, 1)
     X = np.arange(len(report)).reshape(-1, 1)
-    lr = LinearRegression()
-    lr.fit(X, y)
+    lr = _signed_r2(report)
 
-    l = 1 if lr.coef_ >= 0 else -1
+    l = 1 if lr >= 0 else -1
 
     if plot:
         plt.plot(report)
@@ -436,19 +428,12 @@ def _simulate_batch(close, l_all, m_all, block_size, direction):
 #  ONNX-accelerated batch prediction
 # -----------------------------------------------------------------------------
 update_registered_converter(
-    CatWithEval,
+    CatBoostClassifier,
     "CatBoostClassifier",
     calculate_linear_classifier_output_shapes,
     skl2onnx_convert_catboost,
     parser=skl2onnx_parser_castboost_classifier,
     options={"nocl": [True, False], "zipmap": [True, False]}
-)
-update_registered_converter(
-    XGBWithEval,
-    'XGBClassifier',
-    calculate_linear_classifier_output_shapes,
-    convert_xgboost,
-    options={'nocl': [True, False], 'zipmap': [True, False]}
 )
 # 1) ───────── cache global de sesiones ───────────────────────────
 _ONNX_CACHE: dict[int, rt.InferenceSession] = {}

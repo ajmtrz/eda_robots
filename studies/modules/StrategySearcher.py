@@ -8,25 +8,19 @@ from time import perf_counter
 from typing import Dict, Any
 import optuna
 from optuna.pruners import HyperbandPruner
-from sklearn.ensemble import VotingClassifier
-from modules.export_lib import XGBWithEval
-from modules.export_lib import CatWithEval
 from optuna.integration import CatBoostPruningCallback
-from optuna.integration import XGBoostPruningCallback
 from sklearn import set_config
 from sklearn.model_selection import train_test_split
 from functools import lru_cache
 from weakref import WeakValueDictionary
-
+from catboost import CatBoostClassifier, Pool
 from modules.labeling_lib import (
     get_prices, get_features, get_labels_one_direction,
     sliding_window_clustering, clustering_simple,
     markov_regime_switching_simple, markov_regime_switching_advanced
 )
 from modules.tester_lib import test_model_one_direction, _ONNX_CACHE
-from modules.export_lib import (
-    export_model_to_ONNX, XGBWithEval, CatWithEval
-)
+from modules.export_lib import export_model_to_ONNX
 
 class StrategySearcher:
     """Clase unificada para búsqueda de estrategias de trading.
@@ -194,7 +188,7 @@ class StrategySearcher:
                     "search_subtype": self.search_subtype,
                     "best_models": best_models,
                     "best_model_seed": model_seed,
-                    "best_score": study.user_attrs["best_score"],
+                    "best_score": study.user_attrs.get("best_score"),
                     "best_periods_main": study.user_attrs.get("best_periods_main"),
                     "best_periods_meta": study.user_attrs.get("best_periods_meta"),
                     "best_stats_main": study.user_attrs.get("best_stats_main"),
@@ -453,7 +447,7 @@ class StrategySearcher:
             not np.isfinite(fwd) or not np.isfinite(bwd) or
             fwd <= 0 or bwd <= 0):
             return -1.0
-        mean = 0.4 * fwd + 0.6 * bwd
+        mean = 0.5 * (fwd + bwd)
         if fwd < bwd * 0.8:
             mean *= 0.8
         delta  = abs(fwd - bwd) / max(abs(fwd), abs(bwd), eps)
@@ -483,29 +477,6 @@ class StrategySearcher:
             f"{prefix}_early_stopping": es_rounds,
         }
     
-    def sample_xgb_params(self, trial: optuna.Trial, prefix: str) -> Dict[str, Any]:
-        """Muestra parámetros para XGBoost.
-        
-        Args:
-            trial: Trial actual de Optuna
-            prefix: Prefijo para los parámetros
-            
-        Returns:
-            Dict[str, Any]: Parámetros de XGBoost
-        """
-        n_estimators = trial.suggest_int(f"{prefix}_estimators", 100, 500, step=50)
-        max_depth = trial.suggest_int(f"{prefix}_max_depth", 3, 6)
-        lr           = trial.suggest_float(f"{prefix}_learning_rate", 0.1, 0.3, log=True)
-        reg_lambda   = trial.suggest_float(f"{prefix}_reg_lambda", 1.0, 5.0, log=True)
-        es_rounds    = trial.suggest_int(f"{prefix}_early_stopping", 50, 100, step=10)
-        return {
-            f"{prefix}_estimators": n_estimators,
-            f"{prefix}_max_depth": max_depth,
-            f"{prefix}_learning_rate": lr,
-            f"{prefix}_reg_lambda": reg_lambda,
-            f"{prefix}_early_stopping": es_rounds,
-        }
-    
     def common_hyper_params(self, trial: optuna.Trial) -> Dict[str, Any]:
         """Obtiene hiperparámetros comunes.
         
@@ -522,8 +493,6 @@ class StrategySearcher:
         hp['atr_period'] = trial.suggest_int('atr_period', 5, 50, step=5)
         hp.update(self.sample_cat_params(trial, "cat_main"))
         hp.update(self.sample_cat_params(trial, "cat_meta"))
-        hp.update(self.sample_xgb_params(trial, "xgb_main"))
-        hp.update(self.sample_xgb_params(trial, "xgb_meta"))
 
         # Optimización de períodos para el modelo principal
         n_periods_main = trial.suggest_int('n_periods_main', 5, 15, log=True)
@@ -674,46 +643,22 @@ class StrategySearcher:
                 depth=hp['cat_main_depth'],
                 learning_rate=hp['cat_main_learning_rate'],
                 l2_leaf_reg=hp['cat_main_l2_leaf_reg'],
-                early_stopping_rounds=hp['cat_main_early_stopping'],
-                eval_metric='Accuracy',
+                eval_metric='F1',
                 store_all_simple_ctr=False,
                 verbose=False,
                 thread_count=self.n_jobs,
                 task_type='CPU'
             )
-            xgb_main_params = dict(
-                n_estimators=hp['xgb_main_estimators'],
-                max_depth=hp['xgb_main_max_depth'],
-                learning_rate=hp['xgb_main_learning_rate'],
-                reg_lambda=hp['xgb_main_reg_lambda'],
-                early_stopping_rounds=hp['xgb_main_early_stopping'],
-                eval_metric='logloss',
-                verbosity=0,
-                n_jobs=self.n_jobs,
-                tree_method= "gpu_hist",
-                device_type="cuda"
-            )
-            base_main_models = [
-                ('catboost', CatWithEval(
-                    **cat_main_params,
-                    eval_set=[(X_val_main, y_val_main)],
-                    callbacks=[CatBoostPruningCallback(trial, "Accuracy")]
-                )),
-                ('xgboost', XGBWithEval(
-                    **xgb_main_params, 
-                    eval_set=[(X_val_main, y_val_main)],
-                    callbacks=[XGBoostPruningCallback(trial, "validation_0-logloss")]
-                )),
-            ]
-            model_main = VotingClassifier(
-                    estimators=base_main_models,
-                    voting='soft',
-                    flatten_transform=False,
-                    n_jobs=1
-                )
+            model_main = CatBoostClassifier(**cat_main_params)
             # print("training main model...")
             # start_time = time.time()
-            model_main.fit(X_train_main, y_train_main)
+            model_main.fit(X_train_main, y_train_main, 
+                           eval_set=Pool(X_val_main, y_val_main), 
+                           early_stopping_rounds=hp['cat_main_early_stopping'],
+                           callbacks=[CatBoostPruningCallback(trial, "F1")],
+                           use_best_model=True,
+                           verbose=False
+                           )
             # print(f"main model trained in {time.time() - start_time:.2f} seconds")
 
             # Meta-modelo
@@ -722,55 +667,29 @@ class StrategySearcher:
                 depth=hp['cat_meta_depth'],
                 learning_rate=hp['cat_meta_learning_rate'],
                 l2_leaf_reg=hp['cat_meta_l2_leaf_reg'],
-                early_stopping_rounds=hp['cat_meta_early_stopping'],
                 eval_metric='F1',
                 store_all_simple_ctr=False,
                 verbose=False,
                 thread_count=self.n_jobs,
                 task_type='CPU'
             )
-            xgb_meta_params = dict(
-                n_estimators=hp['xgb_meta_estimators'],
-                max_depth=hp['xgb_meta_max_depth'],
-                learning_rate=hp['xgb_meta_learning_rate'],
-                reg_lambda=hp['xgb_meta_reg_lambda'],
-                early_stopping_rounds=hp['xgb_meta_early_stopping'],
-                eval_metric='logloss',
-                verbosity=0,
-                verbose_eval=False,
-                n_jobs=self.n_jobs,
-                tree_method= "gpu_hist",
-                device_type="cuda"
-            )
-            base_meta_models = [
-                ('catboost', CatWithEval(
-                    **cat_meta_params,
-                    eval_set=[(X_val_meta, y_val_meta)],
-                    callbacks=[CatBoostPruningCallback(trial, "F1")]
-                )),
-                ('xgboost', XGBWithEval(
-                    **xgb_meta_params, 
-                    eval_set=[(X_val_meta, y_val_meta)],
-                    callbacks=[XGBoostPruningCallback(trial, "validation_0-logloss")]
-                )),
-            ]
-
-            model_meta = VotingClassifier(
-                    estimators=base_meta_models,
-                    voting='soft',
-                    flatten_transform=False,
-                    n_jobs=1
-                )
+            model_meta = CatBoostClassifier(**cat_meta_params)
             # print("training meta model...")
             # start_time = time.time()
-            model_meta.fit(X_train_meta, y_train_meta)
+            model_meta.fit(X_train_meta, y_train_meta, 
+                           eval_set=Pool(X_val_meta, y_val_meta), 
+                           early_stopping_rounds=hp['cat_meta_early_stopping'],
+                           callbacks=[CatBoostPruningCallback(trial, "F1")],
+                           use_best_model=True,
+                           verbose=False
+                           )
             # print(f"meta model trained in {time.time() - start_time:.2f} seconds")
 
             # ── evaluación ───────────────────────────────────────────────
             test_len = len(ds_test)
             train_indices = np.random.choice(len(ds_train), size=test_len, replace=False)
             ds_train_eval = ds_train.iloc[train_indices].copy()
-            
+
             # print("evaluating in-sample...")
             # start_time = time.time()
             r2_ins = test_model_one_direction(

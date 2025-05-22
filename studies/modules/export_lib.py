@@ -1,55 +1,12 @@
 import os
 import re
 from catboost import CatBoostClassifier
-from xgboost import XGBClassifier
 from skl2onnx import convert_sklearn, update_registered_converter
 from skl2onnx.common.shape_calculator import calculate_linear_classifier_output_shapes
 from skl2onnx.common.data_types import FloatTensorType, Int64TensorType
 from skl2onnx._parse import _apply_zipmap, _get_sklearn_operator_name
 from onnx.helper import get_attribute_value
 from catboost.utils import convert_to_onnx_object
-from onnxmltools.convert.xgboost.operator_converters.XGBoost import convert_xgboost
-from onnxmltools.convert import convert_xgboost as convert_xgboost_booster
-
-# ---------- Catboost ----------
-class CatWithEval(CatBoostClassifier):
-    def __init__(self, eval_set=None, callbacks=None, **kw):
-        super().__init__(**kw)
-        self.eval_set = eval_set
-        self.callbacks = callbacks
-        
-    def fit(self, X, y, **kw):
-        if self.eval_set is not None:
-            kw["eval_set"] = self.eval_set
-            kw["use_best_model"] = True
-        if self.callbacks is not None:
-            kw["callbacks"] = self.callbacks
-        return super().fit(X, y, **kw)
-        
-    def get_params(self, deep=True):
-        params = super().get_params(deep)
-        if self.eval_set is not None:
-            params['eval_set'] = self.eval_set
-        if self.callbacks is not None:
-            params['callbacks'] = self.callbacks
-        return params
-        
-    def set_params(self, **params):
-        if 'eval_set' in params:
-            self.eval_set = params.pop('eval_set')
-        if 'callbacks' in params:
-            self.callbacks = params.pop('callbacks')
-        return super().set_params(**params)
-    
-# ---------- XGBoost ----------
-class XGBWithEval(XGBClassifier):
-    def __init__(self, *, eval_set=None, **kw):
-        super().__init__(**kw)
-        self.eval_set = eval_set
-    def fit(self, X, y, **kw):
-        if self.eval_set is not None:
-            kw["eval_set"] = self.eval_set
-        return super().fit(X, y, verbose=0, **kw)
     
 # ONNX para Pipeline con Catboost
 def skl2onnx_parser_castboost_classifier(scope, model, inputs, custom_parsers=None):
@@ -98,38 +55,25 @@ def export_model_to_ONNX(best_models, **kwargs):
 
     # Register the custom converter
     update_registered_converter(
-        CatWithEval,
+        CatBoostClassifier,
         "CatBoostClassifier",
         calculate_linear_classifier_output_shapes,
         skl2onnx_convert_catboost,
         parser=skl2onnx_parser_castboost_classifier,
         options={"nocl": [True, False], "zipmap": [True, False]}
     )
-    update_registered_converter(
-        XGBWithEval,
-        'XGBClassifier',
-        calculate_linear_classifier_output_shapes,
-        convert_xgboost,
-        options={'nocl': [True, False], 'zipmap': [True, False]}
-    )
 
     try:
-        for idx in range(len(models)):
-            for (name, _), est in zip(models[idx].estimators, models[idx].estimators_):
-                if hasattr(est, "get_booster"):
-                    booster = est.get_booster()
-                    if booster.feature_names is not None:
-                        booster.feature_names = [f"f{j}" for j in range(len(booster.feature_names))]
         # Convierte los pipelines completos
         model_main_onnx = convert_sklearn(
             models[0],
-            initial_types=[('input', FloatTensorType([None, len(models[0].feature_names_in_)]))],
+            initial_types=[('input', FloatTensorType([None, len(models[0].feature_names_)]))],
             target_opset={"": 18, "ai.onnx.ml": 2},
             options={id(models[0]): {'zipmap': True}}
         )
         model_meta_onnx = convert_sklearn(
             models[1],
-            initial_types=[('input', FloatTensorType([None, len(models[1].feature_names_in_)]))],
+            initial_types=[('input', FloatTensorType([None, len(models[1].feature_names_)]))],
             target_opset={"": 18, "ai.onnx.ml": 2},
             options={id(models[1]): {'zipmap': True}}
         )

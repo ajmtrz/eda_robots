@@ -419,8 +419,8 @@ def _simulate_batch(close, l_all, m_all, block_size, direction):
         ret = np.diff(rpt)
         if ret.size == 0:
             continue
-        eq  = _equity_from_returns(_bootstrap_returns(ret, block_size))
-        score = evaluate_report(eq, _signed_r2(eq))
+        eq = _equity_from_returns(_bootstrap_returns(ret, block_size))
+        score = evaluate_report(eq)
         scores[i] = score
     return scores
 
@@ -439,23 +439,16 @@ update_registered_converter(
 _ONNX_CACHE: dict[int, rt.InferenceSession] = {}
 
 def _predict_batch(model, X_base, noise_levels):
-    """
-    Devuelve (n_sim, n_samples) con las probabilidades p(1) usando
-    una ÚNICA inferencia ONNX Runtime. La sesión se guarda en un
-    cache global para evitar recrearla, sin modificar el objeto modelo.
-    """
-    # ── a) build / fetch ONNX session ─────────────────────────────
     sid = id(model)
     sess = _ONNX_CACHE.get(sid)
-    if sess is None:                       # primera vez para este modelo
+    if sess is None:
         onnx_model = convert_sklearn(
             model,
             initial_types=[('x', FloatTensorType([None, X_base.shape[1]]))],
             target_opset={"": 18, "ai.onnx.ml": 2},
             options={id(model): {'zipmap': False}}
         )
-
-        providers = (['CPUExecutionProvider'])
+        providers = ['CPUExecutionProvider']
         sess = rt.InferenceSession(
             onnx_model.SerializeToString(),
             providers=providers
@@ -465,16 +458,15 @@ def _predict_batch(model, X_base, noise_levels):
     iname = sess.get_inputs()[0].name
     onnx_run = sess.run
 
-    # ── b) construir tensor ruidoso completo ─────────────────────
     n_sim, n_samples, n_feat = len(noise_levels), *X_base.shape
     X_big = np.repeat(X_base[None, :, :], n_sim, axis=0)
-    std   = X_base.std(axis=0, keepdims=True)
-    eps   = np.random.normal(0.0, std, size=X_big.shape)
+    std = X_base.std(axis=0, keepdims=True)
+    eps = np.random.normal(0.0, std, size=X_big.shape)
     X_big += eps * noise_levels[:, None, None]
 
-    # ── c) inferencia masiva ─────────────────────────────────────
-    proba = onnx_run(None, {iname: X_big.reshape(-1, n_feat).astype(np.float32)})[1][:, 1]
-    return proba.reshape(n_sim, n_samples)
+    proba_flat = onnx_run(None, {iname: X_big.reshape(-1, n_feat).astype(np.float32)})[0]
+    proba = proba_flat.reshape(n_sim, n_samples)
+    return proba
 
 def monte_carlo_full(
     model_main: object,

@@ -19,7 +19,11 @@ from modules.labeling_lib import (
     sliding_window_clustering, clustering_simple,
     markov_regime_switching_simple, markov_regime_switching_advanced
 )
-from modules.tester_lib import test_model_one_direction, _ONNX_CACHE
+from modules.tester_lib import (
+    test_model_one_direction,
+    robust_oos_score_one_direction,
+    _ONNX_CACHE
+)
 from modules.export_lib import export_model_to_ONNX
 
 class StrategySearcher:
@@ -417,10 +421,11 @@ class StrategySearcher:
             'stats_meta'  : tuple(hp['stats_meta']),
         }.items()))
 
+        # Asegurarnos de que tenemos todos los datos necesarios
         full_ds = StrategySearcher._cached_features(
             id(self.base_df),
-            self.train_start,
-            self.test_end,
+            min(self.train_start, self.test_start),
+            max(self.train_end, self.test_end),
             hkey,
         )
         
@@ -430,8 +435,13 @@ class StrategySearcher:
             return None, None
         
         # Obtener datasets de entrenamiento y prueba
-        test_mask  = (full_ds.index >= self.test_start) & (full_ds.index <= self.test_end)
-        train_mask = (full_ds.index >= self.train_start) & (full_ds.index <= self.train_end) & ~test_mask
+        test_mask = (full_ds.index >= self.test_start) & (full_ds.index <= self.test_end)
+        train_mask = (full_ds.index >= self.train_start) & (full_ds.index <= self.train_end)
+        
+        # Excluir el período de test del train si hay solapamiento
+        if (self.test_start <= self.train_end and self.test_end >= self.train_start):
+            train_mask = train_mask & ~test_mask
+        
         return full_ds[train_mask], full_ds[test_mask]
     
     def calc_score(self, fwd: float, bwd: float, eps: float = 1e-9) -> float:
@@ -450,8 +460,8 @@ class StrategySearcher:
             fwd <= 0 or bwd <= 0):
             return -1.0
         mean = 0.5 * (fwd + bwd)
-        if fwd < bwd * 0.9:
-            mean *= 0.7
+        if fwd < bwd * 0.8:
+            mean *= 0.8
         delta  = abs(fwd - bwd) / max(abs(fwd), abs(bwd), eps)
         score  = mean * (1.0 - delta)
         return score
@@ -688,26 +698,25 @@ class StrategySearcher:
             # print(f"meta model trained in {time.time() - start_time:.2f} seconds")
 
             # ── evaluación ───────────────────────────────────────────────
+            ds_train_eval = ds_train.sample(n=len(ds_test), replace=False)
             # print("evaluating in-sample...")
             # start_time = time.time()
             r2_ins = test_model_one_direction(
-                dataset=ds_train,
+                dataset=ds_train_eval,
                 model_main=model_main,
                 model_meta=model_meta,
                 direction=self.direction,
-                # n_sim=100,
-                # agg="q05"
             )
             # print(f"in-sample score calculated in {time.time() - start_time:.2f} seconds")
             # print("evaluating out-of-sample...")
             # start_time = time.time()
-            r2_oos = test_model_one_direction(
+            r2_oos = robust_oos_score_one_direction(
                 dataset=ds_test,
                 model_main=model_main,
                 model_meta=model_meta,
                 direction=self.direction,
-                # n_sim=100,
-                # agg="q05"
+                n_sim=100,
+                agg="q05"
             )
             # print(f"out-of-sample score calculated in {time.time() - start_time:.2f} seconds\n")
 

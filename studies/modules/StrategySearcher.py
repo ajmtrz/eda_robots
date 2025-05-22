@@ -1,12 +1,11 @@
 import gc
-import copy
 import math
 import time
 import numpy as np
 import pandas as pd
 from datetime import datetime
 from time import perf_counter
-from typing import Dict, Any, Tuple, List, Optional
+from typing import Dict, Any
 import optuna
 from optuna.pruners import HyperbandPruner
 from sklearn.ensemble import VotingClassifier
@@ -16,15 +15,15 @@ from optuna.integration import CatBoostPruningCallback
 from optuna.integration import XGBoostPruningCallback
 from sklearn import set_config
 from sklearn.model_selection import train_test_split
-from functools import lru_cache, partial
+from functools import lru_cache
 from weakref import WeakValueDictionary
 
 from modules.labeling_lib import (
     get_prices, get_features, get_labels_one_direction,
     sliding_window_clustering, clustering_simple,
-    markov_regime_switching_simple, markov_regime_switching_sliding
+    markov_regime_switching_simple, markov_regime_switching_advanced
 )
-from modules.tester_lib import robust_oos_score_one_direction, _ONNX_CACHE
+from modules.tester_lib import test_model_one_direction, _ONNX_CACHE
 from modules.export_lib import (
     export_model_to_ONNX, XGBWithEval, CatWithEval
 )
@@ -36,9 +35,7 @@ class StrategySearcher:
     utilizando técnicas de machine learning y optimización bayesiana.
     
     Attributes:
-        base_hp (dict): Hiperparámetros base para la búsqueda
         base_df (pd.DataFrame): DataFrame con datos históricos
-        all_results (dict): Resultados de todas las búsquedas realizadas
         best_models (list): Lista de los mejores modelos encontrados
         model_range (list): Rango de modelos a optimizar
     """
@@ -77,9 +74,8 @@ class StrategySearcher:
         models_export_path: str = r'/mnt/c/Users/Administrador/AppData/Roaming/MetaQuotes/Terminal/6C3C6A11D1C3791DD4DBF45421BF8028/MQL5/Files/',
         include_export_path: str = r'/mnt/c/Users/Administrador/AppData/Roaming/MetaQuotes/Terminal/6C3C6A11D1C3791DD4DBF45421BF8028/MQL5/Include/ajmtrz/include/Dmitrievsky',
         history_path: str = r"/mnt/c/Users/Administrador/AppData/Roaming/MetaQuotes/Terminal/Common/Files/",
-        model_seed: Optional[int] = None,
         search_type: str = 'clusters',
-        subtype: str = 'simple',
+        search_subtype: str = 'simple',
         tag: str = "",
     ):
         """Inicializa el buscador de estrategias.
@@ -96,39 +92,29 @@ class StrategySearcher:
             models_export_path: Ruta para exportar modelos
             include_export_path: Ruta para archivos include
             history_path: Ruta para datos históricos
-            model_seed: Semilla para reproducibilidad
+            search_type: Tipo de búsqueda a realizar ('clusters' o 'markov')
+            search_subtype: Subtipo de búsqueda ('simple' u otros según el tipo)
+            tag: Etiqueta opcional para identificar la búsqueda
         """
+        self.symbol = symbol
+        self.timeframe = timeframe
+        self.direction = direction
+        self.train_start = train_start
+        self.train_end = train_end
+        self.test_start = test_start
+        self.test_end = test_end
+        self.models_export_path = models_export_path
+        self.include_export_path = include_export_path
+        self.history_path = history_path
         self.search_type = search_type
-        self.subtype = subtype
+        self.search_subtype = search_subtype
         self.n_trials = n_trials
         self.n_models = n_models
         self.n_jobs = n_jobs
         self.tag = tag
-        self.base_hp = {
-            'symbol': symbol,
-            'timeframe': timeframe,
-            'direction': direction,
-            'train_start': train_start,
-            'train_end': train_end,
-            'test_start': test_start,
-            'test_end': test_end,
-            'model_seed': model_seed,
-            'models_export_path': models_export_path,
-            'include_export_path': include_export_path,
-            'history_path': history_path,
-            'periods_main': [],
-            'periods_meta': [],
-            'stats_main': [],
-            'stats_meta': [],
-            'best_models': [],
-            'markup': 0.20,
-            'label_min': 1,
-            'label_max': 15,
-            'n_clusters': 30,
-        }
         
         # Cargar datos históricos
-        self.base_df = get_prices(self.base_hp)
+        self.base_df = get_prices(self.symbol, self.timeframe, self.history_path)
         StrategySearcher._DF_REGISTRY[id(self.base_df)] = self.base_df
         
         # Configuración de sklearn y optuna
@@ -136,7 +122,6 @@ class StrategySearcher:
         optuna.logging.set_verbosity(optuna.logging.WARNING)
         
         # Resultados
-        self.all_results = {}
         self.best_models = []
 
     # =========================================================================
@@ -158,6 +143,9 @@ class StrategySearcher:
         
         for i in range(self.n_models):
             try:
+                # Generar un seed único para este modelo
+                model_seed = int(time.time() * 1000) + i
+
                 # Inicializar estudio de Optuna
                 study = optuna.create_study(
                     direction='maximize',
@@ -193,40 +181,27 @@ class StrategySearcher:
                 # Verificar y exportar el mejor modelo
                 best_models = study.user_attrs.get("best_models", [])
                 if not (best_models and len(best_models) == 2 and all(best_models)):
-                    print("⚠️  Error: best_models incorrecto")
+                    print(f"⚠️ ERROR: best_models VACÍO")
                     continue
-
-                export_params = self.base_hp.copy()
-                export_params.update({
-                    "best_trial": study.user_attrs["best_trial_number"],
+                
+                export_params = {
+                    "symbol": self.symbol,
+                    "timeframe": self.timeframe,
+                    "direction": self.direction,
+                    "models_export_path": self.models_export_path,
+                    "include_export_path": self.include_export_path,
+                    "search_type": self.search_type,
+                    "search_subtype": self.search_subtype,
+                    "best_models": best_models,
+                    "best_model_seed": model_seed,
                     "best_score": study.user_attrs["best_score"],
                     "best_periods_main": study.user_attrs.get("best_periods_main"),
                     "best_periods_meta": study.user_attrs.get("best_periods_meta"),
                     "best_stats_main": study.user_attrs.get("best_stats_main"),
                     "best_stats_meta": study.user_attrs.get("best_stats_meta"),
-                    "best_models": best_models,
-                    "search_type": self.search_type,
-                    "subtype": self.subtype,
-                })
+                }
                 
                 export_model_to_ONNX(**export_params)
-                
-                self.show_best_summary(study)
-                
-                model_results = {
-                    "r2_ins": study.user_attrs.get("best_metrics", {}).get("r2_ins", float("nan")),
-                    "r2_oos": study.user_attrs.get("best_metrics", {}).get("r2_oos", float("nan")),
-                    "score": study.user_attrs.get("best_metrics", {}).get("score", float("nan")),
-                }
-                
-                self.best_models.append((i, model_results))
-                
-                self.all_results[f"model_{i}"] = {
-                    "success": True,
-                    "r2_ins": model_results["r2_ins"],
-                    "r2_oos": model_results["r2_oos"],
-                    "score": model_results["score"]
-                }
                 
             except Exception as e:
                 import traceback
@@ -234,72 +209,7 @@ class StrategySearcher:
                 print(f"Error: {str(e)}")
                 print("Traceback:")
                 print(traceback.format_exc())
-                
-                self.all_results[f"model_{i}"] = {
-                    "success": False,
-                    "error": str(e)
-                }
                 continue
-        
-        self._print_summary()
-
-    # =========================================================================
-    # Métodos de visualización y reportes
-    # =========================================================================
-    
-    def show_best_summary(self, study: optuna.study.Study) -> None:
-        """Muestra resumen del mejor trial encontrado.
-        
-        Args:
-            study: Estudio de Optuna con los resultados
-        """
-        m = study.user_attrs.get("best_metrics", {})
-        f2 = m.get("r2_ins", float("nan"))
-        b2 = m.get("r2_oos", float("nan"))
-        c2 = m.get("score", float("nan"))
-        best_trial = study.user_attrs.get("best_trial_number", "-")
-
-        lines = [
-            "┌" + "─" * 55 + "┐",
-            f"│  MODELO {self.base_hp['model_seed']} TRIAL ÓPTIMO #{best_trial}",
-            "├" + "─" * 55 + "┤",
-            f"│  R² Forward : {f2:10.4f}  │  R² Backward : {b2:10.4f} │",
-            f"│  Combined     : {c2:10.4f}                            │",
-            "├" + "─" * 55 + "┤"
-        ]
-        print("\n".join(lines))
-
-    def _print_summary(self) -> None:
-        """Imprime un resumen final de la optimización."""
-        print("\n" + "="*50)
-        print(f"RESUMEN DE OPTIMIZACIÓN {self.base_hp['symbol']}/{self.base_hp['timeframe']}")
-        print("="*50)
-        
-        successful_models = [info for model_key, info in self.all_results.items() if info.get("success", False)]
-        print(f"Modelos completados exitosamente: {len(successful_models)}/{self.n_models}")
-        
-        if successful_models:
-            # Calcular estadísticas globales
-            r2_ins_scores = [info["r2_ins"] for info in successful_models]
-            r2_oos_scores = [info["r2_oos"] for info in successful_models]
-            scores = [info["score"] for info in successful_models]
-            
-            print(f"\nEstadísticas de rendimiento:")
-            print(f"  R2 INS promedio: {np.mean(r2_ins_scores):.4f} ± {np.std(r2_ins_scores):.4f}")
-            print(f"  R2 OOS promedio: {np.mean(r2_oos_scores):.4f} ± {np.std(r2_oos_scores):.4f}")
-            print(f"  Puntuación combinada promedio: {np.mean(scores):.4f} ± {np.std(scores):.4f}")
-
-            # Identificar el mejor modelo global
-            successful = [(k, v) for k, v in self.all_results.items() if v.get("success", False)]
-            scores = [v["score"] for _, v in successful]
-            best_model_key, best_info = successful[int(np.argmax(scores))]
-            
-            print(f"\nMejor modelo global: {best_model_key}")
-            print(f"  R2 INS: {best_info['r2_ins']:.4f}")
-            print(f"  R2 OOS: {best_info['r2_oos']:.4f}")
-            print(f"  Puntuación combinada: {best_info['score']:.4f}")
-        
-        print("\nProceso de optimización completado.")
 
     # =========================================================================
     # Métodos de búsqueda específicos
@@ -345,7 +255,7 @@ class StrategySearcher:
                 main_data,
                 markup=hp['markup'],
                 max_val=hp['label_max'],
-                direction=hp['direction'],
+                direction=self.direction,
                 atr_period=hp['atr_period'],
                 deterministic=True
             )
@@ -432,17 +342,17 @@ class StrategySearcher:
 
         # Parámetros a optimizar
         hp['n_clusters'] = trial.suggest_int('n_clusters', 5, 50, step=5)
-        if self.subtype != 'simple':
+        if self.search_subtype == 'sliding':
             hp['window_size'] = trial.suggest_int('window_size', 100, 500, step=50)
             #hp['step'] = trial.suggest_int('step', 1, hp['window_size'], step=10)
         
         # Clustering
-        if self.subtype == 'simple':
+        if self.search_subtype == 'simple':
             ds_train = clustering_simple(
                 ds_train,
                 min_cluster_size=hp['n_clusters']
             )
-        elif self.subtype == 'sliding':
+        elif self.search_subtype == 'advanced':
             ds_train = sliding_window_clustering(
                 ds_train,
                 n_clusters=hp['n_clusters'],
@@ -472,22 +382,22 @@ class StrategySearcher:
         
         # Parámetros base a optimizar
         hp['model_type'] = trial.suggest_categorical('model_type', ['GMMHMM', 'HMM', 'VARHMM'])
-        hp['n_regimes'] = trial.suggest_int('n_regimes', 3, 15, step=1)
-        hp['n_iter'] = trial.suggest_int('n_iter', 10, 500, step=10)
-        if self.subtype != 'simple':
+        hp['n_regimes'] = trial.suggest_int('n_regimes', 3, 30, step=1)
+        hp['n_iter'] = trial.suggest_int('n_iter', 10, 300, step=10)
+        if self.search_subtype == 'sliding':
             hp['window_size'] = trial.suggest_int('window_size', hp['n_regimes'] * 10, len(ds_train)//10, step=50)
             #hp['step'] = trial.suggest_int('step', max(1, hp['window_size']//10), hp['window_size'], step=10)
         
         # Markov
-        if self.subtype == 'simple':
+        if self.search_subtype == 'simple':
             ds_train = markov_regime_switching_simple(
                 ds_train,
                 model_type=hp['model_type'],
                 n_regimes=hp['n_regimes'],
                 n_iter=hp['n_iter']
             )
-        elif self.subtype == 'sliding':
-            ds_train = markov_regime_switching_sliding(
+        elif self.search_subtype == 'advanced':
+            ds_train = markov_regime_switching_advanced(
                 ds_train,
                 model_type=hp['model_type'],
                 n_regimes=hp['n_regimes'],
@@ -513,8 +423,8 @@ class StrategySearcher:
 
         full_ds = StrategySearcher._cached_features(
             id(self.base_df),
-            self.base_hp['train_start'],
-            self.base_hp['test_end'],
+            self.train_start,
+            self.test_end,
             hkey,
         )
         
@@ -524,8 +434,8 @@ class StrategySearcher:
             return None, None
         
         # Obtener datasets de entrenamiento y prueba
-        test_mask  = (full_ds.index >= hp["test_start"]) & (full_ds.index <= hp["test_end"])
-        train_mask = (full_ds.index >= hp["train_start"]) & (full_ds.index <= hp["train_end"]) & ~test_mask
+        test_mask  = (full_ds.index >= self.test_start) & (full_ds.index <= self.test_end)
+        train_mask = (full_ds.index >= self.train_start) & (full_ds.index <= self.train_end) & ~test_mask
         return full_ds[train_mask], full_ds[test_mask]
     
     def calc_score(self, fwd: float, bwd: float, eps: float = 1e-9) -> float:
@@ -605,7 +515,7 @@ class StrategySearcher:
         Returns:
             Dict[str, Any]: Hiperparámetros comunes
         """
-        hp = {k: copy.deepcopy(v) for k, v in self.base_hp.items() if k != 'base_df'}
+        hp = {}
         # Optimización de hiperparámetros comunes
         hp['markup'] = trial.suggest_float("markup", 0.1, 1.0, step=0.1)
         hp['label_max'] = trial.suggest_int('label_max', 2, 6, step=1, log=True)
@@ -623,6 +533,8 @@ class StrategySearcher:
             main_periods.append(period_main)
         main_periods = sorted(list(set(main_periods)))
         hp['periods_main'] = main_periods
+        trial.set_user_attr('periods_main', main_periods)
+        
         # Selección de estadísticas para el modelo principal
         main_stat_choices = [
             "std", "skew", "kurt", "zscore", "range", "mad", "entropy", 
@@ -637,7 +549,7 @@ class StrategySearcher:
             selected_main_stats.append(stat)
         selected_main_stats = list(set(selected_main_stats))
         hp["stats_main"] = selected_main_stats
-        #print(f"Main features seleccionadas: {hp['stats_main']}")
+        trial.set_user_attr('stats_main', selected_main_stats)
 
         # Optimización de períodos para el meta-modelo
         n_periods_meta = 1 # trial.suggest_int('n_periods_meta', 1, 3, log=True)
@@ -647,6 +559,8 @@ class StrategySearcher:
             meta_periods.append(period_meta)
         meta_periods = sorted(list(set(meta_periods)))
         hp['periods_meta'] = meta_periods
+        trial.set_user_attr('periods_meta', meta_periods)
+        
         # Selección de estadísticas para el meta-modelo
         meta_stat_choices = [
             "std", "skew", "kurt", "zscore", "range", "mad", "entropy", 
@@ -661,7 +575,7 @@ class StrategySearcher:
             selected_meta_stats.append(stat)
         selected_meta_stats = list(set(selected_meta_stats))
         hp["stats_meta"] = selected_meta_stats
-        #print(f"Meta features seleccionadas: {hp['stats_meta']} | Periodo: {hp['periods_meta']}")
+        trial.set_user_attr('stats_meta', selected_meta_stats)
         return hp
 
     def save_best_trial(
@@ -693,6 +607,10 @@ class StrategySearcher:
             study.set_user_attr("best_models", models)
             study.set_user_attr("best_metrics", metrics)
             study.set_user_attr("best_trial_number", trial.number)
+            study.set_user_attr("best_periods_main", trial.user_attrs['periods_main'])
+            study.set_user_attr("best_periods_meta", trial.user_attrs['periods_meta'])
+            study.set_user_attr("best_stats_main", trial.user_attrs['stats_main'])
+            study.set_user_attr("best_stats_meta", trial.user_attrs['stats_meta'])
         else:
             # score no mejora -> descartar modelos recibidos
             if models is not None:
@@ -855,24 +773,24 @@ class StrategySearcher:
             
             # print("evaluating in-sample...")
             # start_time = time.time()
-            r2_ins = robust_oos_score_one_direction(
+            r2_ins = test_model_one_direction(
                 dataset=ds_train_eval,
                 model_main=model_main,
                 model_meta=model_meta,
-                direction=hp['direction'],
-                n_sim=100,
-                agg="q05"
+                direction=self.direction,
+                # n_sim=100,
+                # agg="q05"
             )
             # print(f"in-sample score calculated in {time.time() - start_time:.2f} seconds")
             # print("evaluating out-of-sample...")
             # start_time = time.time()
-            r2_oos = robust_oos_score_one_direction(
+            r2_oos = test_model_one_direction(
                 dataset=ds_test,
                 model_main=model_main,
                 model_meta=model_meta,
-                direction=hp['direction'],
-                n_sim=100,
-                agg="q05"
+                direction=self.direction,
+                # n_sim=100,
+                # agg="q05"
             )
             # print(f"out-of-sample score calculated in {time.time() - start_time:.2f} seconds\n")
 

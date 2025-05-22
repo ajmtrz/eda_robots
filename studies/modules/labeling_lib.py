@@ -17,8 +17,8 @@ import matplotlib.pyplot as plt
 logging.getLogger('hmmlearn').setLevel(logging.ERROR)
 
 # Obtener precios
-def get_prices(hyper_params) -> pd.DataFrame:
-    history_file = os.path.join(hyper_params["history_path"], f"{hyper_params['symbol']}_{hyper_params['timeframe']}.csv")
+def get_prices(symbol, timeframe, history_path) -> pd.DataFrame:
+    history_file = os.path.join(history_path, f"{symbol}_{timeframe}.csv")
     p = pd.read_csv(history_file, sep=r"\s+")
     # Crear DataFrame con todas las columnas necesarias
     pFixed = pd.DataFrame(columns=['time', 'open', 'high', 'low', 'close', 'volume'])
@@ -1832,13 +1832,13 @@ def calculate_labels_one_direction(high, low, close, markup, min_val, max_val, d
             for j in range(min_val, max_val + 1):
                 fwd_matrix[i, j - min_val] = close[i + j]
         close_slice = close[:-max_val].reshape(-1, 1)
-        diffs = fwd_matrix - close_slice          # shape: (n-max_val, n_shifts)
+        diffs = fwd_matrix - close_slice
     else:
         # --------- una sola vela aleatoria por fila -----------------
         rand_shift = np.random.randint(min_val, max_val + 1, size=n - max_val)
-        target = close[np.arange(n - max_val) + rand_shift]          # vector
-        diffs = target - close[:-max_val]                            # vector 1-D
-        diffs = diffs.reshape(-1, 1)                                 # → columna
+        target = close[np.arange(n - max_val) + rand_shift]
+        diffs = target - close[:-max_val]
+        diffs = diffs.reshape(-1, 1)
 
     # Calcular markup dinámico basado en ATR
     atr_slice = atr[:-max_val].reshape(-1, 1)
@@ -2006,86 +2006,6 @@ def markov_regime_switching_simple(dataset, n_regimes: int, model_type="GMMHMM",
     except Exception:
         dataset["labels_meta"] = -1
         
-    return dataset
-
-def markov_regime_switching_sliding(dataset, n_regimes: int, window_size: int = 100, step: int = None, model_type="GMMHMM", n_iter=100) -> pd.DataFrame:
-    if dataset.empty:
-        dataset["labels_meta"] = -1
-        return dataset
-    
-    meta_features = dataset.filter(regex="meta_feature")
-    if meta_features.empty:
-        dataset["labels_meta"] = -1
-        return dataset
-        
-    meta_X_np = meta_features.to_numpy(np.float32)
-    n_samples = len(dataset)
-    
-    step = window_size if step is None else step
-    votes = np.zeros((n_samples, n_regimes + 1), dtype=np.uint8)
-
-    for i in range(0, n_samples - window_size + 1, step):
-        window_data = meta_X_np[i:i + window_size]
-        
-        scaler = StandardScaler()
-        try:
-            X_scaled = scaler.fit_transform(window_data)
-        except Exception:
-            continue
-            
-        # Verificar calidad de datos
-        if not np.isfinite(X_scaled).all():
-            continue
-            
-        stds = np.nanstd(X_scaled, axis=0)
-        if np.any(stds < 1e-10):
-            continue
-            
-        try:
-            cov = np.cov(X_scaled.T)
-            np.linalg.cholesky(cov)
-        except np.linalg.LinAlgError:
-            continue
-        
-        if model_type == "HMM":
-            model = hmm.GaussianHMM(
-                n_components=n_regimes,
-                covariance_type="full",
-                n_iter=n_iter,
-                verbose=False
-            )
-        elif model_type == "GMMHMM":
-            model = hmm.GMMHMM(
-                n_components=n_regimes,
-                covariance_type="full",
-                n_iter=n_iter,
-                n_mix=3,
-                verbose=False
-            )
-        elif model_type == "VARHMM":
-            model = vhmm.VariationalGaussianHMM(
-                n_components=n_regimes,
-                covariance_type="full",
-                n_iter=n_iter,
-                verbose=False
-            )
-        
-        try:
-            model.fit(X_scaled)
-            hidden_states = model.predict(X_scaled)
-            
-            for j, state in enumerate(hidden_states):
-                if i + j < n_samples:
-                    votes[i + j, state + 1] += 1
-        except Exception:
-            continue
-    
-    no_votes = votes.sum(axis=1) == 0
-    clusters = np.zeros(n_samples, dtype=np.int32)
-    clusters[~no_votes] = votes[~no_votes, 1:].argmax(axis=1)
-    clusters[no_votes] = -1
-    
-    dataset['labels_meta'] = clusters
     return dataset
 
 def markov_regime_switching_advanced(dataset, n_regimes: int, model_type="HMM", n_iter=100) -> pd.DataFrame:

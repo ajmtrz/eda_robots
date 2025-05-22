@@ -110,41 +110,68 @@ def tester(dataset, plot=False):
 # ───────────────────────────────────────────────
 # NUEVA FUNCIÓN evaluate_report
 # ───────────────────────────────────────────────
-@njit(fastmath=True)
-def evaluate_report(report: np.ndarray, r2_raw: float) -> float:
-    # ─── comprobaciones mínimas ──────────────────
-    if report.size < 2 or r2_raw <= 0.0:
+@njit(fastmath=True, nogil=True)
+def evaluate_report(report: np.ndarray) -> float:
+    eps = 1e-6
+
+    # Verificación básica - necesitamos al menos 2 puntos para un reporte válido
+    if len(report) < 2:
         return -1.0
 
-    returns    = np.diff(report)
-    n_trades   = returns.size
+    # Calcular R²
+    r2_raw = _signed_r2(report)
 
-    # ─── Return-to-Drawdown ──────────────────────
-    total_ret  = report[-1] - report[0]
+    # Calcular los retornos individuales
+    returns = np.diff(report)
+    num_trades = len(returns)
+    if num_trades < 3:
+        return -1.0
+    
+    # ────────────────────────
+    # MÉTRICAS BASE
+    gains = returns[returns > 0]
+    losses = -returns[returns < 0]
+    profit_factor = np.sum(gains) / np.sum(losses) if np.sum(losses) > 0 else eps
 
-    peak, max_dd = report[0], 0.0
-    for x in report:
-        if x > peak:
-            peak = x
-        dd = peak - x
-        if dd > max_dd:
-            max_dd = dd
+    equity_curve = report
+    peak = equity_curve[0]
+    max_dd = 0.0
+    for x in equity_curve:
+        peak = max(peak, x)
+        max_dd = max(max_dd, peak - x)
+    total_return = equity_curve[-1] - equity_curve[0]
+    return_dd_ratio = total_return / max_dd if max_dd > 0 else eps
 
-    dd_norm = max(max_dd, 0.01 * abs(total_ret) + 1e-3)
-    r_dd    = total_ret / dd_norm
+    # ────────────────────────
+    # PUNTAJE COMPUESTO BASE
+    base_score = (
+        (profit_factor * 0.4) +
+        (return_dd_ratio * 0.6)
+    )
 
-    # ─── bonus por número de operaciones ─────────
-    trade_bonus = math.sqrt(float(n_trades))
+    # Penalizaciones por métricas débiles
+    penalization = 1.0
+    if profit_factor < 2.0: penalization *= 0.8
+    if return_dd_ratio < 2.0: penalization *= 0.8
 
-    # ─── score compuesto ─────────────────────────
-    base_score  = 0.6 * r_dd + 0.4 * trade_bonus
+    # ────────────────────────
+    # AJUSTE POR NÚMERO DE TRADES
+    trade_weight = np.sqrt(float(num_trades))
+    
+    # Aplicar penalizaciones y ajustes
+    base_score *= penalization * trade_weight
 
-    # penalización si el ratio return/DD es pobre
-    if r_dd < 1.2:
-        base_score *= 0.8
+    # ────────────────────────
+    # Verificamos que el R² sea positivo
+    if r2_raw > 0:
+        r2_raw *= 1.0
+    else:
+        return -1.0
 
-    # mezcla con la calidad de la tendencia
-    final_score = 0.7 * base_score + 0.3 * r2_raw
+    # ────────────────────────
+    # Score final
+    final_score = 0.5 * base_score + 0.5 * r2_raw
+    
     return final_score
 
 def tester_one_direction(dataset, direction='buy', plot=False):
@@ -157,24 +184,18 @@ def tester_one_direction(dataset, direction='buy', plot=False):
     # Pasamos los índices numéricos en lugar de fechas
     rpt, ch= process_data_one_direction(
         close, lab, meta, direction)
-    
+
     # Si no hay suficientes operaciones, devolver valor negativo
     if len(rpt) < 2:
         return -1.0
-
-    # Calcular regresión lineal para el R²
-    y = rpt.reshape(-1, 1)
-    X = np.ascontiguousarray(np.arange(len(rpt))).reshape(-1, 1)
-    lr = LinearRegression().fit(X, y)
-    sign = 1 if lr.coef_[0][0] >= 0 else -1
-    r2_raw = lr.score(X, y) * sign
+    
+    # Calcular score
+    score = evaluate_report(rpt)
 
     # Visualizar resultados si se solicita
     if plot:
         plt.figure(figsize=(12, 6))
         plt.plot(rpt, label='Equity Curve')
-        plt.plot(lr.predict(X), 'g--', alpha=0.7, label='Regression Line')
-        plt.title(f"Strategy Performance: R² {r2_raw:.2f}")
         plt.xlabel("Operations")
         plt.ylabel("Cumulative Profit")
         plt.legend()
@@ -182,7 +203,7 @@ def tester_one_direction(dataset, direction='buy', plot=False):
         plt.show()
 
     # Evaluar el reporte para obtener una puntuación completa
-    return evaluate_report(rpt, r2_raw)
+    return score
 
 # ─────────────────────────────────────────────
 # tester_slow  (mantenerlo o borrarlo)
@@ -258,23 +279,20 @@ def test_model(dataset: pd.DataFrame,
 
 
 def test_model_one_direction(dataset: pd.DataFrame,
-                           result: list,
-                           backward: datetime,
-                           forward: datetime,
+                           model_main: object,
+                           model_meta: object,
                            direction: str = 'buy',
                            plt=False):
     # Copiar dataset para no modificar el original
     ext_dataset = dataset.copy()
-    mask = (ext_dataset.index > backward) & (ext_dataset.index < forward)
-    ext_dataset = ext_dataset[mask]#.reset_index(drop=True)
 
     # Extraer características regulares y meta-features
-    X_main = ext_dataset.loc[:, ext_dataset.columns.str.contains('_feature') & ~ext_dataset.columns.str.contains('_meta_feature')]
-    X_meta = ext_dataset.loc[:, ext_dataset.columns.str.contains('_meta_feature')]
+    X_main = ext_dataset.loc[:, ext_dataset.columns.str.contains('_feature') & ~ext_dataset.columns.str.contains('_meta_feature')].to_numpy('float32')
+    X_meta = ext_dataset.loc[:, ext_dataset.columns.str.contains('_meta_feature')].to_numpy('float32')
 
     # Calcular probabilidades usando ambos modelos
-    ext_dataset['labels'] = result[0].predict_proba(X_main)[:, 1]
-    ext_dataset['meta_labels'] = result[1].predict_proba(X_meta)[:, 1]
+    ext_dataset['labels'] = model_main.predict_proba(X_main)[:, 1]
+    ext_dataset['meta_labels'] = model_meta.predict_proba(X_meta)[:, 1]
     
     # Convertir probabilidades a señales binarias
     ext_dataset[['labels', 'meta_labels']] = ext_dataset[['labels', 'meta_labels']].gt(0.5).astype(float)

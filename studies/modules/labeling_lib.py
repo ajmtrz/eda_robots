@@ -1833,24 +1833,31 @@ def calculate_labels_one_direction(high, low, close, markup, min_val, max_val, d
                 fwd_matrix[i, j - min_val] = close[i + j]
         close_slice = close[:-max_val].reshape(-1, 1)
         diffs = fwd_matrix - close_slice
+        
+        # Calcular markup dinámico basado en ATR
+        atr_slice = atr[:-max_val].reshape(-1, 1)
+        dyn_mk = markup * atr_slice
+        # Calcular hits con umbral dinámico basado en volatilidad
+        hits = (diffs > dyn_mk) if direction=="buy" else (diffs < -dyn_mk)
+        result = np.zeros(len(hits), dtype=np.float64)
+        for i in range(len(hits)):
+            # Requerir más hits cuando la volatilidad es mayor
+            min_hits = np.maximum(1.0, np.round(atr_slice[i] / atr_slice.mean()))
+            if np.sum(hits[i]) >= min_hits:
+                result[i] = 1.0
     else:
         # --------- una sola vela aleatoria por fila -----------------
         rand_shift = np.random.randint(min_val, max_val + 1, size=n - max_val)
         target = close[np.arange(n - max_val) + rand_shift]
         diffs = target - close[:-max_val]
-        diffs = diffs.reshape(-1, 1)
-
-    # Calcular markup dinámico basado en ATR
-    atr_slice = atr[:-max_val].reshape(-1, 1)
-    dyn_mk = markup * atr_slice
-    # Calcular hits
-    hits = (diffs > dyn_mk) if direction=="buy" else (diffs < -dyn_mk)
-    result = np.zeros(len(hits), dtype=np.float64)
-    for i in range(len(hits)):
-        for j in range(hits.shape[1]):
-            if hits[i, j]:
-                result[i] = 1.0
-                break
+        
+        # Calcular markup dinámico basado en ATR
+        atr_slice = atr[:-max_val]
+        dyn_mk = markup * atr_slice
+        # En modo aleatorio, solo necesitamos un hit
+        hits = (diffs > dyn_mk) if direction=="buy" else (diffs < -dyn_mk)
+        result = hits.astype(np.float64)
+        
     return result
 
 def get_labels_one_direction(dataset, markup, min_val=1, max_val=15, direction='buy', atr_period=14, deterministic=True) -> pd.DataFrame:
@@ -1938,7 +1945,7 @@ def clustering_simple(dataset: pd.DataFrame,
     dataset["labels_meta"] = clusterer.labels_.astype(int)
     return dataset
 
-def markov_regime_switching_simple(dataset, n_regimes: int, model_type="GMMHMM", n_iter = 10) -> pd.DataFrame:
+def markov_regime_switching_simple(dataset, n_regimes: int, model_type="GMMHMM", n_iter = 10, n_mix = 3) -> pd.DataFrame:
     # Si el dataset está vacío, devuelve un dataset con -1 en la columna labels_meta
     if dataset.empty:
         dataset["labels_meta"] = -1
@@ -1986,7 +1993,7 @@ def markov_regime_switching_simple(dataset, n_regimes: int, model_type="GMMHMM",
             n_components=n_regimes,
             covariance_type="full",
             n_iter=n_iter,
-            n_mix=3,
+            n_mix=n_mix,
             verbose=False
         )
     elif model_type == "VARHMM":
@@ -2008,7 +2015,7 @@ def markov_regime_switching_simple(dataset, n_regimes: int, model_type="GMMHMM",
         
     return dataset
 
-def markov_regime_switching_advanced(dataset, n_regimes: int, model_type="HMM", n_iter=100) -> pd.DataFrame:
+def markov_regime_switching_advanced(dataset, n_regimes: int, model_type="HMM", n_iter=100, n_mix = 3) -> pd.DataFrame:
     # Si el dataset está vacío, devuelve un dataset con -1 en la columna labels_meta
     if dataset.empty:
         dataset["labels_meta"] = -1
@@ -2111,7 +2118,7 @@ def markov_regime_switching_advanced(dataset, n_regimes: int, model_type="HMM", 
             'n_components': n_regimes,
             'covariance_type': "full",
             'n_iter': n_iter,
-            'n_mix': 3,
+            'n_mix': n_mix,
             'init_params': '',
             'verbose': False
         }

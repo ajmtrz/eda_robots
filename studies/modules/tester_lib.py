@@ -114,17 +114,17 @@ def evaluate_report(report: np.ndarray) -> float:
     if len(report) < 2:
         return -1.0
 
+    # Calcular los retornos individuales
+    returns = np.diff(report)
+    num_trades = len(returns)
+    if num_trades < 3:
+        return -1.0
+    
     # Calcular R² y sea positivo
     r2_raw = _signed_r2(report)
     if r2_raw > 0:
         r2_raw *= 1.0
     else:
-        return -1.0
-    
-    # Calcular los retornos individuales
-    returns = np.diff(report)
-    num_trades = len(returns)
-    if num_trades < 3:
         return -1.0
     
     # ────────────────────────

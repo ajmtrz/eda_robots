@@ -312,6 +312,7 @@ class StrategySearcher:
                 problematic_cols.append(f"{col} (desviación estándar {std:.2e})")
                 
         if problematic_cols:
+            #print(f"problematic_cols: {problematic_cols}")
             return True
             
         return False
@@ -336,7 +337,7 @@ class StrategySearcher:
 
         # Parámetros a optimizar
         hp['n_clusters'] = trial.suggest_int('n_clusters', 5, 50, step=5)
-        if self.search_subtype == 'sliding':
+        if self.search_subtype == 'advanced':
             hp['window_size'] = trial.suggest_int('window_size', 100, 500, step=50)
             #hp['step'] = trial.suggest_int('step', 1, hp['window_size'], step=10)
         
@@ -376,11 +377,12 @@ class StrategySearcher:
         
         # Parámetros base a optimizar
         hp['model_type'] = trial.suggest_categorical('model_type', ['GMMHMM', 'HMM', 'VARHMM'])
-        hp['n_regimes'] = trial.suggest_int('n_regimes', 3, 30, step=1)
-        hp['n_iter'] = trial.suggest_int('n_iter', 10, 300, step=10)
-        if self.search_subtype == 'sliding':
-            hp['window_size'] = trial.suggest_int('window_size', hp['n_regimes'] * 10, len(ds_train)//10, step=50)
-            #hp['step'] = trial.suggest_int('step', max(1, hp['window_size']//10), hp['window_size'], step=10)
+        hp['n_regimes'] = trial.suggest_int('n_regimes', 2, 20, log=True)
+        hp['n_iter'] = trial.suggest_int('n_iter', 20, 200, step=10)
+        if hp['model_type'] == 'VARHMM':
+            hp['n_mix'] = trial.suggest_int('n_mix', 1, 10, log=True)
+        else:
+            hp['n_mix'] = 3
         
         # Markov
         if self.search_subtype == 'simple':
@@ -388,7 +390,8 @@ class StrategySearcher:
                 ds_train,
                 model_type=hp['model_type'],
                 n_regimes=hp['n_regimes'],
-                n_iter=hp['n_iter']
+                n_iter=hp['n_iter'],
+                n_mix=hp['n_mix']
             )
         elif self.search_subtype == 'advanced':
             ds_train = markov_regime_switching_advanced(
@@ -396,8 +399,7 @@ class StrategySearcher:
                 model_type=hp['model_type'],
                 n_regimes=hp['n_regimes'],
                 n_iter=hp['n_iter'],
-                window_size=hp['window_size'],
-                step=hp.get('step', None)
+                n_mix=hp['n_mix']
             )
             
         return self._evaluate_clusters(ds_train, ds_test, hp, trial, study)
@@ -448,8 +450,8 @@ class StrategySearcher:
             fwd <= 0 or bwd <= 0):
             return -1.0
         mean = 0.5 * (fwd + bwd)
-        if fwd < bwd * 0.8:
-            mean *= 0.8
+        if fwd < bwd * 0.9:
+            mean *= 0.7
         delta  = abs(fwd - bwd) / max(abs(fwd), abs(bwd), eps)
         score  = mean * (1.0 - delta)
         return score
@@ -489,8 +491,8 @@ class StrategySearcher:
         hp = {}
         # Optimización de hiperparámetros comunes
         hp['markup'] = trial.suggest_float("markup", 0.1, 1.0, step=0.1)
-        hp['label_max'] = trial.suggest_int('label_max', 2, 6, step=1, log=True)
-        hp['atr_period'] = trial.suggest_int('atr_period', 5, 50, step=5)
+        hp['label_max'] = trial.suggest_int('label_max', 2, 20, step=1, log=True)
+        hp['atr_period'] = trial.suggest_int('atr_period', 20, 200, step=10)
         hp.update(self.sample_cat_params(trial, "cat_main"))
         hp.update(self.sample_cat_params(trial, "cat_meta"))
 
@@ -686,14 +688,10 @@ class StrategySearcher:
             # print(f"meta model trained in {time.time() - start_time:.2f} seconds")
 
             # ── evaluación ───────────────────────────────────────────────
-            test_len = len(ds_test)
-            train_indices = np.random.choice(len(ds_train), size=test_len, replace=False)
-            ds_train_eval = ds_train.iloc[train_indices].copy()
-
             # print("evaluating in-sample...")
             # start_time = time.time()
             r2_ins = test_model_one_direction(
-                dataset=ds_train_eval,
+                dataset=ds_train,
                 model_main=model_main,
                 model_meta=model_meta,
                 direction=self.direction,

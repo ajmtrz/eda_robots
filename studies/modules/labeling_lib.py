@@ -1816,7 +1816,7 @@ def calculate_atr_simple(high, low, close, period=14):
 
 # ONE DIRECTION LABELING
 @njit(fastmath=True, nogil=True)
-def calculate_labels_one_direction(high, low, close, markup, min_val, max_val, direction, atr_period=14, deterministic=True):
+def calculate_labels_one_direction(high, low, close, markup, min_val, max_val, direction, atr_period=14):
     # Verificar que hay suficientes datos
     n = len(close)
     if n <= max_val:
@@ -1825,38 +1825,17 @@ def calculate_labels_one_direction(high, low, close, markup, min_val, max_val, d
     # Calcular ATR
     atr = calculate_atr_simple(high, low, close, period=atr_period)
     
-    if deterministic:
-        # --- exactamente igual que antes ---
-        fwd_matrix = np.zeros((n - max_val, max_val - min_val + 1))
-        for i in range(n - max_val):
-            for j in range(min_val, max_val + 1):
-                fwd_matrix[i, j - min_val] = close[i + j]
-        close_slice = close[:-max_val].reshape(-1, 1)
-        diffs = fwd_matrix - close_slice
-        
-        # Calcular markup dinámico basado en ATR
-        atr_slice = atr[:-max_val].reshape(-1, 1)
-        dyn_mk = markup * atr_slice
-        # Calcular hits con umbral dinámico basado en volatilidad
-        hits = (diffs > dyn_mk) if direction=="buy" else (diffs < -dyn_mk)
-        result = np.zeros(len(hits), dtype=np.float64)
-        for i in range(len(hits)):
-            # Requerir más hits cuando la volatilidad es mayor
-            min_hits = np.maximum(1.0, np.round(atr_slice[i] / atr_slice.mean()))
-            if np.sum(hits[i]) >= min_hits:
-                result[i] = 1.0
-    else:
-        # --------- una sola vela aleatoria por fila -----------------
-        rand_shift = np.random.randint(min_val, max_val + 1, size=n - max_val)
-        target = close[np.arange(n - max_val) + rand_shift]
-        diffs = target - close[:-max_val]
-        
-        # Calcular markup dinámico basado en ATR
-        atr_slice = atr[:-max_val]
-        dyn_mk = markup * atr_slice
-        # En modo aleatorio, solo necesitamos un hit
-        hits = (diffs > dyn_mk) if direction=="buy" else (diffs < -dyn_mk)
-        result = hits.astype(np.float64)
+    # --------- una sola vela aleatoria por fila -----------------
+    rand_shift = np.random.randint(min_val, max_val + 1, size=n - max_val)
+    target = close[np.arange(n - max_val) + rand_shift]
+    diffs = target - close[:-max_val]
+    
+    # Calcular markup dinámico basado en ATR
+    atr_slice = atr[:-max_val]
+    dyn_mk = markup * atr_slice
+    # En modo aleatorio, solo necesitamos un hit
+    hits = (diffs > dyn_mk) if direction=="buy" else (diffs < -dyn_mk)
+    result = hits.astype(np.float64)
         
     return result
 
@@ -1929,8 +1908,7 @@ def sliding_window_clustering(
 
 def clustering_simple(dataset: pd.DataFrame,
                min_cluster_size: int = 20,
-               min_samples: int | None = None,
-               metric: str = "euclidean") -> pd.DataFrame:
+               min_samples: int | None = None) -> pd.DataFrame:
     # Si el dataset está vacío, devuelve un dataset con -1 en la columna labels_meta
     if dataset.empty:
         dataset["labels_meta"] = -1
@@ -1938,8 +1916,7 @@ def clustering_simple(dataset: pd.DataFrame,
     meta_X_np = dataset.filter(regex="meta_feature").to_numpy(np.float32)
     clusterer = HDBSCAN(
         min_cluster_size=min_cluster_size,
-        min_samples=min_samples,
-        metric=metric
+        min_samples=min_samples
     ).fit(meta_X_np)
 
     dataset["labels_meta"] = clusterer.labels_.astype(int)

@@ -129,9 +129,9 @@ def evaluate_report(report: np.ndarray) -> float:
     
     # ────────────────────────
     # MÉTRICAS BASE
-    # gains = returns[returns > 0]
-    # losses = -returns[returns < 0]
-    # profit_factor = np.sum(gains) / np.sum(losses) if np.sum(losses) > 0 else eps
+    gains = returns[returns > 0]
+    losses = -returns[returns < 0]
+    profit_factor = np.sum(gains) / np.sum(losses) if np.sum(losses) > 0 else eps
 
     equity_curve = report
     peak = equity_curve[0]
@@ -147,14 +147,14 @@ def evaluate_report(report: np.ndarray) -> float:
     # ────────────────────────
     # PUNTAJE COMPUESTO BASE
     base_score = (
-        # (profit_factor * 0.3) +
-        (return_dd_ratio * 0.6) +
-        (trade_weight * 0.4)
+        (profit_factor * 0.35) +
+        (return_dd_ratio * 0.4) +
+        (trade_weight * 0.25)
     )
 
     # Penalizaciones por métricas débiles
     penalization = 1.0
-    # if profit_factor < 2.0: penalization *= 0.8
+    if profit_factor < 2.0: penalization *= 0.8
     if return_dd_ratio < 2.0: penalization *= 0.8
     if num_trades < 200: penalization *= 0.8
     

@@ -501,13 +501,13 @@ class StrategySearcher:
         hp = {}
         # Optimización de hiperparámetros comunes
         hp['markup'] = trial.suggest_float("markup", 0.1, 1.0, step=0.1)
-        hp['label_max'] = trial.suggest_int('label_max', 2, 20, step=1, log=True)
-        hp['atr_period'] = trial.suggest_int('atr_period', 20, 200, step=10)
+        hp['label_max'] = trial.suggest_int('label_max', 2, 20, log=True)
+        hp['atr_period'] = trial.suggest_int('atr_period', 5, 50, step=5)
         hp.update(self.sample_cat_params(trial, "cat_main"))
         hp.update(self.sample_cat_params(trial, "cat_meta"))
 
         # Optimización de períodos para el modelo principal
-        n_periods_main = trial.suggest_int('n_periods_main', 5, 15, log=True)
+        n_periods_main = trial.suggest_int('n_periods_main', 3, 15, log=True)
         main_periods = []
         for i in range(n_periods_main):
             period_main = trial.suggest_int(f'period_main_{i}', 2, 200, log=True)
@@ -523,7 +523,7 @@ class StrategySearcher:
             "sharpe", "fisher", "chande", "var", "approx_entropy", 
             "eff_ratio", "corr_skew", "jump_vol", "vol_skew", "hurst"
         ]
-        n_main_stats = trial.suggest_int('n_main_stats', 1, 5, log=True)
+        n_main_stats = trial.suggest_int('n_main_stats', 1, len(main_stat_choices), log=True)
         selected_main_stats = []
         for i in range(n_main_stats):
             stat = trial.suggest_categorical(f'main_stat_{i}', main_stat_choices)
@@ -533,7 +533,7 @@ class StrategySearcher:
         trial.set_user_attr('stats_main', selected_main_stats)
 
         # Optimización de períodos para el meta-modelo
-        n_periods_meta = 1 # trial.suggest_int('n_periods_meta', 1, 3, log=True)
+        n_periods_meta = trial.suggest_int('n_periods_meta', 1, 3, log=True)
         meta_periods = []
         for i in range(n_periods_meta):
             period_meta = trial.suggest_int(f'period_meta_{i}', 2, 6, log=True)
@@ -627,7 +627,7 @@ class StrategySearcher:
             # División de datos para el modelo principal según fechas
             X_train_main, X_val_main, y_train_main, y_val_main = train_test_split(
                 X_main, y_main, 
-                test_size=0.2,
+                test_size=0.3,
                 shuffle=True
             )
             # ── descartar clusters problemáticos ────────────────────────────
@@ -642,7 +642,7 @@ class StrategySearcher:
             # División de datos para el modelo principal según fechas
             X_train_meta, X_val_meta, y_train_meta, y_val_meta = train_test_split(
                 X_meta, y_meta, 
-                test_size=0.2,
+                test_size=0.3,
                 shuffle=True
             )
             # ── descartar clusters problemáticos ────────────────────────────
@@ -670,7 +670,7 @@ class StrategySearcher:
                            callbacks=[CatBoostPruningCallback(trial, "F1")],
                            use_best_model=True,
                            verbose=False
-                           )
+            )
             # print(f"main model trained in {time.time() - start_time:.2f} seconds")
 
             # Meta-modelo
@@ -694,7 +694,7 @@ class StrategySearcher:
                            callbacks=[CatBoostPruningCallback(trial, "F1")],
                            use_best_model=True,
                            verbose=False
-                           )
+            )
             # print(f"meta model trained in {time.time() - start_time:.2f} seconds")
 
             # ── evaluación ───────────────────────────────────────────────

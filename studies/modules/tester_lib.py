@@ -372,12 +372,15 @@ def _signed_r2(equity: np.ndarray) -> float:
 @njit(fastmath=True)
 def _make_noisy_signals(close: np.ndarray,
                        labels: np.ndarray,
-                       meta: np.ndarray,
-                       price_noise_range: tuple[float, float] = (0.001, 0.005),
-                       prob_noise_range: tuple[float, float] = (0.01, 0.03),
-                       correlation: float = 0.3) -> tuple:
+                       meta: np.ndarray) -> tuple:
     """Añade ruido a precios, labels y meta-labels."""
     n = close.size
+    volatility = np.std(np.diff(close) / close[:-1])
+    price_noise_range = (volatility * 0.5, volatility * 2.0)
+    prob_std = np.std(labels)
+    prob_noise_range = (prob_std * 0.5, prob_std * 2.0)
+    correlation = np.corrcoef(close, labels)[0,1]
+
     # ------ precios ------------------------------------------------
     price_noise = np.random.uniform(price_noise_range[0], price_noise_range[1])
     close_noisy = np.empty_like(close)
@@ -458,12 +461,21 @@ def _predict_batch(model, X_base, noise_levels):
     iname = sess.get_inputs()[0].name
     onnx_run = sess.run
 
+    # 1. Preparar los datos base
     n_sim, n_samples, n_feat = len(noise_levels), *X_base.shape
     X_big = np.repeat(X_base[None, :, :], n_sim, axis=0)
+    
+    # 2. Calcular sensibilidad de cada feature
+    feature_importance = model.get_feature_importance()
+    sensitivity = feature_importance / feature_importance.max()
+    
+    # 3. Generar y aplicar el ruido ajustado
     std = X_base.std(axis=0, keepdims=True)
     eps = np.random.normal(0.0, std, size=X_big.shape)
-    X_big += eps * noise_levels[:, None, None]
+    adjusted_noise = noise_levels[:, None, None] * sensitivity[None, None, :]
+    X_big += eps * adjusted_noise
 
+    # 4. Realizar la predicción
     proba_flat = onnx_run(None, {iname: X_big.reshape(-1, n_feat).astype(np.float32)})[0]
     proba = proba_flat.reshape(n_sim, n_samples)
     return proba

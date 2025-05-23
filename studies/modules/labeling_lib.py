@@ -1839,13 +1839,13 @@ def calculate_labels_one_direction(high, low, close, markup, min_val, max_val, d
         
     return result
 
-def get_labels_one_direction(dataset, markup, min_val=1, max_val=15, direction='buy', atr_period=14, deterministic=True) -> pd.DataFrame:
+def get_labels_one_direction(dataset, markup, min_val=1, max_val=15, direction='buy', atr_period=14) -> pd.DataFrame:
     close_data = np.ascontiguousarray(dataset['close'].values)
     high_data = np.ascontiguousarray(dataset['high'].values)
     low_data = np.ascontiguousarray(dataset['low'].values)
     labels = calculate_labels_one_direction(
         high_data, low_data, close_data, 
-        markup, min_val, max_val, direction, atr_period, deterministic
+        markup, min_val, max_val, direction, atr_period
     )
     dataset = dataset.iloc[:len(labels)].copy()
     dataset['labels_main'] = labels

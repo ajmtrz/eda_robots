@@ -58,14 +58,18 @@ def process_data_one_direction(close, main_labels, meta_labels, direction):
 
         # Abrir posición si:
         # 1. No hay posición abierta
-        # 2. El metamodelo da señal positiva
+        # 2. El metamodelo da señal positiva (>0.5)
         # 3. El modelo principal da señal positiva (>0.5)
+        # Nota: señales = 0.5 indican alta incertidumbre y no generan trades
         if last_deal == 2 and pred_meta > 0.5 and pred > 0.5:
             last_deal = 1
             last_price = pr
             continue
 
-        # Cerrar posición si el modelo principal da señal negativa (<0.5)
+        # Cerrar posición si:
+        # 1. Hay posición abierta
+        # 2. El modelo principal da señal negativa (<0.5)
+        # Nota: señales = 0.5 indican alta incertidumbre y no generan cierres
         if last_deal == 1 and pred < 0.5:
             last_deal = 2
             # Calcular beneficio según dirección
@@ -274,7 +278,20 @@ def test_model_one_direction(dataset: pd.DataFrame,
                            model_main: object,
                            model_meta: object,
                            direction: str = 'buy',
-                           plt=False):
+                           plt=False,
+                           main_intervals: tuple | None = None,
+                           meta_intervals: tuple | None = None):
+    """Testea un modelo en una dirección específica.
+    
+    Args:
+        dataset: DataFrame con los datos
+        model_main: Modelo principal
+        model_meta: Modelo meta
+        direction: Dirección de trading ('buy' o 'sell')
+        plt: Si True, muestra gráficos
+        main_intervals: Tupla (X_train, intervals) con intervalos de incertidumbre del modelo principal
+        meta_intervals: Tupla (X_train, intervals) con intervalos de incertidumbre del modelo meta
+    """
     # Copiar dataset para no modificar el original
     ext_dataset = dataset.copy()
 
@@ -285,6 +302,24 @@ def test_model_one_direction(dataset: pd.DataFrame,
     # Calcular probabilidades usando ambos modelos
     ext_dataset['main_labels'] = model_main.predict_proba(X_main)[:, 1]
     ext_dataset['meta_labels'] = model_meta.predict_proba(X_meta)[:, 1]
+
+    # Filtrar señales con alta incertidumbre si tenemos intervalos
+    if main_intervals is not None and meta_intervals is not None:
+        try:
+            # Obtener intervalos para los datos de test usando los modelos MAPIE existentes
+            _, main_test_intervals = main_intervals
+            _, meta_test_intervals = meta_intervals
+            
+            # Filtrar señales con alta incertidumbre (intervalo > 0.5)
+            main_mask = main_test_intervals <= 0.5
+            meta_mask = meta_test_intervals <= 0.5
+            
+            # Aplicar máscaras
+            ext_dataset.loc[~main_mask, 'main_labels'] = 0.5
+            ext_dataset.loc[~meta_mask, 'meta_labels'] = 0.5
+            
+        except Exception as e:
+            print(f"Error al filtrar señales con alta incertidumbre: {str(e)}")
 
     return tester_one_direction(ext_dataset, direction, plot=plt)
 
@@ -485,11 +520,25 @@ def monte_carlo_full(
     X_meta: np.ndarray,
     direction: str,
     n_sim: int = 100,
-    block_size: int = 20
+    block_size: int = 20,
+    main_intervals: tuple | None = None,
+    meta_intervals: tuple | None = None
 ) -> dict:
     """
     Lanza Monte-Carlo combinando ruido en inputs y bootstrapping de retornos.
     Si se pasan modelos y features, añade ruido a las features y predice en cada simulación.
+    
+    Args:
+        model_main: Modelo principal
+        model_meta: Modelo meta
+        close: Array con precios de cierre
+        X_main: Características del modelo principal
+        X_meta: Características del modelo meta
+        direction: Dirección de trading ('buy' o 'sell')
+        n_sim: Número de simulaciones
+        block_size: Tamaño del bloque para bootstrap
+        main_intervals: Tupla (X_train, intervals) con intervalos de incertidumbre del modelo principal
+        meta_intervals: Tupla (X_train, intervals) con intervalos de incertidumbre del modelo meta
     """
     # Validación de inputs
     if X_main is not None and X_meta is not None:
@@ -505,6 +554,24 @@ def monte_carlo_full(
         meta = model_meta.predict_proba(X_meta)[:, 1]
         labels = (labels > 0.5).astype(np.float64)
         meta = (meta > 0.5).astype(np.float64)
+
+        # Filtrar señales con alta incertidumbre si tenemos intervalos
+        if main_intervals is not None and meta_intervals is not None:
+            try:
+                # Obtener intervalos para los datos de test usando los modelos MAPIE existentes
+                _, main_test_intervals = main_intervals
+                _, meta_test_intervals = meta_intervals
+                
+                # Filtrar señales con alta incertidumbre (intervalo > 0.5)
+                main_mask = main_test_intervals <= 0.5
+                meta_mask = meta_test_intervals <= 0.5
+                
+                # Aplicar máscaras
+                labels[~main_mask] = 0.5
+                meta[~meta_mask] = 0.5
+                
+            except Exception as e:
+                print(f"Error al filtrar señales con alta incertidumbre: {str(e)}")
 
         if close.size < 2:
             return {"scores": np.array([-1.0]), "p_positive": 0.0, "quantiles": np.array([-1.0, -1.0, -1.0])}
@@ -536,11 +603,24 @@ def robust_oos_score_one_direction(dataset: pd.DataFrame,
                                    direction: str,
                                    n_sim: int = 100,
                                    block_size: int = 20,
-                                   agg: str = "q05") -> float:
+                                   agg: str = "q05",
+                                   main_intervals: tuple | None = None,
+                                   meta_intervals: tuple | None = None) -> float:
     """
     Devuelve un score robusto (float) listo para Optuna.
     Solo prepara los datos y pasa los modelos y features a monte_carlo_full,
     que se encargará de aplicar ruido y hacer predicciones en cada simulación.
+    
+    Args:
+        dataset: DataFrame con los datos
+        model_main: Modelo principal
+        model_meta: Modelo meta
+        direction: Dirección de trading ('buy' o 'sell')
+        n_sim: Número de simulaciones
+        block_size: Tamaño del bloque para bootstrap
+        agg: Método de agregación ('q05', 'median' o 'p_pos')
+        main_intervals: Tupla (X_train, intervals) con intervalos de incertidumbre del modelo principal
+        meta_intervals: Tupla (X_train, intervals) con intervalos de incertidumbre del modelo meta
     """
     # 1) Copiar dataset --------------------------------------------
     ext_ds = dataset.copy()
@@ -572,6 +652,8 @@ def robust_oos_score_one_direction(dataset: pd.DataFrame,
             direction=direction,
             n_sim=n_sim,
             block_size=block_size,
+            main_intervals=main_intervals,
+            meta_intervals=meta_intervals
         )
         
         if mc["scores"].size == 0:

@@ -52,6 +52,8 @@ def export_model_to_ONNX(best_models, **kwargs):
     include_export_path = kwargs.get('include_export_path')
     search_type = kwargs.get('search_type')
     search_subtype = kwargs.get('search_subtype')
+    main_intervals = kwargs.get('best_main_intervals')
+    meta_intervals = kwargs.get('best_meta_intervals')
 
     # Register the custom converter
     update_registered_converter(
@@ -99,508 +101,7 @@ def export_model_to_ONNX(best_models, **kwargs):
         with open(filepath_model_m, "wb") as f:
             f.write(model_meta_onnx.SerializeToString())
 
-        stat_function_templates = {
-            "std": """
-                double stat_std(const double &a[])
-                {
-                    int n = ArraySize(a);
-                    if(n <= 1) return 0.0;
-                    double sum = 0.0, sum_sq = 0.0;
-                    for(int i = 0; i < n; i++)
-                    {
-                        sum += a[i];
-                        sum_sq += a[i] * a[i];
-                    }
-                    double mean = sum / n;
-                    return MathSqrt((sum_sq - n * mean * mean) / (n - 1));
-                }
-                """,
-            "skew": """
-                double stat_skew(const double &a[])
-                {
-                    int n = ArraySize(a);
-                    if(n <= 1) return 0.0;
-                    double sum = 0.0, m3 = 0.0;
-                    for(int i = 0; i < n; i++) sum += a[i];
-                    double mean = sum / n;
-                    double std = stat_std(a);
-                    if(std == 0.0) return 0.0;
-                    for(int i = 0; i < n; i++)
-                        m3 += MathPow((a[i] - mean) / std, 3);
-                    return m3 / n;
-                }
-                """,
-            "kurt": """
-                double stat_kurt(const double &a[])
-                {
-                    int n = ArraySize(a);
-                    if(n <= 1) return 0.0;
-                    double sum = 0.0, m4 = 0.0;
-                    for(int i = 0; i < n; i++) sum += a[i];
-                    double mean = sum / n;
-                    double std = stat_std(a);
-                    if(std == 0.0) return 0.0;
-                    for(int i = 0; i < n; i++)
-                        m4 += MathPow((a[i] - mean) / std, 4);
-                    return m4 / n - 3.0;
-                }
-                """,
-            "zscore": """
-                double stat_zscore(const double &a[])
-                {
-                    int n = ArraySize(a);
-                    if(n <= 1) return 0.0;
-                    double sum = 0.0;
-                    for(int i = 0; i < n; i++) sum += a[i];
-                    double mean = sum / n;
-                    double std = stat_std(a);
-                    return std == 0.0 ? 0.0 : (a[n-1] - mean) / std;
-                }
-                """,
-            "mean": """
-                double stat_mean(const double &a[])
-                {
-                    double sum = 0.0;
-                    for(int i = 0; i < ArraySize(a); i++)
-                        sum += a[i];
-                    return sum / ArraySize(a);
-                }
-                """,
-            "range": """
-                double stat_range(const double &a[])
-                {
-                    double minv = a[0], maxv = a[0];
-                    for(int i = 1; i < ArraySize(a); i++)
-                    {
-                        if(a[i] < minv) minv = a[i];
-                        if(a[i] > maxv) maxv = a[i];
-                    }
-                    return maxv - minv;
-                }
-                """,
-            "median": """
-                double stat_median(const double &a[])
-                {
-                    double tmp[];
-                    ArrayCopy(tmp, a);
-                    ArraySort(tmp);
-                    int n = ArraySize(tmp);
-                    if(n % 2 == 0)
-                        return (tmp[n/2 - 1] + tmp[n/2]) / 2.0;
-                    else
-                        return tmp[n/2];
-                }
-                """,
-            "mad": """
-                double stat_mad(const double &a[])
-                {
-                    double mean = stat_mean(a);
-                    double sum = 0.0;
-                    for(int i = 0; i < ArraySize(a); i++)
-                        sum += MathAbs(a[i] - mean);
-                    return sum / ArraySize(a);
-                }
-                """,
-            "var": """
-                double stat_var(const double &a[])
-                {
-                    double mean = stat_mean(a);
-                    double sum = 0.0;
-                    for(int i = 0; i < ArraySize(a); i++)
-                        sum += (a[i] - mean) * (a[i] - mean);
-                    return sum / (ArraySize(a));
-                }
-                """,
-            "entropy": """
-                double stat_entropy(const double &a[])
-                {
-                    int bins = 10;
-                    double minv = a[0], maxv = a[0];
-                    for(int i = 1; i < ArraySize(a); i++)
-                    {
-                        if(a[i] < minv) minv = a[i];
-                        if(a[i] > maxv) maxv = a[i];
-                    }
-                    double width = (maxv - minv) / bins;
-                    if(width == 0) return 0.0;
-                    double hist[10] = {0};
-                    for(int i = 0; i < ArraySize(a); i++)
-                    {
-                        int idx = int((a[i] - minv) / width);
-                        if(idx == bins) idx--; // borde superior
-                        hist[idx]++;
-                    }
-                    double total = ArraySize(a);
-                    double entropy = 0.0;
-                    for(int i = 0; i < bins; i++)
-                    {
-                        if(hist[i] > 0)
-                            entropy -= (hist[i] / total) * MathLog(hist[i] / total);
-                    }
-                    return entropy;
-                }
-                """,
-            "slope": """
-                double stat_slope(const double &a[])
-                {
-                    int n = ArraySize(a);
-                    if(n <= 1) return 0.0;
-                    
-                    // Crear el vector de índices x
-                    double x[];
-                    ArrayResize(x, n);
-                    for(int i = 0; i < n; i++) x[i] = i;
-                    
-                    // Calcular medias usando las funciones existentes
-                    double x_mean = stat_mean(x);
-                    double y_mean = stat_mean(a);
-                    
-                    // Calcular covarianza
-                    double cov = 0.0;
-                    for(int i = 0; i < n; i++)
-                        cov += (x[i] - x_mean) * (a[i] - y_mean);
-                    cov /= n;
-                    
-                    // Calcular varianza de x usando stat_std
-                    double x_std = stat_std(x);
-                    double var_x = x_std * x_std * (n - 1) / n;  // Convertir de varianza muestral a poblacional
-                    
-                    return var_x == 0.0 ? 0.0 : cov / var_x;
-                }
-                """,
-            "momentum": """
-                double stat_momentum(const double &a[])
-                {
-                    int size = ArraySize(a);
-                    if(size == 0 || a[size-1] == 0) return 0.0;
-                    return (a[0] / a[size-1]) - 1.0;
-                }
-                """,
-            "fractal": """
-                double stat_fractal(const double &x[])
-                {
-                    int size = ArraySize(x);
-                    if(size < 2) return 1.0;
-                    
-                    double mean = stat_mean(x);
-                    double std_dev = stat_std(x);
-                    double eps = std_dev / 4.0;
-                    int count = 0;
-                    
-                    for(int i = 0; i < size-1; i++) {
-                        if(MathAbs(x[i] - x[i+1]) > eps) count++;
-                    }
-                    
-                    if(count == 0) return 1.0;
-                    return 1.0 + MathLog(count) / MathLog(size);
-                }
-                """,
-            "hurst": """
-                double stat_hurst(const double &x[])
-                {
-                    int n = ArraySize(x);
-                    if(n < 2) return 0.5;
-                    
-                    // Calcular rangos reescalados
-                    double valid_rs[];
-                    ArrayResize(valid_rs, n-1);
-                    ArrayInitialize(valid_rs, 0.0);
-                    
-                    for(int i = 1; i < n; i++) {
-                        // Calcular media y desviación estándar para cada subserie
-                        double subseries[];
-                        ArrayResize(subseries, i+1);
-                        ArrayCopy(subseries, x, 0, 0, i+1);
-                        
-                        double m = stat_mean(subseries);
-                        double s = stat_std(subseries);
-                        if(s == 0) continue;
-                        
-                        // Calcular rango reescalado
-                        double max_val = subseries[0];
-                        double min_val = subseries[0];
-                        for(int j = 1; j < ArraySize(subseries); j++) {
-                            if(subseries[j] > max_val) max_val = subseries[j];
-                            if(subseries[j] < min_val) min_val = subseries[j];
-                        }
-                        double r = max_val - min_val;
-                        valid_rs[i-1] = r / s;
-                    }
-                    
-                    // Calcular media de los logaritmos
-                    double sum_log = 0.0;
-                    int count = 0;
-                    for(int i = 0; i < n-1; i++) {
-                        if(valid_rs[i] > 0) {
-                            sum_log += MathLog(valid_rs[i]);
-                            count++;
-                        }
-                    }
-                    
-                    if(count == 0 || MathAbs(MathLog(n)) < 1e-10)
-                        return 0.5;
-                    return sum_log / count / MathLog(n);
-                }
-                """,
-            "autocorr": """
-                double stat_autocorr(const double &a[])
-                {
-                    int n = ArraySize(a);
-                    if(n < 2) return 0.0;
-                    double mean = stat_mean(a);
-                    double num=0.0, den=0.0;
-                    for(int i=0;i<n-1;i++)
-                    {
-                        double d0 = a[i]   - mean;
-                        double d1 = a[i+1] - mean;
-                        num += d0 * d1;
-                        den += d0 * d0;
-                    }
-                    return den==0.0 ? 0.0 : num/den;
-                }
-                """,
-            "max_dd":"""
-                double stat_max_dd(const double &a[])
-                {
-                    int n = ArraySize(a);
-                    if(n==0) return 0.0;
-                    double peak = a[0];
-                    double maxdd = 0.0;
-                    for(int i=0;i<n;i++)
-                    {
-                        if(a[i] > peak) peak = a[i];
-                        double dd = (peak - a[i]) / peak;
-                        if(dd > maxdd) maxdd = dd;
-                    }
-                    return maxdd;
-                }
-            """,
-            "sharpe": """
-                double stat_sharpe(const double &a[])
-                {
-                    int n = ArraySize(a);
-                    if(n < 2) return 0.0;
-                    double sum=0.0, sum2=0.0;
-                    for(int i=1;i<n;i++)
-                    {
-                        double r = a[i]/a[i-1] - 1.0;
-                        sum  += r;
-                        sum2 += r*r;
-                    }
-                    int m = n-1;
-                    double mean = sum / m;
-                    double std = stat_std(a);
-                    return std==0.0 ? 0.0 : mean/std;
-                }
-            """,
-            "fisher": """
-                double stat_fisher(const double &a[])
-                {
-                    int n = ArraySize(a);
-                    if(n <= 1) return 0.0;
-                    
-                    // Usar la función stat_momentum ya definida
-                    double momentum = stat_momentum(a);
-                    
-                    // Aplicar transformación de Fisher
-                    double x = MathMax(-0.9999, MathMin(0.9999, momentum));
-                    return 0.5 * MathLog((1.0 + x)/(1.0 - x));
-                }
-                """,
-            "chande": """
-                double stat_chande(const double &a[])
-                {
-                    int n = ArraySize(a);
-                    if(n < 2) return 0.0;
-                    double up=0.0, down=0.0;
-                    for(int i=1;i<n;i++)
-                    {
-                        double diff = a[i] - a[i-1];
-                        if(diff > 0) up += diff;
-                        else         down -= diff;  // diff es negativo
-                    }
-                    double sum = up + down;
-                    return sum==0.0 ? 0.0 : (up - down)/sum;
-                }
-            """,
-            "approx_entropy": """
-                double stat_approx_entropy(const double &a[])
-                {
-                    int n = ArraySize(a);
-                    int m = 2;
-                    if(n <= m + 1) return 0.0;
-                    
-                    double sd = stat_std(a);
-                    double r = 0.2 * sd;
-                    r *= sd;  // Multiplicar por sd como en Python
-                    
-                    // Para m = 2
-                    int count_m = 0;
-                    for(int i = 0; i < n - 1; i++) {
-                        for(int j = 0; j < n - 1; j++) {
-                            if(i != j) {  // Excluir i == j como en Python
-                                bool match_m = true;
-                                for(int k = 0; k < m; k++) {
-                                    if(MathAbs(a[i+k] - a[j+k]) > r) {
-                                        match_m = false;
-                                        break;
-                                    }
-                                }
-                                if(match_m) count_m++;
-                            }
-                        }
-                    }
-                    double phi1 = count_m > 0 ? MathLog((double)count_m / (n - 1)) : 0.0;
-                    
-                    // Para m = 3
-                    int count_m1 = 0;
-                    for(int i = 0; i < n - 2; i++) {
-                        for(int j = 0; j < n - 2; j++) {
-                            if(i != j) {  // Excluir i == j como en Python
-                                bool match_m1 = true;
-                                for(int k = 0; k < m + 1; k++) {
-                                    if(MathAbs(a[i+k] - a[j+k]) > r) {
-                                        match_m1 = false;
-                                        break;
-                                    }
-                                }
-                                if(match_m1) count_m1++;
-                            }
-                        }
-                    }
-                    double phi2 = count_m1 > 0 ? MathLog((double)count_m1 / (n - 2)) : 0.0;
-                    
-                    return phi1 - phi2;
-                }
-                """,
-            "eff_ratio": """
-                double stat_eff_ratio(const double &a[])
-                {
-                    int n = ArraySize(a);
-                    if(n < 2) return 0.0;
-                    double directio = a[n-1] - a[0];
-                    double volatility = 0.0;
-                    for(int i=1;i<n;i++) volatility += MathAbs(a[i]-a[i-1]);
-                    return volatility==0.0 ? 0.0 : directio/volatility;
-                }
-            """,
-            "corr": """
-            double stat_corr(const double &a[], const double &b[])
-            {
-                int n = ArraySize(a);
-                if(n != ArraySize(b) || n < 2) return 0.0;
-                
-                // Calcular medias usando stat_mean
-                double mean_a = stat_mean(a);
-                double mean_b = stat_mean(b);
-                
-                // Calcular covarianza
-                double cov = 0.0;
-                for(int i=0; i<n; i++) {
-                    cov += (a[i] - mean_a) * (b[i] - mean_b);
-                }
-                
-                // Calcular desviaciones estándar usando stat_std
-                double std_a = stat_std(a);
-                double std_b = stat_std(b);
-                
-                if(std_a == 0.0 || std_b == 0.0) return 0.0;
-                
-                return cov / (n * std_a * std_b);
-            }
-            """,
-            "corr_skew": """
-            double stat_corr_skew(const double &a[])
-            {
-                int n = ArraySize(a);
-                int lag = MathMin(5, n/2);
-                if(n < lag+1) return 0.0;
-                
-                // Preparar arrays para correlación positiva
-                double x1[], y1[];
-                ArrayResize(x1, n-lag);
-                ArrayResize(y1, n-lag);
-                for(int i=0; i<n-lag; i++) {
-                    x1[i] = a[i];
-                    y1[i] = a[i+lag];
-                }
-                
-                // Preparar arrays para correlación negativa
-                double x2[], y2[];
-                ArrayResize(x2, n-lag);
-                ArrayResize(y2, n-lag);
-                for(int i=0; i<n-lag; i++) {
-                    x2[i] = -a[i];
-                    y2[i] = a[i+lag];
-                }
-                
-                double corr_pos = stat_corr(x1, y1);
-                double corr_neg = stat_corr(x2, y2);
-                
-                return corr_pos - corr_neg;
-            }
-            """,
-            "jump_vol": """
-                double stat_jump_vol(const double &a[])
-                {
-                    int n = ArraySize(a);
-                    if(n < 2) return 0.0;
-                    
-                    // Calcular log returns
-                    double logret[];
-                    ArrayResize(logret, n-1);
-                    for(int i = 1; i < n; i++) 
-                        logret[i-1] = MathLog(a[i-1]/a[i]);
-                    
-                    // Calcular mediana usando stat_median
-                    double med = stat_median(logret);
-                    
-                    // Calcular MAD usando stat_median
-                    double dev[];
-                    ArrayResize(dev, n-1);
-                    for(int i = 0; i < n-1; i++) 
-                        dev[i] = MathAbs(logret[i] - med);
-                    double mad = stat_median(dev);
-                    
-                    if(mad == 0.0) return 0.0;
-                    
-                    // Contar saltos
-                    double thresh = 3.0 * mad;
-                    int jumps = 0;
-                    for(int i = 0; i < n-1; i++)
-                        if(dev[i] > thresh) jumps++;
-                    
-                    return (double)jumps/(n-1);
-                }
-                """,
-            "vol_skew": """
-                double stat_vol_skew(const double &a[])
-                {
-                    int n = ArraySize(a);
-                    if(n<2) return 0.0;
-                    
-                    // Calcular movimientos positivos y negativos
-                    double up_moves[], down_moves[];
-                    ArrayResize(up_moves, n-1);
-                    ArrayResize(down_moves, n-1);
-                    
-                    for(int i=1; i<n; i++)
-                    {
-                        double diff = a[i] - a[i-1];
-                        up_moves[i-1] = MathMax(diff, 0.0);
-                        down_moves[i-1] = MathMax(-diff, 0.0);
-                    }
-                    
-                    // Calcular desviación estándar usando stat_std
-                    double up_vol = stat_std(up_moves);
-                    double down_vol = stat_std(down_moves);
-                    
-                    // Calcular skew
-                    double sum = up_vol + down_vol;
-                    return sum==0.0 ? 0.0 : (up_vol - down_vol)/sum;
-                }
-            """,
-        }
+        # Generar código MQL5
         code = r"#include <Math\Stat\Math.mqh>"
         code += '\n'
         code += rf'#resource "\\Files\\{filename_model}" as uchar ExtModel_[]'
@@ -608,7 +109,7 @@ def export_model_to_ONNX(best_models, **kwargs):
         code += rf'#resource "\\Files\\{filename_model_m}" as uchar ExtModel_m_[]'
         code += '\n\n'
         code += '//+------------------------------------------------------------------+\n'
-        code += f'//| BEST_SCORE           {best_score}{' ' * 25} |\n'
+        code += f'//| BEST_SCORE           {best_score}{" " * 25} |\n'
         code += '//+------------------------------------------------------------------+\n'
         code += '\n\n'
         code += 'int periods_main' + '[' + str(len(periods_main)) + \
@@ -624,6 +125,25 @@ def export_model_to_ONNX(best_models, **kwargs):
         code += f'#define TIMEFRAME            "{str(timeframe)}"\n'
         code += f'#define DIRECTION            "{str(direction)}"\n'
         code += f'#define MAGIC_NUMBER         {model_seed}\n\n'
+
+        # Añadir código para intervalos de incertidumbre si están disponibles
+        if main_intervals is not None and meta_intervals is not None:
+            code += '// Intervalos de incertidumbre para el modelo principal\n'
+            code += 'double main_intervals[] = {' + ','.join(map(str, main_intervals[1])) + '};\n'
+            code += '// Intervalos de incertidumbre para el modelo meta\n'
+            code += 'double meta_intervals[] = {' + ','.join(map(str, meta_intervals[1])) + '};\n\n'
+            code += '// Función para filtrar señales con alta incertidumbre\n'
+            code += 'bool filter_uncertain_signals(double main_prob, double meta_prob, int main_idx, int meta_idx)\n'
+            code += '{\n'
+            code += '    // Si el intervalo de incertidumbre es mayor que 0.5, descartar la señal\n'
+            code += '    if(main_idx >= 0 && main_idx < ArraySize(main_intervals) && main_intervals[main_idx] > 0.5)\n'
+            code += '        return false;\n'
+            code += '    if(meta_idx >= 0 && meta_idx < ArraySize(meta_intervals) && meta_intervals[meta_idx] > 0.5)\n'
+            code += '        return false;\n'
+            code += '    return true;\n'
+            code += '}\n\n'
+
+        # Añadir el resto del código MQL5...
         stats_total = set(stats_main + stats_meta)
         if "mean" not in stats_total:
             code += stat_function_templates["mean"] + "\n"
@@ -674,13 +194,13 @@ def export_model_to_ONNX(best_models, **kwargs):
         code += '     }\n'
         code += '  }\n\n'
 
-        file_name = os.path.join(include_export_path, f"{symbol}_{timeframe}_{direction}_{search_type}_{search_subtype}_{model_seed}.mqh")
+        file_name = os.path.join(include_export_path, f"{symbol}_{timeframe}_{direction}_ONNX_include_{model_seed}.mqh")
         with open(file_name, "w") as file:
             file.write(code)
-        
-        print(f"EXPORTACIÓN {symbol}_{timeframe}_{direction}_{search_type}_{search_subtype}_{model_seed} ONNX CORRECTA")
+        print('The file ' + file_name + ' has been written to disk')
+
     except Exception as e:
-        print(f"ERROR EN EXPORTACIÓN: {e}")
+        print(f"Error exporting model: {str(e)}")
         raise
 
 def remove_inner_braces_and_second_bracket(text):

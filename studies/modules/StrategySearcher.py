@@ -336,7 +336,7 @@ class StrategySearcher:
                     print(f"⚠️ ERROR: Fit fallido para el cluster {clust}")
                     continue
 
-                scores, m_main, m_meta = res
+                scores, m_main, m_meta, main_intervals, meta_intervals = res
 
                 # Verificar scores
                 if not all(np.isfinite(scores)):
@@ -351,6 +351,8 @@ class StrategySearcher:
                         trial, study,
                         metrics={"score": min(scores)},
                         models=[m_main, m_meta],
+                        main_intervals=main_intervals,
+                        meta_intervals=meta_intervals
                     )
                 else:
                     # no mejora → descartar enseguida
@@ -561,6 +563,8 @@ class StrategySearcher:
             *,
             metrics: dict,
             models: list | None = None,
+            main_intervals: tuple | None = None,
+            meta_intervals: tuple | None = None,
     ):
         """Registra métricas y conserva solo los modelos del mejor score.
         
@@ -569,6 +573,8 @@ class StrategySearcher:
             study: Estudio de Optuna
             metrics: Diccionario con métricas a guardar
             models: Lista de modelos [model_main, model_meta] o None
+            main_intervals: Intervalos de incertidumbre para el modelo principal o None
+            meta_intervals: Intervalos de incertidumbre para el modelo meta o None
         """
         try:
             # Verificar que las métricas sean válidas
@@ -618,6 +624,10 @@ class StrategySearcher:
                                 study.set_user_attr("best_stats_main", trial.params['stats_main'])
                                 study.set_user_attr("best_stats_meta", trial.params['stats_meta'])
                                 study.set_user_attr("best_trial_number", trial.number)
+                                if main_intervals:
+                                    study.set_user_attr("best_main_intervals", main_intervals)
+                                if meta_intervals:
+                                    study.set_user_attr("best_meta_intervals", meta_intervals)
                             except Exception as e:
                                 print(f"⚠️ ERROR al guardar atributos: {str(e)}")
                                 if "best_models" in study.user_attrs:
@@ -633,8 +643,13 @@ class StrategySearcher:
                         ds_train: pd.DataFrame,
                         ds_test: pd.DataFrame,
                         hp: Dict[str, Any],
-                        trial: optuna.Trial) -> tuple[tuple[float, float], object, object]:
-        """Ajusta los modelos finales."""
+                        trial: optuna.Trial) -> tuple[tuple[float, float], object, object, tuple, tuple]:
+        """Ajusta los modelos finales y calcula intervalos de incertidumbre.
+        
+        Returns:
+            tuple: (scores, model_main, model_meta, main_intervals, meta_intervals)
+            donde main_intervals y meta_intervals son tuplas (X_train, intervals)
+        """
         try:
             # ---------- 1) main model_main ----------
             # Get feature columns and rename them to follow f%d pattern
@@ -726,6 +741,35 @@ class StrategySearcher:
                            verbose=False
             )
 
+            # Calcular intervalos de incertidumbre usando MAPIE
+            main_intervals = None
+            meta_intervals = None
+            try:
+                from mapie.classification import MapieClassifier
+                
+                # MAPIE para modelo principal
+                mapie_main = MapieClassifier(
+                    estimator=model_main,
+                    method="score"
+                )
+                mapie_main.fit(X_train_main, y_train_main, prefit=True)
+                main_intervals = (X_train_main, mapie_main.predict(X_train_main)[1])
+                
+                # MAPIE para modelo meta
+                mapie_meta = MapieClassifier(
+                    estimator=model_meta,
+                    method="score"
+                )
+                mapie_meta.fit(X_train_meta, y_train_meta, prefit=True)
+                meta_intervals = (X_train_meta, mapie_meta.predict(X_train_meta)[1])
+                
+            except ImportError:
+                print("MAPIE no está instalado. Ejecutando sin intervalos de confianza.")
+            except Exception as e:
+                print(f"Error al calcular intervalos de confianza: {str(e)}")
+                main_intervals = None
+                meta_intervals = None
+
             # ── evaluación ───────────────────────────────────────────────
             ds_train_eval = ds_train.sample(n=len(ds_test), replace=False)
             r2_ins = test_model_one_direction(
@@ -733,6 +777,8 @@ class StrategySearcher:
                 model_main=model_main,
                 model_meta=model_meta,
                 direction=self.direction,
+                main_intervals=main_intervals,
+                meta_intervals=meta_intervals
             )
             r2_oos = robust_oos_score_one_direction(
                 dataset=ds_test,
@@ -740,7 +786,9 @@ class StrategySearcher:
                 model_meta=model_meta,
                 direction=self.direction,
                 n_sim=100,
-                agg="q05"
+                agg="q05",
+                main_intervals=main_intervals,
+                meta_intervals=meta_intervals
             )
 
             # Manejar valores inválidos
@@ -748,10 +796,10 @@ class StrategySearcher:
                 r2_ins = -1.0
                 r2_oos = -1.0
 
-            return (r2_ins, r2_oos), model_main, model_meta
+            return (r2_ins, r2_oos), model_main, model_meta, main_intervals, meta_intervals
         except Exception as e:
             print(f"Error en fit_final_models: {str(e)}")
-            return (-1.0, -1.0), None, None
+            return (-1.0, -1.0), None, None, None, None
         finally:
             _ONNX_CACHE.clear()
             gc.collect()

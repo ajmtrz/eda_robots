@@ -7,8 +7,8 @@ from datetime import datetime
 from time import perf_counter
 from typing import Dict, Any
 import optuna
-from optuna.pruners import HyperbandPruner
-from optuna.integration import CatBoostPruningCallback
+from optuna.pruners import HyperbandPruner, SuccessiveHalvingPruner
+#from optuna.integration import CatBoostPruningCallback
 from sklearn import set_config
 from sklearn.model_selection import train_test_split
 from functools import lru_cache
@@ -85,6 +85,7 @@ class StrategySearcher:
         train_end: datetime,
         test_start: datetime,
         test_end: datetime,
+        pruner_type: str = 'hyperband',
         n_trials: int = 500,
         n_models: int = 10,
         n_jobs: int = -1,
@@ -105,6 +106,7 @@ class StrategySearcher:
             train_end: Fecha de fin del entrenamiento
             test_start: Fecha de inicio de prueba
             test_end: Fecha de fin de prueba
+            pruner_type: Tipo de pruner ('hyperband' o 'halving')
             n_trials: Número de trials para la optimización
             models_export_path: Ruta para exportar modelos
             include_export_path: Ruta para archivos include
@@ -125,6 +127,7 @@ class StrategySearcher:
         self.history_path = history_path
         self.search_type = search_type
         self.search_subtype = search_subtype
+        self.pruner_type = pruner_type
         self.n_trials = n_trials
         self.n_models = n_models
         self.n_jobs = n_jobs
@@ -167,11 +170,13 @@ class StrategySearcher:
                 model_seed = int(time.time() * 1000) + i
 
                 # Inicializar estudio de Optuna con objetivos múltiples
+                pruners = {
+                    'hyperband': HyperbandPruner(max_resource='auto'),
+                    'halving': SuccessiveHalvingPruner(min_resource='auto', reduction_factor=3)
+                }
                 study = optuna.create_study(
-                    directions=['maximize', 'maximize'],  # Maximizar ambos scores
-                    pruner=HyperbandPruner(
-                        max_resource='auto'
-                    ),
+                    directions=['maximize', 'maximize'],
+                    pruner=pruners[self.pruner_type],
                     sampler=optuna.samplers.TPESampler(
                         n_startup_trials=int(np.sqrt(self.n_trials)),
                         multivariate=True

@@ -47,20 +47,20 @@ def process_data(close, labels, metalabels):
     return np.array(report), np.array(chart)
 
 @jit(fastmath=True)
-def process_data_one_direction(close, labels, metalabels, direction):
+def process_data_one_direction(close, main_labels, meta_labels, direction):
     last_deal = 2           # 2 = flat, 1 = in‑market (única dirección)
     last_price = 0.0
     report, chart = [0.0], [0.0]
     long_side = (direction == 'buy')
 
     for i in range(len(close)):
-        pred, pr, pred_meta = labels[i], close[i], metalabels[i]
+        pred, pr, pred_meta = main_labels[i], close[i], meta_labels[i]
 
         # Abrir posición si:
         # 1. No hay posición abierta
         # 2. El metamodelo da señal positiva
         # 3. El modelo principal da señal positiva (>0.5)
-        if last_deal == 2 and pred_meta == 1 and pred > 0.5:
+        if last_deal == 2 and pred_meta > 0.5 and pred > 0.5:
             last_deal = 1
             last_price = pr
             continue
@@ -82,11 +82,11 @@ def process_data_one_direction(close, labels, metalabels, direction):
 def tester(dataset, plot=False):
 
     close = dataset['close'].to_numpy()
-    lab   = dataset['labels'].to_numpy()
+    main   = dataset['main_labels'].to_numpy()
     meta  = dataset['meta_labels'].to_numpy()
 
     # Pasamos los índices relativos al dataset filtrado
-    rpt, ch= process_data(close, lab, meta)
+    rpt, ch= process_data(close, main, meta)
 
     # regresión lineal sobre el equity
     y = rpt.reshape(-1, 1)
@@ -171,12 +171,12 @@ def tester_one_direction(dataset, direction='buy', plot=False):
 
     # Extraer datos necesarios
     close = np.ascontiguousarray(dataset['close'].values)
-    lab = np.ascontiguousarray(dataset['labels'].values)
+    main = np.ascontiguousarray(dataset['main_labels'].values)
     meta = np.ascontiguousarray(dataset['meta_labels'].values)
 
     # Pasamos los índices numéricos en lugar de fechas
     rpt, ch= process_data_one_direction(
-        close, lab, meta, direction)
+        close, main, meta, direction)
 
     # Si no hay suficientes operaciones, devolver valor negativo
     if len(rpt) < 2:
@@ -207,11 +207,11 @@ def tester_slow(dataset, markup, plot=False):
     report, chart = [0.0], [0.0]
 
     close = dataset['close'].to_numpy()
-    labels = dataset['labels'].to_numpy()
+    main = dataset['main_labels'].to_numpy()
     metalabels = dataset['meta_labels'].to_numpy()
 
     for i in range(dataset.shape[0]):
-        pred, pr, pred_meta = labels[i], close[i], metalabels[i]
+        pred, pr, pred_meta = main[i], close[i], metalabels[i]
 
         if last_deal == 2 and pred_meta == 1:
             last_price = pr
@@ -263,9 +263,9 @@ def test_model(dataset: pd.DataFrame,
     ext_dataset = ext_dataset[mask].reset_index(drop=True)
     X = ext_dataset.iloc[:, 1:]
 
-    ext_dataset['labels']      = result[0].predict_proba(X)[:, 1]
+    ext_dataset['main_labels']      = result[0].predict_proba(X)[:, 1]
     ext_dataset['meta_labels'] = result[1].predict_proba(X)[:, 1]
-    ext_dataset[['labels', 'meta_labels']] = ext_dataset[['labels', 'meta_labels']].gt(0.5).astype(float)
+    ext_dataset[['main_labels', 'meta_labels']] = ext_dataset[['main_labels', 'meta_labels']].gt(0.5).astype(float)
 
     return tester(ext_dataset, plot=plt)
 
@@ -283,11 +283,8 @@ def test_model_one_direction(dataset: pd.DataFrame,
     X_meta = ext_dataset.loc[:, ext_dataset.columns.str.contains('_meta_feature')].to_numpy('float32')
 
     # Calcular probabilidades usando ambos modelos
-    ext_dataset['labels'] = model_main.predict_proba(X_main)[:, 1]
+    ext_dataset['main_labels'] = model_main.predict_proba(X_main)[:, 1]
     ext_dataset['meta_labels'] = model_meta.predict_proba(X_meta)[:, 1]
-    
-    # Convertir probabilidades a señales binarias
-    ext_dataset[['labels', 'meta_labels']] = ext_dataset[['labels', 'meta_labels']].gt(0.5).astype(float)
 
     return tester_one_direction(ext_dataset, direction, plot=plt)
 
@@ -414,7 +411,7 @@ def _make_noisy_signals(close: np.ndarray,
 def _simulate_batch(close, l_all, m_all, block_size, direction):
     n_sim, n = l_all.shape
     scores = np.full(n_sim, -1.0)
-    for i in prange(n_sim):                      # ← paralelo
+    for i in prange(n_sim):
         c_n, l_n, m_n = _make_noisy_signals(close, l_all[i], m_all[i])
         rpt, _ = process_data_one_direction(c_n, l_n, m_n, direction)
         if rpt.size < 2:
@@ -514,8 +511,8 @@ def monte_carlo_full(
 
         # ── predicción batch + cast a float64 (necesario para _make_noisy_signals) ──
         noise_levels = np.random.uniform(0.005, 0.02, n_sim)
-        l_all = (_predict_batch(model_main, X_main, noise_levels) > 0.5).astype(np.float64)
-        m_all = (_predict_batch(model_meta, X_meta, noise_levels) > 0.5).astype(np.float64)
+        l_all = _predict_batch(model_main, X_main, noise_levels)
+        m_all = _predict_batch(model_meta, X_meta, noise_levels)
 
         scores = _simulate_batch(close, l_all, m_all, block_size, direction)
 

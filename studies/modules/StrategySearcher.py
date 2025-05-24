@@ -225,7 +225,7 @@ class StrategySearcher:
                                key=lambda t: min(t.values[0], t.values[1]))
 
                 # Verificar y exportar el mejor modelo
-                best_models = best_trial.user_attrs.get("best_models", [])
+                best_models = study.user_attrs.get("best_models", [])
                 if not (best_models and len(best_models) == 2 and all(best_models)):
                     print(f"⚠️ ERROR: best_models VACÍO")
                     continue
@@ -241,10 +241,10 @@ class StrategySearcher:
                     "best_models": best_models,
                     "best_model_seed": model_seed,
                     "best_scores": best_trial.values,
-                    "best_periods_main": best_trial.user_attrs.get("best_periods_main"),
-                    "best_periods_meta": best_trial.user_attrs.get("best_periods_meta"),
-                    "best_stats_main": best_trial.user_attrs.get("best_stats_main"),
-                    "best_stats_meta": best_trial.user_attrs.get("best_stats_meta"),
+                    "best_periods_main": study.user_attrs.get("best_periods_main"),
+                    "best_periods_meta": study.user_attrs.get("best_periods_meta"),
+                    "best_stats_main": study.user_attrs.get("best_stats_main"),
+                    "best_stats_meta": study.user_attrs.get("best_stats_meta"),
                 }
                 
                 export_model_to_ONNX(**export_params)

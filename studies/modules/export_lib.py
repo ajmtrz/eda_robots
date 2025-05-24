@@ -5,7 +5,8 @@ from skl2onnx import convert_sklearn, update_registered_converter
 from skl2onnx.common.shape_calculator import calculate_linear_classifier_output_shapes
 from skl2onnx.common.data_types import FloatTensorType, Int64TensorType
 from skl2onnx._parse import _apply_zipmap, _get_sklearn_operator_name
-from onnx.helper import get_attribute_value
+from onnx.helper import get_attribute_value, make_tensor_value_info
+from onnx import TensorProto
 from catboost.utils import convert_to_onnx_object
     
 # ONNX para Pipeline con Catboost
@@ -80,6 +81,26 @@ def export_model_to_ONNX(best_models, **kwargs):
             options={id(models[1]): {'zipmap': True}}
         )
 
+        # Añadir salida de índice de intervalo para el modelo principal
+        if main_intervals is not None:
+            model_main_onnx.graph.output.append(
+                make_tensor_value_info(
+                    'interval_index',
+                    TensorProto.INT64,
+                    [None]
+                )
+            )
+
+        # Añadir salida de índice de intervalo para el modelo meta
+        if meta_intervals is not None:
+            model_meta_onnx.graph.output.append(
+                make_tensor_value_info(
+                    'interval_index',
+                    TensorProto.INT64,
+                    [None]
+                )
+            )
+
         # Eliminar inicializadores no utilizados
         for model_onnx in [model_main_onnx, model_meta_onnx]:
             initializers_to_remove = []
@@ -132,6 +153,7 @@ def export_model_to_ONNX(best_models, **kwargs):
             code += 'double main_intervals[] = {' + ','.join(map(str, main_intervals[1])) + '};\n'
             code += '// Intervalos de incertidumbre para el modelo meta\n'
             code += 'double meta_intervals[] = {' + ','.join(map(str, meta_intervals[1])) + '};\n\n'
+            
             code += '// Función para filtrar señales con alta incertidumbre\n'
             code += 'bool filter_uncertain_signals(double main_prob, double meta_prob, int main_idx, int meta_idx)\n'
             code += '{\n'
@@ -142,6 +164,50 @@ def export_model_to_ONNX(best_models, **kwargs):
             code += '        return false;\n'
             code += '    return true;\n'
             code += '}\n\n'
+
+            # Añadir ejemplo de uso en la estrategia
+            code += '// Ejemplo de uso en la estrategia:\n'
+            code += '/*\n'
+            code += 'void OnTick()\n'
+            code += '{\n'
+            code += '    // 1. Obtener características actuales\n'
+            code += '    double main_features[];\n'
+            code += '    double meta_features[];\n'
+            code += '    ArrayResize(main_features, NUM_MAIN_FEATURES);\n'
+            code += '    ArrayResize(meta_features, NUM_META_FEATURES);\n'
+            code += '    \n'
+            code += '    // 2. Llenar las características\n'
+            code += '    fill_arays_main(main_features);\n'
+            code += '    fill_arays_meta(meta_features);\n'
+            code += '    \n'
+            code += '    // 3. Obtener predicciones de los modelos\n'
+            code += '    output out2[], out2_meta[];\n'
+            code += '    OnnxRun(ExtHandle, ONNX_DEBUG_LOGS, main_features, out, out2);\n'
+            code += '    OnnxRun(ExtHandle2, ONNX_DEBUG_LOGS, meta_features, out_meta, out2_meta);\n'
+            code += '    \n'
+            code += '    double sig = out2[0].proba[1];\n'
+            code += '    double meta_sig = out2_meta[0].proba[1];\n'
+            code += '    \n'
+            code += '    // 4. Obtener los índices de los intervalos de incertidumbre\n'
+            code += '    int main_idx = (int)out2[0].interval_index[0];\n'
+            code += '    int meta_idx = (int)out2_meta[0].interval_index[0];\n'
+            code += '    \n'
+            code += '    // 5. Filtrar señales con alta incertidumbre\n'
+            code += '    if(filter_uncertain_signals(sig, meta_sig, main_idx, meta_idx))\n'
+            code += '    {\n'
+            code += '        // 6. Proceder con la señal de trading\n'
+            code += '        if(sig > 0.5 && meta_sig > 0.5)\n'
+            code += '        {\n'
+            code += '            // Abrir posición larga\n'
+            code += '            if(DIRECTION == "buy")\n'
+            code += '                OrderSend(SYMBOL, OP_BUY, ...);\n'
+            code += '            // Abrir posición corta\n'
+            code += '            else if(DIRECTION == "sell")\n'
+            code += '                OrderSend(SYMBOL, OP_SELL, ...);\n'
+            code += '        }\n'
+            code += '    }\n'
+            code += '}\n'
+            code += '*/\n\n'
 
         # Añadir el resto del código MQL5...
         stats_total = set(stats_main + stats_meta)

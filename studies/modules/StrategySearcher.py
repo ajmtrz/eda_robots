@@ -408,36 +408,40 @@ class StrategySearcher:
             max_meta_periods = trial.suggest_int('max_meta_periods', 1, 5, log=True)
             
             # Sugerir todos los períodos main de una vez y asegurar que sean únicos
+            min_main_period = 2
+            max_main_period = 200
             main_periods = sorted(list(set([
-                trial.suggest_int('period_main_0', 2, 200, log=True),
-                trial.suggest_int('period_main_1', 2, 200, log=True),
-                trial.suggest_int('period_main_2', 2, 200, log=True),
-                trial.suggest_int('period_main_3', 2, 200, log=True),
-                trial.suggest_int('period_main_4', 2, 200, log=True),
-                trial.suggest_int('period_main_5', 2, 200, log=True),
-                trial.suggest_int('period_main_6', 2, 200, log=True),
-                trial.suggest_int('period_main_7', 2, 200, log=True),
-                trial.suggest_int('period_main_8', 2, 200, log=True),
-                trial.suggest_int('period_main_9', 2, 200, log=True),
-                trial.suggest_int('period_main_10', 2, 200, log=True),
-                trial.suggest_int('period_main_11', 2, 200, log=True),
-                trial.suggest_int('period_main_12', 2, 200, log=True),
-                trial.suggest_int('period_main_13', 2, 200, log=True),
-                trial.suggest_int('period_main_14', 2, 200, log=True),
-                trial.suggest_int('period_main_15', 2, 200, log=True),
-                trial.suggest_int('period_main_16', 2, 200, log=True),
-                trial.suggest_int('period_main_17', 2, 200, log=True),
-                trial.suggest_int('period_main_18', 2, 200, log=True),
-                trial.suggest_int('period_main_19', 2, 200, log=True),
+                trial.suggest_int('period_main_0', min_main_period, max_main_period, log=True),
+                trial.suggest_int('period_main_1', min_main_period, max_main_period, log=True),
+                trial.suggest_int('period_main_2', min_main_period, max_main_period, log=True),
+                trial.suggest_int('period_main_3', min_main_period, max_main_period, log=True),
+                trial.suggest_int('period_main_4', min_main_period, max_main_period, log=True),
+                trial.suggest_int('period_main_5', min_main_period, max_main_period, log=True),
+                trial.suggest_int('period_main_6', min_main_period, max_main_period, log=True),
+                trial.suggest_int('period_main_7', min_main_period, max_main_period, log=True),
+                trial.suggest_int('period_main_8', min_main_period, max_main_period, log=True),
+                trial.suggest_int('period_main_9', min_main_period, max_main_period, log=True),
+                trial.suggest_int('period_main_10', min_main_period, max_main_period, log=True),
+                trial.suggest_int('period_main_11', min_main_period, max_main_period, log=True),
+                trial.suggest_int('period_main_12', min_main_period, max_main_period, log=True),
+                trial.suggest_int('period_main_13', min_main_period, max_main_period, log=True),
+                trial.suggest_int('period_main_14', min_main_period, max_main_period, log=True),
+                trial.suggest_int('period_main_15', min_main_period, max_main_period, log=True),
+                trial.suggest_int('period_main_16', min_main_period, max_main_period, log=True),
+                trial.suggest_int('period_main_17', min_main_period, max_main_period, log=True),
+                trial.suggest_int('period_main_18', min_main_period, max_main_period, log=True),
+                trial.suggest_int('period_main_19', min_main_period, max_main_period, log=True),
             ])))[:max_main_periods]
             
             # Sugerir todos los períodos meta de una vez y asegurar que sean únicos
+            min_meta_period = 2
+            max_meta_period = 5
             meta_periods = sorted(list(set([
-                trial.suggest_int('period_meta_0', 2, 5, log=True),
-                trial.suggest_int('period_meta_1', 2, 5, log=True),
-                trial.suggest_int('period_meta_2', 2, 5, log=True),
-                trial.suggest_int('period_meta_3', 2, 5, log=True),
-                trial.suggest_int('period_meta_4', 2, 5, log=True),
+                trial.suggest_int('period_meta_0', min_meta_period, max_meta_period, log=True),
+                trial.suggest_int('period_meta_1', min_meta_period, max_meta_period, log=True),
+                trial.suggest_int('period_meta_2', min_meta_period, max_meta_period, log=True),
+                trial.suggest_int('period_meta_3', min_meta_period, max_meta_period, log=True),
+                trial.suggest_int('period_meta_4', min_meta_period, max_meta_period, log=True),
             ])))[:max_meta_periods]
 
             # Verificar períodos main
@@ -464,7 +468,7 @@ class StrategySearcher:
                 'cat_main_early_stopping': trial.suggest_int('cat_main_early_stopping', 20, 200, log=True),
                 'cat_main_bootstrap_type': trial.suggest_categorical('cat_main_bootstrap_type', ['Bayesian', 'Bernoulli', 'MVS']),
                 'cat_main_bagging_temperature': trial.suggest_float('cat_main_bagging_temperature', 0, 10),
-                'cat_main_subsample': trial.suggest_float('cat_main_subsample', 0.1, 1),
+                'cat_main_subsample': trial.suggest_float('cat_main_subsample', 0.5, 1),
                 
                 # Parámetros de CatBoost meta
                 'cat_meta_iterations': trial.suggest_int('cat_meta_iterations', 100, 1000, log=True),
@@ -474,7 +478,7 @@ class StrategySearcher:
                 'cat_meta_early_stopping': trial.suggest_int('cat_meta_early_stopping', 20, 200, log=True),
                 'cat_meta_bootstrap_type': trial.suggest_categorical('cat_meta_bootstrap_type', ['Bayesian', 'Bernoulli', 'MVS']),
                 'cat_meta_bagging_temperature': trial.suggest_float('cat_meta_bagging_temperature', 0, 10),
-                'cat_meta_subsample': trial.suggest_float('cat_meta_subsample', 0.1, 1),
+                'cat_meta_subsample': trial.suggest_float('cat_meta_subsample', 0.5, 1),
                 
                 # Períodos
                 'max_main_periods': max_main_periods,
@@ -502,19 +506,39 @@ class StrategySearcher:
                         'window_size': trial.suggest_int('window_size', 100, 500, step=50)
                     })
 
-            # Estadísticas
-            stat_choices = [
-                "std", "skew", "kurt", "zscore", "range", "mad", "entropy", 
-                "slope", "momentum", "fractal", "hurst", "autocorr", "max_dd", 
-                "sharpe", "fisher", "chande", "var", "approx_entropy", 
-                "eff_ratio", "corr_skew", "jump_vol", "vol_skew", "hurst"
+            # Estadísticas que requieren períodos mínimos
+            stats_requiring_min_period = {
+                'jump_vol': 4,
+                'fractal': 4,
+                'vol_skew': 4,
+                'corr_skew': 4,
+                'approx_entropy': 4,
+                'hurst': 4,
+                'kurt': 4
+            }
+
+            # Todas las estadísticas posibles (conjunto fijo)
+            all_stats = [
+                "std", "skew", "zscore", "range", "mad", "entropy", 
+                "slope", "momentum", "autocorr", "max_dd", 
+                "sharpe", "fisher", "chande", "var", "eff_ratio",
+                "jump_vol", "fractal", "vol_skew", "corr_skew",
+                "approx_entropy", "hurst", "kurt"
             ]
             
             # Sugerir todas las estadísticas de una vez
-            main_stats = [stat for i, stat in enumerate(stat_choices) 
+            main_stats = [stat for i, stat in enumerate(all_stats) 
                          if trial.suggest_categorical(f'main_stat_{i}', [0, 1]) == 1]
-            meta_stats = [stat for i, stat in enumerate(stat_choices) 
+            meta_stats = [stat for i, stat in enumerate(all_stats) 
                          if trial.suggest_categorical(f'meta_stat_{i}', [0, 1]) == 1]
+            
+            # Filtrar estadísticas problemáticas según los períodos
+            main_stats = [stat for stat in main_stats 
+                         if stat not in stats_requiring_min_period or 
+                         min(main_periods) >= stats_requiring_min_period[stat]]
+            meta_stats = [stat for stat in meta_stats 
+                         if stat not in stats_requiring_min_period or 
+                         min(meta_periods) >= stats_requiring_min_period[stat]]
             
             # Verificar estadísticas
             if not main_stats or not meta_stats:

@@ -1927,9 +1927,9 @@ def markov_regime_switching_simple(dataset, n_regimes: int, model_type="GMMHMM",
     if dataset.empty:
         dataset["labels_meta"] = -1
         return dataset
-    
+
     meta_X_np = dataset.filter(regex="meta_feature").to_numpy(np.float32)
-    
+
     # Features normalization before training
     scaler = StandardScaler()
     try:
@@ -1946,14 +1946,6 @@ def markov_regime_switching_simple(dataset, n_regimes: int, model_type="GMMHMM",
     # 4) Verificar columnas (casi) constantes después del escalado
     stds = np.nanstd(X_scaled, axis=0)
     if np.any(stds < 1e-10):
-        dataset["labels_meta"] = -1
-        return dataset
-    
-    # 5) Verificar que la matriz de covarianza sea definida positiva
-    try:
-        cov = np.cov(X_scaled.T)
-        np.linalg.cholesky(cov)
-    except np.linalg.LinAlgError:
         dataset["labels_meta"] = -1
         return dataset
     
@@ -2016,14 +2008,6 @@ def markov_regime_switching_advanced(dataset, n_regimes: int, model_type="HMM", 
     # 4) Verificar columnas (casi) constantes después del escalado
     stds = np.nanstd(X_scaled, axis=0)
     if np.any(stds < 1e-10):
-        dataset["labels_meta"] = -1
-        return dataset
-    
-    # 5) Verificar que la matriz de covarianza sea definida positiva
-    try:
-        cov = np.cov(X_scaled.T)
-        np.linalg.cholesky(cov)
-    except np.linalg.LinAlgError:
         dataset["labels_meta"] = -1
         return dataset
     

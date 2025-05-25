@@ -37,10 +37,10 @@ def skl2onnx_convert_catboost(scope, operator, container):
         **{att.name: get_attribute_value(att) for att in node.attribute}
     )
 
-def export_model_to_ONNX(best_models, **kwargs):
-    models = best_models
+def export_model_to_ONNX(**kwargs):
     model_seed = kwargs.get('best_model_seed')
-    best_score = kwargs.get('best_score')
+    models = kwargs.get('best_models')
+    best_scores = kwargs.get('best_scores')
     periods_main = kwargs.get('best_periods_main')
     periods_meta = kwargs.get('best_periods_meta')
     stats_main = kwargs.get('best_stats_main')
@@ -608,7 +608,7 @@ def export_model_to_ONNX(best_models, **kwargs):
         code += rf'#resource "\\Files\\{filename_model_m}" as uchar ExtModel_m_[]'
         code += '\n\n'
         code += '//+------------------------------------------------------------------+\n'
-        code += f'//| BEST_SCORE           {best_score}{' ' * 25} |\n'
+        code += f'//| INS SCORE: {best_scores[0]} | OOS SCORE: {best_scores[1]} |\n'
         code += '//+------------------------------------------------------------------+\n'
         code += '\n\n'
         code += 'int periods_main' + '[' + str(len(periods_main)) + \

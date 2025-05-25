@@ -45,7 +45,7 @@ class StrategySearcher:
     def _cached_features(df_id: int,
                         start: datetime,
                         end: datetime,
-                        hkey: tuple):
+                        hp_tuple: tuple) -> pd.DataFrame:
         """Obtiene características del DataFrame con caché LRU.
         
         El caché almacena hasta 128 resultados diferentes, eliminando automáticamente
@@ -56,20 +56,21 @@ class StrategySearcher:
             df_id: ID del DataFrame base
             start: Fecha de inicio
             end: Fecha de fin
-            hkey: Tupla con los hiperparámetros que afectan a las características
-            
+            hp_tuple: Tupla de tuplas con los hiperparámetros que afectan a las características
+
         Returns:
             pd.DataFrame: DataFrame con las características calculadas
         """
-        hp_subset = dict(hkey)
-        hp_full = {
-            'periods_main': list(hp_subset['periods_main']),
-            'periods_meta': list(hp_subset['periods_meta']),
-            'stats_main'  : list(hp_subset['stats_main']),
-            'stats_meta'  : list(hp_subset['stats_meta']),
-        }
-        return get_features(StrategySearcher._FEATURE_CACHE[df_id].loc[start:end].copy(), hp_full)
-    
+        # Convertir la tupla de tuplas en diccionario
+        hp = dict(hp_tuple)
+        hp.update({
+            'periods_main': list(hp.get('periods_main', ())),
+            'periods_meta': list(hp.get('periods_meta', ())),
+            'stats_main': list(hp.get('stats_main', ())),
+            'stats_meta': list(hp.get('stats_meta', ())),
+        })
+        return get_features(StrategySearcher._FEATURE_CACHE[df_id].loc[start:end].copy(), hp)
+
     @staticmethod
     def clear_cache():
         """Limpia el caché de características."""
@@ -185,32 +186,40 @@ class StrategySearcher:
 
                 t0 = perf_counter()
                 def log_trial(study, trial):
-                    # Obtener el Pareto front
-                    best_trial = max(study.best_trials, 
-                                   key=lambda t: min(t.values[0], t.values[1]))
-                        
-                    # Si este trial es el mejor, guardar sus modelos
-                    if trial.number == best_trial.number:
-                        # Obtener los modelos del trial actual
-                        if self.best_models is not None:
-                            self.save_best_trial(
-                                trial, study,
-                                scores=best_trial.values,
-                                models=self.best_models
-                            )
+                    try:
+                        # Obtener el Pareto front
+                        if study.best_trials:
+                            best_trial = max(study.best_trials, 
+                                          key=lambda t: min(t.values[0], t.values[1]))
+                            
+                            # Si este trial es el mejor, guardar sus modelos
+                            if trial.number == best_trial.number:
+                                if trial.user_attrs.get('models') is not None:
+                                    study.set_user_attr("best_models", trial.user_attrs['models'])
+                                    study.set_user_attr("best_scores", trial.user_attrs['scores'])
+                                    study.set_user_attr("best_periods_main", trial.user_attrs['periods_main'])
+                                    study.set_user_attr("best_periods_meta", trial.user_attrs['periods_meta'])
+                                    study.set_user_attr("best_stats_main", trial.user_attrs['stats_main'])
+                                    study.set_user_attr("best_stats_meta", trial.user_attrs['stats_meta'])
 
-                    # Log
-                    best_str = f"ins={best_trial.values[0]:.4f} oos={best_trial.values[1]:.4f}"
-                    elapsed = perf_counter() - t0
-                    n_done = trial.number + 1
-                    avg_time = elapsed / n_done
-                    print(
-                        f"[{self.tag}] modelo {i} "
-                        f"trial {n_done}/{self.n_trials} "
-                        f"{best_str} "
-                        f"avg={avg_time:6.2f}s",
-                        flush=True,
-                    )
+                        # Log
+                        best_str = f"ins={best_trial.values[0]:.4f} oos={best_trial.values[1]:.4f}"
+                        elapsed = perf_counter() - t0
+                        n_done = trial.number + 1
+                        avg_time = elapsed / n_done
+                        print(
+                            f"[{self.tag}] modelo {i} "
+                            f"trial {n_done}/{self.n_trials} "
+                            f"{best_str} "
+                            f"avg={avg_time:6.2f}s",
+                            flush=True,
+                        )
+
+                        # Forzar limpieza de memoria
+                        gc.collect()
+                    except Exception as e:
+                        print(f"⚠️ ERROR en log_trial: {str(e)}")
+                        gc.collect()
 
                 study.optimize(
                     lambda t: search_func(t, study),
@@ -218,21 +227,12 @@ class StrategySearcher:
                     gc_after_trial=True,
                     show_progress_bar=False,
                     callbacks=[log_trial],
+                    n_jobs=self.n_jobs,
                 )
 
-                # Seleccionar el mejor trial del Pareto front
-                pareto_front = study.best_trials
-                if not pareto_front:
-                    print(f"⚠️ ERROR: No se encontraron trials válidos")
-                    continue
-
-                # Seleccionar el trial que mejor balancea in-sample y out-of-sample
-                best_trial = max(pareto_front, 
-                               key=lambda t: min(t.values[0], t.values[1]))
-
                 # Verificar y exportar el mejor modelo
-                best_models = study.user_attrs.get("best_models", [])
-                if not (best_models and len(best_models) == 2 and all(best_models)):
+                best_models = study.user_attrs.get("best_models", None)
+                if best_models is None or not best_models:
                     print(f"⚠️ ERROR: best_models VACÍO")
                     continue
                 
@@ -244,13 +244,13 @@ class StrategySearcher:
                     "include_export_path": self.include_export_path,
                     "search_type": self.search_type,
                     "search_subtype": self.search_subtype,
-                    "best_models": best_models,
                     "best_model_seed": model_seed,
-                    "best_scores": best_trial.values,
-                    "best_periods_main": study.user_attrs.get("best_periods_main"),
-                    "best_periods_meta": study.user_attrs.get("best_periods_meta"),
-                    "best_stats_main": study.user_attrs.get("best_stats_main"),
-                    "best_stats_meta": study.user_attrs.get("best_stats_meta"),
+                    "best_models": study.user_attrs["best_models"],
+                    "best_scores": study.user_attrs["best_scores"],
+                    "best_periods_main": study.user_attrs["best_periods_main"],
+                    "best_periods_meta": study.user_attrs["best_periods_meta"],
+                    "best_stats_main": study.user_attrs["best_stats_main"],
+                    "best_stats_meta": study.user_attrs["best_stats_meta"],
                 }
                 
                 export_model_to_ONNX(**export_params)
@@ -277,15 +277,15 @@ class StrategySearcher:
             # Verificar que hay clusters
             if cluster_sizes.empty:
                 print("⚠️ ERROR: No hay clusters")
-                return (-1.0, -1.0), (None, None)
+                return None, None
 
             # Filtrar el cluster -1 (inválido) si existe
             if -1 in cluster_sizes.index:
                 cluster_sizes = cluster_sizes.drop(-1)
                 if cluster_sizes.empty:
-                    print("⚠️ ERROR: Solo hay clusters inválidos")
-                    return (-1.0, -1.0), (None, None)
-        
+                    #print("⚠️ ERROR: Solo hay clusters inválidos")
+                    return None, None
+
             # Evaluar cada cluster
             for clust in cluster_sizes.index:
                 # Main data
@@ -333,35 +333,34 @@ class StrategySearcher:
                     continue
 
                 # ── Evaluación en ambos períodos ──────────────────────────────
-                res = self.fit_final_models(
-                    main_data, meta_data, ds_train, ds_test, hp.copy(), trial
+                scores, models = self.fit_final_models(
+                    main_data, meta_data, ds_train, ds_test, hp.copy()
                 )
-                if res is None:
+                if scores is None or models is None:
                     print(f"⚠️ ERROR: Fit fallido para el cluster {clust}")
                     continue
-
-                scores, m_main, m_meta = res
 
                 # Verificar scores
                 if not all(np.isfinite(scores)):
                     print(f"⚠️ ERROR: Scores no finitos para el cluster {clust}")
                     continue
 
-                # no guardes modelos si el score no mejora
-                if min(scores) > min(best_scores):
+                # Aplica Pareto front: mejora en al menos una métrica sin empeorar la otra
+                if (scores[0] > best_scores[0] and scores[1] >= best_scores[1]) or \
+                   (scores[1] > best_scores[1] and scores[0] >= best_scores[0]):
                     best_scores = scores
-                    best_models = (m_main, m_meta)
+                    best_models = models
 
             # Verificar que encontramos algún cluster válido
-            if best_scores == (-math.inf, -math.inf):
+            if best_scores == (-math.inf, -math.inf) or best_models == (None, None):
                 print("⚠️ ERROR: No se encontraron clusters válidos")
-                return (-1.0, -1.0), (None, None)
+                return None, None
 
             return best_scores, best_models
             
         except Exception as e:
             print(f"⚠️ ERROR en evaluación de clusters: {str(e)}")
-            return (-1.0, -1.0), (None, None)
+            return None
     
     def check_constant_features(self, X: np.ndarray, feature_cols: list, std_epsilon: float = 1e-12) -> bool:
         """Verifica si hay columnas que podrían causar inestabilidad numérica.
@@ -398,135 +397,79 @@ class StrategySearcher:
     def suggest_all_params(self, trial: optuna.Trial) -> Dict[str, Any]:
         """Sugiere todos los parámetros de una vez para permitir muestreo multivariado."""
         try:
-            # Definir todos los períodos posibles de una vez
-            max_main_periods = trial.suggest_int('max_main_periods', 3, 20, log=True)
-            max_meta_periods = trial.suggest_int('max_meta_periods', 1, 5, log=True)
-            
-            # Sugerir todos los períodos main de una vez y asegurar que sean únicos
-            min_main_period = 2
-            max_main_period = 200
-            main_periods = sorted(list(set([
-                trial.suggest_int('period_main_0', min_main_period, max_main_period, log=True),
-                trial.suggest_int('period_main_1', min_main_period, max_main_period, log=True),
-                trial.suggest_int('period_main_2', min_main_period, max_main_period, log=True),
-                trial.suggest_int('period_main_3', min_main_period, max_main_period, log=True),
-                trial.suggest_int('period_main_4', min_main_period, max_main_period, log=True),
-                trial.suggest_int('period_main_5', min_main_period, max_main_period, log=True),
-                trial.suggest_int('period_main_6', min_main_period, max_main_period, log=True),
-                trial.suggest_int('period_main_7', min_main_period, max_main_period, log=True),
-                trial.suggest_int('period_main_8', min_main_period, max_main_period, log=True),
-                trial.suggest_int('period_main_9', min_main_period, max_main_period, log=True),
-                trial.suggest_int('period_main_10', min_main_period, max_main_period, log=True),
-                trial.suggest_int('period_main_11', min_main_period, max_main_period, log=True),
-                trial.suggest_int('period_main_12', min_main_period, max_main_period, log=True),
-                trial.suggest_int('period_main_13', min_main_period, max_main_period, log=True),
-                trial.suggest_int('period_main_14', min_main_period, max_main_period, log=True),
-                trial.suggest_int('period_main_15', min_main_period, max_main_period, log=True),
-                trial.suggest_int('period_main_16', min_main_period, max_main_period, log=True),
-                trial.suggest_int('period_main_17', min_main_period, max_main_period, log=True),
-                trial.suggest_int('period_main_18', min_main_period, max_main_period, log=True),
-                trial.suggest_int('period_main_19', min_main_period, max_main_period, log=True),
-            ])))[:max_main_periods]
-            
-            # Sugerir todos los períodos meta de una vez y asegurar que sean únicos
-            min_meta_period = 2
-            max_meta_period = 5
-            meta_periods = sorted(list(set([
-                trial.suggest_int('period_meta_0', min_meta_period, max_meta_period, log=True),
-                trial.suggest_int('period_meta_1', min_meta_period, max_meta_period, log=True),
-                trial.suggest_int('period_meta_2', min_meta_period, max_meta_period, log=True),
-                trial.suggest_int('period_meta_3', min_meta_period, max_meta_period, log=True),
-                trial.suggest_int('period_meta_4', min_meta_period, max_meta_period, log=True),
-            ])))[:max_meta_periods]
-
-            # Verificar períodos main
-            if not main_periods or len(main_periods) < 3:
-                print("⚠️ ERROR: Períodos main insuficientes")
-                return None
-            
-            # Verificar períodos meta
-            if not meta_periods or len(meta_periods) < 1:
-                print("⚠️ ERROR: Períodos meta insuficientes")
-                return None
-
-            # Todas las estadísticas posibles (conjunto fijo)
+            # Todas las estadísticas disponibles
             all_stats = [
-                "std", "skew", "zscore", "range", "mad", "entropy", 
-                "slope", "momentum", "autocorr", "max_dd", 
-                "sharpe", "fisher", "chande", "var", "eff_ratio",
+                "std", "skew", "zscore", "range", "mad", "entropy",
+                "slope", "momentum", "autocorr", "max_dd",
+                "sharpe", "fisher", "chande", "var", "eff_ratio", 
                 "jump_vol", "fractal", "vol_skew", "corr_skew",
                 "approx_entropy", "hurst", "kurt"
             ]
-            
-            # Sugerir todas las estadísticas de una vez
-            main_stats = [stat for i, stat in enumerate(all_stats) 
-                         if trial.suggest_categorical(f'main_stat_{i}', [0, 1]) == 1]
-            meta_stats = [stat for i, stat in enumerate(all_stats) 
-                         if trial.suggest_categorical(f'meta_stat_{i}', [0, 1]) == 1]
-            
-            # Filtrar estadísticas problemáticas según los períodos
-            stats_requiring_min_period = {
-                'jump_vol': 4,
-                'fractal': 4,
-                'vol_skew': 4,
-                'corr_skew': 4,
-                'approx_entropy': 4,
-                'hurst': 4,
-                'kurt': 4
-            }
-            
-            main_stats = [stat for stat in main_stats 
-                         if stat not in stats_requiring_min_period or 
-                         min(main_periods) >= stats_requiring_min_period[stat]]
-            meta_stats = [stat for stat in meta_stats 
-                         if stat not in stats_requiring_min_period or 
-                         min(meta_periods) >= stats_requiring_min_period[stat]]
-            
-            # Verificar estadísticas
-            if not main_stats or not meta_stats:
-                print("⚠️ ERROR: Estadísticas insuficientes")
-                return None
 
             # Parámetros base comunes
             params = {
-                'markup': trial.suggest_float("markup", 0.1, 1.0, log=True),
-                'label_max': trial.suggest_int('label_max', 2, 30, log=True),
-                'atr_period': trial.suggest_int('atr_period', 5, 100, log=True),
+                'markup': trial.suggest_float("markup", 0.1, 1.0),
+                'label_max': trial.suggest_int('label_max', 2, 20),
+                'atr_period': trial.suggest_int('atr_period', 5, 50, step=5),
                 
                 # Parámetros de CatBoost main
-                'cat_main_iterations': trial.suggest_int('cat_main_iterations', 100, 1000, log=True),
-                'cat_main_depth': trial.suggest_int('cat_main_depth', 3, 10, log=True),
-                'cat_main_learning_rate': trial.suggest_float('cat_main_learning_rate', 0.01, 0.3, log=True),
-                'cat_main_l2_leaf_reg': trial.suggest_float('cat_main_l2_leaf_reg', 0.1, 10.0, log=True),
-                'cat_main_early_stopping': trial.suggest_int('cat_main_early_stopping', 20, 200, log=True),
+                'cat_main_iterations': trial.suggest_int('cat_main_iterations', 100, 1000, step=50),
+                'cat_main_depth': trial.suggest_int('cat_main_depth', 3, 10, step=1),
+                'cat_main_learning_rate': trial.suggest_float('cat_main_learning_rate', 0.01, 0.3, step=0.05),
+                'cat_main_l2_leaf_reg': trial.suggest_float('cat_main_l2_leaf_reg', 0.1, 10.0, step=0.1),
+                'cat_main_early_stopping': trial.suggest_int('cat_main_early_stopping', 20, 100, step=10),
                 'cat_main_bootstrap_type': trial.suggest_categorical('cat_main_bootstrap_type', ['Bayesian', 'Bernoulli', 'MVS']),
-                'cat_main_bagging_temperature': trial.suggest_float('cat_main_bagging_temperature', 0, 10),
-                'cat_main_subsample': trial.suggest_float('cat_main_subsample', 0.5, 1),
-                
+                'cat_main_bagging_temperature': trial.suggest_float('cat_main_bagging_temperature', 0, 10, step=0.1),
+                'cat_main_subsample': trial.suggest_float('cat_main_subsample', 0.5, 1, step=0.01),
+
                 # Parámetros de CatBoost meta
-                'cat_meta_iterations': trial.suggest_int('cat_meta_iterations', 100, 1000, log=True),
-                'cat_meta_depth': trial.suggest_int('cat_meta_depth', 3, 10, log=True),
-                'cat_meta_learning_rate': trial.suggest_float('cat_meta_learning_rate', 0.01, 0.3, log=True),
-                'cat_meta_l2_leaf_reg': trial.suggest_float('cat_meta_l2_leaf_reg', 0.1, 10.0, log=True),
-                'cat_meta_early_stopping': trial.suggest_int('cat_meta_early_stopping', 20, 200, log=True),
+                'cat_meta_iterations': trial.suggest_int('cat_meta_iterations', 100, 1000, step=50),
+                'cat_meta_depth': trial.suggest_int('cat_meta_depth', 3, 10, step=1),
+                'cat_meta_learning_rate': trial.suggest_float('cat_meta_learning_rate', 0.01, 0.3, step=0.05),
+                'cat_meta_l2_leaf_reg': trial.suggest_float('cat_meta_l2_leaf_reg', 0.1, 10.0, step=0.1),
+                'cat_meta_early_stopping': trial.suggest_int('cat_meta_early_stopping', 20, 100, step=10),
                 'cat_meta_bootstrap_type': trial.suggest_categorical('cat_meta_bootstrap_type', ['Bayesian', 'Bernoulli', 'MVS']),
-                'cat_meta_bagging_temperature': trial.suggest_float('cat_meta_bagging_temperature', 0, 10),
-                'cat_meta_subsample': trial.suggest_float('cat_meta_subsample', 0.5, 1),
-                
+                'cat_meta_bagging_temperature': trial.suggest_float('cat_meta_bagging_temperature', 0, 10, step=0.1),
+                'cat_meta_subsample': trial.suggest_float('cat_meta_subsample', 0.5, 1, step=0.01),
+
                 # Períodos y estadísticas en el formato esperado
-                'periods_main': main_periods,
-                'periods_meta': meta_periods,
-                'stats_main': main_stats,
-                'stats_meta': meta_stats,
+                # Definir todos los períodos posibles de una vez
+                'max_main_periods': trial.suggest_int('max_main_periods', 3, 15, log=True),
+                'max_meta_periods': trial.suggest_int('max_meta_periods', 1, 3, log=True),
+                'max_main_stats': trial.suggest_int('max_main_stats', 1, 5, log=True),
+                'max_meta_stats': trial.suggest_int('max_meta_stats', 1, 3, log=True),
             }
+
+            # Main periods - sugerir como array discreto
+            params['periods_main'] = tuple(sorted(set(
+                trial.suggest_int('periods_main', 4, 200, log=True)
+                for _ in range(params['max_main_periods'])
+            )))
+
+            # Meta periods - sugerir como array discreto  
+            params['periods_meta'] = tuple(sorted(set(
+                trial.suggest_int('periods_meta', 4, 8, log=True)
+                for _ in range(params['max_meta_periods'])
+            )))
+
+            # Sugerir estadísticas como arrays completos
+            params['stats_main'] = tuple(set(
+                trial.suggest_categorical('stats_main', all_stats)
+                for _ in range(params['max_main_stats'])
+            ))
+
+            params['stats_meta'] = tuple(set(
+                trial.suggest_categorical('stats_meta', all_stats)
+                for _ in range(params['max_meta_stats'])
+            ))
 
             # Parámetros específicos según el tipo de búsqueda
             if self.search_type == 'markov':
                 params.update({
                     'model_type': trial.suggest_categorical('model_type', ['GMMHMM', 'HMM', 'VARHMM']),
-                    'n_regimes': trial.suggest_int('n_regimes', 2, 10, log=True),
+                    'n_regimes': trial.suggest_int('n_regimes', 2, 20),
                     'n_iter': trial.suggest_int('n_iter', 50, 200, step=10),
-                    'n_mix': trial.suggest_int('n_mix', 1, 5, log=True)
+                    'n_mix': trial.suggest_int('n_mix', 2, 5)
                 })
             elif self.search_type == 'clusters':
                 params.update({
@@ -546,42 +489,12 @@ class StrategySearcher:
         except Exception as e:
             print(f"⚠️ ERROR en suggest_all_params: {str(e)}")
             return None
-
-    def save_best_trial(
-            self,
-            trial: optuna.Trial,
-            study: optuna.study.Study,
-            *,
-            scores: tuple[float, float],
-            models: list | None = None,
-    ):
-        """Registra métricas y conserva solo los modelos del mejor score.
-        
-        Args:
-            trial: Trial actual de Optuna
-            study: Estudio de Optuna
-            scores: Tupla con scores (r2_ins, r2_oos)
-            models: Lista de modelos [model_main, model_meta] o None
-        """
-        try:
-            # Guardar en el estudio todos los atributos del mejor trial
-            study.set_user_attr("best_models", models)
-            study.set_user_attr("best_scores", scores)
-            study.set_user_attr("best_periods_main", trial.user_attrs['periods_main'])
-            study.set_user_attr("best_periods_meta", trial.user_attrs['periods_meta'])
-            study.set_user_attr("best_stats_main", trial.user_attrs['stats_main'])
-            study.set_user_attr("best_stats_meta", trial.user_attrs['stats_meta'])
-                        
-        except Exception as e:
-            print(f"⚠️ ERROR en save_best_trial: {str(e)}")
-            gc.collect()
     
     def fit_final_models(self, main_data: pd.DataFrame,
                         meta_data: pd.DataFrame,
                         ds_train: pd.DataFrame,
                         ds_test: pd.DataFrame,
-                        hp: Dict[str, Any],
-                        trial: optuna.Trial) -> tuple[tuple[float, float], object, object]:
+                        hp: Dict[str, Any]) -> tuple[tuple[float, float], object, object]:
         """Ajusta los modelos finales."""
         try:
             # ---------- 1) main model_main ----------
@@ -599,7 +512,7 @@ class StrategySearcher:
             
             # ── descartar clusters problemáticos ────────────────────────────
             if len(y_train_main.value_counts()) < 2 or len(y_val_main.value_counts()) < 2:
-                return None
+                return None, None
             
             # ---------- 2) meta‑modelo ----------
             meta_feature_cols = meta_data.columns[meta_data.columns.str.contains('_meta_feature')]
@@ -616,7 +529,7 @@ class StrategySearcher:
             
             # ── descartar clusters problemáticos ────────────────────────────
             if len(y_train_meta.value_counts()) < 2 or len(y_val_meta.value_counts()) < 2:
-                return None
+                return None, None
 
             # Main model
             cat_main_params = dict(
@@ -625,11 +538,11 @@ class StrategySearcher:
                 learning_rate=hp['cat_main_learning_rate'],
                 l2_leaf_reg=hp['cat_main_l2_leaf_reg'],
                 bootstrap_type=hp['cat_main_bootstrap_type'],
-                eval_metric='F1',
+                eval_metric='Accuracy',
                 store_all_simple_ctr=False,
-                verbose=False,
                 thread_count=self.n_jobs,
-                task_type='CPU'
+                task_type='CPU',
+                verbose=False,
             )
             
             # Añadir parámetros específicos según el tipo de bootstrap
@@ -655,9 +568,9 @@ class StrategySearcher:
                 bootstrap_type=hp['cat_meta_bootstrap_type'],
                 eval_metric='F1',
                 store_all_simple_ctr=False,
-                verbose=False,
                 thread_count=self.n_jobs,
-                task_type='CPU'
+                task_type='CPU',
+                verbose=False,
             )
             
             # Añadir parámetros específicos según el tipo de bootstrap
@@ -676,11 +589,13 @@ class StrategySearcher:
 
             # ── evaluación ───────────────────────────────────────────────
             ds_train_eval = ds_train.sample(n=len(ds_test), replace=False)
-            r2_ins = test_model_one_direction(
+            r2_ins = robust_oos_score_one_direction(
                 dataset=ds_train_eval,
                 model_main=model_main,
                 model_meta=model_meta,
                 direction=self.direction,
+                n_sim=100,
+                agg="q95"
             )
             r2_oos = robust_oos_score_one_direction(
                 dataset=ds_test,
@@ -688,7 +603,7 @@ class StrategySearcher:
                 model_meta=model_meta,
                 direction=self.direction,
                 n_sim=100,
-                agg="q05"
+                agg="q95"
             )
 
             # Manejar valores inválidos
@@ -696,10 +611,11 @@ class StrategySearcher:
                 r2_ins = -1.0
                 r2_oos = -1.0
 
-            return (r2_ins, r2_oos), model_main, model_meta
+            return (r2_ins, r2_oos), (model_main, model_meta)
+        
         except Exception as e:
-            print(f"Error en fit_final_models: {str(e)}")
-            return (-1.0, -1.0), None, None
+            print(f"Error en función de entrenamiento y test: {str(e)}")
+            return None, None
         finally:
             _ONNX_CACHE.clear()
             gc.collect()
@@ -732,14 +648,14 @@ class StrategySearcher:
                     n_iter=hp['n_iter'],
                     n_mix=hp['n_mix'] if hp['model_type'] == 'VARHMM' else 3
                 )
-            
-            regime_counts = ds_train['labels_meta'].value_counts()
-            if len(regime_counts) < 2:
+
+            scores, models = self._evaluate_clusters(ds_train, ds_test, hp, trial, study)
+            if scores is None or models is None:
                 return -1.0, -1.0
-            
-            # Evaluar los clusters y obtener los scores
-            scores, self.best_models = self._evaluate_clusters(ds_train, ds_test, hp, trial, study)
-                
+            else:
+                trial.set_user_attr('models', models)
+                trial.set_user_attr('scores', scores)
+
             return scores
             
         except Exception as e:
@@ -771,9 +687,15 @@ class StrategySearcher:
                     step=hp.get('step', None),
                 )
             
-            scores, self.best_models = self._evaluate_clusters(ds_train, ds_test, hp, trial, study)
+            scores, models = self._evaluate_clusters(ds_train, ds_test, hp, trial, study)
+            if scores is None or models is None:
+                return -1.0, -1.0
+            else:
+                trial.set_user_attr('models', models)
+                trial.set_user_attr('scores', scores)
 
             return scores
+        
         except Exception as e:
             print(f"Error en search_clusters: {str(e)}")
             return -1.0, -1.0
@@ -790,21 +712,15 @@ class StrategySearcher:
                 print("⚠️ ERROR: Parámetros inválidos")
                 return None, None
 
-            hkey = tuple(sorted({
-                'periods_main': tuple(hp['periods_main']),
-                'periods_meta': tuple(hp['periods_meta']),
-                'stats_main'  : tuple(hp['stats_main']),
-                'stats_meta'  : tuple(hp['stats_meta']),
-            }.items()))
-
             # Asegurarnos de que tenemos todos los datos necesarios
+            # Convertir el diccionario en una tupla de tuplas para que sea hasheable
+            hp_tuple = tuple(sorted(hp.items()))
             full_ds = StrategySearcher._cached_features(
                 StrategySearcher._BASE_DF_ID,
                 min(self.train_start, self.test_start),
                 max(self.train_end, self.test_end),
-                hkey,
+                hp_tuple,
             )
-            
             if full_ds is None or full_ds.empty:
                 print("⚠️ ERROR: Dataset vacío")
                 return None, None

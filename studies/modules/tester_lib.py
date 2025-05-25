@@ -152,15 +152,6 @@ def evaluate_report(report: np.ndarray) -> float:
         (trade_weight * 0.25)
     )
 
-    # Penalizaciones por métricas débiles
-    penalization = 1.0
-    if profit_factor < 2.0: penalization *= 0.8
-    if return_dd_ratio < 2.0: penalization *= 0.8
-    if num_trades < 200: penalization *= 0.8
-    
-    # Aplicar penalizaciones y ajustes
-    base_score *= penalization
-
     # ────────────────────────
     # Score final
     final_score = 0.5 * base_score + 0.5 * r2_raw
@@ -573,9 +564,6 @@ def robust_oos_score_one_direction(dataset: pd.DataFrame,
             n_sim=n_sim,
             block_size=block_size,
         )
-        
-        if mc["scores"].size == 0 or mc['p_positive'] < 0.5:
-            return -1.0
         
         if agg == "q05":
             return float(mc["quantiles"][0])

@@ -631,9 +631,9 @@ def export_model_to_ONNX(best_models, **kwargs):
             code += stat_function_templates["std"] + "\n"
         if "median" not in stats_total:
             code += stat_function_templates["median"] + "\n"
-        if "fisher" in stats_total:
+        if "fisher" in stats_total and "momentum" not in stats_total:
             code += stat_function_templates["momentum"] + "\n"
-        if "corr_skew" in stats_total:
+        if "corr_skew" in stats_total and "corr" not in stats_total:
             code += stat_function_templates["corr"] + "\n"
         for stat in stats_total:
             code += stat_function_templates[stat] + "\n"

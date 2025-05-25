@@ -574,17 +574,18 @@ def robust_oos_score_one_direction(dataset: pd.DataFrame,
             block_size=block_size,
         )
         
-        if mc["scores"].size == 0:
+        if mc["scores"].size == 0 or mc['p_positive'] < 0.5:
             return -1.0
-            
+        
         if agg == "q05":
             return float(mc["quantiles"][0])
-        elif agg == "median":
+        elif agg == "q50":
             return float(mc["quantiles"][1])
-        elif agg == "p_pos":
-            return float(mc["p_positive"])
+        elif agg == "q95":
+            return float(mc["quantiles"][2])
         else:
-            raise ValueError("agg must be 'q05', 'median' or 'p_pos'")
-            
+            raise ValueError("agg must be 'q05', 'q50' or 'q95'")
+
     except Exception as e:
+        print(f"\nError en robust_oos_score_one_direction: {e}")
         return -1.0

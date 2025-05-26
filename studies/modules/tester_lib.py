@@ -142,19 +142,20 @@ def evaluate_report(report: np.ndarray) -> float:
     total_return = equity_curve[-1] - equity_curve[0]
     return_dd_ratio = total_return / max_dd if max_dd > 0 else eps
 
-    trade_weight = np.sqrt(float(num_trades))
-
     # ────────────────────────
     # PUNTAJE COMPUESTO BASE
     base_score = (
-        (profit_factor * 0.35) +
-        (return_dd_ratio * 0.4) +
-        (trade_weight * 0.25)
+        (profit_factor * 0.4) +
+        (return_dd_ratio * 0.6)
     )
 
     # ────────────────────────
+    # Factor de trades
+    trade_multiplier = np.log10(num_trades) / np.log10(100)
+    
+    # ────────────────────────
     # Score final
-    final_score = 0.5 * base_score + 0.5 * r2_raw
+    final_score = (0.5 * base_score + 0.5 * r2_raw) * trade_multiplier
     
     return final_score
 
@@ -254,9 +255,8 @@ def test_model(dataset: pd.DataFrame,
     ext_dataset = ext_dataset[mask].reset_index(drop=True)
     X = ext_dataset.iloc[:, 1:]
 
-    ext_dataset['main_labels']      = result[0].predict_proba(X)[:, 1]
+    ext_dataset['main_labels'] = result[0].predict_proba(X)[:, 1]
     ext_dataset['meta_labels'] = result[1].predict_proba(X)[:, 1]
-    ext_dataset[['main_labels', 'meta_labels']] = ext_dataset[['main_labels', 'meta_labels']].gt(0.5).astype(float)
 
     return tester(ext_dataset, plot=plt)
 
@@ -273,7 +273,7 @@ def test_model_one_direction(dataset: pd.DataFrame,
     X_main = ext_dataset.loc[:, ext_dataset.columns.str.contains('_feature') & ~ext_dataset.columns.str.contains('_meta_feature')].to_numpy('float32')
     X_meta = ext_dataset.loc[:, ext_dataset.columns.str.contains('_meta_feature')].to_numpy('float32')
 
-    # Calcular probabilidades usando ambos modelos
+    # Calcular probabilidades usando ambos modelos (sin binarizar)
     ext_dataset['main_labels'] = model_main.predict_proba(X_main)[:, 1]
     ext_dataset['meta_labels'] = model_meta.predict_proba(X_meta)[:, 1]
 
@@ -491,15 +491,6 @@ def monte_carlo_full(
 
     # ---------- curva original ------------------------------------
     try:
-        # Predecir con los modelos originales
-        labels = model_main.predict_proba(X_main)[:, 1]
-        meta = model_meta.predict_proba(X_meta)[:, 1]
-        labels = (labels > 0.5).astype(np.float64)
-        meta = (meta > 0.5).astype(np.float64)
-
-        if close.size < 2:
-            return {"scores": np.array([-1.0]), "p_positive": 0.0, "quantiles": np.array([-1.0, -1.0, -1.0])}
-
         # ── predicción batch + cast a float64 (necesario para _make_noisy_signals) ──
         noise_levels = np.random.uniform(0.005, 0.02, n_sim)
         l_all = _predict_batch(model_main, X_main, noise_levels)

@@ -403,30 +403,28 @@ class StrategySearcher:
                 "sharpe", "fisher", "chande", "var", "eff_ratio", 
                 "jump_vol", "fractal", "vol_skew", "corr_skew",
                 "approx_entropy", "hurst", "kurt"
-            ]
-
-            # Parámetros base comunes
+            ]                # Parámetros base comunes
             params = {
-                'markup': trial.suggest_float("markup", 0.1, 1.0, log=True),
-                'label_max': trial.suggest_int('label_max', 2, 30, log=True),
-                'atr_period': trial.suggest_int('atr_period', 5, 100, log=True),
+                'markup': trial.suggest_float("markup", 0.1, 1.0, log=True),  # Multiplicativo - mantiene log
+                'label_max': trial.suggest_int('label_max', 2, 30, log=True),  # Períodos - mantiene log
+                'atr_period': trial.suggest_int('atr_period', 5, 100, log=True),  # Períodos - mantiene log
                 
                 # Parámetros de CatBoost main
-                'cat_main_iterations': trial.suggest_int('cat_main_iterations', 100, 1000, log=True),
-                'cat_main_depth': trial.suggest_int('cat_main_depth', 3, 10, log=True),
-                'cat_main_learning_rate': trial.suggest_float('cat_main_learning_rate', 0.01, 0.3, log=True),
-                'cat_main_l2_leaf_reg': trial.suggest_float('cat_main_l2_leaf_reg', 0.1, 10.0, log=True),
-                'cat_main_early_stopping': trial.suggest_int('cat_main_early_stopping', 20, 200, log=True),
+                'cat_main_iterations': trial.suggest_int('cat_main_iterations', 100, 1000),  # Lineal - quita log
+                'cat_main_depth': trial.suggest_int('cat_main_depth', 3, 10),  # Discreto - quita log
+                'cat_main_learning_rate': trial.suggest_float('cat_main_learning_rate', 0.01, 0.3, log=True),  # Multiplicativo - mantiene log
+                'cat_main_l2_leaf_reg': trial.suggest_float('cat_main_l2_leaf_reg', 0.1, 10.0, log=True),  # Regularización - mantiene log
+                'cat_main_early_stopping': trial.suggest_int('cat_main_early_stopping', 20, 200),  # Lineal - quita log
                 'cat_main_bootstrap_type': trial.suggest_categorical('cat_main_bootstrap_type', ['Bayesian', 'Bernoulli', 'MVS']),
                 'cat_main_bagging_temperature': trial.suggest_float('cat_main_bagging_temperature', 0, 10),
                 'cat_main_subsample': trial.suggest_float('cat_main_subsample', 0.5, 1),
                 
                 # Parámetros de CatBoost meta
-                'cat_meta_iterations': trial.suggest_int('cat_meta_iterations', 100, 1000, log=True),
-                'cat_meta_depth': trial.suggest_int('cat_meta_depth', 3, 10, log=True),
-                'cat_meta_learning_rate': trial.suggest_float('cat_meta_learning_rate', 0.01, 0.3, log=True),
-                'cat_meta_l2_leaf_reg': trial.suggest_float('cat_meta_l2_leaf_reg', 0.1, 10.0, log=True),
-                'cat_meta_early_stopping': trial.suggest_int('cat_meta_early_stopping', 20, 200, log=True),
+                'cat_meta_iterations': trial.suggest_int('cat_meta_iterations', 100, 1000),  # Lineal - quita log
+                'cat_meta_depth': trial.suggest_int('cat_meta_depth', 3, 10),  # Discreto - quita log
+                'cat_meta_learning_rate': trial.suggest_float('cat_meta_learning_rate', 0.01, 0.3, log=True),  # Multiplicativo - mantiene log
+                'cat_meta_l2_leaf_reg': trial.suggest_float('cat_meta_l2_leaf_reg', 0.1, 10.0, log=True),  # Regularización - mantiene log
+                'cat_meta_early_stopping': trial.suggest_int('cat_meta_early_stopping', 20, 200),  # Lineal - quita log
                 'cat_meta_bootstrap_type': trial.suggest_categorical('cat_meta_bootstrap_type', ['Bayesian', 'Bernoulli', 'MVS']),
                 'cat_meta_bagging_temperature': trial.suggest_float('cat_meta_bagging_temperature', 0, 10),
                 'cat_meta_subsample': trial.suggest_float('cat_meta_subsample', 0.5, 1),

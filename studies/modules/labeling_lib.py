@@ -1816,36 +1816,71 @@ def calculate_atr_simple(high, low, close, period=14):
 
 # ONE DIRECTION LABELING
 @njit(fastmath=True, nogil=True)
-def calculate_labels_one_direction(high, low, close, markup, min_val, max_val, direction, atr_period=14):
-    # Verificar que hay suficientes datos
+def calculate_labels_one_direction(high, low, close, markup, min_val, max_val, direction, atr_period=14, deterministic=True):
+    # Verificar que hay suficientes datos  
     n = len(close)
     if n <= max_val:
         return np.zeros(0, dtype=np.float64)
-    
+
     # Calcular ATR
     atr = calculate_atr_simple(high, low, close, period=atr_period)
-    
-    # --------- una sola vela aleatoria por fila -----------------
-    rand_shift = np.random.randint(min_val, max_val + 1, size=n - max_val)
-    target = close[np.arange(n - max_val) + rand_shift]
-    diffs = target - close[:-max_val]
-    
-    # Calcular markup dinámico basado en ATR
-    atr_slice = atr[:-max_val]
-    dyn_mk = markup * atr_slice
-    # En modo aleatorio, solo necesitamos un hit
-    hits = (diffs > dyn_mk) if direction=="buy" else (diffs < -dyn_mk)
-    result = hits.astype(np.float64)
+
+    if deterministic:
+        # Calcular la matriz de diferencias futuras
+        fwd_matrix = np.zeros((n - max_val, max_val - min_val + 1))
+        for i in range(n - max_val):
+            for j in range(min_val, max_val + 1):
+                fwd_matrix[i, j - min_val] = close[i + j]
+        close_slice = close[:-max_val].reshape(-1, 1)
+        diffs = fwd_matrix - close_slice
+
+        # Calcular markup dinámico basado en ATR
+        atr_slice = atr[:-max_val].reshape(-1, 1) 
+        dyn_mk = markup * atr_slice
+
+        # Calcular hits
+        hits = (diffs > dyn_mk) if direction=="buy" else (diffs < -dyn_mk)
+
+        # Calcular volatilidad relativa usando ATR
+        mean_atr = np.mean(atr)
+        vol_ratio = atr[:-max_val] / mean_atr
+
+        # Ajustar número de hits según volatilidad
+        result = np.zeros(len(hits), dtype=np.float64)
+        for i in range(len(hits)):
+            num_hits = np.sum(hits[i])
+            if num_hits >= max(1, int(vol_ratio[i])):
+                result[i] = 1.0
+
+    else:
+        # Modo aleatorio
+        result = np.zeros(n - max_val, dtype=np.float64)
         
+        for i in range(n - max_val):
+            # Seleccionar barra aleatoria dentro del rango
+            rand_idx = np.random.randint(min_val, max_val + 1)
+            future_price = close[i + rand_idx]
+            
+            # Calcular markup dinámico
+            dyn_mk = markup * atr[i]
+            
+            # Verificar condición según dirección
+            if direction == "buy":
+                if future_price > close[i] + dyn_mk:
+                    result[i] = 1.0
+            else:  # sell
+                if future_price < close[i] - dyn_mk:
+                    result[i] = 1.0
+
     return result
 
-def get_labels_one_direction(dataset, markup, min_val=1, max_val=15, direction='buy', atr_period=14) -> pd.DataFrame:
+def get_labels_one_direction(dataset, markup, min_val=1, max_val=15, direction='buy', atr_period=14, deterministic=True) -> pd.DataFrame:
     close_data = np.ascontiguousarray(dataset['close'].values)
     high_data = np.ascontiguousarray(dataset['high'].values)
     low_data = np.ascontiguousarray(dataset['low'].values)
     labels = calculate_labels_one_direction(
         high_data, low_data, close_data, 
-        markup, min_val, max_val, direction, atr_period
+        markup, min_val, max_val, direction, atr_period, deterministic
     )
     dataset = dataset.iloc[:len(labels)].copy()
     dataset['labels_main'] = labels

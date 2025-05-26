@@ -95,6 +95,7 @@ class StrategySearcher:
         history_path: str = r"/mnt/c/Users/Administrador/AppData/Roaming/MetaQuotes/Terminal/Common/Files/",
         search_type: str = 'clusters',
         search_subtype: str = 'simple',
+        labels_deterministic: bool = True,
         tag: str = "",
     ):
         """Inicializa el buscador de estrategias.
@@ -128,6 +129,7 @@ class StrategySearcher:
         self.history_path = history_path
         self.search_type = search_type
         self.search_subtype = search_subtype
+        self.labels_deterministic = labels_deterministic
         self.pruner_type = pruner_type
         self.n_trials = n_trials
         self.n_models = n_models
@@ -317,7 +319,8 @@ class StrategySearcher:
                     markup=hp['markup'],
                     max_val=hp['label_max'],
                     direction=self.direction,
-                    atr_period=hp['atr_period']
+                    atr_period=hp['atr_period'],
+                    deterministic=self.labels_deterministic,
                 )
                 
                 if (main_data['labels_main'].value_counts() < 2).any():
@@ -645,9 +648,7 @@ class StrategySearcher:
                     n_iter=hp['n_iter'],
                     n_mix=hp['n_mix'] if hp['model_type'] == 'VARHMM' else 3
                 )
-            # Mostrar el número de clusters encontrados
-            cluster_sizes = ds_train['labels_meta'].value_counts()
-            print(f"Clusters encontrados: {cluster_sizes}")
+
             scores, models = self._evaluate_clusters(ds_train, ds_test, hp, trial, study)
             if scores is None or models is None:
                 return -1.0, -1.0

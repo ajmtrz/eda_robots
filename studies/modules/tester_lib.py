@@ -48,25 +48,35 @@ def process_data(close, labels, metalabels):
 
 @jit(fastmath=True)
 def process_data_one_direction(close, main_labels, meta_labels, direction):
+    """
+    Procesa los datos para una dirección específica (compra o venta).
+    
+    Args:
+        close: Array de precios de cierre
+        main_labels: Array de probabilidades del modelo principal (sin binarizar)
+        meta_labels: Array de probabilidades del modelo meta (sin binarizar)
+        direction: 'buy' o 'sell'
+    """
     last_deal = 2           # 2 = flat, 1 = in‑market (única dirección)
     last_price = 0.0
     report, chart = [0.0], [0.0]
     long_side = (direction == 'buy')
+    min_prob = 0.5         # Umbral de probabilidad
 
     for i in range(len(close)):
-        pred, pr, pred_meta = main_labels[i], close[i], meta_labels[i]
+        pred_main, pr, pred_meta = main_labels[i], close[i], meta_labels[i]
 
         # Abrir posición si:
-        # 1. No hay posición abierta
-        # 2. El metamodelo da señal positiva
-        # 3. El modelo principal da señal positiva (>0.5)
-        if last_deal == 2 and pred_meta > 0.5 and pred > 0.5:
+        # 1. No hay posición abierta (last_deal == 2)
+        # 2. El metamodelo da señal positiva (prob >= 0.5)
+        # 3. El modelo principal da señal positiva (prob >= 0.5)
+        if last_deal == 2 and pred_meta >= min_prob and pred_main >= min_prob:
             last_deal = 1
             last_price = pr
             continue
 
-        # Cerrar posición si el modelo principal da señal negativa (<0.5)
-        if last_deal == 1 and pred < 0.5:
+        # Cerrar posición si el modelo principal da señal negativa (prob < 0.5)
+        if last_deal == 1 and pred_main < min_prob:
             last_deal = 2
             # Calcular beneficio según dirección
             profit = (pr - last_price) if long_side else (last_price - pr)
@@ -370,6 +380,7 @@ def _make_noisy_signals(close: np.ndarray,
     correlation = np.corrcoef(close, labels)[0,1]
 
     # ------ precios ------------------------------------------------
+    # Añadir ruido a los precios para simular slippage y volatilidad
     price_noise = np.random.uniform(price_noise_range[0], price_noise_range[1])
     close_noisy = np.empty_like(close)
     if price_noise > 0:
@@ -378,25 +389,8 @@ def _make_noisy_signals(close: np.ndarray,
     else:
         close_noisy[:] = close
 
-    # ------ labels / meta_labels -----------------------------------
-    prob_noise = price_noise * correlation + np.random.uniform(prob_noise_range[0], prob_noise_range[1]) * (1 - correlation)
-    labels_noisy = np.empty_like(labels)
-    meta_noisy = np.empty_like(meta)
-    
-    if prob_noise > 0:
-        for i in range(n):
-            labels_noisy[i] = min(1.0, max(0.0, labels[i] + np.random.normal(0.0, prob_noise)))
-            meta_noisy[i] = min(1.0, max(0.0, meta[i] + np.random.normal(0.0, prob_noise)))
-    else:
-        labels_noisy[:] = labels
-        meta_noisy[:] = meta
-
-    # binarizamos tras añadir ruido
-    for i in range(n):
-        labels_noisy[i] = 1.0 if labels_noisy[i] > 0.5 else 0.0
-        meta_noisy[i] = 1.0 if meta_noisy[i] > 0.5 else 0.0
-
-    return close_noisy, labels_noisy, meta_noisy
+    # Labels y meta-labels se mantienen sin distorsionar
+    return close_noisy, labels, meta
 
 @njit(parallel=True, fastmath=True)
 def _simulate_batch(close, l_all, m_all, block_size, direction):

@@ -197,10 +197,10 @@ class StrategySearcher:
                                 if trial.user_attrs.get('models') is not None:
                                     study.set_user_attr("best_models", trial.user_attrs['models'])
                                     study.set_user_attr("best_scores", trial.user_attrs['scores'])
-                                    study.set_user_attr("periods_main", trial.user_attrs['periods_main'])
-                                    study.set_user_attr("periods_meta", trial.user_attrs['periods_meta'])
-                                    study.set_user_attr("stats_main", trial.user_attrs['stats_main'])
-                                    study.set_user_attr("stats_meta", trial.user_attrs['stats_meta'])
+                                    study.set_user_attr("best_periods_main", trial.user_attrs['periods_main'])
+                                    study.set_user_attr("best_periods_meta", trial.user_attrs['periods_meta'])
+                                    study.set_user_attr("best_stats_main", trial.user_attrs['stats_main'])
+                                    study.set_user_attr("best_stats_meta", trial.user_attrs['stats_meta'])
 
                         # Log
                         best_str = f"ins={best_trial.values[0]:.4f} oos={best_trial.values[1]:.4f}"
@@ -645,7 +645,9 @@ class StrategySearcher:
                     n_iter=hp['n_iter'],
                     n_mix=hp['n_mix'] if hp['model_type'] == 'VARHMM' else 3
                 )
-
+            # Mostrar el número de clusters encontrados
+            cluster_sizes = ds_train['labels_meta'].value_counts()
+            print(f"Clusters encontrados: {cluster_sizes}")
             scores, models = self._evaluate_clusters(ds_train, ds_test, hp, trial, study)
             if scores is None or models is None:
                 return -1.0, -1.0

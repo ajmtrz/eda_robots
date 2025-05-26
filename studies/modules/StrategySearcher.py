@@ -187,20 +187,24 @@ class StrategySearcher:
                 t0 = perf_counter()
                 def log_trial(study, trial):
                     try:
-                        # Obtener el Pareto front
+                        # Obtener el Pareto front y encontrar el mejor trial según dominancia
                         if study.best_trials:
-                            best_trial = max(study.best_trials, 
-                                          key=lambda t: min(t.values[0], t.values[1]))
+                            # Un trial domina si es mejor o igual en ambos objetivos y estrictamente mejor en al menos uno
+                            best_trial = trial
+                            for t in study.best_trials:
+                                if ((t.values[0] > best_trial.values[0] and t.values[1] >= best_trial.values[1]) or
+                                    (t.values[1] > best_trial.values[1] and t.values[0] >= best_trial.values[0])):
+                                    best_trial = t
                             
                             # Si este trial es el mejor, guardar sus modelos
                             if trial.number == best_trial.number:
                                 if trial.user_attrs.get('models') is not None:
                                     study.set_user_attr("best_models", trial.user_attrs['models'])
                                     study.set_user_attr("best_scores", trial.user_attrs['scores'])
-                                    study.set_user_attr("best_periods_main", trial.user_attrs['periods_main'])
-                                    study.set_user_attr("best_periods_meta", trial.user_attrs['periods_meta'])
-                                    study.set_user_attr("best_stats_main", trial.user_attrs['stats_main'])
-                                    study.set_user_attr("best_stats_meta", trial.user_attrs['stats_meta'])
+                                    study.set_user_attr("periods_main", trial.user_attrs['periods_main'])
+                                    study.set_user_attr("periods_meta", trial.user_attrs['periods_meta'])
+                                    study.set_user_attr("stats_main", trial.user_attrs['stats_main'])
+                                    study.set_user_attr("stats_meta", trial.user_attrs['stats_meta'])
 
                         # Log
                         best_str = f"ins={best_trial.values[0]:.4f} oos={best_trial.values[1]:.4f}"
@@ -227,7 +231,7 @@ class StrategySearcher:
                     gc_after_trial=True,
                     show_progress_bar=False,
                     callbacks=[log_trial],
-                    n_jobs=self.n_jobs,
+                    #n_jobs=self.n_jobs,
                 )
 
                 # Verificar y exportar el mejor modelo
@@ -408,30 +412,30 @@ class StrategySearcher:
 
             # Parámetros base comunes
             params = {
-                'markup': trial.suggest_float("markup", 0.1, 1.0),
-                'label_max': trial.suggest_int('label_max', 2, 20),
-                'atr_period': trial.suggest_int('atr_period', 5, 50, step=5),
+                'markup': trial.suggest_float("markup", 0.1, 1.0, log=True),
+                'label_max': trial.suggest_int('label_max', 2, 30, log=True),
+                'atr_period': trial.suggest_int('atr_period', 5, 100, log=True),
                 
                 # Parámetros de CatBoost main
-                'cat_main_iterations': trial.suggest_int('cat_main_iterations', 100, 1000, step=50),
-                'cat_main_depth': trial.suggest_int('cat_main_depth', 3, 10, step=1),
-                'cat_main_learning_rate': trial.suggest_float('cat_main_learning_rate', 0.01, 0.3, step=0.05),
-                'cat_main_l2_leaf_reg': trial.suggest_float('cat_main_l2_leaf_reg', 0.1, 10.0, step=0.1),
-                'cat_main_early_stopping': trial.suggest_int('cat_main_early_stopping', 20, 100, step=10),
+                'cat_main_iterations': trial.suggest_int('cat_main_iterations', 100, 1000, log=True),
+                'cat_main_depth': trial.suggest_int('cat_main_depth', 3, 10, log=True),
+                'cat_main_learning_rate': trial.suggest_float('cat_main_learning_rate', 0.01, 0.3, log=True),
+                'cat_main_l2_leaf_reg': trial.suggest_float('cat_main_l2_leaf_reg', 0.1, 10.0, log=True),
+                'cat_main_early_stopping': trial.suggest_int('cat_main_early_stopping', 20, 200, log=True),
                 'cat_main_bootstrap_type': trial.suggest_categorical('cat_main_bootstrap_type', ['Bayesian', 'Bernoulli', 'MVS']),
-                'cat_main_bagging_temperature': trial.suggest_float('cat_main_bagging_temperature', 0, 10, step=0.1),
-                'cat_main_subsample': trial.suggest_float('cat_main_subsample', 0.5, 1, step=0.01),
-
+                'cat_main_bagging_temperature': trial.suggest_float('cat_main_bagging_temperature', 0, 10),
+                'cat_main_subsample': trial.suggest_float('cat_main_subsample', 0.5, 1),
+                
                 # Parámetros de CatBoost meta
-                'cat_meta_iterations': trial.suggest_int('cat_meta_iterations', 100, 1000, step=50),
-                'cat_meta_depth': trial.suggest_int('cat_meta_depth', 3, 10, step=1),
-                'cat_meta_learning_rate': trial.suggest_float('cat_meta_learning_rate', 0.01, 0.3, step=0.05),
-                'cat_meta_l2_leaf_reg': trial.suggest_float('cat_meta_l2_leaf_reg', 0.1, 10.0, step=0.1),
-                'cat_meta_early_stopping': trial.suggest_int('cat_meta_early_stopping', 20, 100, step=10),
+                'cat_meta_iterations': trial.suggest_int('cat_meta_iterations', 100, 1000, log=True),
+                'cat_meta_depth': trial.suggest_int('cat_meta_depth', 3, 10, log=True),
+                'cat_meta_learning_rate': trial.suggest_float('cat_meta_learning_rate', 0.01, 0.3, log=True),
+                'cat_meta_l2_leaf_reg': trial.suggest_float('cat_meta_l2_leaf_reg', 0.1, 10.0, log=True),
+                'cat_meta_early_stopping': trial.suggest_int('cat_meta_early_stopping', 20, 200, log=True),
                 'cat_meta_bootstrap_type': trial.suggest_categorical('cat_meta_bootstrap_type', ['Bayesian', 'Bernoulli', 'MVS']),
-                'cat_meta_bagging_temperature': trial.suggest_float('cat_meta_bagging_temperature', 0, 10, step=0.1),
-                'cat_meta_subsample': trial.suggest_float('cat_meta_subsample', 0.5, 1, step=0.01),
-
+                'cat_meta_bagging_temperature': trial.suggest_float('cat_meta_bagging_temperature', 0, 10),
+                'cat_meta_subsample': trial.suggest_float('cat_meta_subsample', 0.5, 1),
+                
                 # Períodos y estadísticas en el formato esperado
                 # Definir todos los períodos posibles de una vez
                 'max_main_periods': trial.suggest_int('max_main_periods', 3, 15, log=True),
@@ -442,7 +446,7 @@ class StrategySearcher:
 
             # Main periods - sugerir como array discreto
             params['periods_main'] = tuple(sorted(set(
-                trial.suggest_int('periods_main', 4, 200, log=True)
+                trial.suggest_int('periods_main', 4, 100, log=True)
                 for _ in range(params['max_main_periods'])
             )))
 
@@ -467,9 +471,9 @@ class StrategySearcher:
             if self.search_type == 'markov':
                 params.update({
                     'model_type': trial.suggest_categorical('model_type', ['GMMHMM', 'HMM', 'VARHMM']),
-                    'n_regimes': trial.suggest_int('n_regimes', 2, 20),
+                    'n_regimes': trial.suggest_int('n_regimes', 2, 10, log=True),
                     'n_iter': trial.suggest_int('n_iter', 50, 200, step=10),
-                    'n_mix': trial.suggest_int('n_mix', 2, 5)
+                    'n_mix': trial.suggest_int('n_mix', 1, 5, log=True)
                 })
             elif self.search_type == 'clusters':
                 params.update({
@@ -595,7 +599,7 @@ class StrategySearcher:
                 model_meta=model_meta,
                 direction=self.direction,
                 n_sim=100,
-                agg="q95"
+                agg="q05"
             )
             r2_oos = robust_oos_score_one_direction(
                 dataset=ds_test,
@@ -603,7 +607,7 @@ class StrategySearcher:
                 model_meta=model_meta,
                 direction=self.direction,
                 n_sim=100,
-                agg="q95"
+                agg="q05"
             )
 
             # Manejar valores inválidos

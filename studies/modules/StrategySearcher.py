@@ -187,14 +187,10 @@ class StrategySearcher:
                 t0 = perf_counter()
                 def log_trial(study, trial):
                     try:
-                        # Obtener el Pareto front y encontrar el mejor trial según dominancia
+                        # Obtener el mejor trial según criterio maximin
                         if study.best_trials:
-                            # Un trial domina si es mejor o igual en ambos objetivos y estrictamente mejor en al menos uno
-                            best_trial = trial
-                            for t in study.best_trials:
-                                if ((t.values[0] > best_trial.values[0] and t.values[1] >= best_trial.values[1]) or
-                                    (t.values[1] > best_trial.values[1] and t.values[0] >= best_trial.values[0])):
-                                    best_trial = t
+                            best_trial = max(study.best_trials, 
+                                          key=lambda t: min(t.values[0], t.values[1]))
                             
                             # Si este trial es el mejor, guardar sus modelos
                             if trial.number == best_trial.number:
@@ -231,7 +227,7 @@ class StrategySearcher:
                     gc_after_trial=True,
                     show_progress_bar=False,
                     callbacks=[log_trial],
-                    #n_jobs=self.n_jobs,
+                    n_jobs=self.n_jobs,
                 )
 
                 # Verificar y exportar el mejor modelo
@@ -349,9 +345,8 @@ class StrategySearcher:
                     print(f"⚠️ ERROR: Scores no finitos para el cluster {clust}")
                     continue
 
-                # Aplica Pareto front: mejora en al menos una métrica sin empeorar la otra
-                if (scores[0] > best_scores[0] and scores[1] >= best_scores[1]) or \
-                   (scores[1] > best_scores[1] and scores[0] >= best_scores[0]):
+                # Aplicar criterio maximin: maximizar el peor valor entre ins/oos
+                if min(scores) > min(best_scores):
                     best_scores = scores
                     best_models = models
 

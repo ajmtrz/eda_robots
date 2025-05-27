@@ -175,7 +175,7 @@ class StrategySearcher:
                 # Inicializar estudio de Optuna con objetivos múltiples
                 pruners = {
                     'hyperband': HyperbandPruner(max_resource='auto'),
-                    'halving': SuccessiveHalvingPruner(min_resource='auto', reduction_factor=3)
+                    'halving': SuccessiveHalvingPruner(min_resource='auto')
                 }
                 study = optuna.create_study(
                     directions=['maximize', 'maximize'],
@@ -224,7 +224,7 @@ class StrategySearcher:
                         gc.collect()
 
                 study.optimize(
-                    lambda t: search_func(t, study),
+                    search_func,
                     n_trials=self.n_trials,
                     gc_after_trial=True,
                     show_progress_bar=False,
@@ -269,7 +269,7 @@ class StrategySearcher:
     # Métodos de búsqueda específicos
     # =========================================================================
     
-    def _evaluate_clusters(self, ds_train: pd.DataFrame, ds_test: pd.DataFrame, hp: Dict[str, Any], trial: optuna.Trial, study: optuna.study.Study) -> tuple[float, float]:
+    def _evaluate_clusters(self, ds_train: pd.DataFrame, ds_test: pd.DataFrame, hp: Dict[str, Any]) -> tuple[float, float]:
         """Función helper para evaluar clusters y entrenar modelos."""
         try:
             best_models = (None, None)
@@ -589,21 +589,25 @@ class StrategySearcher:
 
             # ── evaluación ───────────────────────────────────────────────
             ds_train_eval = ds_train.sample(n=len(ds_test), replace=False)
-            r2_ins = robust_oos_score_one_direction(
+            r2_ins = test_model_one_direction(
                 dataset=ds_train_eval,
                 model_main=model_main,
                 model_meta=model_meta,
                 direction=self.direction,
-                n_sim=100,
-                agg="q05"
+                plt=False,
+                prd='insample',
+                # n_sim=100,
+                # agg="q05"
             )
-            r2_oos = robust_oos_score_one_direction(
+            r2_oos = test_model_one_direction(
                 dataset=ds_test,
                 model_main=model_main,
                 model_meta=model_meta,
                 direction=self.direction,
-                n_sim=100,
-                agg="q05"
+                plt=False,
+                prd='outofsample'
+                # n_sim=100,
+                # agg="q05"
             )
 
             # Manejar valores inválidos
@@ -620,7 +624,7 @@ class StrategySearcher:
             _ONNX_CACHE.clear()
             gc.collect()
 
-    def search_markov(self, trial: optuna.Trial, study: optuna.study.Study) -> tuple[float, float]:
+    def search_markov(self, trial: optuna.Trial) -> tuple[float, float]:
         """Implementa la búsqueda de estrategias usando modelos markovianos."""
         try:
             # Obtener todos los parámetros de una vez
@@ -649,20 +653,20 @@ class StrategySearcher:
                     n_mix=hp['n_mix'] if hp['model_type'] == 'VARHMM' else 3
                 )
 
-            scores, models = self._evaluate_clusters(ds_train, ds_test, hp, trial, study)
+            scores, models = self._evaluate_clusters(ds_train, ds_test, hp)
             if scores is None or models is None:
                 return -1.0, -1.0
             else:
                 trial.set_user_attr('models', models)
                 trial.set_user_attr('scores', scores)
 
-            return scores
+            return scores[0], scores[1]
             
         except Exception as e:
             print(f"Error en search_markov: {str(e)}")
             return -1.0, -1.0
 
-    def search_clusters(self, trial: optuna.Trial, study: optuna.study.Study) -> tuple[float, float]:
+    def search_clusters(self, trial: optuna.Trial) -> tuple[float, float]:
         """Implementa la búsqueda de estrategias usando clustering."""
         try:
             # Obtener todos los parámetros de una vez
@@ -687,14 +691,14 @@ class StrategySearcher:
                     step=hp.get('step', None),
                 )
             
-            scores, models = self._evaluate_clusters(ds_train, ds_test, hp, trial, study)
+            scores, models = self._evaluate_clusters(ds_train, ds_test, hp)
             if scores is None or models is None:
                 return -1.0, -1.0
             else:
                 trial.set_user_attr('models', models)
                 trial.set_user_attr('scores', scores)
 
-            return scores
+            return scores[0], scores[1]
         
         except Exception as e:
             print(f"Error en search_clusters: {str(e)}")

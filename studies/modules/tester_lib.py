@@ -70,7 +70,7 @@ def process_data_one_direction(close, main_labels, meta_labels, direction):
         # 1. No hay posición abierta (last_deal == 2)
         # 2. El metamodelo da señal positiva (prob >= 0.5)
         # 3. El modelo principal da señal positiva (prob >= 0.5)
-        if last_deal == 2 and pred_meta >= min_prob and pred_main >= min_prob:
+        if last_deal == 2 and pred_meta > min_prob and pred_main > min_prob:
             last_deal = 1
             last_price = pr
             continue
@@ -169,7 +169,7 @@ def evaluate_report(report: np.ndarray) -> float:
     
     return final_score
 
-def tester_one_direction(dataset, direction='buy', plot=False):
+def tester_one_direction(dataset, direction='buy', plot=False, prd=''):
 
     # Extraer datos necesarios
     close = np.ascontiguousarray(dataset['close'].values)
@@ -189,10 +189,11 @@ def tester_one_direction(dataset, direction='buy', plot=False):
 
     # Visualizar resultados si se solicita
     if plot:
-        plt.figure(figsize=(12, 6))
+        plt.figure(figsize=(8, 4))
         plt.plot(rpt, label='Equity Curve')
         plt.xlabel("Operations")
         plt.ylabel("Cumulative Profit")
+        plt.title(f"Period: {prd} | Score: {score:.2f}")
         plt.legend()
         plt.grid(alpha=0.3)
         plt.show()
@@ -275,7 +276,8 @@ def test_model_one_direction(dataset: pd.DataFrame,
                            model_main: object,
                            model_meta: object,
                            direction: str = 'buy',
-                           plt=False):
+                           plt=False,
+                           prd= ''):
     # Copiar dataset para no modificar el original
     ext_dataset = dataset.copy()
 
@@ -287,7 +289,7 @@ def test_model_one_direction(dataset: pd.DataFrame,
     ext_dataset['main_labels'] = model_main.predict_proba(X_main)[:, 1]
     ext_dataset['meta_labels'] = model_meta.predict_proba(X_meta)[:, 1]
 
-    return tester_one_direction(ext_dataset, direction, plot=plt)
+    return tester_one_direction(ext_dataset, direction, plot=plt, prd=prd)
 
 
 
@@ -311,10 +313,6 @@ def _bootstrap_returns(returns: np.ndarray,
         for i in range(n):
             resampled[i] = returns[np.random.randint(0, n)]
         return resampled
-        
-    # ---- block bootstrap  ----------------------------------------
-    # Calcular número exacto de bloques necesarios
-    n_blocks = (n + block_size - 1) // block_size  # división entera hacia arriba
     
     # Llenar el array resampled bloque por bloque
     pos = 0
@@ -375,9 +373,6 @@ def _make_noisy_signals(close: np.ndarray,
     n = close.size
     volatility = np.std(np.diff(close) / close[:-1])
     price_noise_range = (volatility * 0.5, volatility * 2.0)
-    prob_std = np.std(labels)
-    prob_noise_range = (prob_std * 0.5, prob_std * 2.0)
-    correlation = np.corrcoef(close, labels)[0,1]
 
     # ------ precios ------------------------------------------------
     # Añadir ruido a los precios para simular slippage y volatilidad

@@ -76,17 +76,17 @@ def export_model_to_ONNX(**kwargs):
             initial_types=[('input', FloatTensorType([None, len(models[1].feature_names_)]))],
             target_opset={"": 18, "ai.onnx.ml": 2},
             options={id(models[1]): {'zipmap': True}}
-        )
+    )
 
         # Eliminar inicializadores no utilizados
-        for model_onnx in [model_main_onnx, model_meta_onnx]:
-            initializers_to_remove = []
-            for initializer in model_onnx.graph.initializer:
-                if initializer.name == 'classes_ind':
-                    initializers_to_remove.append(initializer)
+        # for model_onnx in [model_main_onnx, model_meta_onnx]:
+        #     initializers_to_remove = []
+        #     for initializer in model_onnx.graph.initializer:
+        #         if initializer.name == 'classes_ind':
+        #             initializers_to_remove.append(initializer)
             
-            for initializer in initializers_to_remove:
-                model_onnx.graph.initializer.remove(initializer)
+        #     for initializer in initializers_to_remove:
+        #         model_onnx.graph.initializer.remove(initializer)
 
         # Guarda los modelos ONNX
         filename_model = f"{symbol}_{timeframe}_{direction}_{search_type}_{search_subtype}_{model_seed}.onnx"

@@ -14,7 +14,7 @@ from modules.export_lib import (
 )
 rt.set_default_logger_severity(4)
 
-@jit(fastmath=True)
+@njit
 def process_data(close, labels, metalabels):
     last_deal  = 2
     last_price = 0.0
@@ -46,45 +46,44 @@ def process_data(close, labels, metalabels):
 
     return np.array(report), np.array(chart)
 
-@jit(fastmath=True)
+from numba import njit
+import numpy as np
+
+@njit
 def process_data_one_direction(close, main_labels, meta_labels, direction):
-    """
-    Procesa los datos para una dirección específica (compra o venta).
-    
-    Args:
-        close: Array de precios de cierre
-        main_labels: Array de probabilidades del modelo principal (sin binarizar)
-        meta_labels: Array de probabilidades del modelo meta (sin binarizar)
-        direction: 'buy' o 'sell'
-    """
-    last_deal = 2           # 2 = flat, 1 = in‑market (única dirección)
+    last_deal  = 2            # 2 = flat, 1 = position open
     last_price = 0.0
-    report, chart = [0.0], [0.0]
+    report = [0.0]
+    chart  = [0.0]
     long_side = (direction == 'buy')
-    min_prob = 0.5         # Umbral de probabilidad
+    min_prob  = 0.5
 
-    for i in range(len(close)):
-        pred_main, pr, pred_meta = main_labels[i], close[i], meta_labels[i]
+    for i in range(close.size):
+        pred_main = main_labels[i]
+        pr        = close[i]
+        pred_meta = meta_labels[i]
 
-        # Abrir posición si:
-        # 1. No hay posición abierta (last_deal == 2)
-        # 2. El metamodelo da señal positiva (prob >= 0.5)
-        # 3. El modelo principal da señal positiva (prob >= 0.5)
+        # ── abrir posición ───────────────────────────────
         if last_deal == 2 and pred_meta > min_prob and pred_main > min_prob:
-            last_deal = 1
+            last_deal  = 1
             last_price = pr
             continue
 
-        # Cerrar posición si el modelo principal da señal negativa (prob < 0.5)
+        # ── cerrar posición ──────────────────────────────
         if last_deal == 1 and pred_main < min_prob:
             last_deal = 2
-            # Calcular beneficio según dirección
             profit = (pr - last_price) if long_side else (last_price - pr)
             report.append(report[-1] + profit)
-            chart.append(chart[-1] + profit)
-            continue
+            chart.append(chart[-1]  + profit)
 
-    return np.array(report), np.array(chart)
+    # Cierre forzoso al final si sigue abierta
+    if last_deal == 1:
+        profit = (close[-1] - last_price) if long_side else (last_price - close[-1])
+        report.append(report[-1] + profit)
+        chart.append(chart[-1]  + profit)
+
+    return np.asarray(report, dtype=np.float64), np.asarray(chart, dtype=np.float64)
+
 
 # ───────────────────────────────────────────────────────────────────
 # 2)  Wrappers del tester
@@ -116,7 +115,7 @@ def tester(dataset, plot=False):
 # ───────────────────────────────────────────────
 # NUEVA FUNCIÓN evaluate_report
 # ───────────────────────────────────────────────
-@njit(fastmath=True, nogil=True)
+@njit
 def evaluate_report(report: np.ndarray) -> float:
     eps = 1e-6
 
@@ -279,17 +278,23 @@ def test_model_one_direction(dataset: pd.DataFrame,
                            plt=False,
                            prd= ''):
     # Copiar dataset para no modificar el original
-    ext_dataset = dataset.copy()
+    ext_ds = dataset.copy()
 
-    # Extraer características regulares y meta-features
-    X_main = ext_dataset.loc[:, ext_dataset.columns.str.contains('_feature') & ~ext_dataset.columns.str.contains('_meta_feature')].to_numpy('float32')
-    X_meta = ext_dataset.loc[:, ext_dataset.columns.str.contains('_meta_feature')].to_numpy('float32')
+    # Validar que las características de test coincidan con las de train
+    test_main_cols = ext_ds.columns[ext_ds.columns.str.contains('_feature') & ~ext_ds.columns.str.contains('_meta_feature')] 
+    test_meta_cols = ext_ds.columns[ext_ds.columns.str.contains('_meta_feature')]
+    
+    # Convertir a numpy arrays directamente para evitar problemas con pandas
+    X_main = ext_ds[test_main_cols].to_numpy()
+    X_meta = ext_ds[test_meta_cols].to_numpy()
+    if X_meta.shape[1] == 0 or X_main.shape[1] == 0:
+        return -1.0
 
     # Calcular probabilidades usando ambos modelos (sin binarizar)
-    ext_dataset['main_labels'] = model_main.predict_proba(X_main)[:, 1]
-    ext_dataset['meta_labels'] = model_meta.predict_proba(X_meta)[:, 1]
+    ext_ds['main_labels'] = model_main.predict_proba(X_main)[:, 1]
+    ext_ds['meta_labels'] = model_meta.predict_proba(X_meta)[:, 1]
 
-    return tester_one_direction(ext_dataset, direction, plot=plt, prd=prd)
+    return tester_one_direction(ext_ds, direction, plot=plt, prd=prd)
 
 
 
@@ -298,7 +303,7 @@ def test_model_one_direction(dataset: pd.DataFrame,
 # ───────────────────────────────────────────────────────────────────
 
 # ---------- helpers ------------------------------------------------
-@njit(fastmath=True)
+@njit
 def _bootstrap_returns(returns: np.ndarray,
                        block_size: int) -> np.ndarray:
     """
@@ -331,7 +336,7 @@ def _bootstrap_returns(returns: np.ndarray,
     return resampled
 
 
-@njit(fastmath=True)
+@njit
 def _equity_from_returns(resampled_returns: np.ndarray) -> np.ndarray:
     """Crea curva de equity partiendo de 0."""
     n = resampled_returns.size
@@ -344,7 +349,7 @@ def _equity_from_returns(resampled_returns: np.ndarray) -> np.ndarray:
     return equity
 
 
-@njit(fastmath=True)
+@njit
 def _signed_r2(equity: np.ndarray) -> float:
     n = equity.size
     x_mean = (n - 1) * 0.5
@@ -365,7 +370,7 @@ def _signed_r2(equity: np.ndarray) -> float:
     r2 = 1.0 - sse / sst if sst else 0.0
     return r2 if slope >= 0 else -r2
 
-@njit(fastmath=True)
+@njit
 def _make_noisy_signals(close: np.ndarray,
                        labels: np.ndarray,
                        meta: np.ndarray) -> tuple:
@@ -387,7 +392,7 @@ def _make_noisy_signals(close: np.ndarray,
     # Labels y meta-labels se mantienen sin distorsionar
     return close_noisy, labels, meta
 
-@njit(parallel=True, fastmath=True)
+@njit(parallel=True)
 def _simulate_batch(close, l_all, m_all, block_size, direction):
     n_sim, n = l_all.shape
     scores = np.full(n_sim, -1.0)
@@ -443,8 +448,9 @@ def _predict_batch(model, X_base, noise_levels):
     X_big = np.repeat(X_base[None, :, :], n_sim, axis=0)
     
     # 2. Calcular sensibilidad de cada feature
-    feature_importance = model.get_feature_importance()
-    sensitivity = feature_importance / feature_importance.max()
+    fi = model.get_feature_importance()
+    max_fi = fi.max() or 1.0
+    sensitivity = fi / max_fi
     
     # 3. Generar y aplicar el ruido ajustado
     std = X_base.std(axis=0, keepdims=True)
@@ -527,7 +533,9 @@ def robust_oos_score_one_direction(dataset: pd.DataFrame,
     # Convertir a numpy arrays directamente para evitar problemas con pandas
     X_main = ext_ds[test_main_cols].to_numpy()
     X_meta = ext_ds[test_meta_cols].to_numpy()
-    close_arr = ext_ds['close'].to_numpy(copy=True)
+    if X_meta.shape[1] == 0 or X_main.shape[1] == 0:
+        return -1.0
+    close = np.ascontiguousarray(dataset['close'].values)
     
     if X_main.size == 0 or X_meta.size == 0:
         return -1.0
@@ -535,7 +543,7 @@ def robust_oos_score_one_direction(dataset: pd.DataFrame,
     # 3) Monte Carlo robusto -------------------------------------
     try:
         mc = monte_carlo_full(
-            close=close_arr,
+            close=close,
             X_main=X_main,
             X_meta=X_meta,
             model_main=model_main,

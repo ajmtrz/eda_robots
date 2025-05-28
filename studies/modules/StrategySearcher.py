@@ -1,6 +1,7 @@
 import gc
 import math
 import time
+import hashlib
 import numpy as np
 import pandas as pd
 from datetime import datetime
@@ -37,12 +38,27 @@ class StrategySearcher:
         model_range (list): Rango de modelos a optimizar
     """
     
-    _FEATURE_CACHE = {}
-    _BASE_DF_ID = 0
+    _FEATURE_CACHE: dict[str, pd.DataFrame] = {}
+
+    @staticmethod
+    def _fingerprint_df(df: pd.DataFrame) -> str:
+        """
+        Devuelve un hash MD5 del contenido + columnas + dtypes.
+        Cambia en cuanto cambie un solo byte del DataFrame.
+        """
+        # Orden canónico en memoria
+        raw = df.values.tobytes()
+        cols = ",".join(df.columns)
+        dtypes = ",".join(map(str, df.dtypes))
+        h = hashlib.md5()
+        h.update(raw)
+        h.update(cols.encode())
+        h.update(dtypes.encode())
+        return h.hexdigest()
 
     @staticmethod
     @lru_cache(maxsize=128)
-    def _cached_features(df_id: int,
+    def _cached_features(df_id: str,
                         start: datetime,
                         end: datetime,
                         hp_tuple: tuple) -> pd.DataFrame:
@@ -138,7 +154,9 @@ class StrategySearcher:
         
         # Cargar datos históricos
         self.base_df = get_prices(self.symbol, self.timeframe, self.history_path)
-        StrategySearcher._FEATURE_CACHE[StrategySearcher._BASE_DF_ID] = self.base_df
+        # Id único para este juego de datos
+        self.df_id = StrategySearcher._fingerprint_df(self.base_df)
+        StrategySearcher._FEATURE_CACHE[self.df_id] = self.base_df
         
         # Configuración de sklearn y optuna
         set_config(enable_metadata_routing=True, skip_parameter_validation=True)
@@ -167,7 +185,7 @@ class StrategySearcher:
             try:
                 # Limpiar caché antes de cada modelo
                 self.clear_cache()
-                StrategySearcher._FEATURE_CACHE[StrategySearcher._BASE_DF_ID] = self.base_df
+                StrategySearcher._FEATURE_CACHE[self.df_id] = self.base_df
                 
                 # Generar un seed único para este modelo
                 model_seed = int(time.time() * 1000) + i
@@ -285,7 +303,6 @@ class StrategySearcher:
             if -1 in cluster_sizes.index:
                 cluster_sizes = cluster_sizes.drop(-1)
                 if cluster_sizes.empty:
-                    #print("⚠️ ERROR: Solo hay clusters inválidos")
                     return None, None
 
             # Evaluar cada cluster
@@ -295,14 +312,12 @@ class StrategySearcher:
                 meta_cols = [c for c in ds_train.columns if '_meta_feature' in c]
 
                 if not main_cols or not meta_cols:
-                    print(f"⚠️ ERROR: No hay características para el cluster {clust}")
                     continue
 
                 ohlc_cols = ["open", "high", "low", "close"]
                 present = [c for c in ohlc_cols if c in ds_train.columns]
                 
                 if not present:
-                    print(f"⚠️ ERROR: No hay datos OHLC para el cluster {clust}")
                     continue
 
                 main_data = ds_train.loc[
@@ -311,7 +326,6 @@ class StrategySearcher:
                 ].copy()
                 
                 if len(main_data) <= hp['label_max']:
-                    print(f"⚠️ ERROR: Cluster {clust} demasiado pequeño")
                     continue
 
                 main_data = get_labels_one_direction(
@@ -324,7 +338,6 @@ class StrategySearcher:
                 )
                 
                 if (main_data['labels_main'].value_counts() < 2).any():
-                    print(f"⚠️ ERROR: Cluster {clust} con clases insuficientes")
                     continue
 
                 # Meta data
@@ -332,7 +345,6 @@ class StrategySearcher:
                 meta_data['labels_meta'] = (ds_train['labels_meta'] == clust).astype(int)
                 
                 if (meta_data['labels_meta'].value_counts() < 2).any():
-                    print(f"⚠️ ERROR: Meta datos del cluster {clust} con clases insuficientes")
                     continue
 
                 # ── Evaluación en ambos períodos ──────────────────────────────
@@ -340,12 +352,10 @@ class StrategySearcher:
                     main_data, meta_data, ds_train, ds_test, hp.copy()
                 )
                 if scores is None or models is None:
-                    print(f"⚠️ ERROR: Fit fallido para el cluster {clust}")
                     continue
 
                 # Verificar scores
                 if not all(np.isfinite(scores)):
-                    print(f"⚠️ ERROR: Scores no finitos para el cluster {clust}")
                     continue
 
                 # Aplicar criterio maximin: maximizar el peor valor entre ins/oos
@@ -355,7 +365,6 @@ class StrategySearcher:
 
             # Verificar que encontramos algún cluster válido
             if best_scores == (-math.inf, -math.inf) or best_models == (None, None):
-                print("⚠️ ERROR: No se encontraron clusters válidos")
                 return None, None
 
             return best_scores, best_models
@@ -501,7 +510,6 @@ class StrategySearcher:
             # Get feature columns and rename them to follow f%d pattern
             main_feature_cols = main_data.columns[main_data.columns.str.contains('_feature') & ~main_data.columns.str.contains('_meta_feature')]
             X_main = main_data[main_feature_cols]
-            X_main.columns = [f'f{i}' for i in range(len(main_feature_cols))]
             y_main = main_data['labels_main'].astype('int16')
             # División de datos para el modelo principal según fechas
             X_train_main, X_val_main, y_train_main, y_val_main = train_test_split(
@@ -517,7 +525,6 @@ class StrategySearcher:
             # ---------- 2) meta‑modelo ----------
             meta_feature_cols = meta_data.columns[meta_data.columns.str.contains('_meta_feature')]
             X_meta = meta_data[meta_feature_cols]
-            X_meta.columns = [f'f{i}' for i in range(len(meta_feature_cols))]
             y_meta = meta_data['labels_meta'].astype('int16')
             
             # División de datos para el modelo principal según fechas
@@ -540,7 +547,7 @@ class StrategySearcher:
                 bootstrap_type=hp['cat_main_bootstrap_type'],
                 eval_metric='Accuracy',
                 store_all_simple_ctr=False,
-                thread_count=self.n_jobs,
+                thread_count=-1,#self.n_jobs,
                 task_type='CPU',
                 verbose=False,
             )
@@ -568,7 +575,7 @@ class StrategySearcher:
                 bootstrap_type=hp['cat_meta_bootstrap_type'],
                 eval_metric='F1',
                 store_all_simple_ctr=False,
-                thread_count=self.n_jobs,
+                thread_count=-1,#self.n_jobs,
                 task_type='CPU',
                 verbose=False,
             )
@@ -720,7 +727,7 @@ class StrategySearcher:
             # Convertir el diccionario en una tupla de tuplas para que sea hasheable
             hp_tuple = tuple(sorted(hp.items()))
             full_ds = StrategySearcher._cached_features(
-                StrategySearcher._BASE_DF_ID,
+                self.df_id,
                 min(self.train_start, self.test_start),
                 max(self.train_end, self.test_end),
                 hp_tuple,

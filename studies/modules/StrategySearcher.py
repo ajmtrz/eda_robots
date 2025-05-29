@@ -25,6 +25,7 @@ from modules.tester_lib import (
     _ONNX_CACHE
 )
 from modules.export_lib import export_model_to_ONNX
+from scipy.stats import gmean
 
 class StrategySearcher:
     """Clase unificada para búsqueda de estrategias de trading.
@@ -196,7 +197,7 @@ class StrategySearcher:
                     'halving': SuccessiveHalvingPruner(min_resource='auto')
                 }
                 study = optuna.create_study(
-                    directions=['maximize', 'maximize'],
+                    directions=['maximize'],
                     pruner=pruners[self.pruner_type],
                     sampler=optuna.samplers.TPESampler(
                         n_startup_trials=int(np.sqrt(self.n_trials)),
@@ -207,30 +208,21 @@ class StrategySearcher:
                 t0 = perf_counter()
                 def log_trial(study, trial):
                     try:
-                        # Obtener el mejor trial según criterio maximin
-                        if study.best_trials:
-                            best_trial = max(study.best_trials, 
-                                          key=lambda t: min(t.values[0], t.values[1]))
-                            
-                            # Si este trial es el mejor, guardar sus modelos
-                            if trial.number == best_trial.number:
-                                if trial.user_attrs.get('models') is not None:
-                                    study.set_user_attr("best_models", trial.user_attrs['models'])
-                                    study.set_user_attr("best_scores", trial.user_attrs['scores'])
-                                    study.set_user_attr("best_periods_main", trial.user_attrs['periods_main'])
-                                    study.set_user_attr("best_periods_meta", trial.user_attrs['periods_meta'])
-                                    study.set_user_attr("best_stats_main", trial.user_attrs['stats_main'])
-                                    study.set_user_attr("best_stats_meta", trial.user_attrs['stats_meta'])
+                        # Actualizar atributos si es el mejor trial hasta ahora
+                        current_score = trial.values[0] if trial.values else float('-inf')
+                        if current_score == study.best_value:
+                            for attr in ['models', 'scores', 'periods_main', 'periods_meta', 'stats_main', 'stats_meta']:
+                                if attr in trial.user_attrs:
+                                    study.set_user_attr(f"best_{attr}", trial.user_attrs[attr])
 
-                        # Log
-                        best_str = f"ins={best_trial.values[0]:.4f} oos={best_trial.values[1]:.4f}"
+                        # Log del progreso
                         elapsed = perf_counter() - t0
                         n_done = trial.number + 1
                         avg_time = elapsed / n_done
                         print(
                             f"[{self.tag}] modelo {i} "
                             f"trial {n_done}/{self.n_trials} "
-                            f"{best_str} "
+                            f"score={study.best_value:.4f} "
                             f"avg={avg_time:6.2f}s",
                             flush=True,
                         )
@@ -287,11 +279,11 @@ class StrategySearcher:
     # Métodos de búsqueda específicos
     # =========================================================================
     
-    def _evaluate_clusters(self, ds_train: pd.DataFrame, ds_test: pd.DataFrame, hp: Dict[str, Any]) -> tuple[float, float]:
+    def evaluate_clusters(self, ds_train: pd.DataFrame, ds_test: pd.DataFrame, hp: Dict[str, Any]) -> tuple[float, float]:
         """Función helper para evaluar clusters y entrenar modelos."""
         try:
+            best_score = -math.inf
             best_models = (None, None)
-            best_scores = (-math.inf, -math.inf)
             cluster_sizes = ds_train['labels_meta'].value_counts()
 
             # Verificar que hay clusters
@@ -358,17 +350,18 @@ class StrategySearcher:
                 if not all(np.isfinite(scores)):
                     continue
 
-                # Aplicar criterio maximin: maximizar el peor valor entre ins/oos
-                if min(scores) > min(best_scores):
-                    best_scores = scores
+                # Aplicar criterio máximo
+                score = self.calc_score(scores)
+                if score > best_score:
+                    best_score = score
                     best_models = models
 
             # Verificar que encontramos algún cluster válido
-            if best_scores == (-math.inf, -math.inf) or best_models == (None, None):
+            if best_score == -math.inf or best_models == (None, None):
                 return None, None
 
-            return best_scores, best_models
-            
+            return best_score, best_models
+
         except Exception as e:
             print(f"⚠️ ERROR en evaluación de clusters: {str(e)}")
             return None
@@ -503,7 +496,7 @@ class StrategySearcher:
                         meta_data: pd.DataFrame,
                         ds_train: pd.DataFrame,
                         ds_test: pd.DataFrame,
-                        hp: Dict[str, Any]) -> tuple[tuple[float, float], object, object]:
+                        hp: Dict[str, Any]) -> tuple[tuple[float, float], tuple[object, object]]:
         """Ajusta los modelos finales."""
         try:
             # ---------- 1) main model_main ----------
@@ -547,7 +540,7 @@ class StrategySearcher:
                 bootstrap_type=hp['cat_main_bootstrap_type'],
                 eval_metric='Accuracy',
                 store_all_simple_ctr=False,
-                thread_count=-1,#self.n_jobs,
+                thread_count=self.n_jobs,
                 task_type='CPU',
                 verbose=False,
             )
@@ -575,7 +568,7 @@ class StrategySearcher:
                 bootstrap_type=hp['cat_meta_bootstrap_type'],
                 eval_metric='F1',
                 store_all_simple_ctr=False,
-                thread_count=-1,#self.n_jobs,
+                thread_count=self.n_jobs,
                 task_type='CPU',
                 verbose=False,
             )
@@ -619,8 +612,7 @@ class StrategySearcher:
 
             # Manejar valores inválidos
             if not np.isfinite(r2_ins) or not np.isfinite(r2_oos):
-                r2_ins = -1.0
-                r2_oos = -1.0
+                return None, None
 
             return (r2_ins, r2_oos), (model_main, model_meta)
         
@@ -640,7 +632,7 @@ class StrategySearcher:
             # Obtener datos de entrenamiento y prueba
             ds_train, ds_test = self.get_train_test_data(hp)
             if ds_train is None or ds_test is None:
-                return -1.0, -1.0
+                return -1.0
             
             # Markov
             if self.search_subtype == 'simple':
@@ -649,7 +641,7 @@ class StrategySearcher:
                     model_type=hp['model_type'],
                     n_regimes=hp['n_regimes'],
                     n_iter=hp['n_iter'],
-                    n_mix=hp['n_mix'] if hp['model_type'] == 'VARHMM' else 3
+                    n_mix=hp['n_mix'] if hp['model_type'] == 'VARHMM' else hp['n_mix']
                 )
             elif self.search_subtype == 'advanced':
                 ds_train = markov_regime_switching_advanced(
@@ -657,21 +649,21 @@ class StrategySearcher:
                     model_type=hp['model_type'],
                     n_regimes=hp['n_regimes'],
                     n_iter=hp['n_iter'],
-                    n_mix=hp['n_mix'] if hp['model_type'] == 'VARHMM' else 3
+                    n_mix=hp['n_mix'] if hp['model_type'] == 'VARHMM' else hp['n_mix']
                 )
 
-            scores, models = self._evaluate_clusters(ds_train, ds_test, hp)
-            if scores is None or models is None:
-                return -1.0, -1.0
-            else:
-                trial.set_user_attr('models', models)
-                trial.set_user_attr('scores', scores)
+            score, models = self.evaluate_clusters(ds_train, ds_test, hp)
+            if score is None or models is None:
+                return -1.0
+            
+            trial.set_user_attr('models', models)
+            trial.set_user_attr('score', score)
 
-            return scores[0], scores[1]
+            return score
             
         except Exception as e:
             print(f"Error en search_markov: {str(e)}")
-            return -1.0, -1.0
+            return -1.0
 
     def search_clusters(self, trial: optuna.Trial) -> tuple[float, float]:
         """Implementa la búsqueda de estrategias usando clustering."""
@@ -682,7 +674,7 @@ class StrategySearcher:
             # Obtener datos de entrenamiento y prueba
             ds_train, ds_test = self.get_train_test_data(hp)
             if ds_train is None or ds_test is None:
-                return -1.0, -1.0
+                return -1.0
             
             # Clustering
             if self.search_subtype == 'simple':
@@ -698,24 +690,34 @@ class StrategySearcher:
                     step=hp.get('step', None),
                 )
             
-            scores, models = self._evaluate_clusters(ds_train, ds_test, hp)
-            if scores is None or models is None:
-                return -1.0, -1.0
-            else:
-                trial.set_user_attr('models', models)
-                trial.set_user_attr('scores', scores)
+            score, models = self.evaluate_clusters(ds_train, ds_test, hp)
+            if score is None or models is None:
+                return -1.0
+            
+            trial.set_user_attr('models', models)
+            trial.set_user_attr('score', score)
 
-            return scores[0], scores[1]
+            return score
         
         except Exception as e:
             print(f"Error en search_clusters: {str(e)}")
-            return -1.0, -1.0
+            return -1.0
 
     # =========================================================================
     # Métodos auxiliares
     # =========================================================================
     
-    # ---------------------------------------------------------------------
+    def calc_score(self, scores):
+        """
+        Calcula el score final combinando los resultados de insample y outsample.
+        Penaliza fuertemente si hay resultados negativos o nulos.
+        """
+        if not scores or any(s <= 0 for s in scores):
+            return float('-inf')
+        
+        # Calculamos la media geométrica para balancear los scores
+        return gmean(scores)
+    
     def get_train_test_data(self, hp):
         """Obtiene los datos de entrenamiento y prueba."""
         try:

@@ -608,7 +608,7 @@ def export_model_to_ONNX(**kwargs):
         code += rf'#resource "\\Files\\{filename_model_m}" as uchar ExtModel_m_[]'
         code += '\n\n'
         code += '//+------------------------------------------------------------------+\n'
-        code += f'//| INS SCORE: {best_scores[0]} | OOS SCORE: {best_scores[1]} |\n'
+        code += f'//| SCORE: {best_scores}                                     |\n'
         code += '//+------------------------------------------------------------------+\n'
         code += '\n\n'
         code += 'int periods_main' + '[' + str(len(periods_main)) + \

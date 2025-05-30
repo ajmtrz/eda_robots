@@ -112,7 +112,7 @@ class StrategySearcher:
         history_path: str = r"/mnt/c/Users/Administrador/AppData/Roaming/MetaQuotes/Terminal/Common/Files/",
         search_type: str = 'clusters',
         search_subtype: str = 'simple',
-        labels_deterministic: bool = True,
+        labels_deterministic: bool = False,
         tag: str = "",
     ):
         """Inicializa el buscador de estrategias.

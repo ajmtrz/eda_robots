@@ -247,7 +247,7 @@ class StrategySearcher:
                     gc_after_trial=True,
                     show_progress_bar=False,
                     callbacks=[log_trial],
-                    n_jobs=self.n_jobs,
+                    #n_jobs=self.n_jobs,
                 )
 
                 # Verificar y exportar el mejor modelo
@@ -307,25 +307,9 @@ class StrategySearcher:
 
             # Evaluar cada cluster
             for clust in cluster_sizes.index:
-                # Main data
-                main_cols = [c for c in ds_train.columns if '_feature' in c and '_meta_feature' not in c]
-                meta_cols = [c for c in ds_train.columns if '_meta_feature' in c]
-
-                if not main_cols or not meta_cols:
-                    continue
-
-                ohlc_cols = ["open", "high", "low", "close"]
-                present = [c for c in ohlc_cols if c in ds_train.columns]
+                main_data = ds_train.loc[ds_train["labels_meta"] == clust].copy()
                 
-                if not present:
-                    continue
-
-                main_data = ds_train.loc[
-                    ds_train["labels_meta"] == clust,
-                    present + main_cols
-                ].copy()
-                
-                if len(main_data) <= hp['label_max']:
+                if len(main_data) <= hp["label_max"]:
                     continue
 
                 main_data = get_labels_one_direction(
@@ -336,14 +320,20 @@ class StrategySearcher:
                     atr_period=hp['atr_period'],
                     deterministic=self.labels_deterministic,
                 )
-                
+                main_feature_cols = main_data.columns[main_data.columns.str.contains('_feature') & \
+                                                       ~main_data.columns.str.contains('_meta_feature')]
+                main_data = main_data[main_feature_cols.tolist() + ['labels_main']]
+
                 if (main_data['labels_main'].value_counts() < 2).any():
                     continue
 
                 # Meta data
-                meta_data = ds_train[meta_cols].copy()
+                meta_data = ds_train.copy()
                 meta_data['labels_meta'] = (ds_train['labels_meta'] == clust).astype(int)
-                
+
+                meta_feature_cols = meta_data.columns[meta_data.columns.str.contains('_meta_feature')]
+                meta_data = meta_data[meta_feature_cols.tolist() + ['labels_meta']]
+
                 if (meta_data['labels_meta'].value_counts() < 2).any():
                     continue
 
@@ -411,10 +401,9 @@ class StrategySearcher:
             # Todas las estadísticas disponibles
             all_stats = [
                 "std", "skew", "zscore", "range", "mad", "entropy",
-                "slope", "momentum", "autocorr", "max_dd",
-                "sharpe", "fisher", "chande", "var", "eff_ratio", 
-                "jump_vol", "fractal", "vol_skew", "corr_skew",
-                "approx_entropy", "hurst", "kurt"
+                "slope", "momentum", "autocorr", "max_dd", "hurst",
+                "sharpe", "fisher", "chande", "var", "eff_ratio", "kurt",
+                "jump_vol", "fractal", "vol_skew", "approx_entropy",
             ]                # Parámetros base comunes
             params = {
                 'markup': trial.suggest_float("markup", 0.1, 1.0, log=True),  # Multiplicativo - mantiene log

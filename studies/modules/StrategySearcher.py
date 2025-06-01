@@ -439,32 +439,32 @@ class StrategySearcher:
             }
 
             # ---------- PERÍODOS MAIN ----------
-            periods_main = []
-            for i in range(params['max_main_periods']):
-                p = trial.suggest_int(f'period_main_{i}', 3, 200, log=True)
-                periods_main.append(p)
-            params['periods_main'] = tuple(sorted(set(periods_main)))
+            MAX_MAIN_PERIODS = 15
+            periods_main = [trial.suggest_int(f'period_main_{i}', 3, 200, log=True)
+                            for i in range(MAX_MAIN_PERIODS)]
+            periods_main = sorted(set(periods_main))
+            params['periods_main'] = tuple(periods_main[:params['max_main_periods']])
 
             # ---------- PERÍODOS META ----------
-            periods_meta = []
-            for i in range(params['max_meta_periods']):
-                p = trial.suggest_int(f'period_meta_{i}', 3, 7, log=True)
-                periods_meta.append(p)
-            params['periods_meta'] = tuple(sorted(set(periods_meta)))
+            MAX_META_PERIODS = 3
+            periods_meta = [trial.suggest_int(f'period_meta_{i}', 3, 7)
+                            for i in range(MAX_META_PERIODS)]
+            periods_meta = sorted(set(periods_meta))
+            params['periods_meta'] = tuple(periods_meta[:params['max_meta_periods']])
 
             # ---------- STATS MAIN ----------
-            stats_main = []
-            for i in range(params['max_main_stats']):
-                s = trial.suggest_categorical(f'stat_main_{i}', all_stats)
-                stats_main.append(s)
-            params['stats_main'] = tuple(set(stats_main))
+            MAX_MAIN_STATS = 5
+            stats_main = [trial.suggest_categorical(f'stat_main_{i}', all_stats)
+                        for i in range(MAX_MAIN_STATS)]
+            stats_main = list(dict.fromkeys(stats_main))
+            params['stats_main'] = tuple(stats_main[:params['max_main_stats']])
 
             # ---------- STATS META ----------
-            stats_meta = []
-            for i in range(params['max_meta_stats']):
-                s = trial.suggest_categorical(f'stat_meta_{i}', all_stats)
-                stats_meta.append(s)
-            params['stats_meta'] = tuple(set(stats_meta))
+            MAX_META_STATS = 3
+            stats_meta = [trial.suggest_categorical(f'stat_meta_{i}', all_stats)
+                        for i in range(MAX_META_STATS)]
+            stats_meta = list(dict.fromkeys(stats_meta))
+            params['stats_meta'] = tuple(stats_meta[:params['max_meta_stats']])
 
             # Parámetros específicos según el tipo de búsqueda
             if self.search_type == 'markov':

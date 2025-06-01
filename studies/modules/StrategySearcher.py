@@ -401,7 +401,7 @@ class StrategySearcher:
             # Todas las estadísticas disponibles
             all_stats = [
                 "std", "skew", "zscore", "range", "mad", "entropy",
-                "slope", "momentum", "autocorr", "max_dd", "hurst",
+                "slope", "momentum", "autocorr", "max_dd", "hurst", "corr_skew"
                 "sharpe", "fisher", "chande", "var", "eff_ratio", "kurt",
                 "jump_vol", "fractal", "vol_skew", "approx_entropy",
             ]                # Parámetros base comunes

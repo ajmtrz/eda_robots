@@ -160,7 +160,7 @@ def evaluate_report(report: np.ndarray) -> float:
 
     # ────────────────────────
     # Factor de trades
-    trade_multiplier = np.log10(num_trades) / np.log10(100)
+    trade_multiplier = np.log10(num_trades)
     
     # ────────────────────────
     # Score final

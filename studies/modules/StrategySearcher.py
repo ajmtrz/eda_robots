@@ -541,7 +541,7 @@ class StrategySearcher:
                 bootstrap_type=hp['cat_main_bootstrap_type'],
                 eval_metric='Accuracy',
                 store_all_simple_ctr=False,
-                thread_count=-1,#self.n_jobs,
+                thread_count=self.n_jobs,
                 task_type='CPU',
                 verbose=False,
             )
@@ -569,7 +569,7 @@ class StrategySearcher:
                 bootstrap_type=hp['cat_meta_bootstrap_type'],
                 eval_metric='F1',
                 store_all_simple_ctr=False,
-                thread_count=-1,#self.n_jobs,
+                thread_count=self.n_jobs,
                 task_type='CPU',
                 verbose=False,
             )
@@ -714,7 +714,7 @@ class StrategySearcher:
         """Obtiene los datos de entrenamiento y prueba."""
         try:
             if hp is None:
-                print("⚠️ ERROR: Parámetros inválidos")
+                # print("⚠️ ERROR: Parámetros inválidos")
                 return None, None
 
             # Asegurarnos de que tenemos todos los datos necesarios
@@ -727,13 +727,13 @@ class StrategySearcher:
                 hp_tuple,
             )
             if full_ds is None or full_ds.empty:
-                print("⚠️ ERROR: Dataset vacío")
+                # print("⚠️ ERROR: Dataset vacío")
                 return None, None
             
             # Verificar calidad de los datasets
             feature_cols = full_ds.columns[full_ds.columns.str.contains('feature')]
             if feature_cols.empty:
-                print("⚠️ ERROR: No hay columnas de características")
+                # print("⚠️ ERROR: No hay columnas de características")
                 return None, None
                 
             if self.check_constant_features(full_ds[feature_cols].to_numpy('float32'), feature_cols):

@@ -247,7 +247,7 @@ class StrategySearcher:
                     gc_after_trial=True,
                     show_progress_bar=False,
                     callbacks=[log_trial],
-                    #n_jobs=self.n_jobs,
+                    n_jobs=self.n_jobs,
                 )
 
                 # Verificar y exportar el mejor modelo
@@ -388,9 +388,9 @@ class StrategySearcher:
                 problematic_cols.append(f"{col} (desviación estándar {std:.2e})")
                 
         if problematic_cols:
-            print("\n⚠️ Columnas problemáticas detectadas:")
-            for col in problematic_cols:
-                print(f"  - {col}")
+            # print("\n⚠️ Columnas problemáticas detectadas:")
+            # for col in problematic_cols:
+            #     print(f"  - {col}")
             return True
             
         return False
@@ -438,28 +438,33 @@ class StrategySearcher:
                 'max_meta_stats': trial.suggest_int('max_meta_stats', 1, 3, log=True),
             }
 
-            # Main periods - sugerir como array discreto
-            params['periods_main'] = tuple(sorted(set(
-                trial.suggest_int('periods_main', 4, 100, log=True)
-                for _ in range(params['max_main_periods'])
-            )))
+            # ---------- PERÍODOS MAIN ----------
+            periods_main = []
+            for i in range(params['max_main_periods']):
+                p = trial.suggest_int(f'period_main_{i}', 3, 200, log=True)
+                periods_main.append(p)
+            params['periods_main'] = tuple(sorted(set(periods_main)))
 
-            # Meta periods - sugerir como array discreto  
-            params['periods_meta'] = tuple(sorted(set(
-                trial.suggest_int('periods_meta', 4, 8, log=True)
-                for _ in range(params['max_meta_periods'])
-            )))
+            # ---------- PERÍODOS META ----------
+            periods_meta = []
+            for i in range(params['max_meta_periods']):
+                p = trial.suggest_int(f'period_meta_{i}', 3, 7, log=True)
+                periods_meta.append(p)
+            params['periods_meta'] = tuple(sorted(set(periods_meta)))
 
-            # Sugerir estadísticas como arrays completos
-            params['stats_main'] = tuple(set(
-                trial.suggest_categorical('stats_main', all_stats)
-                for _ in range(params['max_main_stats'])
-            ))
+            # ---------- STATS MAIN ----------
+            stats_main = []
+            for i in range(params['max_main_stats']):
+                s = trial.suggest_categorical(f'stat_main_{i}', all_stats)
+                stats_main.append(s)
+            params['stats_main'] = tuple(set(stats_main))
 
-            params['stats_meta'] = tuple(set(
-                trial.suggest_categorical('stats_meta', all_stats)
-                for _ in range(params['max_meta_stats'])
-            ))
+            # ---------- STATS META ----------
+            stats_meta = []
+            for i in range(params['max_meta_stats']):
+                s = trial.suggest_categorical(f'stat_meta_{i}', all_stats)
+                stats_meta.append(s)
+            params['stats_meta'] = tuple(set(stats_meta))
 
             # Parámetros específicos según el tipo de búsqueda
             if self.search_type == 'markov':
@@ -497,7 +502,7 @@ class StrategySearcher:
         try:
             # ---------- 1) main model_main ----------
             # Get feature columns and rename them to follow f%d pattern
-            main_feature_cols = main_data.columns[main_data.columns.str.contains('_feature') & ~main_data.columns.str.contains('_meta_feature')]
+            main_feature_cols = [col for col in main_data.columns if col != 'labels_main']
             X_main = main_data[main_feature_cols]
             y_main = main_data['labels_main'].astype('int16')
             # División de datos para el modelo principal según fechas
@@ -512,7 +517,7 @@ class StrategySearcher:
                 return None, None
             
             # ---------- 2) meta‑modelo ----------
-            meta_feature_cols = meta_data.columns[meta_data.columns.str.contains('_meta_feature')]
+            meta_feature_cols = [col for col in meta_data.columns if col != 'labels_meta']
             X_meta = meta_data[meta_feature_cols]
             y_meta = meta_data['labels_meta'].astype('int16')
             
@@ -732,7 +737,7 @@ class StrategySearcher:
                 return None, None
                 
             if self.check_constant_features(full_ds[feature_cols].to_numpy('float32'), feature_cols):
-                print("⚠️ ERROR: Características constantes detectadas")
+                # print("⚠️ ERROR: Características constantes detectadas")
                 return None, None
             
             # Obtener datasets de entrenamiento y prueba

@@ -137,7 +137,11 @@ class StrategySearcher:
                                     study.set_user_attr("best_stats_meta", trial.user_attrs['stats_meta'])
 
                         # Log
-                        best_str = f"ins={best_trial.values[0]:.4f} oos={best_trial.values[1]:.4f}"
+                        if study.best_trials:
+                            best_trial = max(study.best_trials, key=lambda t: min(*t.values))
+                            best_str = f"ins={best_trial.values[0]:.4f} oos={best_trial.values[1]:.4f}"
+                        else:
+                            best_str = "ins=--- oos=---"
                         elapsed = perf_counter() - t0
                         n_done = trial.number + 1
                         avg_time = elapsed / n_done
@@ -243,10 +247,8 @@ class StrategySearcher:
 
                 # Meta data
                 meta_feature_cols = ds_train.filter(like='_meta_feature').columns
-                meta_labels = (ds_train['labels_meta'] == clust).astype(np.int8).to_numpy()
-
                 model_meta_data = ds_train.loc[:, meta_feature_cols].copy()
-                model_meta_data['labels_meta'] = meta_labels
+                model_meta_data['labels_meta'] = (ds_train['labels_meta'] == clust).astype('int8')
 
                 if (model_meta_data['labels_meta'].value_counts() < 2).any():
                     continue
@@ -502,29 +504,29 @@ class StrategySearcher:
             close_train_eval = ds_train_eval_sample['close'].to_numpy()
             close_test_eval = ds_test['close'].to_numpy()
 
-            score_ins = tester_one_direction(
+            score_ins = robust_oos_score_one_direction(
                 ds_main=ds_train_eval_main,
                 ds_meta=ds_train_eval_meta,
                 close=close_train_eval,
                 model_main=model_main,
                 model_meta=model_meta,
                 direction=self.direction,
-                plt=False,
+                plot=False,
                 prd='insample',
-                # n_sim=100,
-                # agg="q05"
+                n_sim=100,
+                agg="q05"
             )
-            score_oos = tester_one_direction(
+            score_oos = robust_oos_score_one_direction(
                 ds_main=ds_test_eval_main,
                 ds_meta=ds_test_eval_meta,
                 close=close_test_eval,
                 model_main=model_main,
                 model_meta=model_meta,
                 direction=self.direction,
-                plt=False,
-                prd='outofsample'
-                # n_sim=100,
-                # agg="q05"
+                plot=False,
+                prd='outofsample',
+                n_sim=100,
+                agg="q05"
             )
 
             # Manejar valores inválidos

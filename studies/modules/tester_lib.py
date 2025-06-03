@@ -1,3 +1,4 @@
+import traceback
 from numba import jit, njit, prange
 import numpy as np
 import pandas as pd
@@ -46,9 +47,6 @@ def process_data(close, labels, metalabels):
 
     return np.array(report), np.array(chart)
 
-from numba import njit
-import numpy as np
-
 @njit
 def process_data_one_direction(close, main_labels, meta_labels, direction):
     last_deal  = 2            # 2 = flat, 1 = position open
@@ -91,8 +89,8 @@ def process_data_one_direction(close, main_labels, meta_labels, direction):
 def tester(dataset, plot=False):
 
     close = dataset['close'].to_numpy()
-    main   = dataset['main_labels'].to_numpy()
-    meta  = dataset['meta_labels'].to_numpy()
+    main   = dataset['labels_main'].to_numpy()
+    meta  = dataset['labels_meta'].to_numpy()
 
     # Pasamos los índices relativos al dataset filtrado
     rpt, ch= process_data(close, main, meta)
@@ -168,12 +166,24 @@ def evaluate_report(report: np.ndarray) -> float:
     
     return final_score
 
-def tester_one_direction(dataset, direction='buy', plot=False, prd=''):
+def tester_one_direction(
+        ds_main: np.ndarray,
+        ds_meta: np.ndarray,
+        close: np.ndarray,
+        model_main: object,
+        model_meta: object,
+        direction: str = 'buy',
+        plot=False,
+        prd= ''):
+
+    # Calcular probabilidades usando ambos modelos (sin binarizar)
+    main = model_main.predict_proba(ds_main)[:, 1]
+    meta = model_meta.predict_proba(ds_meta)[:, 1]
 
     # Extraer datos necesarios
-    close = np.ascontiguousarray(dataset['close'].values)
-    main = np.ascontiguousarray(dataset['main_labels'].values)
-    meta = np.ascontiguousarray(dataset['meta_labels'].values)
+    close = np.ascontiguousarray(close)
+    main = np.ascontiguousarray(main)
+    meta = np.ascontiguousarray(meta)
 
     # Pasamos los índices numéricos en lugar de fechas
     rpt, ch= process_data_one_direction(
@@ -209,8 +219,8 @@ def tester_slow(dataset, markup, plot=False):
     report, chart = [0.0], [0.0]
 
     close = dataset['close'].to_numpy()
-    main = dataset['main_labels'].to_numpy()
-    metalabels = dataset['meta_labels'].to_numpy()
+    main = dataset['labels_main'].to_numpy()
+    metalabels = dataset['labels_meta'].to_numpy()
 
     for i in range(dataset.shape[0]):
         pred, pr, pred_meta = main[i], close[i], metalabels[i]
@@ -265,38 +275,10 @@ def test_model(dataset: pd.DataFrame,
     ext_dataset = ext_dataset[mask].reset_index(drop=True)
     X = ext_dataset.iloc[:, 1:]
 
-    ext_dataset['main_labels'] = result[0].predict_proba(X)[:, 1]
-    ext_dataset['meta_labels'] = result[1].predict_proba(X)[:, 1]
+    ext_dataset['labels_main'] = result[0].predict_proba(X)[:, 1]
+    ext_dataset['labels_meta'] = result[1].predict_proba(X)[:, 1]
 
     return tester(ext_dataset, plot=plt)
-
-
-def test_model_one_direction(dataset: pd.DataFrame,
-                           model_main: object,
-                           model_meta: object,
-                           direction: str = 'buy',
-                           plt=False,
-                           prd= ''):
-    # Copiar dataset para no modificar el original
-    ext_ds = dataset.copy()
-
-    # Validar que las características de test coincidan con las de train
-    test_main_cols = ext_ds.columns[ext_ds.columns.str.contains('_feature') & ~ext_ds.columns.str.contains('_meta_feature')] 
-    test_meta_cols = ext_ds.columns[ext_ds.columns.str.contains('_meta_feature')]
-    
-    # Convertir a numpy arrays directamente para evitar problemas con pandas
-    X_main = ext_ds[test_main_cols].to_numpy()
-    X_meta = ext_ds[test_meta_cols].to_numpy()
-    if X_meta.shape[1] == 0 or X_main.shape[1] == 0:
-        return -1.0
-
-    # Calcular probabilidades usando ambos modelos (sin binarizar)
-    ext_ds['main_labels'] = model_main.predict_proba(X_main)[:, 1]
-    ext_ds['meta_labels'] = model_meta.predict_proba(X_meta)[:, 1]
-
-    return tester_one_direction(ext_ds, direction, plot=plt, prd=prd)
-
-
 
 # ───────────────────────────────────────────────────────────────────
 # Monte-Carlo robustness utilities
@@ -471,86 +453,154 @@ def monte_carlo_full(
     X_meta: np.ndarray,
     direction: str,
     n_sim: int = 100,
-    block_size: int = 20
+    block_size: int = 20,
+    plot: bool = False,
+    prd: str = ""
 ) -> dict:
     """
     Lanza Monte-Carlo combinando ruido en inputs y bootstrapping de retornos.
     Si se pasan modelos y features, añade ruido a las features y predice en cada simulación.
+
+    Args:
+        plot: Si True, muestra un gráfico con las curvas de equity de todas las simulaciones
     """
     # Validación de inputs
+    close = np.ascontiguousarray(close)
     if X_main is not None and X_meta is not None:
         if X_main.shape[0] != close.shape[0] or X_meta.shape[0] != close.shape[0]:
             raise ValueError("X_main y X_meta deben tener el mismo número de filas que close")
         if model_main is None or model_meta is None:
             raise ValueError("Si se pasan features, también deben pasarse los modelos")
 
-    # ---------- curva original ------------------------------------
     try:
-        # ── predicción batch + cast a float64 (necesario para _make_noisy_signals) ──
+        # Primero calculamos la curva original sin ruido
+        main = model_main.predict_proba(X_main)[:, 1]
+        meta = model_meta.predict_proba(X_meta)[:, 1]
+        rpt_original, _ = process_data_one_direction(close, main, meta, direction)
+        
+        # Monte Carlo simulations
         noise_levels = np.random.uniform(0.005, 0.02, n_sim)
         l_all = _predict_batch(model_main, X_main, noise_levels)
         m_all = _predict_batch(model_meta, X_meta, noise_levels)
 
         scores = _simulate_batch(close, l_all, m_all, block_size, direction)
-
         valid = scores[scores > 0.0]
+        
+        # Visualización si se solicita
+        if plot:
+            try:
+                import matplotlib.pyplot as plt
+                
+                fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 8), height_ratios=[3, 1])
+                
+                # Plot superior: Curvas de equity
+                if valid.size > 0:
+                    # Recolectar todas las curvas de simulación
+                    equity_curves = []
+                    for i in range(n_sim):
+                        c_n, l_n, m_n = _make_noisy_signals(close, l_all[i], m_all[i])
+                        rpt, _ = process_data_one_direction(c_n, l_n, m_n, direction)
+                        if len(rpt) >= 2:
+                            equity_curves.append(rpt)
+                    
+                    # Plotear simulaciones en gris claro
+                    for eq in equity_curves:
+                        ax1.plot(eq, color='gray', alpha=0.1)
+                    
+                    # Plotear curva original en azul
+                    ax1.plot(rpt_original, color='blue', linewidth=2, label='Original')
+                    
+                    # Calcular y plotear percentiles
+                    if equity_curves:
+                        # Encontrar la longitud mínima común
+                        min_len = min(len(curve) for curve in equity_curves)
+                        curves_array = np.array([curve[:min_len] for curve in equity_curves])
+                        
+                        p05 = np.percentile(curves_array, 5, axis=0)
+                        p95 = np.percentile(curves_array, 95, axis=0)
+                        median = np.median(curves_array, axis=0)
+                        
+                        ax1.plot(p05, 'r--', alpha=0.5, label='5%')
+                        ax1.plot(p95, 'r--', alpha=0.5, label='95%')
+                        ax1.plot(median, 'g-', alpha=0.5, label='Mediana')
+                    
+                    if prd:
+                        ax1.set_title(f'Simulaciones Monte Carlo - {prd}\n'
+                                   f'(n={valid.size}, {direction})')
+                    else:
+                        ax1.set_title(f'Simulaciones Monte Carlo\n'
+                                   f'(n={valid.size}, {direction})')
+                else:
+                    ax1.text(0.5, 0.5, 'No hay simulaciones válidas', 
+                           ha='center', va='center')
+                
+                ax1.set_xlabel('Operaciones')
+                ax1.set_ylabel('Beneficio Acumulado')
+                ax1.legend()
+                ax1.grid(True, alpha=0.3)
+                
+                # Plot inferior: Histograma de scores
+                if valid.size > 0:
+                    ax2.hist(valid, bins=30, density=True, alpha=0.6, color='skyblue')
+                    ax2.axvline(np.median(valid), color='red', linestyle='--', 
+                             label=f'Mediana: {np.median(valid):.2f}')
+                    
+                    q05, q50, q95 = np.quantile(valid, [0.05, 0.5, 0.95])
+                    ax2.axvline(q05, color='orange', linestyle=':', 
+                             label=f'Q05: {q05:.2f}')
+                    ax2.axvline(q95, color='green', linestyle=':', 
+                             label=f'Q95: {q95:.2f}')
+                
+                ax2.set_xlabel('Score')
+                ax2.set_ylabel('Densidad')
+                ax2.legend()
+                ax2.grid(True, alpha=0.3)
+                
+                plt.tight_layout()
+                plt.show()
+                
+            except Exception as viz_error:
+                print(f"Error en visualización: {viz_error}")
+
         return {
             "scores": scores,
             "p_positive": np.mean(scores > 0),
             "quantiles": np.quantile(valid, [0.05, 0.5, 0.95]) if valid.size else [-1,-1,-1],
         }
     except Exception as e:
-        import traceback
         print(f"\nError en monte_carlo_full:")
         print(f"Error: {str(e)}")
         print("Traceback:")
         print(traceback.format_exc())
         return {"scores": np.array([-1.0]), "p_positive": 0.0, "quantiles": np.array([-1.0, -1.0, -1.0])}
 
-def robust_oos_score_one_direction(dataset: pd.DataFrame,
-                                   model_main: object,
-                                   model_meta: object,
-                                   direction: str,
-                                   n_sim: int = 100,
-                                   block_size: int = 20,
-                                   agg: str = "q05") -> float:
-    """
-    Devuelve un score robusto (float) listo para Optuna.
-    Solo prepara los datos y pasa los modelos y features a monte_carlo_full,
-    que se encargará de aplicar ruido y hacer predicciones en cada simulación.
-    """
-    # 1) Copiar dataset --------------------------------------------
-    ext_ds = dataset.copy()
-    # 2) Validar dataset --------------------------------------------
-    if ext_ds.empty:
-        return -1.0
+def robust_oos_score_one_direction(
+        ds_main: np.ndarray,
+        ds_meta: np.ndarray,
+        close: np.ndarray,
+        model_main: object,
+        model_meta: object,
+        direction: str,
+        n_sim: int = 100,
+        block_size: int = 20,
+        agg: str = "q05",
+        plot: bool = False,
+        prd: str = "") -> float:
 
-    # 3) preparar datos --------------------------------------------
-    # Validar que las características de test coincidan con las de train
-    test_main_cols = ext_ds.columns[ext_ds.columns.str.contains('_feature') & ~ext_ds.columns.str.contains('_meta_feature')] 
-    test_meta_cols = ext_ds.columns[ext_ds.columns.str.contains('_meta_feature')]
-    
-    # Convertir a numpy arrays directamente para evitar problemas con pandas
-    X_main = ext_ds[test_main_cols].to_numpy()
-    X_meta = ext_ds[test_meta_cols].to_numpy()
-    if X_meta.shape[1] == 0 or X_main.shape[1] == 0:
-        return -1.0
-    close = np.ascontiguousarray(dataset['close'].values)
-    
-    if X_main.size == 0 or X_meta.size == 0:
-        return -1.0
 
     # 3) Monte Carlo robusto -------------------------------------
     try:
         mc = monte_carlo_full(
             close=close,
-            X_main=X_main,
-            X_meta=X_meta,
+            X_main=ds_main,
+            X_meta=ds_meta,
             model_main=model_main,
             model_meta=model_meta,
             direction=direction,
             n_sim=n_sim,
             block_size=block_size,
+            plot=plot,
+            prd=prd
         )
         
         if agg == "q05":

@@ -1,7 +1,7 @@
 import gc
 import math
 import time
-import hashlib
+import weakref
 import numpy as np
 import pandas as pd
 from datetime import datetime
@@ -10,9 +10,7 @@ from typing import Dict, Any
 import optuna
 from optuna.pruners import HyperbandPruner, SuccessiveHalvingPruner
 #from optuna.integration import CatBoostPruningCallback
-from sklearn import set_config
 from sklearn.model_selection import train_test_split
-from functools import lru_cache
 from catboost import CatBoostClassifier, Pool
 from modules.labeling_lib import (
     get_prices, get_features, get_labels_one_direction,
@@ -20,79 +18,15 @@ from modules.labeling_lib import (
     markov_regime_switching_simple, markov_regime_switching_advanced
 )
 from modules.tester_lib import (
-    test_model_one_direction,
+    tester_one_direction,
     robust_oos_score_one_direction,
     _ONNX_CACHE
 )
 from modules.export_lib import export_model_to_ONNX
 
+_BASES = weakref.WeakValueDictionary()
+
 class StrategySearcher:
-    """Clase unificada para búsqueda de estrategias de trading.
-    
-    Esta clase implementa diferentes métodos de búsqueda de estrategias de trading
-    utilizando técnicas de machine learning y optimización bayesiana.
-    
-    Attributes:
-        base_df (pd.DataFrame): DataFrame con datos históricos
-        best_models (list): Lista de los mejores modelos encontrados
-        model_range (list): Rango de modelos a optimizar
-    """
-    
-    _FEATURE_CACHE: dict[str, pd.DataFrame] = {}
-
-    @staticmethod
-    def _fingerprint_df(df: pd.DataFrame) -> str:
-        """
-        Devuelve un hash MD5 del contenido + columnas + dtypes.
-        Cambia en cuanto cambie un solo byte del DataFrame.
-        """
-        # Orden canónico en memoria
-        raw = df.values.tobytes()
-        cols = ",".join(df.columns)
-        dtypes = ",".join(map(str, df.dtypes))
-        h = hashlib.md5()
-        h.update(raw)
-        h.update(cols.encode())
-        h.update(dtypes.encode())
-        return h.hexdigest()
-
-    @staticmethod
-    @lru_cache(maxsize=128)
-    def _cached_features(df_id: str,
-                        start: datetime,
-                        end: datetime,
-                        hp_tuple: tuple) -> pd.DataFrame:
-        """Obtiene características del DataFrame con caché LRU.
-        
-        El caché almacena hasta 128 resultados diferentes, eliminando automáticamente
-        los más antiguos cuando se alcanza el límite. Cada resultado es un DataFrame
-        completo con las características calculadas.
-        
-        Args:
-            df_id: ID del DataFrame base
-            start: Fecha de inicio
-            end: Fecha de fin
-            hp_tuple: Tupla de tuplas con los hiperparámetros que afectan a las características
-
-        Returns:
-            pd.DataFrame: DataFrame con las características calculadas
-        """
-        # Convertir la tupla de tuplas en diccionario
-        hp = dict(hp_tuple)
-        hp.update({
-            'periods_main': list(hp.get('periods_main', ())),
-            'periods_meta': list(hp.get('periods_meta', ())),
-            'stats_main': list(hp.get('stats_main', ())),
-            'stats_meta': list(hp.get('stats_meta', ())),
-        })
-        return get_features(StrategySearcher._FEATURE_CACHE[df_id].loc[start:end].copy(), hp)
-
-    @staticmethod
-    def clear_cache():
-        """Limpia el caché de características."""
-        StrategySearcher._cached_features.cache_clear()
-        gc.collect()
-
     def __init__(
         self,
         symbol: str,
@@ -114,25 +48,6 @@ class StrategySearcher:
         labels_deterministic: bool = True,
         tag: str = "",
     ):
-        """Inicializa el buscador de estrategias.
-        
-        Args:
-            symbol: Símbolo del activo financiero
-            timeframe: Timeframe de los datos
-            direction: Dirección de trading ('buy' o 'sell')
-            train_start: Fecha de inicio del entrenamiento
-            train_end: Fecha de fin del entrenamiento
-            test_start: Fecha de inicio de prueba
-            test_end: Fecha de fin de prueba
-            pruner_type: Tipo de pruner ('hyperband' o 'halving')
-            n_trials: Número de trials para la optimización
-            models_export_path: Ruta para exportar modelos
-            include_export_path: Ruta para archivos include
-            history_path: Ruta para datos históricos
-            search_type: Tipo de búsqueda a realizar ('clusters' o 'markov')
-            search_subtype: Subtipo de búsqueda ('simple' u otros según el tipo)
-            tag: Etiqueta opcional para identificar la búsqueda
-        """
         self.symbol = symbol
         self.timeframe = timeframe
         self.direction = direction
@@ -152,25 +67,25 @@ class StrategySearcher:
         self.n_jobs = n_jobs
         self.tag = tag
         
-        # Cargar datos históricos
-        self.base_df = get_prices(self.symbol, self.timeframe, self.history_path)
-        # Id único para este juego de datos
-        self.df_id = StrategySearcher._fingerprint_df(self.base_df)
-        StrategySearcher._FEATURE_CACHE[self.df_id] = self.base_df
+        key = (symbol, timeframe)
+        if key in _BASES:
+            self.base_df = _BASES[key]
+        else:
+            self.base_df = get_prices(symbol, timeframe, history_path)
+            self.base_df = self.base_df[~self.base_df.index.duplicated()].sort_index()
+            _BASES[key] = self.base_df
+
+        # cache de features POR INSTANCIA --------------------
+        self._feature_cache: dict[tuple, pd.DataFrame] = {}
         
         # Configuración de sklearn y optuna
-        set_config(enable_metadata_routing=True, skip_parameter_validation=True)
         optuna.logging.set_verbosity(optuna.logging.WARNING)
-        
-        # Resultados
-        self.best_models = (None, None)
 
     # =========================================================================
     # Métodos de búsqueda principales
     # =========================================================================
 
     def run_search(self) -> None:
-        """Ejecuta la búsqueda de estrategias."""
         search_funcs = {
             'clusters': self.search_clusters,
             'markov': self.search_markov,
@@ -185,7 +100,6 @@ class StrategySearcher:
             try:
                 # Limpiar caché antes de cada modelo
                 self.clear_cache()
-                StrategySearcher._FEATURE_CACHE[self.df_id] = self.base_df
                 
                 # Generar un seed único para este modelo
                 model_seed = int(time.time() * 1000) + i
@@ -307,39 +221,43 @@ class StrategySearcher:
 
             # Evaluar cada cluster
             for clust in cluster_sizes.index:
-                main_data = ds_train.loc[ds_train["labels_meta"] == clust].copy()
-                
-                if len(main_data) <= hp["label_max"]:
+                model_main_data = ds_train.loc[ds_train["labels_meta"] == clust].copy()
+
+                if len(model_main_data) <= hp["label_max"]:
                     continue
 
-                main_data = get_labels_one_direction(
-                    main_data,
+                model_main_data = get_labels_one_direction(
+                    model_main_data,
                     markup=hp['markup'],
                     max_val=hp['label_max'],
                     direction=self.direction,
                     atr_period=hp['atr_period'],
                     deterministic=self.labels_deterministic,
                 )
-                main_feature_cols = main_data.columns[main_data.columns.str.contains('_feature') & \
-                                                       ~main_data.columns.str.contains('_meta_feature')]
-                main_data = main_data[main_feature_cols.tolist() + ['labels_main']]
+                main_feature_cols = model_main_data.columns[model_main_data.columns.str.contains('_feature') & \
+                                                       ~model_main_data.columns.str.contains('_meta_feature')]
+                model_main_data = model_main_data[main_feature_cols.tolist() + ['labels_main']]
 
-                if (main_data['labels_main'].value_counts() < 2).any():
+                if (model_main_data['labels_main'].value_counts() < 2).any():
                     continue
 
                 # Meta data
-                meta_data = ds_train.copy()
-                meta_data['labels_meta'] = (ds_train['labels_meta'] == clust).astype(int)
+                meta_feature_cols = ds_train.filter(like='_meta_feature').columns
+                meta_labels = (ds_train['labels_meta'] == clust).astype(np.int8).to_numpy()
 
-                meta_feature_cols = meta_data.columns[meta_data.columns.str.contains('_meta_feature')]
-                meta_data = meta_data[meta_feature_cols.tolist() + ['labels_meta']]
+                model_meta_data = ds_train.loc[:, meta_feature_cols].copy()
+                model_meta_data['labels_meta'] = meta_labels
 
-                if (meta_data['labels_meta'].value_counts() < 2).any():
+                if (model_meta_data['labels_meta'].value_counts() < 2).any():
                     continue
 
                 # ── Evaluación en ambos períodos ──────────────────────────────
                 scores, models = self.fit_final_models(
-                    main_data, meta_data, ds_train, ds_test, hp.copy()
+                    model_main_data=model_main_data, 
+                    model_meta_data=model_meta_data,
+                    ds_train=ds_train, 
+                    ds_test=ds_test, 
+                    hp=hp.copy()
                 )
                 if scores is None or models is None:
                     continue
@@ -398,17 +316,22 @@ class StrategySearcher:
     def suggest_all_params(self, trial: optuna.Trial) -> Dict[str, Any]:
         """Sugiere todos los parámetros de una vez para permitir muestreo multivariado."""
         try:
+            MAX_MAIN_PERIODS = 15
+            MAX_META_PERIODS = 3
+            MAX_MAIN_STATS = 5
+            MAX_META_STATS = 3
             # Todas las estadísticas disponibles
             all_stats = [
                 "std", "skew", "zscore", "range", "mad", "entropy",
-                "slope", "momentum", "autocorr", "max_dd", "hurst", "corr_skew"
+                "slope", "momentum", "autocorr", "max_dd", "hurst", "corr_skew",
                 "sharpe", "fisher", "chande", "var", "eff_ratio", "kurt",
                 "jump_vol", "fractal", "vol_skew", "approx_entropy",
-            ]                # Parámetros base comunes
+            ]
+            # Parámetros base comunes
             params = {
                 'markup': trial.suggest_float("markup", 0.1, 1.0, log=True),  # Multiplicativo - mantiene log
-                'label_max': trial.suggest_int('label_max', 2, 30, log=True),  # Períodos - mantiene log
-                'atr_period': trial.suggest_int('atr_period', 5, 100, log=True),  # Períodos - mantiene log
+                'label_max': trial.suggest_int('label_max', 1, 15, log=True),  # Períodos - mantiene log
+                'atr_period': trial.suggest_int('atr_period', 5, 50, log=True),  # Períodos - mantiene log
                 
                 # Parámetros de CatBoost main
                 'cat_main_iterations': trial.suggest_int('cat_main_iterations', 100, 1000),  # Lineal - quita log
@@ -416,9 +339,6 @@ class StrategySearcher:
                 'cat_main_learning_rate': trial.suggest_float('cat_main_learning_rate', 0.01, 0.3, log=True),  # Multiplicativo - mantiene log
                 'cat_main_l2_leaf_reg': trial.suggest_float('cat_main_l2_leaf_reg', 0.1, 10.0, log=True),  # Regularización - mantiene log
                 'cat_main_early_stopping': trial.suggest_int('cat_main_early_stopping', 20, 200),  # Lineal - quita log
-                'cat_main_bootstrap_type': trial.suggest_categorical('cat_main_bootstrap_type', ['Bayesian', 'Bernoulli', 'MVS']),
-                'cat_main_bagging_temperature': trial.suggest_float('cat_main_bagging_temperature', 0, 10),
-                'cat_main_subsample': trial.suggest_float('cat_main_subsample', 0.5, 1),
                 
                 # Parámetros de CatBoost meta
                 'cat_meta_iterations': trial.suggest_int('cat_meta_iterations', 100, 1000),  # Lineal - quita log
@@ -426,41 +346,33 @@ class StrategySearcher:
                 'cat_meta_learning_rate': trial.suggest_float('cat_meta_learning_rate', 0.01, 0.3, log=True),  # Multiplicativo - mantiene log
                 'cat_meta_l2_leaf_reg': trial.suggest_float('cat_meta_l2_leaf_reg', 0.1, 10.0, log=True),  # Regularización - mantiene log
                 'cat_meta_early_stopping': trial.suggest_int('cat_meta_early_stopping', 20, 200),  # Lineal - quita log
-                'cat_meta_bootstrap_type': trial.suggest_categorical('cat_meta_bootstrap_type', ['Bayesian', 'Bernoulli', 'MVS']),
-                'cat_meta_bagging_temperature': trial.suggest_float('cat_meta_bagging_temperature', 0, 10),
-                'cat_meta_subsample': trial.suggest_float('cat_meta_subsample', 0.5, 1),
                 
                 # Períodos y estadísticas en el formato esperado
-                # Definir todos los períodos posibles de una vez
-                'max_main_periods': trial.suggest_int('max_main_periods', 3, 15, log=True),
-                'max_meta_periods': trial.suggest_int('max_meta_periods', 1, 3, log=True),
-                'max_main_stats': trial.suggest_int('max_main_stats', 1, 5, log=True),
-                'max_meta_stats': trial.suggest_int('max_meta_stats', 1, 3, log=True),
+                'max_main_periods': trial.suggest_int('max_main_periods', 3, MAX_MAIN_PERIODS, log=True),
+                'max_meta_periods': trial.suggest_int('max_meta_periods', 1, MAX_META_PERIODS, log=True),
+                'max_main_stats': trial.suggest_int('max_main_stats', 1, MAX_MAIN_STATS, log=True),
+                'max_meta_stats': trial.suggest_int('max_meta_stats', 1, MAX_META_STATS, log=True),
             }
 
             # ---------- PERÍODOS MAIN ----------
-            MAX_MAIN_PERIODS = 15
             periods_main = [trial.suggest_int(f'period_main_{i}', 3, 200, log=True)
                             for i in range(MAX_MAIN_PERIODS)]
             periods_main = sorted(set(periods_main))
             params['periods_main'] = tuple(periods_main[:params['max_main_periods']])
 
             # ---------- PERÍODOS META ----------
-            MAX_META_PERIODS = 3
             periods_meta = [trial.suggest_int(f'period_meta_{i}', 3, 7)
                             for i in range(MAX_META_PERIODS)]
             periods_meta = sorted(set(periods_meta))
             params['periods_meta'] = tuple(periods_meta[:params['max_meta_periods']])
 
             # ---------- STATS MAIN ----------
-            MAX_MAIN_STATS = 5
             stats_main = [trial.suggest_categorical(f'stat_main_{i}', all_stats)
                         for i in range(MAX_MAIN_STATS)]
             stats_main = list(dict.fromkeys(stats_main))
             params['stats_main'] = tuple(stats_main[:params['max_main_stats']])
 
             # ---------- STATS META ----------
-            MAX_META_STATS = 3
             stats_meta = [trial.suggest_categorical(f'stat_meta_{i}', all_stats)
                         for i in range(MAX_META_STATS)]
             stats_meta = list(dict.fromkeys(stats_meta))
@@ -492,9 +404,9 @@ class StrategySearcher:
         except Exception as e:
             print(f"⚠️ ERROR en suggest_all_params: {str(e)}")
             return None
-    
-    def fit_final_models(self, main_data: pd.DataFrame,
-                        meta_data: pd.DataFrame,
+
+    def fit_final_models(self, model_main_data: pd.DataFrame,
+                        model_meta_data: pd.DataFrame,
                         ds_train: pd.DataFrame,
                         ds_test: pd.DataFrame,
                         hp: Dict[str, Any]) -> tuple[tuple[float, float], object, object]:
@@ -502,13 +414,13 @@ class StrategySearcher:
         try:
             # ---------- 1) main model_main ----------
             # Get feature columns and rename them to follow f%d pattern
-            main_feature_cols = [col for col in main_data.columns if col != 'labels_main']
-            X_main = main_data[main_feature_cols]
-            y_main = main_data['labels_main'].astype('int16')
+            main_feature_cols = sorted([col for col in model_main_data.columns if col != 'labels_main'])
+            X_main = model_main_data[main_feature_cols]
+            y_main = model_main_data['labels_main'].astype('int16')
             # División de datos para el modelo principal según fechas
             X_train_main, X_val_main, y_train_main, y_val_main = train_test_split(
                 X_main, y_main, 
-                test_size=0.3,
+                test_size=0.2,
                 shuffle=True
             )
             
@@ -517,14 +429,14 @@ class StrategySearcher:
                 return None, None
             
             # ---------- 2) meta‑modelo ----------
-            meta_feature_cols = [col for col in meta_data.columns if col != 'labels_meta']
-            X_meta = meta_data[meta_feature_cols]
-            y_meta = meta_data['labels_meta'].astype('int16')
-            
+            meta_feature_cols = sorted([col for col in model_meta_data.columns if col != 'labels_meta'])
+            X_meta = model_meta_data[meta_feature_cols]
+            y_meta = model_meta_data['labels_meta'].astype('int16')
+
             # División de datos para el modelo principal según fechas
             X_train_meta, X_val_meta, y_train_meta, y_val_meta = train_test_split(
                 X_meta, y_meta, 
-                test_size=0.3,
+                test_size=0.2,
                 shuffle=True
             )
             
@@ -538,19 +450,12 @@ class StrategySearcher:
                 depth=hp['cat_main_depth'],
                 learning_rate=hp['cat_main_learning_rate'],
                 l2_leaf_reg=hp['cat_main_l2_leaf_reg'],
-                bootstrap_type=hp['cat_main_bootstrap_type'],
                 eval_metric='Accuracy',
-                store_all_simple_ctr=False,
+                #store_all_simple_ctr=False,
                 thread_count=self.n_jobs,
                 task_type='CPU',
                 verbose=False,
             )
-            
-            # Añadir parámetros específicos según el tipo de bootstrap
-            if hp['cat_main_bootstrap_type'] == 'Bayesian':
-                cat_main_params['bagging_temperature'] = hp['cat_main_bagging_temperature']
-            elif hp['cat_main_bootstrap_type'] == 'Bernoulli':
-                cat_main_params['subsample'] = hp['cat_main_subsample']
 
             model_main = CatBoostClassifier(**cat_main_params)
             model_main.fit(X_train_main, y_train_main, 
@@ -566,19 +471,12 @@ class StrategySearcher:
                 depth=hp['cat_meta_depth'],
                 learning_rate=hp['cat_meta_learning_rate'],
                 l2_leaf_reg=hp['cat_meta_l2_leaf_reg'],
-                bootstrap_type=hp['cat_meta_bootstrap_type'],
                 eval_metric='F1',
-                store_all_simple_ctr=False,
+                #store_all_simple_ctr=False,
                 thread_count=self.n_jobs,
                 task_type='CPU',
                 verbose=False,
             )
-            
-            # Añadir parámetros específicos según el tipo de bootstrap
-            if hp['cat_meta_bootstrap_type'] == 'Bayesian':
-                cat_meta_params['bagging_temperature'] = hp['cat_meta_bagging_temperature']
-            elif hp['cat_meta_bootstrap_type'] == 'Bernoulli':
-                cat_meta_params['subsample'] = hp['cat_meta_subsample']
 
             model_meta = CatBoostClassifier(**cat_meta_params)
             model_meta.fit(X_train_meta, y_train_meta, 
@@ -589,9 +487,25 @@ class StrategySearcher:
             )
 
             # ── evaluación ───────────────────────────────────────────────
-            ds_train_eval = ds_train.sample(n=len(ds_test), replace=False)
-            r2_ins = test_model_one_direction(
-                dataset=ds_train_eval,
+            # Preparar datasets de entrenamiento y prueba
+            n_test = len(ds_test)
+            cut_idx   = ds_train.index[ds_train.index < self.test_start].max()
+            if pd.isna(cut_idx):
+                return None, None
+            ds_train_eval_sample = ds_train.loc[:cut_idx].tail(n_test)
+            if len(ds_train_eval_sample) != n_test:
+                return None, None
+            ds_train_eval_main = ds_train_eval_sample[main_feature_cols].to_numpy()
+            ds_train_eval_meta = ds_train_eval_sample[meta_feature_cols].to_numpy()
+            ds_test_eval_main = ds_test[main_feature_cols].to_numpy()
+            ds_test_eval_meta = ds_test[meta_feature_cols].to_numpy()
+            close_train_eval = ds_train_eval_sample['close'].to_numpy()
+            close_test_eval = ds_test['close'].to_numpy()
+
+            score_ins = tester_one_direction(
+                ds_main=ds_train_eval_main,
+                ds_meta=ds_train_eval_meta,
+                close=close_train_eval,
                 model_main=model_main,
                 model_meta=model_meta,
                 direction=self.direction,
@@ -600,8 +514,10 @@ class StrategySearcher:
                 # n_sim=100,
                 # agg="q05"
             )
-            r2_oos = test_model_one_direction(
-                dataset=ds_test,
+            score_oos = tester_one_direction(
+                ds_main=ds_test_eval_main,
+                ds_meta=ds_test_eval_meta,
+                close=close_test_eval,
                 model_main=model_main,
                 model_meta=model_meta,
                 direction=self.direction,
@@ -612,11 +528,11 @@ class StrategySearcher:
             )
 
             # Manejar valores inválidos
-            if not np.isfinite(r2_ins) or not np.isfinite(r2_oos):
-                r2_ins = -1.0
-                r2_oos = -1.0
+            if not np.isfinite(score_ins) or not np.isfinite(score_oos):
+                score_ins = -1.0
+                score_oos = -1.0
 
-            return (r2_ins, r2_oos), (model_main, model_meta)
+            return (score_ins, score_oos), (model_main, model_meta)
         
         except Exception as e:
             print(f"Error en función de entrenamiento y test: {str(e)}")
@@ -711,58 +627,92 @@ class StrategySearcher:
     
     # ---------------------------------------------------------------------
     def get_train_test_data(self, hp):
-        """Obtiene los datos de entrenamiento y prueba."""
         try:
             if hp is None:
-                # print("⚠️ ERROR: Parámetros inválidos")
                 return None, None
 
-            # Asegurarnos de que tenemos todos los datos necesarios
-            # Convertir el diccionario en una tupla de tuplas para que sea hasheable
+            # ──────────────────────────────────────────────────────────────
+            # 1) Calcular el colchón de barras necesario
+            pad = max(hp.get('periods_main', ()) + hp.get('periods_meta', ()), default=0)
+            pad = int(pad)
+
+            # ──────────────────────────────────────────────────────────────
+            # 2) Paso típico de la serie (mediana -> inmune a huecos)
+            idx = self.base_df.index.sort_values()
+            if pad == 0 or len(idx) < 2:
+                bar_delta = pd.Timedelta(0)
+            else:
+                bar_delta = idx.to_series().diff().dropna().median()
+
+            # ──────────────────────────────────────────────────────────────
+            # 3) Rango extendido para calcular features “con contexto”
+            start_ext = min(self.train_start, self.test_start) - pad * bar_delta
+            if start_ext < idx[0]:                      # evita pedir antes de que existan datos
+                start_ext = idx[0]
+
+            end_ext = max(self.train_end, self.test_end)
+
+            # ──────────────────────────────────────────────────────────────
+            # 4) Obtener features de todo el rango extendido
             hp_tuple = tuple(sorted(hp.items()))
-            full_ds = StrategySearcher._cached_features(
-                self.df_id,
-                min(self.train_start, self.test_start),
-                max(self.train_end, self.test_end),
-                hp_tuple,
-            )
-            if full_ds is None or full_ds.empty:
-                # print("⚠️ ERROR: Dataset vacío")
+            full_ds = self._cached_features(start_ext, end_ext, hp_tuple)
+
+            # y recortar exactamente al rango que interesa
+            full_ds = full_ds.loc[
+                min(self.train_start, self.test_start):
+                max(self.train_end,   self.test_end)
+            ]
+
+            if full_ds.empty:
                 return None, None
-            
-            # Verificar calidad de los datasets
+
+            # ──────────────────────────────────────────────────────────────
+            # 5) Comprobaciones de calidad de features
             feature_cols = full_ds.columns[full_ds.columns.str.contains('feature')]
             if feature_cols.empty:
-                # print("⚠️ ERROR: No hay columnas de características")
                 return None, None
-                
+
             if self.check_constant_features(full_ds[feature_cols].to_numpy('float32'), feature_cols):
-                # print("⚠️ ERROR: Características constantes detectadas")
                 return None, None
-            
-            # Obtener datasets de entrenamiento y prueba
-            test_mask = (full_ds.index >= self.test_start) & (full_ds.index <= self.test_end)
+
+            # ──────────────────────────────────────────────────────────────
+            # 6) Máscaras de train / test
+            test_mask  = (full_ds.index >= self.test_start)  & (full_ds.index <= self.test_end)
             train_mask = (full_ds.index >= self.train_start) & (full_ds.index <= self.train_end)
-            
-            # Verificar que hay datos en ambos períodos
-            if not any(test_mask) or not any(train_mask):
+
+            if not test_mask.any() or not train_mask.any():
                 print("⚠️ ERROR: Períodos sin datos")
                 return None, None
-            
-            # Excluir el período de test del train si hay solapamiento
-            if (self.test_start <= self.train_end and self.test_end >= self.train_start):
-                train_mask = train_mask & ~test_mask
-            
-            train_data = full_ds[train_mask]
-            test_data = full_ds[test_mask]
-            
-            # Verificar tamaño mínimo de datos
+
+            # Evitar solapamiento
+            if self.test_start <= self.train_end and self.test_end >= self.train_start:
+                train_mask &= ~test_mask
+
+            # ──────────────────────────────────────────────────────────────
+            # 7) DataFrames finales, ordenados cronológicamente
+            train_data = full_ds[train_mask].sort_index()
+            test_data  = full_ds[test_mask].sort_index()
+
             if len(train_data) < 100 or len(test_data) < 50:
                 print("⚠️ ERROR: Datasets demasiado pequeños")
                 return None, None
-            
+
             return train_data, test_data
-            
+
         except Exception as e:
             print(f"⚠️ ERROR en get_train_test_data: {str(e)}")
             return None, None
+        
+    # ------- cache interno, sin LRU global ------------------
+    def _cached_features(self, start, end, hp_tuple):
+        k = (start, end, hp_tuple)
+        if k not in self._feature_cache:
+            hp = dict(hp_tuple)
+            ds = self.base_df.loc[start:end].copy()
+            self._feature_cache[k] = get_features(ds, hp)
+        return self._feature_cache[k]
+
+    def clear_cache(self):
+        """Vacía SOLO las features derivadas; mantiene base_df viva."""
+        self._feature_cache.clear()
+        gc.collect()

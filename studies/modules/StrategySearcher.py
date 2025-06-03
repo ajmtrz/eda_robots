@@ -416,9 +416,13 @@ class StrategySearcher:
         try:
             # ---------- 1) main model_main ----------
             # Get feature columns and rename them to follow f%d pattern
-            main_feature_cols = sorted([col for col in model_main_data.columns if col != 'labels_main'])
+            main_feature_cols = [col for col in model_main_data.columns if col != 'labels_main']
+            print("\n=== Verificación de columnas principales ===")
+            print("Columnas de entrenamiento main:", main_feature_cols)
+            
             X_main = model_main_data[main_feature_cols]
             y_main = model_main_data['labels_main'].astype('int16')
+            
             # División de datos para el modelo principal según fechas
             X_train_main, X_val_main, y_train_main, y_val_main = train_test_split(
                 X_main, y_main, 
@@ -431,7 +435,10 @@ class StrategySearcher:
                 return None, None
             
             # ---------- 2) meta‑modelo ----------
-            meta_feature_cols = sorted([col for col in model_meta_data.columns if col != 'labels_meta'])
+            meta_feature_cols = [col for col in model_meta_data.columns if col != 'labels_meta']
+            print("\n=== Verificación de columnas meta ===")
+            print("Columnas de entrenamiento meta:", meta_feature_cols)
+            
             X_meta = model_meta_data[meta_feature_cols]
             y_meta = model_meta_data['labels_meta'].astype('int16')
 
@@ -494,9 +501,23 @@ class StrategySearcher:
             cut_idx   = ds_train.index[ds_train.index < self.test_start].max()
             if pd.isna(cut_idx):
                 return None, None
+                
             ds_train_eval_sample = ds_train.loc[:cut_idx].tail(n_test)
             if len(ds_train_eval_sample) != n_test:
                 return None, None
+                
+            print("\n=== Verificación de columnas en evaluación ===")
+            print("Columnas de test main:", ds_test[main_feature_cols].columns)
+            print("Columnas de test meta:", ds_test[meta_feature_cols].columns)
+
+            # Verificar orden exacto
+            if not (ds_test[main_feature_cols].columns == main_feature_cols).all():
+                print("⚠️ ERROR: El orden de las columnas main no coincide en test")
+                return None, None
+            if not (ds_test[meta_feature_cols].columns == meta_feature_cols).all():
+                print("⚠️ ERROR: El orden de las columnas meta no coincide en test")
+                return None, None
+                
             ds_train_eval_main = ds_train_eval_sample[main_feature_cols].to_numpy()
             ds_train_eval_meta = ds_train_eval_sample[meta_feature_cols].to_numpy()
             ds_test_eval_main = ds_test[main_feature_cols].to_numpy()

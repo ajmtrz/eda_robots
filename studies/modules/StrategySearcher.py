@@ -2,6 +2,7 @@ import gc
 import math
 import time
 import weakref
+import traceback
 import numpy as np
 import pandas as pd
 from datetime import datetime
@@ -45,7 +46,7 @@ class StrategySearcher:
         history_path: str = r"/mnt/c/Users/Administrador/AppData/Roaming/MetaQuotes/Terminal/Common/Files/",
         search_type: str = 'clusters',
         search_subtype: str = 'simple',
-        labels_deterministic: bool = True,
+        labels_deterministic: bool = False,
         tag: str = "",
     ):
         self.symbol = symbol
@@ -74,9 +75,6 @@ class StrategySearcher:
             self.base_df = get_prices(symbol, timeframe, history_path)
             self.base_df = self.base_df[~self.base_df.index.duplicated()].sort_index()
             _BASES[key] = self.base_df
-
-        # cache de features POR INSTANCIA --------------------
-        self._feature_cache: dict[tuple, pd.DataFrame] = {}
         
         # Configuración de sklearn y optuna
         optuna.logging.set_verbosity(optuna.logging.WARNING)
@@ -98,9 +96,6 @@ class StrategySearcher:
         
         for i in range(self.n_models):
             try:
-                # Limpiar caché antes de cada modelo
-                self.clear_cache()
-                
                 # Generar un seed único para este modelo
                 model_seed = int(time.time() * 1000) + i
 
@@ -153,11 +148,8 @@ class StrategySearcher:
                             flush=True,
                         )
 
-                        # Forzar limpieza de memoria
-                        gc.collect()
                     except Exception as e:
                         print(f"⚠️ ERROR en log_trial: {str(e)}")
-                        gc.collect()
 
                 study.optimize(
                     search_func,
@@ -194,7 +186,6 @@ class StrategySearcher:
                 export_model_to_ONNX(**export_params)
                 
             except Exception as e:
-                import traceback
                 print(f"\nError procesando modelo {i}:")
                 print(f"Error: {str(e)}")
                 print("Traceback:")
@@ -229,7 +220,6 @@ class StrategySearcher:
 
                 if len(model_main_data) <= hp["label_max"]:
                     continue
-
                 model_main_data = get_labels_one_direction(
                     model_main_data,
                     markup=hp['markup'],
@@ -417,9 +407,6 @@ class StrategySearcher:
             # ---------- 1) main model_main ----------
             # Get feature columns and rename them to follow f%d pattern
             main_feature_cols = [col for col in model_main_data.columns if col != 'labels_main']
-            print("\n=== Verificación de columnas principales ===")
-            print("Columnas de entrenamiento main:", main_feature_cols)
-            
             X_main = model_main_data[main_feature_cols]
             y_main = model_main_data['labels_main'].astype('int16')
             
@@ -436,9 +423,6 @@ class StrategySearcher:
             
             # ---------- 2) meta‑modelo ----------
             meta_feature_cols = [col for col in model_meta_data.columns if col != 'labels_meta']
-            print("\n=== Verificación de columnas meta ===")
-            print("Columnas de entrenamiento meta:", meta_feature_cols)
-            
             X_meta = model_meta_data[meta_feature_cols]
             y_meta = model_meta_data['labels_meta'].astype('int16')
 
@@ -461,11 +445,11 @@ class StrategySearcher:
                 l2_leaf_reg=hp['cat_main_l2_leaf_reg'],
                 eval_metric='Accuracy',
                 #store_all_simple_ctr=False,
-                thread_count=self.n_jobs,
+                allow_writing_files=False,
+                thread_count=-1,
                 task_type='CPU',
                 verbose=False,
             )
-
             model_main = CatBoostClassifier(**cat_main_params)
             model_main.fit(X_train_main, y_train_main, 
                            eval_set=Pool(X_val_main, y_val_main), 
@@ -482,11 +466,11 @@ class StrategySearcher:
                 l2_leaf_reg=hp['cat_meta_l2_leaf_reg'],
                 eval_metric='F1',
                 #store_all_simple_ctr=False,
-                thread_count=self.n_jobs,
+                allow_writing_files=False,
+                thread_count=-1,
                 task_type='CPU',
                 verbose=False,
             )
-
             model_meta = CatBoostClassifier(**cat_meta_params)
             model_meta.fit(X_train_meta, y_train_meta, 
                            eval_set=Pool(X_val_meta, y_val_meta), 
@@ -505,10 +489,6 @@ class StrategySearcher:
             ds_train_eval_sample = ds_train.loc[:cut_idx].tail(n_test)
             if len(ds_train_eval_sample) != n_test:
                 return None, None
-                
-            print("\n=== Verificación de columnas en evaluación ===")
-            print("Columnas de test main:", ds_test[main_feature_cols].columns)
-            print("Columnas de test meta:", ds_test[meta_feature_cols].columns)
 
             # Verificar orden exacto
             if not (ds_test[main_feature_cols].columns == main_feature_cols).all():
@@ -524,8 +504,7 @@ class StrategySearcher:
             ds_test_eval_meta = ds_test[meta_feature_cols].to_numpy()
             close_train_eval = ds_train_eval_sample['close'].to_numpy()
             close_test_eval = ds_test['close'].to_numpy()
-
-            score_ins = robust_oos_score_one_direction(
+            score_ins = tester_one_direction(
                 ds_main=ds_train_eval_main,
                 ds_meta=ds_train_eval_meta,
                 close=close_train_eval,
@@ -534,10 +513,10 @@ class StrategySearcher:
                 direction=self.direction,
                 plot=False,
                 prd='insample',
-                n_sim=100,
-                agg="q05"
+                # n_sim=100,
+                # agg="q05"
             )
-            score_oos = robust_oos_score_one_direction(
+            score_oos = tester_one_direction(
                 ds_main=ds_test_eval_main,
                 ds_meta=ds_test_eval_meta,
                 close=close_test_eval,
@@ -546,8 +525,8 @@ class StrategySearcher:
                 direction=self.direction,
                 plot=False,
                 prd='outofsample',
-                n_sim=100,
-                agg="q05"
+                # n_sim=100,
+                # agg="q05"
             )
 
             # Manejar valores inválidos
@@ -630,7 +609,6 @@ class StrategySearcher:
                     window_size=hp['window_size'],
                     step=hp.get('step', None),
                 )
-            
             scores, models = self._evaluate_clusters(ds_train, ds_test, hp)
             if scores is None or models is None:
                 return -1.0, -1.0
@@ -678,7 +656,8 @@ class StrategySearcher:
             # ──────────────────────────────────────────────────────────────
             # 4) Obtener features de todo el rango extendido
             hp_tuple = tuple(sorted(hp.items()))
-            full_ds = self._cached_features(start_ext, end_ext, hp_tuple)
+            ds_slice = self.base_df.loc[start_ext:end_ext].copy()
+            full_ds = get_features(ds_slice, dict(hp_tuple))
 
             # y recortar exactamente al rango que interesa
             full_ds = full_ds.loc[
@@ -725,17 +704,3 @@ class StrategySearcher:
         except Exception as e:
             print(f"⚠️ ERROR en get_train_test_data: {str(e)}")
             return None, None
-        
-    # ------- cache interno, sin LRU global ------------------
-    def _cached_features(self, start, end, hp_tuple):
-        k = (start, end, hp_tuple)
-        if k not in self._feature_cache:
-            hp = dict(hp_tuple)
-            ds = self.base_df.loc[start:end].copy()
-            self._feature_cache[k] = get_features(ds, hp)
-        return self._feature_cache[k]
-
-    def clear_cache(self):
-        """Vacía SOLO las features derivadas; mantiene base_df viva."""
-        self._feature_cache.clear()
-        gc.collect()

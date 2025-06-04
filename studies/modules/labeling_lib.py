@@ -493,13 +493,24 @@ def get_features(data: pd.DataFrame, hp):
         for p in periods_meta:
             for s in stats_meta:
                 colnames.extend([f"{p}_{s}_meta_feature"])
+    # ───────────- NUEVO BLOQUE FINAL -───────────
     df = pd.DataFrame(feats, columns=colnames, index=index)
-    df["open"] = data["open"]
-    df["high"] = data["high"]
-    df["low"] = data["low"]
-    df["close"] = data["close"]
-    df["volume"] = data["volume"]
-    return df.replace([np.inf, -np.inf], np.nan).dropna()
+
+    # 1) añadir OHLCV **antes** de limpiar para que sufran el mismo filtrado
+    ohlcv = data.loc[index, ["open", "high", "low", "close", "volume"]]
+    df = pd.concat([df, ohlcv], axis=1)
+
+    # 2) limpiar Inf/NaN SOLO en columnas de features
+    feat_cols = df.filter(like='_feature').columns
+    df[feat_cols] = df[feat_cols].replace([np.inf, -np.inf], np.nan)
+    df = df.dropna(subset=feat_cols)
+
+    # 3) verificación — el close debe coincidir al 100 %
+    if not np.allclose(df["close"].values,
+                    ohlcv.loc[df.index, "close"].values):
+        raise RuntimeError("❌ 'close' desalineado tras generar features")
+
+    return df
 
 # TREND OR NEUTRAL BASED LABELING
 @njit

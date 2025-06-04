@@ -444,9 +444,9 @@ class StrategySearcher:
                 learning_rate=hp['cat_main_learning_rate'],
                 l2_leaf_reg=hp['cat_main_l2_leaf_reg'],
                 eval_metric='Accuracy',
-                #store_all_simple_ctr=False,
+                store_all_simple_ctr=False,
                 allow_writing_files=False,
-                thread_count=-1,
+                thread_count=self.n_jobs,
                 task_type='CPU',
                 verbose=False,
             )
@@ -465,9 +465,9 @@ class StrategySearcher:
                 learning_rate=hp['cat_meta_learning_rate'],
                 l2_leaf_reg=hp['cat_meta_l2_leaf_reg'],
                 eval_metric='F1',
-                #store_all_simple_ctr=False,
+                store_all_simple_ctr=False,
                 allow_writing_files=False,
-                thread_count=-1,
+                thread_count=self.n_jobs,
                 task_type='CPU',
                 verbose=False,
             )

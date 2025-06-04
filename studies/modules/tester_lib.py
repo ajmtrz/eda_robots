@@ -1,4 +1,5 @@
 import traceback
+from threading import Lock
 from numba import jit, njit, prange
 import numpy as np
 import pandas as pd
@@ -402,25 +403,29 @@ update_registered_converter(
     parser=skl2onnx_parser_castboost_classifier,
     options={"nocl": [True, False], "zipmap": [True, False]}
 )
-# 1) ───────── cache global de sesiones ───────────────────────────
+
 _ONNX_CACHE: dict[int, rt.InferenceSession] = {}
+_ONNX_LOCK = Lock()
 
 def _predict_batch(model, X_base, noise_levels):
     sid = id(model)
     sess = _ONNX_CACHE.get(sid)
+
     if sess is None:
-        onnx_model = convert_sklearn(
-            model,
-            initial_types=[('x', FloatTensorType([None, X_base.shape[1]]))],
-            target_opset={"": 18, "ai.onnx.ml": 2},
-            options={id(model): {'zipmap': False}}
-        )
-        providers = ['CPUExecutionProvider']
-        sess = rt.InferenceSession(
-            onnx_model.SerializeToString(),
-            providers=providers
-        )
-        _ONNX_CACHE[sid] = sess
+        with _ONNX_LOCK:
+            sess = _ONNX_CACHE.get(sid)
+            if sess is None:
+                onnx_model = convert_sklearn(
+                    model,
+                    initial_types=[('x', FloatTensorType([None, X_base.shape[1]]))],
+                    target_opset={"": 18, "ai.onnx.ml": 2},
+                    options={id(model): {'zipmap': False}}
+                )
+                sess = rt.InferenceSession(
+                    onnx_model.SerializeToString(),
+                    providers=['CPUExecutionProvider']
+                )
+                _ONNX_CACHE[sid] = sess
 
     iname = sess.get_inputs()[0].name
     onnx_run = sess.run

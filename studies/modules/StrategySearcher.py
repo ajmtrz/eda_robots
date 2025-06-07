@@ -1,7 +1,6 @@
 import gc
 import math
 import time
-import weakref
 import traceback
 import numpy as np
 import pandas as pd
@@ -25,8 +24,6 @@ from modules.tester_lib import (
 )
 from modules.export_lib import export_model_to_ONNX
 
-_BASES = weakref.WeakValueDictionary()
-
 class StrategySearcher:
     def __init__(
         self,
@@ -40,7 +37,6 @@ class StrategySearcher:
         pruner_type: str = 'hyperband',
         n_trials: int = 500,
         n_models: int = 10,
-        n_jobs: int = -1,
         models_export_path: str = r'/mnt/c/Users/Administrador/AppData/Roaming/MetaQuotes/Terminal/6C3C6A11D1C3791DD4DBF45421BF8028/MQL5/Files/',
         include_export_path: str = r'/mnt/c/Users/Administrador/AppData/Roaming/MetaQuotes/Terminal/6C3C6A11D1C3791DD4DBF45421BF8028/MQL5/Include/ajmtrz/include/Dmitrievsky',
         history_path: str = r"/mnt/c/Users/Administrador/AppData/Roaming/MetaQuotes/Terminal/Common/Files/",
@@ -65,16 +61,8 @@ class StrategySearcher:
         self.pruner_type = pruner_type
         self.n_trials = n_trials
         self.n_models = n_models
-        self.n_jobs = n_jobs
         self.tag = tag
-        
-        key = (symbol, timeframe)
-        if key in _BASES:
-            self.base_df = _BASES[key]
-        else:
-            self.base_df = get_prices(symbol, timeframe, history_path)
-            self.base_df = self.base_df[~self.base_df.index.duplicated()].sort_index()
-            _BASES[key] = self.base_df
+        self.base_df = get_prices(symbol, timeframe, history_path)
         
         # Configuración de sklearn y optuna
         optuna.logging.set_verbosity(optuna.logging.WARNING)
@@ -156,8 +144,7 @@ class StrategySearcher:
                     n_trials=self.n_trials,
                     gc_after_trial=True,
                     show_progress_bar=False,
-                    callbacks=[log_trial],
-                    n_jobs=self.n_jobs,
+                    callbacks=[log_trial]
                 )
 
                 # Verificar y exportar el mejor modelo
@@ -446,7 +433,7 @@ class StrategySearcher:
                 eval_metric='Accuracy',
                 store_all_simple_ctr=False,
                 allow_writing_files=False,
-                thread_count=self.n_jobs,
+                thread_count=-1,
                 task_type='CPU',
                 verbose=False,
             )
@@ -467,7 +454,7 @@ class StrategySearcher:
                 eval_metric='F1',
                 store_all_simple_ctr=False,
                 allow_writing_files=False,
-                thread_count=self.n_jobs,
+                thread_count=-1,
                 task_type='CPU',
                 verbose=False,
             )

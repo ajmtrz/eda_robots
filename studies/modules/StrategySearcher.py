@@ -12,6 +12,7 @@ from optuna.pruners import HyperbandPruner, SuccessiveHalvingPruner
 #from optuna.integration import CatBoostPruningCallback
 from sklearn.model_selection import train_test_split
 from catboost import CatBoostClassifier, Pool
+from mapie.classification import CrossConformalClassifier
 from modules.labeling_lib import (
     get_prices, get_features, get_labels_one_direction,
     sliding_window_clustering, clustering_simple,
@@ -37,6 +38,7 @@ class StrategySearcher:
         pruner_type: str = 'hyperband',
         n_trials: int = 500,
         n_models: int = 10,
+        n_jobs: int = 1,
         models_export_path: str = r'/mnt/c/Users/Administrador/AppData/Roaming/MetaQuotes/Terminal/6C3C6A11D1C3791DD4DBF45421BF8028/MQL5/Files/',
         include_export_path: str = r'/mnt/c/Users/Administrador/AppData/Roaming/MetaQuotes/Terminal/6C3C6A11D1C3791DD4DBF45421BF8028/MQL5/Include/ajmtrz/include/Dmitrievsky',
         history_path: str = r"/mnt/c/Users/Administrador/AppData/Roaming/MetaQuotes/Terminal/Common/Files/",
@@ -61,6 +63,7 @@ class StrategySearcher:
         self.pruner_type = pruner_type
         self.n_trials = n_trials
         self.n_models = n_models
+        self.n_jobs = n_jobs
         self.tag = tag
         self.base_df = get_prices(symbol, timeframe, history_path)
         
@@ -75,6 +78,7 @@ class StrategySearcher:
         search_funcs = {
             'clusters': self.search_clusters,
             'markov': self.search_markov,
+            'mapie': self.search_mapie,
         }
         
         if self.search_type not in search_funcs:
@@ -144,7 +148,8 @@ class StrategySearcher:
                     n_trials=self.n_trials,
                     gc_after_trial=True,
                     show_progress_bar=False,
-                    callbacks=[log_trial]
+                    callbacks=[log_trial],
+                    n_jobs=self.n_jobs,
                 )
 
                 # Verificar y exportar el mejor modelo
@@ -292,72 +297,58 @@ class StrategySearcher:
             
         return False
     
-    def suggest_all_params(self, trial: optuna.Trial) -> Dict[str, Any]:
-        """Sugiere todos los parámetros de una vez para permitir muestreo multivariado."""
+    def suggest_all_params(self, trial: 'optuna.Trial') -> dict:
         try:
             MAX_MAIN_PERIODS = 15
             MAX_META_PERIODS = 3
             MAX_MAIN_STATS = 5
             MAX_META_STATS = 3
-            # Todas las estadísticas disponibles
             all_stats = [
                 "std", "skew", "zscore", "range", "mad", "entropy",
                 "slope", "momentum", "autocorr", "max_dd", "hurst", "corr_skew",
                 "sharpe", "fisher", "chande", "var", "eff_ratio", "kurt",
                 "jump_vol", "fractal", "vol_skew", "approx_entropy",
             ]
-            # Parámetros base comunes
             params = {
-                'markup': trial.suggest_float("markup", 0.1, 1.0, log=True),  # Multiplicativo - mantiene log
-                'label_max': trial.suggest_int('label_max', 1, 15, log=True),  # Períodos - mantiene log
-                'atr_period': trial.suggest_int('atr_period', 5, 50, log=True),  # Períodos - mantiene log
-                
-                # Parámetros de CatBoost main
-                'cat_main_iterations': trial.suggest_int('cat_main_iterations', 100, 1000),  # Lineal - quita log
-                'cat_main_depth': trial.suggest_int('cat_main_depth', 3, 10),  # Discreto - quita log
-                'cat_main_learning_rate': trial.suggest_float('cat_main_learning_rate', 0.01, 0.3, log=True),  # Multiplicativo - mantiene log
-                'cat_main_l2_leaf_reg': trial.suggest_float('cat_main_l2_leaf_reg', 0.1, 10.0, log=True),  # Regularización - mantiene log
-                'cat_main_early_stopping': trial.suggest_int('cat_main_early_stopping', 20, 200),  # Lineal - quita log
-                
-                # Parámetros de CatBoost meta
-                'cat_meta_iterations': trial.suggest_int('cat_meta_iterations', 100, 1000),  # Lineal - quita log
-                'cat_meta_depth': trial.suggest_int('cat_meta_depth', 3, 10),  # Discreto - quita log
-                'cat_meta_learning_rate': trial.suggest_float('cat_meta_learning_rate', 0.01, 0.3, log=True),  # Multiplicativo - mantiene log
-                'cat_meta_l2_leaf_reg': trial.suggest_float('cat_meta_l2_leaf_reg', 0.1, 10.0, log=True),  # Regularización - mantiene log
-                'cat_meta_early_stopping': trial.suggest_int('cat_meta_early_stopping', 20, 200),  # Lineal - quita log
-                
-                # Períodos y estadísticas en el formato esperado
+                'markup': trial.suggest_float("markup", 0.1, 1.0, log=True),
+                'label_max': trial.suggest_int('label_max', 1, 15, log=True),
+                'atr_period': trial.suggest_int('atr_period', 5, 50, log=True),
+                'cat_main_iterations': trial.suggest_int('cat_main_iterations', 100, 1000),
+                'cat_main_depth': trial.suggest_int('cat_main_depth', 3, 10),
+                'cat_main_learning_rate': trial.suggest_float('cat_main_learning_rate', 0.01, 0.3, log=True),
+                'cat_main_l2_leaf_reg': trial.suggest_float('cat_main_l2_leaf_reg', 0.1, 10.0, log=True),
+                'cat_main_early_stopping': trial.suggest_int('cat_main_early_stopping', 20, 200),
+                'cat_meta_iterations': trial.suggest_int('cat_meta_iterations', 100, 1000),
+                'cat_meta_depth': trial.suggest_int('cat_meta_depth', 3, 10),
+                'cat_meta_learning_rate': trial.suggest_float('cat_meta_learning_rate', 0.01, 0.3, log=True),
+                'cat_meta_l2_leaf_reg': trial.suggest_float('cat_meta_l2_leaf_reg', 0.1, 10.0, log=True),
+                'cat_meta_early_stopping': trial.suggest_int('cat_meta_early_stopping', 20, 200),
                 'max_main_periods': trial.suggest_int('max_main_periods', 3, MAX_MAIN_PERIODS, log=True),
-                'max_meta_periods': trial.suggest_int('max_meta_periods', 1, MAX_META_PERIODS, log=True),
                 'max_main_stats': trial.suggest_int('max_main_stats', 1, MAX_MAIN_STATS, log=True),
-                'max_meta_stats': trial.suggest_int('max_meta_stats', 1, MAX_META_STATS, log=True),
             }
-
             # ---------- PERÍODOS MAIN ----------
             periods_main = [trial.suggest_int(f'period_main_{i}', 3, 200, log=True)
                             for i in range(MAX_MAIN_PERIODS)]
             periods_main = sorted(set(periods_main))
             params['periods_main'] = tuple(periods_main[:params['max_main_periods']])
-
-            # ---------- PERÍODOS META ----------
-            periods_meta = [trial.suggest_int(f'period_meta_{i}', 3, 7)
-                            for i in range(MAX_META_PERIODS)]
-            periods_meta = sorted(set(periods_meta))
-            params['periods_meta'] = tuple(periods_meta[:params['max_meta_periods']])
-
             # ---------- STATS MAIN ----------
             stats_main = [trial.suggest_categorical(f'stat_main_{i}', all_stats)
                         for i in range(MAX_MAIN_STATS)]
             stats_main = list(dict.fromkeys(stats_main))
             params['stats_main'] = tuple(stats_main[:params['max_main_stats']])
-
-            # ---------- STATS META ----------
-            stats_meta = [trial.suggest_categorical(f'stat_meta_{i}', all_stats)
-                        for i in range(MAX_META_STATS)]
-            stats_meta = list(dict.fromkeys(stats_meta))
-            params['stats_meta'] = tuple(stats_meta[:params['max_meta_stats']])
-
-            # Parámetros específicos según el tipo de búsqueda
+            # ---------- Hiperparámetros meta solo si no es mapie ----------
+            if self.search_type in ['clusters', 'markov']:
+                params['max_meta_periods'] = trial.suggest_int('max_meta_periods', 1, MAX_META_PERIODS, log=True)
+                params['max_meta_stats'] = trial.suggest_int('max_meta_stats', 1, MAX_META_STATS, log=True)
+                periods_meta = [trial.suggest_int(f'period_meta_{i}', 3, 7)
+                                for i in range(MAX_META_PERIODS)]
+                periods_meta = sorted(set(periods_meta))
+                params['periods_meta'] = tuple(periods_meta[:params['max_meta_periods']])
+                stats_meta = [trial.suggest_categorical(f'stat_meta_{i}', all_stats)
+                            for i in range(MAX_META_STATS)]
+                stats_meta = list(dict.fromkeys(stats_meta))
+                params['stats_meta'] = tuple(stats_meta[:params['max_meta_stats']])
+            # ---------- Otros hiperparámetros específicos ----------
             if self.search_type == 'markov':
                 params.update({
                     'model_type': trial.suggest_categorical('model_type', ['GMMHMM', 'HMM', 'VARHMM']),
@@ -373,13 +364,15 @@ class StrategySearcher:
                     params.update({
                         'window_size': trial.suggest_int('window_size', 100, 500, step=50)
                     })
-
+            elif self.search_type == 'mapie':
+                params.update({
+                    'mapie_confidence_level': trial.suggest_float('mapie_confidence_level', 0.7, 0.99),
+                    'mapie_cv': trial.suggest_int('mapie_cv', 3, 10),
+                })
             # Actualizar trial.params con los valores procesados
             for key, value in params.items():
                 trial.set_user_attr(key, value)
-
             return params
-            
         except Exception as e:
             print(f"⚠️ ERROR en suggest_all_params: {str(e)}")
             return None
@@ -607,6 +600,79 @@ class StrategySearcher:
         
         except Exception as e:
             print(f"Error en search_clusters: {str(e)}")
+            return -1.0, -1.0
+
+    def search_mapie(self, trial) -> tuple[float, float]:
+        """Implementa la búsqueda de estrategias usando conformal prediction (MAPIE) con CatBoost, usando el mismo conjunto de features para ambos modelos."""
+        try:
+            hp = self.suggest_all_params(trial)
+            ds_train, ds_test = self.get_train_test_data(hp)
+            if ds_train is None or ds_test is None:
+                return -1.0, -1.0
+
+            # Etiquetado
+            ds_train = get_labels_one_direction(
+                ds_train,
+                markup=hp['markup'],
+                max_val=hp['label_max'],
+                direction=self.direction,
+                atr_period=hp['atr_period'],
+                deterministic=self.labels_deterministic,
+            )
+            # Selección de features: todas las columnas *_feature
+            feature_cols = [col for col in ds_train.columns if col.endswith('_feature')]
+            X = ds_train[feature_cols]
+            y = ds_train['labels_main'] if 'labels_main' in ds_train.columns else ds_train['labels']
+
+            # CatBoost como estimador base para MAPIE
+            catboost_params = dict(
+                iterations=hp['cat_main_iterations'],
+                depth=hp['cat_main_depth'],
+                learning_rate=hp['cat_main_learning_rate'],
+                l2_leaf_reg=hp['cat_main_l2_leaf_reg'],
+                eval_metric='Accuracy',
+                thread_count=-1,
+                task_type='CPU',
+                verbose=False,
+            )
+            base_estimator = CatBoostClassifier(**catboost_params)
+
+            mapie = CrossConformalClassifier(
+                estimator=base_estimator,
+                confidence_level=hp.get('mapie_confidence_level', 0.9),
+                cv=hp.get('mapie_cv', 5),
+            )
+            mapie.fit_conformalize(X, y)
+            predicted, y_prediction_sets = mapie.predict_set(X)
+            y_prediction_sets = np.squeeze(y_prediction_sets, axis=-1)
+            set_sizes = np.sum(y_prediction_sets, axis=1)
+            ds_train['conformal_labels'] = 0.0
+            ds_train.loc[set_sizes == 1, 'conformal_labels'] = 1.0
+            ds_train['meta_labels'] = 0.0
+            ds_train.loc[predicted == y, 'meta_labels'] = 1.0
+
+            # Ambos modelos usan el mismo conjunto de features
+            # Main: solo donde meta_labels==1
+            model_main_data = ds_train[ds_train['meta_labels'] == 1][feature_cols + ['labels_main']].copy()
+            # Meta: todas las filas, target = conformal_labels
+            model_meta_data = ds_train[feature_cols].copy()
+            model_meta_data['labels_meta'] = ds_train['conformal_labels']
+
+            # Llamar a fit_final_models
+            scores, models = self.fit_final_models(
+                model_main_data=model_main_data,
+                model_meta_data=model_meta_data,
+                ds_train=ds_train,
+                ds_test=ds_test,
+                hp=hp.copy()
+            )
+            if scores is None or models is None:
+                return -1.0, -1.0
+            trial.set_user_attr('models', models)
+            trial.set_user_attr('scores', scores)
+            return scores[0], scores[1]
+        except Exception as e:
+            print(f"Error en search_mapie: {str(e)}")
             return -1.0, -1.0
 
     # =========================================================================

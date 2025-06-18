@@ -114,58 +114,54 @@ def tester(dataset, plot=False):
 # ───────────────────────────────────────────────
 # NUEVA FUNCIÓN evaluate_report
 # ───────────────────────────────────────────────
+from numba import njit
+import numpy as np
+
 @njit
 def evaluate_report(report: np.ndarray) -> float:
-    eps = 1e-6
-
-    # Verificación básica - necesitamos al menos 2 puntos para un reporte válido
-    if len(report) < 2:
+    if report.size < 3:
         return -1.0
 
-    # Calcular los retornos individuales
-    returns = np.diff(report)
-    num_trades = len(returns)
-    if num_trades < 3:
-        return -1.0
-    
-    # Calcular R² y sea positivo
-    r2_raw = _signed_r2(report)
-    if r2_raw > 0:
-        r2_raw *= 1.0
-    else:
-        return -1.0
-    
-    # ────────────────────────
-    # MÉTRICAS BASE
-    gains = returns[returns > 0]
-    losses = -returns[returns < 0]
-    profit_factor = np.sum(gains) / np.sum(losses) if np.sum(losses) > 0 else eps
+    ret = np.diff(report)
+    n   = ret.size
+    if n < 5:
+        return -1.0                     # curva demasiado corta
 
-    equity_curve = report
-    peak = equity_curve[0]
+    # 1) slope * signed-R²
+    sr2 = _signed_r2(report)           # ∈ [-1,1]
+    if sr2 <= 0.0:                     # exigimos pendiente positiva
+        return -1.0
+    sr2_norm = 0.5 * (sr2 + 1.0)       # → [0,1]
+
+    # 2) profit factor y return/DD
+    gains  = ret[ret > 0.0].sum()
+    losses = -ret[ret < 0.0].sum()
+    if losses == 0.0:
+        losses = 1e-9
+    pf  = gains / losses
+    pf_norm  = 1.0 - np.exp(-pf / 3.0)
+
+    peak = report[0]
     max_dd = 0.0
-    for x in equity_curve:
-        peak = max(peak, x)
-        max_dd = max(max_dd, peak - x)
-    total_return = equity_curve[-1] - equity_curve[0]
-    return_dd_ratio = total_return / max_dd if max_dd > 0 else eps
+    for x in report:
+        if x > peak:
+            peak = x
+        dd = peak - x
+        if dd > max_dd:
+            max_dd = dd
+    rdd = (report[-1] - report[0]) / (max_dd + 1e-9)
+    rdd_norm = 1.0 - np.exp(-rdd / 4.0)
 
-    # ────────────────────────
-    # PUNTAJE COMPUESTO BASE
-    base_score = (
-        (profit_factor * 0.4) +
-        (return_dd_ratio * 0.6)
-    )
+    # 3) bonus de trades (logística)
+    TRG   = 300.0        # n trades donde bonus = 0.5
+    SCALE = 100.0        # controla la pendiente
+    bonus = 1.0 / (1.0 + np.exp(-(n - TRG) / SCALE))
 
-    # ────────────────────────
-    # Factor de trades
-    trade_multiplier = np.log10(num_trades)
-    
-    # ────────────────────────
-    # Score final
-    final_score = (0.5 * base_score + 0.5 * r2_raw) * trade_multiplier
-    
-    return final_score
+    # 4) score agregado (ponderaciones iguales)
+    core  = (pf_norm + rdd_norm + sr2_norm) / 3.0
+    score = core * bonus
+
+    return score
 
 def tester_one_direction(
         ds_main: np.ndarray,

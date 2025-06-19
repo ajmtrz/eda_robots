@@ -118,6 +118,23 @@ from numba import njit
 import numpy as np
 
 @njit
+def max_gap_between_highs(equity: np.ndarray) -> int:
+    last_high = equity[0]
+    gap = 0
+    max_gap = 0
+    for x in equity:
+        if x > last_high:
+            last_high = x
+            if gap > max_gap:
+                max_gap = gap
+            gap = 0
+        else:
+            gap += 1
+    if gap > max_gap:
+        max_gap = gap
+    return max_gap
+
+@njit
 def evaluate_report(report: np.ndarray) -> float:
     if report.size < 3:
         return -1.0
@@ -139,7 +156,7 @@ def evaluate_report(report: np.ndarray) -> float:
     if losses == 0.0:
         losses = 1e-9
     pf  = gains / losses
-    pf_norm  = 1.0 - np.exp(-pf / 3.0)
+    pf_norm  = 1.0 - np.exp(-pf / 2.0)
 
     peak = report[0]
     max_dd = 0.0
@@ -152,14 +169,22 @@ def evaluate_report(report: np.ndarray) -> float:
     rdd = (report[-1] - report[0]) / (max_dd + 1e-9)
     rdd_norm = 1.0 - np.exp(-rdd / 4.0)
 
-    # 3) bonus de trades (logística)
+    # 3) expected payoff por trade
+    exp_payoff = ret.mean()
+    payoff_norm = (np.tanh(exp_payoff * 100.0) + 1.0) / 2.0
+
+    # 4) estancamiento
+    stagn = max_gap_between_highs(report)
+    stagn_pen = 1.0 / (1.0 + stagn / 1000.0)
+
+    # 5) bonus de trades (logística)
     TRG   = 300.0        # n trades donde bonus = 0.5
     SCALE = 100.0        # controla la pendiente
     bonus = 1.0 / (1.0 + np.exp(-(n - TRG) / SCALE))
 
-    # 4) score agregado (ponderaciones iguales)
-    core  = (pf_norm + rdd_norm + sr2_norm) / 3.0
-    score = core * bonus
+    # 6) score agregado (ponderaciones iguales)
+    core  = (pf_norm + rdd_norm + sr2_norm + payoff_norm) / 4.0
+    score = core * bonus * stagn_pen
 
     return score
 

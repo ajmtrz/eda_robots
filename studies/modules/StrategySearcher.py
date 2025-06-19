@@ -14,11 +14,13 @@ from sklearn.model_selection import train_test_split
 from catboost import CatBoostClassifier, Pool
 from mapie.classification import CrossConformalClassifier
 from modules.labeling_lib import (
-    get_prices, get_features, get_labels_one_direction,
+    get_prices, get_features,
+    get_labels_one_direction, get_labels,
     sliding_window_clustering, clustering_simple,
     markov_regime_switching_simple, markov_regime_switching_advanced
 )
 from modules.tester_lib import (
+    tester,
     tester_one_direction,
     robust_oos_score_one_direction,
     _ONNX_CACHE
@@ -50,6 +52,8 @@ class StrategySearcher:
         self.symbol = symbol
         self.timeframe = timeframe
         self.direction = direction
+        if self.direction not in {'buy', 'sell', 'both'}:
+            raise ValueError("direction must be 'buy', 'sell', or 'both'")
         self.train_start = train_start
         self.train_end = train_end
         self.test_start = test_start
@@ -212,14 +216,22 @@ class StrategySearcher:
 
                 if len(model_main_data) <= hp["label_max"]:
                     continue
-                model_main_data = get_labels_one_direction(
-                    model_main_data,
-                    markup=hp['markup'],
-                    max_val=hp['label_max'],
-                    direction=self.direction,
-                    atr_period=hp['atr_period'],
-                    deterministic=self.labels_deterministic,
-                )
+                if self.direction == 'both':
+                    model_main_data = get_labels(
+                        model_main_data,
+                        markup=hp['markup'],
+                        max=hp['label_max']
+                    )
+                    model_main_data = model_main_data.rename(columns={'labels': 'labels_main'})
+                else:
+                    model_main_data = get_labels_one_direction(
+                        model_main_data,
+                        markup=hp['markup'],
+                        max_val=hp['label_max'],
+                        direction=self.direction,
+                        atr_period=hp['atr_period'],
+                        deterministic=self.labels_deterministic,
+                    )
                 main_feature_cols = model_main_data.columns[model_main_data.columns.str.contains('_feature') & \
                                                        ~model_main_data.columns.str.contains('_meta_feature')]
                 model_main_data = model_main_data[main_feature_cols.tolist() + ['labels_main']]
@@ -484,30 +496,40 @@ class StrategySearcher:
             ds_test_eval_meta = ds_test[meta_feature_cols].to_numpy()
             close_train_eval = ds_train_eval_sample['close'].to_numpy()
             close_test_eval = ds_test['close'].to_numpy()
-            score_ins = tester_one_direction(
-                ds_main=ds_train_eval_main,
-                ds_meta=ds_train_eval_meta,
-                close=close_train_eval,
-                model_main=model_main,
-                model_meta=model_meta,
-                direction=self.direction,
-                plot=False,
-                prd='insample',
-                # n_sim=100,
-                # agg="q05"
-            )
-            score_oos = tester_one_direction(
-                ds_main=ds_test_eval_main,
-                ds_meta=ds_test_eval_meta,
-                close=close_test_eval,
-                model_main=model_main,
-                model_meta=model_meta,
-                direction=self.direction,
-                plot=False,
-                prd='outofsample',
-                # n_sim=100,
-                # agg="q05"
-            )
+            if self.direction == 'both':
+                df_ins = pd.DataFrame({
+                    'close': close_train_eval,
+                    'labels_main': model_main.predict_proba(ds_train_eval_main)[:, 1],
+                    'labels_meta': model_meta.predict_proba(ds_train_eval_meta)[:, 1],
+                })
+                df_oos = pd.DataFrame({
+                    'close': close_test_eval,
+                    'labels_main': model_main.predict_proba(ds_test_eval_main)[:, 1],
+                    'labels_meta': model_meta.predict_proba(ds_test_eval_meta)[:, 1],
+                })
+                score_ins = tester(df_ins, plot=False)
+                score_oos = tester(df_oos, plot=False)
+            else:
+                score_ins = tester_one_direction(
+                    ds_main=ds_train_eval_main,
+                    ds_meta=ds_train_eval_meta,
+                    close=close_train_eval,
+                    model_main=model_main,
+                    model_meta=model_meta,
+                    direction=self.direction,
+                    plot=False,
+                    prd='insample',
+                )
+                score_oos = tester_one_direction(
+                    ds_main=ds_test_eval_main,
+                    ds_meta=ds_test_eval_meta,
+                    close=close_test_eval,
+                    model_main=model_main,
+                    model_meta=model_meta,
+                    direction=self.direction,
+                    plot=False,
+                    prd='outofsample',
+                )
 
             # Manejar valores inválidos
             if not np.isfinite(score_ins) or not np.isfinite(score_oos):
@@ -610,15 +632,23 @@ class StrategySearcher:
             if ds_train is None or ds_test is None:
                 return -1.0, -1.0
 
-            # Etiquetado
-            ds_train = get_labels_one_direction(
-                ds_train,
-                markup=hp['markup'],
-                max_val=hp['label_max'],
-                direction=self.direction,
-                atr_period=hp['atr_period'],
-                deterministic=self.labels_deterministic,
-            )
+            # Etiquetado según la dirección seleccionada
+            if self.direction == 'both':
+                ds_train = get_labels(
+                    ds_train,
+                    markup=hp['markup'],
+                    max=hp['label_max']
+                )
+                ds_train = ds_train.rename(columns={'labels': 'labels_main'})
+            else:
+                ds_train = get_labels_one_direction(
+                    ds_train,
+                    markup=hp['markup'],
+                    max_val=hp['label_max'],
+                    direction=self.direction,
+                    atr_period=hp['atr_period'],
+                    deterministic=self.labels_deterministic,
+                )
             # Selección de features: todas las columnas *_feature
             feature_cols = [col for col in ds_train.columns if col.endswith('_feature')]
             X = ds_train[feature_cols]

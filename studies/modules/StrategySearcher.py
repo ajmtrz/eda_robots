@@ -2,6 +2,7 @@ import gc
 import math
 import time
 import traceback
+import random
 import numpy as np
 import pandas as pd
 from datetime import datetime
@@ -83,6 +84,7 @@ class StrategySearcher:
             'clusters': self.search_clusters,
             'markov': self.search_markov,
             'mapie': self.search_mapie,
+            'causal': self.search_causal,
         }
         
         if self.search_type not in search_funcs:
@@ -703,6 +705,147 @@ class StrategySearcher:
             return scores[0], scores[1]
         except Exception as e:
             print(f"Error en search_mapie: {str(e)}")
+            return -1.0, -1.0
+
+    def search_causal(self, trial: optuna.Trial) -> tuple[float, float]:
+        """Búsqueda basada en detección causal de muestras malas."""
+        try:
+            hp = self.suggest_all_params(trial)
+
+            ds_train, ds_test = self.get_train_test_data(hp)
+            if ds_train is None or ds_test is None:
+                return -1.0, -1.0
+
+            # Etiquetado según la dirección
+            if self.direction == 'both':
+                ds_train = get_labels(
+                    ds_train,
+                    markup=hp['markup'],
+                    max=hp['label_max']
+                )
+                ds_train = ds_train.rename(columns={'labels': 'labels_main'})
+            else:
+                ds_train = get_labels_one_direction(
+                    ds_train,
+                    markup=hp['markup'],
+                    max_val=hp['label_max'],
+                    direction=self.direction,
+                    atr_period=hp['atr_period'],
+                    deterministic=self.labels_deterministic,
+                )
+
+            feature_cols = [c for c in ds_train.columns if c.endswith('_feature')]
+            X = ds_train[feature_cols]
+            y = ds_train['labels_main']
+
+            def _bootstrap_oob_identification(X: pd.DataFrame, y: pd.Series, n_models: int = 25):
+                oob_counts = pd.Series(0, index=X.index)
+                error_counts_0 = pd.Series(0, index=X.index)
+                error_counts_1 = pd.Series(0, index=X.index)
+                for _ in range(n_models):
+                    frac = random.uniform(0.4, 0.6)
+                    train_idx = X.sample(frac=frac, replace=True).index
+                    val_idx = X.index.difference(train_idx)
+                    if len(val_idx) == 0:
+                        continue
+                    model = CatBoostClassifier(
+                        iterations=random.randint(100, 500),
+                        depth=random.randint(3, 10),
+                        learning_rate=random.uniform(0.1, 0.5),
+                        l2_leaf_reg=random.uniform(0.0, 1.0),
+                        verbose=False,
+                        thread_count=-1,
+                    )
+                    model.fit(X.loc[train_idx], y.loc[train_idx])
+                    pred = (model.predict_proba(X.loc[val_idx])[:, 1] >= 0.5).astype(int)
+                    val_y = y.loc[val_idx]
+                    val0 = val_idx[val_y == 0]
+                    val1 = val_idx[val_y == 1]
+                    diff0 = val0[pred[val_y == 0] != 0]
+                    diff1 = val1[pred[val_y == 1] != 1]
+                    oob_counts.loc[val_idx] += 1
+                    error_counts_0.loc[diff0] += 1
+                    error_counts_1.loc[diff1] += 1
+                return error_counts_0, error_counts_1, oob_counts
+
+            def _optimize_bad_samples_threshold(err0, err1, oob, fracs=[0.5, 0.6, 0.7, 0.8]):
+                to_mark_0 = (err0 / oob.replace(0, 1)).fillna(0)
+                to_mark_1 = (err1 / oob.replace(0, 1)).fillna(0)
+                best_f = None
+                best_s = np.inf
+                for frac in fracs:
+                    thr0 = np.percentile(to_mark_0[to_mark_0 > 0], 75) * frac if len(to_mark_0[to_mark_0 > 0]) else 0
+                    thr1 = np.percentile(to_mark_1[to_mark_1 > 0], 75) * frac if len(to_mark_1[to_mark_1 > 0]) else 0
+                    marked0 = to_mark_0[to_mark_0 > thr0].index
+                    marked1 = to_mark_1[to_mark_1 > thr1].index
+                    all_bad = pd.Index(marked0).union(marked1)
+                    good_mask = ~to_mark_0.index.isin(all_bad)
+                    ratios = []
+                    for idx in to_mark_0[good_mask].index:
+                        if to_mark_0[idx] > 0:
+                            ratios.append(to_mark_0[idx])
+                        if to_mark_1[idx] > 0:
+                            ratios.append(to_mark_1[idx])
+                    mean_err = np.mean(ratios) if ratios else 1.0
+                    if mean_err < best_s:
+                        best_s = mean_err
+                        best_f = frac
+                return best_f
+
+            err0, err1, oob = _bootstrap_oob_identification(X, y, n_models=hp.get('n_meta_learners', 5))
+            best_frac = _optimize_bad_samples_threshold(err0, err1, oob)
+            to_mark_0 = (err0 / oob.replace(0, 1)).fillna(0)
+            to_mark_1 = (err1 / oob.replace(0, 1)).fillna(0)
+            thr0 = np.percentile(to_mark_0[to_mark_0 > 0], 75) * best_frac if len(to_mark_0[to_mark_0 > 0]) else 0
+            thr1 = np.percentile(to_mark_1[to_mark_1 > 0], 75) * best_frac if len(to_mark_1[to_mark_1 > 0]) else 0
+            marked0 = to_mark_0[to_mark_0 > thr0].index
+            marked1 = to_mark_1[to_mark_1 > thr1].index
+            all_bad = pd.Index(marked0).union(marked1)
+            ds_train['meta_labels'] = 1.0
+            ds_train.loc[ds_train.index.isin(all_bad), 'meta_labels'] = 0.0
+
+            model_main_data = ds_train[ds_train['meta_labels'] == 1.0][feature_cols + ['labels_main']].copy()
+            model_meta_data = ds_train[feature_cols].copy()
+            model_meta_data['labels_meta'] = ds_train['meta_labels']
+
+            scores, models = self.fit_final_models(
+                model_main_data=model_main_data,
+                model_meta_data=model_meta_data,
+                ds_train=ds_train,
+                ds_test=ds_test,
+                hp=hp.copy()
+            )
+            if scores is None or models is None:
+                return -1.0, -1.0
+
+            score_ins, score_oos_raw = scores
+            model_main, model_meta = models
+
+            main_feature_cols = [c for c in model_main_data.columns if c != 'labels_main']
+            meta_feature_cols = [c for c in model_meta_data.columns if c != 'labels_meta']
+            ds_test_main = ds_test[main_feature_cols].to_numpy()
+            ds_test_meta = ds_test[meta_feature_cols].to_numpy()
+            close_test = ds_test['close'].to_numpy()
+
+            score_oos = robust_oos_score_one_direction(
+                ds_main=ds_test_main,
+                ds_meta=ds_test_meta,
+                close=close_test,
+                model_main=model_main,
+                model_meta=model_meta,
+                direction=self.direction,
+                plot=False,
+                prd='outofsample'
+            )
+
+            trial.set_user_attr('models', models)
+            trial.set_user_attr('scores', (score_ins, score_oos))
+            trial.set_user_attr('oos_raw', score_oos_raw)
+
+            return score_ins, score_oos
+
+        except Exception as e:
+            print(f"Error en search_causal: {str(e)}")
             return -1.0, -1.0
 
     # =========================================================================

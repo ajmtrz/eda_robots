@@ -748,14 +748,17 @@ class StrategySearcher:
                     val_idx = X.index.difference(train_idx)
                     if len(val_idx) == 0:
                         continue
-                    model = CatBoostClassifier(
-                        iterations=random.randint(100, 500),
-                        depth=random.randint(3, 10),
-                        learning_rate=random.uniform(0.1, 0.5),
-                        l2_leaf_reg=random.uniform(0.0, 1.0),
-                        verbose=False,
+                    catboost_params = dict(
+                        iterations=hp['cat_main_iterations'],
+                        depth=hp['cat_main_depth'],
+                        learning_rate=hp['cat_main_learning_rate'],
+                        l2_leaf_reg=hp['cat_main_l2_leaf_reg'],
+                        eval_metric='Accuracy',
                         thread_count=-1,
+                        task_type='CPU',
+                        verbose=False,
                     )
+                    model = CatBoostClassifier(**catboost_params)
                     model.fit(X.loc[train_idx], y.loc[train_idx])
                     pred = (model.predict_proba(X.loc[val_idx])[:, 1] >= 0.5).astype(int)
                     val_y = y.loc[val_idx]

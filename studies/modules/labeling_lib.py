@@ -243,7 +243,6 @@ def approximate_entropy(x):
         return 0.0
     sd = std_manual(x)
     r = 0.2 * sd
-    r *= sd
     count = 0
     for i in range(n - 1):
         for j in range(n - 1):

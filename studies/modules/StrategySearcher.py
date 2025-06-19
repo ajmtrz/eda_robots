@@ -263,7 +263,7 @@ class StrategySearcher:
             
         except Exception as e:
             print(f"⚠️ ERROR en evaluación de clusters: {str(e)}")
-            return None
+            return None, None
     
     def check_constant_features(self, X: np.ndarray, feature_cols: list, std_epsilon: float = 1e-12) -> bool:
         """Verifica si hay columnas que podrían causar inestabilidad numérica.

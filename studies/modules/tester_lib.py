@@ -94,22 +94,19 @@ def tester(dataset, plot=False):
     meta  = dataset['labels_meta'].to_numpy()
 
     # Pasamos los índices relativos al dataset filtrado
-    rpt, ch= process_data(close, main, meta)
+    rpt, ch = process_data(close, main, meta)
 
-    # regresión lineal sobre el equity
-    y = rpt.reshape(-1, 1)
-    X = np.ascontiguousarray(np.arange(len(rpt))).reshape(-1, 1)
-    lr = _signed_r2(rpt)
-    sign = 1 if lr.coef_[0][0] >= 0 else -1
+    # calcular el R² con signo directamente
+    score = _signed_r2(rpt)
+    sign = 1 if score >= 0 else -1
 
     if plot:
         plt.plot(rpt)
         plt.plot(ch)
-        plt.plot(lr.predict(X))
-        plt.title(f"R² {lr.score(X, y) * sign:.2f}")
+        plt.title(f"R² {score:.2f}")
         plt.show()
 
-    return lr.score(X, y) * sign
+    return score
 
 # ───────────────────────────────────────────────
 # NUEVA FUNCIÓN evaluate_report

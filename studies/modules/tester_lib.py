@@ -11,7 +11,7 @@ from skl2onnx import convert_sklearn, update_registered_converter
 from skl2onnx.common.data_types import FloatTensorType
 from skl2onnx.common.shape_calculator import calculate_linear_classifier_output_shapes
 from modules.export_lib import (
-    skl2onnx_parser_castboost_classifier,
+    skl2onnx_parser_catboost_classifier,
     skl2onnx_convert_catboost,
 )
 rt.set_default_logger_severity(4)
@@ -421,7 +421,7 @@ update_registered_converter(
     "CatBoostClassifier",
     calculate_linear_classifier_output_shapes,
     skl2onnx_convert_catboost,
-    parser=skl2onnx_parser_castboost_classifier,
+    parser=skl2onnx_parser_catboost_classifier,
     options={"nocl": [True, False], "zipmap": [True, False]}
 )
 

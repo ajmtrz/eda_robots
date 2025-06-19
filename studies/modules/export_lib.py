@@ -9,7 +9,7 @@ from onnx.helper import get_attribute_value
 from catboost.utils import convert_to_onnx_object
     
 # ONNX para Pipeline con Catboost
-def skl2onnx_parser_castboost_classifier(scope, model, inputs, custom_parsers=None):
+def skl2onnx_parser_catboost_classifier(scope, model, inputs, custom_parsers=None):
     options = scope.get_options(model, dict(zipmap=True))
     no_zipmap = isinstance(options["zipmap"], bool) and not options["zipmap"]
     
@@ -59,7 +59,7 @@ def export_model_to_ONNX(**kwargs):
         "CatBoostClassifier",
         calculate_linear_classifier_output_shapes,
         skl2onnx_convert_catboost,
-        parser=skl2onnx_parser_castboost_classifier,
+        parser=skl2onnx_parser_catboost_classifier,
         options={"nocl": [True, False], "zipmap": [True, False]}
     )
 

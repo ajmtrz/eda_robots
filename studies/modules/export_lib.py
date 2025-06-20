@@ -432,7 +432,6 @@ def export_model_to_ONNX(**kwargs):
                     
                     double sd = stat_std(a);
                     double r = 0.2 * sd;
-                    r *= sd;  // Multiplicar por sd como en Python
                     
                     // Para m = 2
                     int count_m = 0;

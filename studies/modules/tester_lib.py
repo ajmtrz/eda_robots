@@ -16,7 +16,7 @@ from modules.export_lib import (
 )
 rt.set_default_logger_severity(4)
 
-@njit
+@njit(cache=True, nogil=True, fastmath=True)
 def process_data(close, labels, metalabels):
     last_deal  = 2
     last_price = 0.0
@@ -48,7 +48,7 @@ def process_data(close, labels, metalabels):
 
     return np.array(report), np.array(chart)
 
-@njit
+@njit(cache=True, nogil=True, fastmath=True)
 def process_data_one_direction(close, main_labels, meta_labels, direction):
     last_deal  = 2            # 2 = flat, 1 = position open
     last_price = 0.0
@@ -108,13 +108,7 @@ def tester(dataset, plot=False):
 
     return score
 
-# ───────────────────────────────────────────────
-# NUEVA FUNCIÓN evaluate_report
-# ───────────────────────────────────────────────
-from numba import njit
-import numpy as np
-
-@njit
+@njit(cache=True, nogil=True, fastmath=True)
 def max_gap_between_highs(equity: np.ndarray) -> int:
     last_high = equity[0]
     gap = 0
@@ -131,7 +125,7 @@ def max_gap_between_highs(equity: np.ndarray) -> int:
         max_gap = gap
     return max_gap
 
-@njit
+@njit(cache=True, nogil=True, fastmath=True)
 def evaluate_report(report: np.ndarray) -> float:
     if report.size < 3:
         return -1.0
@@ -304,7 +298,7 @@ def test_model(dataset: pd.DataFrame,
 # ───────────────────────────────────────────────────────────────────
 
 # ---------- helpers ------------------------------------------------
-@njit
+@njit(cache=True, nogil=True, fastmath=True)
 def _bootstrap_returns(returns: np.ndarray,
                        block_size: int) -> np.ndarray:
     """
@@ -337,7 +331,7 @@ def _bootstrap_returns(returns: np.ndarray,
     return resampled
 
 
-@njit
+@njit(cache=True, nogil=True, fastmath=True)
 def _equity_from_returns(resampled_returns: np.ndarray) -> np.ndarray:
     """Crea curva de equity partiendo de 0."""
     n = resampled_returns.size
@@ -350,7 +344,7 @@ def _equity_from_returns(resampled_returns: np.ndarray) -> np.ndarray:
     return equity
 
 
-@njit
+@njit(cache=True, nogil=True, fastmath=True)
 def _signed_r2(equity: np.ndarray) -> float:
     n = equity.size
     x_mean = (n - 1) * 0.5
@@ -371,7 +365,7 @@ def _signed_r2(equity: np.ndarray) -> float:
     r2 = 1.0 - sse / sst if sst else 0.0
     return r2 if slope >= 0 else -r2
 
-@njit
+@njit(cache=True, nogil=True, fastmath=True)
 def _make_noisy_signals(close: np.ndarray,
                        labels: np.ndarray,
                        meta: np.ndarray) -> tuple:
@@ -393,7 +387,7 @@ def _make_noisy_signals(close: np.ndarray,
     # Labels y meta-labels se mantienen sin distorsionar
     return close_noisy, labels, meta
 
-@njit(parallel=True)
+@njit(cache=True, nogil=True, fastmath=True, parallel=True)
 def _simulate_batch(close, l_all, m_all, block_size, direction):
     n_sim, n = l_all.shape
     scores = np.full(n_sim, -1.0)

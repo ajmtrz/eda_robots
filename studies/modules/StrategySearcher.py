@@ -24,7 +24,7 @@ from modules.labeling_lib import (
 )
 from modules.tester_lib import (
     tester,
-    robust_oos_score_one_direction,
+    robust_oos_score,
     _ONNX_CACHE
 )
 from modules.export_lib import export_model_to_ONNX
@@ -893,7 +893,7 @@ class StrategySearcher:
             ds_test_meta = ds_test[meta_feature_cols].to_numpy()
             close_test = ds_test['close'].to_numpy()
 
-            score_oos = robust_oos_score_one_direction(
+            score_oos = robust_oos_score(
                 ds_main=ds_test_main,
                 ds_meta=ds_test_meta,
                 close=close_test,

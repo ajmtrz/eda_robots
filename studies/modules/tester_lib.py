@@ -427,7 +427,10 @@ def _simulate_batch(close, l_all, m_all, block_size, direction):
     scores = np.full(n_sim, -1.0)
     for i in prange(n_sim):
         c_n, l_n, m_n = _make_noisy_signals(close, l_all[i], m_all[i])
-        rpt, _ = process_data_one_direction(c_n, l_n, m_n, direction)
+        if direction == "both":
+            rpt, _ = process_data(c_n, l_n, m_n)
+        else:
+            rpt, _ = process_data_one_direction(c_n, l_n, m_n, direction)
         if rpt.size < 2:
             continue
         ret = np.diff(rpt)
@@ -502,7 +505,7 @@ def monte_carlo_full(
     close: np.ndarray,
     X_main: np.ndarray,
     X_meta: np.ndarray,
-    direction: str,
+    direction: str = "both",
     n_sim: int = 100,
     block_size: int = 20,
     plot: bool = False,
@@ -527,7 +530,10 @@ def monte_carlo_full(
         # Primero calculamos la curva original sin ruido
         main = model_main.predict_proba(X_main)[:, 1]
         meta = model_meta.predict_proba(X_meta)[:, 1]
-        rpt_original, _ = process_data_one_direction(close, main, meta, direction)
+        if direction == "both":
+            rpt_original, _ = process_data(close, main, meta)
+        else:
+            rpt_original, _ = process_data_one_direction(close, main, meta, direction)
         
         # Monte Carlo simulations
         noise_levels = np.random.uniform(0.005, 0.02, n_sim)
@@ -550,7 +556,10 @@ def monte_carlo_full(
                     equity_curves = []
                     for i in range(n_sim):
                         c_n, l_n, m_n = _make_noisy_signals(close, l_all[i], m_all[i])
-                        rpt, _ = process_data_one_direction(c_n, l_n, m_n, direction)
+                        if direction == "both":
+                            rpt, _ = process_data(c_n, l_n, m_n)
+                        else:
+                            rpt, _ = process_data_one_direction(c_n, l_n, m_n, direction)
                         if len(rpt) >= 2:
                             equity_curves.append(rpt)
                     
@@ -625,21 +634,21 @@ def monte_carlo_full(
         print(traceback.format_exc())
         return {"scores": np.array([-1.0]), "p_positive": 0.0, "quantiles": np.array([-1.0, -1.0, -1.0])}
 
-def robust_oos_score_one_direction(
+def robust_oos_score(
         ds_main: np.ndarray,
         ds_meta: np.ndarray,
         close: np.ndarray,
         model_main: object,
         model_meta: object,
-        direction: str,
+        direction: str = "both",
         n_sim: int = 100,
         block_size: int = 20,
         agg: str = "q05",
         plot: bool = False,
         prd: str = "") -> float:
 
+    """Calcula un score robusto en out-of-sample mediante Monte Carlo."""
 
-    # 3) Monte Carlo robusto -------------------------------------
     try:
         mc = monte_carlo_full(
             close=close,
@@ -653,7 +662,7 @@ def robust_oos_score_one_direction(
             plot=plot,
             prd=prd
         )
-        
+
         if agg == "q05":
             return float(mc["quantiles"][0])
         elif agg == "q50":
@@ -664,5 +673,34 @@ def robust_oos_score_one_direction(
             raise ValueError("agg must be 'q05', 'q50' or 'q95'")
 
     except Exception as e:
-        print(f"\nError en robust_oos_score_one_direction: {e}")
+        print(f"\nError en robust_oos_score: {e}")
         return -1.0
+
+
+def robust_oos_score_one_direction(
+        ds_main: np.ndarray,
+        ds_meta: np.ndarray,
+        close: np.ndarray,
+        model_main: object,
+        model_meta: object,
+        direction: str,
+        n_sim: int = 100,
+        block_size: int = 20,
+        agg: str = "q05",
+        plot: bool = False,
+        prd: str = "") -> float:
+    """Compatibilidad hacia atrás."""
+
+    return robust_oos_score(
+        ds_main=ds_main,
+        ds_meta=ds_meta,
+        close=close,
+        model_main=model_main,
+        model_meta=model_meta,
+        direction=direction,
+        n_sim=n_sim,
+        block_size=block_size,
+        agg=agg,
+        plot=plot,
+        prd=prd,
+    )

@@ -189,6 +189,9 @@ class StrategySearcher:
                                     study.set_user_attr("best_periods_meta", trial.user_attrs.get('periods_meta'))
                                     study.set_user_attr("best_stats_main", trial.user_attrs['stats_main'])
                                     study.set_user_attr("best_stats_meta", trial.user_attrs.get('stats_meta'))
+                            # Liberar memoria eliminando datos pesados del trial
+                            trial.set_user_attr('models', None)
+                            trial.set_user_attr('scores', None)
 
                         # Log
                         if study.best_trials:

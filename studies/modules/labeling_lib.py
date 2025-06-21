@@ -2233,3 +2233,50 @@ def markov_regime_switching_advanced(dataset, n_regimes: int, model_type="HMM", 
         dataset["labels_meta"] = -1
         
     return dataset
+
+
+def lgmm_clustering(dataset: pd.DataFrame, n_components: int,
+                    covariance_type: str = "full",
+                    max_iter: int = 100) -> pd.DataFrame:
+    """Cluster meta features using a GaussianMixture model.
+
+    Parameters
+    ----------
+    dataset : pd.DataFrame
+        Input data with ``*_meta_feature`` columns.
+    n_components : int
+        Number of mixture components.
+    covariance_type : str, optional
+        Covariance type for ``GaussianMixture``.
+    max_iter : int, optional
+        Maximum EM iterations.
+
+    Returns
+    -------
+    pd.DataFrame
+        Dataset with an added ``labels_meta`` column containing cluster ids. If
+        clustering fails the column will be ``-1``.
+    """
+    if dataset.empty:
+        dataset["labels_meta"] = -1
+        return dataset
+
+    meta_X = dataset.filter(regex="meta_feature")
+    if meta_X.shape[1] == 0:
+        dataset["labels_meta"] = -1
+        return dataset
+
+    try:
+        gm = GaussianMixture(
+            n_components=n_components,
+            covariance_type=covariance_type,
+            max_iter=max_iter,
+            random_state=0,
+        )
+        labels = gm.fit_predict(meta_X.to_numpy(np.float32))
+        dataset["labels_meta"] = labels.astype(int)
+    except Exception:
+        dataset["labels_meta"] = -1
+
+    return dataset
+

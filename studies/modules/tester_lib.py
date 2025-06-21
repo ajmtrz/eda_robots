@@ -87,23 +87,73 @@ def process_data_one_direction(close, main_labels, meta_labels, direction):
 # ───────────────────────────────────────────────────────────────────
 # 2)  Wrappers del tester
 # ───────────────────────────────────────────────────────────────────
-def tester(dataset, plot=False):
+def tester(
+        ds_main: np.ndarray,
+        ds_meta: np.ndarray,
+        close: np.ndarray,
+        model_main: object,
+        model_meta: object,
+        direction: str = 'both',
+        plot: bool = False,
+        prd: str = '') -> float:
 
-    close = dataset['close'].to_numpy()
-    main   = dataset['labels_main'].to_numpy()
-    meta  = dataset['labels_meta'].to_numpy()
+    """Evalúa una estrategia para una o ambas direcciones.
 
-    # Pasamos los índices relativos al dataset filtrado
-    rpt, ch = process_data(close, main, meta)
+    Parameters
+    ----------
+    ds_main : np.ndarray
+        Conjunto de características para el modelo principal.
+    ds_meta : np.ndarray
+        Conjunto de características para el meta-modelo.
+    close : np.ndarray
+        Serie de precios de cierre.
+    model_main : object
+        Modelo principal entrenado con ``predict_proba``.
+    model_meta : object
+        Meta-modelo entrenado con ``predict_proba``.
+    direction : str, optional
+        ``'buy'``, ``'sell'`` o ``'both'``. Por defecto ``'both'``.
+    plot : bool, optional
+        Si ``True`` muestra la curva de equity.  Por defecto ``False``.
+    prd : str, optional
+        Etiqueta del periodo a mostrar en el gráfico.
 
-    # calcular el R² con signo directamente
-    score = _signed_r2(rpt)
-    sign = 1 if score >= 0 else -1
+    Returns
+    -------
+    float
+        Puntuación de la estrategia según :func:`evaluate_report`.
+    """
+
+    # Calcular probabilidades usando ambos modelos (sin binarizar)
+    main = model_main.predict_proba(ds_main)[:, 1]
+    meta = model_meta.predict_proba(ds_meta)[:, 1]
+
+    # Asegurar contigüidad en memoria
+    close = np.ascontiguousarray(close)
+    main = np.ascontiguousarray(main)
+    meta = np.ascontiguousarray(meta)
+
+    if direction == 'both':
+        rpt, _ = process_data(close, main, meta)
+    else:
+        rpt, _ = process_data_one_direction(close, main, meta, direction)
+
+    if rpt.size < 2:
+        return -1.0
+
+    score = evaluate_report(rpt)
 
     if plot:
-        plt.plot(rpt)
-        plt.plot(ch)
-        plt.title(f"R² {score:.2f}")
+        plt.figure(figsize=(8, 4))
+        plt.plot(rpt, label='Equity Curve')
+        plt.xlabel("Operations")
+        plt.ylabel("Cumulative Profit")
+        if prd:
+            plt.title(f"Period: {prd} | Score: {score:.2f}")
+        else:
+            plt.title(f"Score: {score:.2f}")
+        plt.legend()
+        plt.grid(alpha=0.3)
         plt.show()
 
     return score
@@ -186,42 +236,19 @@ def tester_one_direction(
         model_main: object,
         model_meta: object,
         direction: str = 'buy',
-        plot=False,
-        prd= ''):
-
-    # Calcular probabilidades usando ambos modelos (sin binarizar)
-    main = model_main.predict_proba(ds_main)[:, 1]
-    meta = model_meta.predict_proba(ds_meta)[:, 1]
-
-    # Extraer datos necesarios
-    close = np.ascontiguousarray(close)
-    main = np.ascontiguousarray(main)
-    meta = np.ascontiguousarray(meta)
-
-    # Pasamos los índices numéricos en lugar de fechas
-    rpt, ch= process_data_one_direction(
-        close, main, meta, direction)
-
-    # Si no hay suficientes operaciones, devolver valor negativo
-    if len(rpt) < 2:
-        return -1.0
-    
-    # Calcular score
-    score = evaluate_report(rpt)
-
-    # Visualizar resultados si se solicita
-    if plot:
-        plt.figure(figsize=(8, 4))
-        plt.plot(rpt, label='Equity Curve')
-        plt.xlabel("Operations")
-        plt.ylabel("Cumulative Profit")
-        plt.title(f"Period: {prd} | Score: {score:.2f}")
-        plt.legend()
-        plt.grid(alpha=0.3)
-        plt.show()
-
-    # Evaluar el reporte para obtener una puntuación completa
-    return score
+        plot: bool = False,
+        prd: str = '') -> float:
+    """Mantiene compatibilidad con la API anterior."""
+    return tester(
+        ds_main=ds_main,
+        ds_meta=ds_meta,
+        close=close,
+        model_main=model_main,
+        model_meta=model_meta,
+        direction=direction,
+        plot=plot,
+        prd=prd,
+    )
 
 # ─────────────────────────────────────────────
 # tester_slow  (mantenerlo o borrarlo)
@@ -281,17 +308,24 @@ def test_model(dataset: pd.DataFrame,
                result: list,
                backward: datetime,
                forward: datetime,
-               plt=False):
+               plt: bool = False) -> float:
 
     ext_dataset = dataset.copy()
     mask = (ext_dataset.index > backward) & (ext_dataset.index < forward)
     ext_dataset = ext_dataset[mask].reset_index(drop=True)
-    X = ext_dataset.iloc[:, 1:]
 
-    ext_dataset['labels_main'] = result[0].predict_proba(X)[:, 1]
-    ext_dataset['labels_meta'] = result[1].predict_proba(X)[:, 1]
+    X = ext_dataset.iloc[:, 1:].to_numpy()
+    close = ext_dataset['close'].to_numpy()
 
-    return tester(ext_dataset, plot=plt)
+    return tester(
+        ds_main=X,
+        ds_meta=X,
+        close=close,
+        model_main=result[0],
+        model_meta=result[1],
+        direction='both',
+        plot=plt,
+    )
 
 # ───────────────────────────────────────────────────────────────────
 # Monte-Carlo robustness utilities

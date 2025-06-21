@@ -13,3 +13,4 @@ joblib
 scipy
 tqdm
 memory-profiler
+psutil

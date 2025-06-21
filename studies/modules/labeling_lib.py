@@ -909,7 +909,7 @@ def calculate_labels_clusters(close_data, clusters, markup):
     return labels
 
 def get_labels_clusters(dataset, markup, num_clusters=20) -> pd.DataFrame:
-    kmeans = KMeans(n_clusters=num_clusters, n_init='auto', algorithm='auto')
+    kmeans = KMeans(n_clusters=num_clusters, n_init='auto')
     dataset['cluster'] = kmeans.fit_predict(dataset[['close']])
 
     close_data = dataset['close'].values
@@ -1974,7 +1974,7 @@ def sliding_window_clustering(
         local_data = meta_X_np[start:end]
         if len(local_data) < n_clusters:
             continue
-        local_km = KMeans(n_clusters, n_init="auto", algorithm='auto').fit(local_data)
+        local_km = KMeans(n_clusters, n_init="auto").fit(local_data)
         local_ct = local_km.cluster_centers_
         if local_ct.shape[0] < global_ct.shape[0]:
             continue
@@ -2100,7 +2100,7 @@ def markov_regime_switching_advanced(dataset, n_regimes: int, model_type="HMM", 
     
     # Use k-means to cluster the data into n_regimes groups
     try:
-        kmeans = KMeans(n_clusters=n_regimes, n_init='auto', algorithm='auto')
+        kmeans = KMeans(n_clusters=n_regimes, n_init='auto')
         cluster_labels = kmeans.fit_predict(X_scaled)
     except Exception:
         dataset["labels_meta"] = -1

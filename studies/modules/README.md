@@ -1,0 +1,54 @@
+# Modules Overview
+
+This directory contains helper modules used for strategy research.
+
+## Labeling Functions
+
+The file `labeling_lib.py` exposes a variety of `get_labels_*` functions. Each one generates buy/sell labels in a different way. The table below summarizes their purpose.
+
+| Function | Purpose |
+| --- | --- |
+| `get_labels_one_direction` | ATR‑based labeling of long/short trades within a look‑ahead window. Can label one or both directions. |
+| `get_labels_trend` | Labels trades when the price trend normalized by volatility exceeds a threshold. |
+| `get_labels_trend_with_profit` | Like `get_labels_trend` but only keeps signals that achieve a minimum markup within a future window. |
+| `get_labels_trend_with_profit_different_filters` | Trend labeling with multiple smoothing methods (savgol, spline, etc.). |
+| `get_labels_trend_with_profit_multi` | Combines several smoothing windows and requires a markup to be hit. |
+| `get_labels_clusters` | Uses K‑Means clusters of closing prices and labels when switching clusters with sufficient price movement. |
+| `get_labels_multi_window` | Generates breakout labels from multiple support/resistance windows. |
+| `get_labels_validated_levels` | Similar to `get_labels_multi_window` but requires several touches to validate levels. |
+| `get_labels_filter_ZZ` | Zigzag peak/trough detection to label local highs and lows. |
+| `get_labels_mean_reversion` | Mean‑reversion labeling based on deviations from a smoothed trend. |
+| `get_labels_mean_reversion_multi` | Mean‑reversion using multiple smoothing windows. |
+| `get_labels_mean_reversion_v` | Mean‑reversion with volatility bands to adapt quantiles. |
+| `get_labels_filter` | Generates labels when price deviates from a Savitzky–Golay filter. |
+| `get_labels_multiple_filters` | Combines several filters and rolling quantiles for multi‑timeframe signals. |
+| `get_labels_filter_bidirectional` | Uses two Savitzky–Golay filters (forward/backward) and labels when price deviates from both. |
+| `get_labels_filter_one_direction` | A single direction variant of `get_labels_filter`. |
+| `get_labels_trend_one_direction` | Trend labeling for only buy or sell signals. |
+| `get_labels_filter_flat` | Detects flat periods using the inverse of a filtered deviation. |
+
+## Using `StrategySearcher`
+
+`StrategySearcher` now accepts a `label_method` parameter. This string selects any of the functions above via an internal map. By default it uses `"atr"` which maps to `get_labels_one_direction`.
+
+Example:
+
+```python
+from datetime import datetime
+from studies.modules.StrategySearcher import StrategySearcher
+
+searcher = StrategySearcher(
+    symbol="EURUSD",
+    timeframe="H1",
+    direction="buy",
+    train_start=datetime(2020, 1, 1),
+    train_end=datetime(2020, 6, 1),
+    test_start=datetime(2020, 6, 1),
+    test_end=datetime(2020, 12, 1),
+    label_method="trend_profit",  # use get_labels_trend_with_profit
+)
+
+searcher.run_search()
+```
+
+The `label_method` can be any key from the map defined in `StrategySearcher.LABEL_FUNCS` such as `"trend"`, `"mean_rev"`, `"multi_filter"`, etc.

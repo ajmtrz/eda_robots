@@ -528,47 +528,25 @@ def calculate_labels(close_data, markup, min_val, max_val):
             labels.append(2.0)
     return labels
 
-def get_labels(dataset, markup, min = 1, max = 15) -> pd.DataFrame:
-    """
-    Generates labels for a financial dataset based on price movements.
+def get_labels(dataset, markup, min=1, max=15, atr_period=14,
+               deterministic=True) -> pd.DataFrame:
+    """Label trades for both directions using the ATR based methodology.
 
-    This function calculates labels indicating buy, sell, or hold signals 
-    based on future price movements relative to a given markup percentage.
-
-    Args:
-        dataset (pd.DataFrame): DataFrame containing financial data with a 'close' column.
-        markup (float): The percentage markup used to determine buy and sell signals.
-        min (int, optional): Minimum number of consecutive days the markup must hold. Defaults to 1.
-        max (int, optional): Maximum number of consecutive days the markup is considered. Defaults to 15.
-
-    Returns:
-        pd.DataFrame: The original DataFrame with a new 'labels' column and filtered rows:
-                       - 'labels' column: 
-                            - 0: Hold (price change doesn't meet criteria)
-                            - 1: Buy (future price increases by at least 'markup' within 'max' days) 
-                       - Rows where 'labels' is 2 (sell signal) are removed.
-                       - Rows with missing values (NaN) are removed. 
+    This function is kept for backwards compatibility and internally delegates
+    to :func:`get_labels_one_direction` with ``direction='both'``.
     """
 
-    # Extract closing prices from the dataset
-    close_data = dataset['close'].values
-
-    # Calculate buy/hold labels based on future price movements
-    labels = calculate_labels(close_data, markup, min, max)
-
-    # Trim the dataset to match the length of calculated labels
-    dataset = dataset.iloc[:len(labels)].copy() 
-
-    # Add the calculated labels as a new column
-    dataset['labels'] = labels
-
-    # Remove rows with NaN values (potentially introduced in 'calculate_labels')
-    dataset = dataset.dropna()
-
-    # Remove rows where the label is 2 (sell signal). 
-    dataset = dataset.drop(dataset[dataset.labels == 2.0].index)
-
-    return dataset
+    labeled = get_labels_one_direction(
+        dataset,
+        markup=markup,
+        min_val=min,
+        max_val=max,
+        direction='both',
+        atr_period=atr_period,
+        deterministic=deterministic,
+    )
+    labeled = labeled.rename(columns={'labels_main': 'labels'})
+    return labeled
 
 @njit(cache=True, nogil=True, fastmath=True)
 def calculate_labels_trend(normalized_trend, threshold):
@@ -1880,18 +1858,78 @@ def calculate_labels_one_direction(high, low, close, markup, min_val, max_val, d
 
     return result
 
-def get_labels_one_direction(dataset, markup, min_val=1, max_val=15, direction='buy', atr_period=14, deterministic=True) -> pd.DataFrame:
+def get_labels_one_direction(dataset, markup, min_val=1, max_val=15,
+                             direction='buy', atr_period=14,
+                             deterministic=True) -> pd.DataFrame:
+    """Label trades for a single or both directions using ATR based distance.
+
+    Parameters
+    ----------
+    dataset : pd.DataFrame
+        Input OHLCV data.
+    markup : float
+        Multiplier for the ATR to define the distance to the target candle.
+    min_val, max_val : int, optional
+        Range (in candles) to evaluate the trade outcome.
+    direction : {'buy', 'sell', 'both'}, optional
+        Direction to evaluate. ``'both'`` returns labels for long and short
+        trades simultaneously.
+    atr_period : int, optional
+        Period for the ATR calculation.
+    deterministic : bool, optional
+        If ``True`` use all candles within the range, otherwise pick one
+        randomly.
+
+    Returns
+    -------
+    pd.DataFrame
+        The original dataset trimmed and with a ``labels_main`` column.
+        When ``direction`` is ``'both'`` the labels are ``0`` for buy and ``1``
+        for sell trades. Rows without a clear signal are removed.
+    """
+
     close_data = np.ascontiguousarray(dataset['close'].values)
     high_data = np.ascontiguousarray(dataset['high'].values)
     low_data = np.ascontiguousarray(dataset['low'].values)
-    labels = calculate_labels_one_direction(
-        high_data, low_data, close_data, 
-        markup, min_val, max_val, direction, atr_period, deterministic
-    )
-    dataset = dataset.iloc[:len(labels)].copy()
-    dataset['labels_main'] = labels
-    dataset = dataset.dropna()
-    return dataset
+
+    if direction in {'buy', 'sell'}:
+        labels = calculate_labels_one_direction(
+            high_data, low_data, close_data,
+            markup, min_val, max_val, direction,
+            atr_period, deterministic
+        )
+        dataset = dataset.iloc[:len(labels)].copy()
+        dataset['labels_main'] = labels
+        dataset = dataset.dropna()
+        return dataset
+
+    if direction == 'both':
+        labels_buy = calculate_labels_one_direction(
+            high_data, low_data, close_data,
+            markup, min_val, max_val, 'buy',
+            atr_period, deterministic
+        )
+        labels_sell = calculate_labels_one_direction(
+            high_data, low_data, close_data,
+            markup, min_val, max_val, 'sell',
+            atr_period, deterministic
+        )
+
+        n = min(len(labels_buy), len(labels_sell))
+        labels = np.full(n, 2.0, dtype=np.float64)
+
+        buy_sig = labels_buy[:n] == 1.0
+        sell_sig = labels_sell[:n] == 1.0
+        labels[buy_sig & ~sell_sig] = 0.0
+        labels[sell_sig & ~buy_sig] = 1.0
+
+        dataset = dataset.iloc[:n].copy()
+        dataset['labels_main'] = labels
+        dataset = dataset.dropna()
+        dataset = dataset.drop(dataset[dataset.labels_main == 2.0].index)
+        return dataset
+
+    raise ValueError("direction must be 'buy', 'sell', or 'both'")
 
 def sliding_window_clustering(
         dataset: pd.DataFrame,

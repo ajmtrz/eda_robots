@@ -18,7 +18,7 @@ from catboost import CatBoostClassifier, Pool
 from mapie.classification import CrossConformalClassifier
 from modules.labeling_lib import (
     get_prices, get_features,
-    get_labels_one_direction, get_labels,
+    get_labels_one_direction,
     sliding_window_clustering, clustering_simple,
     markov_regime_switching_simple, markov_regime_switching_advanced
 )
@@ -227,22 +227,14 @@ class StrategySearcher:
 
                 if len(model_main_data) <= hp["label_max"]:
                     continue
-                if self.direction == 'both':
-                    model_main_data = get_labels(
-                        model_main_data,
-                        markup=hp['markup'],
-                        max=hp['label_max']
-                    )
-                    model_main_data = model_main_data.rename(columns={'labels': 'labels_main'})
-                else:
-                    model_main_data = get_labels_one_direction(
-                        model_main_data,
-                        markup=hp['markup'],
-                        max_val=hp['label_max'],
-                        direction=self.direction,
-                        atr_period=hp['atr_period'],
-                        deterministic=self.labels_deterministic,
-                    )
+                model_main_data = get_labels_one_direction(
+                    model_main_data,
+                    markup=hp['markup'],
+                    max_val=hp['label_max'],
+                    direction=self.direction if self.direction != 'both' else 'both',
+                    atr_period=hp['atr_period'],
+                    deterministic=self.labels_deterministic,
+                )
                 main_feature_cols = model_main_data.columns[model_main_data.columns.str.contains('_feature') & \
                                                        ~model_main_data.columns.str.contains('_meta_feature')]
                 model_main_data = model_main_data[main_feature_cols.tolist() + ['labels_main']]
@@ -690,22 +682,14 @@ class StrategySearcher:
                 return -1.0, -1.0
 
             # Etiquetado según la dirección seleccionada
-            if self.direction == 'both':
-                ds_train = get_labels(
-                    ds_train,
-                    markup=hp['markup'],
-                    max=hp['label_max']
-                )
-                ds_train = ds_train.rename(columns={'labels': 'labels_main'})
-            else:
-                ds_train = get_labels_one_direction(
-                    ds_train,
-                    markup=hp['markup'],
-                    max_val=hp['label_max'],
-                    direction=self.direction,
-                    atr_period=hp['atr_period'],
-                    deterministic=self.labels_deterministic,
-                )
+            ds_train = get_labels_one_direction(
+                ds_train,
+                markup=hp['markup'],
+                max_val=hp['label_max'],
+                direction=self.direction if self.direction != 'both' else 'both',
+                atr_period=hp['atr_period'],
+                deterministic=self.labels_deterministic,
+            )
             # Selección de features: todas las columnas *_feature
             feature_cols = [col for col in ds_train.columns if col.endswith('_feature')]
             X = ds_train[feature_cols]
@@ -780,22 +764,14 @@ class StrategySearcher:
                 return -1.0, -1.0
 
             # Etiquetado según la dirección
-            if self.direction == 'both':
-                ds_train = get_labels(
-                    ds_train,
-                    markup=hp['markup'],
-                    max=hp['label_max']
-                )
-                ds_train = ds_train.rename(columns={'labels': 'labels_main'})
-            else:
-                ds_train = get_labels_one_direction(
-                    ds_train,
-                    markup=hp['markup'],
-                    max_val=hp['label_max'],
-                    direction=self.direction,
-                    atr_period=hp['atr_period'],
-                    deterministic=self.labels_deterministic,
-                )
+            ds_train = get_labels_one_direction(
+                ds_train,
+                markup=hp['markup'],
+                max_val=hp['label_max'],
+                direction=self.direction if self.direction != 'both' else 'both',
+                atr_period=hp['atr_period'],
+                deterministic=self.labels_deterministic,
+            )
 
             feature_cols = [c for c in ds_train.columns if c.endswith('_feature')]
             X = ds_train[feature_cols]

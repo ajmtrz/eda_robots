@@ -45,6 +45,12 @@ def export_model_to_ONNX(**kwargs):
     periods_meta = kwargs.get('best_periods_meta')
     stats_main = kwargs.get('best_stats_main')
     stats_meta = kwargs.get('best_stats_meta')
+
+    # Permitir que periods_meta y stats_meta sean opcionales
+    if periods_meta is None:
+        periods_meta = []
+    if stats_meta is None:
+        stats_meta = []
     symbol = kwargs.get('symbol')
     timeframe = kwargs.get('timeframe')
     direction = kwargs.get('direction')
@@ -613,8 +619,11 @@ def export_model_to_ONNX(**kwargs):
         code += 'int periods_main' + '[' + str(len(periods_main)) + \
             '] = {' + ','.join(map(str, periods_main)) + '};'
         code += '\n'
-        code += 'int periods_meta' + '[' + str(len(periods_meta)) + \
-            '] = {' + ','.join(map(str, periods_meta)) + '};\n\n'
+        if len(periods_meta) > 0:
+            code += 'int periods_meta' + '[' + str(len(periods_meta)) + \
+                '] = {' + ','.join(map(str, periods_meta)) + '};\n\n'
+        else:
+            code += 'int periods_meta[0] = {};\n\n'
         code += '#define NUM_STATS_MAIN       (ArraySize(stat_main_ptr))\n'
         code += '#define NUM_STATS_META       (ArraySize(stat_meta_ptr))\n'
         code += '#define NUM_MAIN_FEATURES    (ArraySize(periods_main))\n'
@@ -638,7 +647,10 @@ def export_model_to_ONNX(**kwargs):
             code += stat_function_templates[stat] + "\n"
         code += "\ntypedef double (*StatFunc)(const double &[]);\n"
         code += "StatFunc stat_main_ptr[] = { " + ", ".join(f"stat_{s}" for s in stats_main) + " };\n\n"
-        code += "StatFunc stat_meta_ptr[] = { " + ", ".join(f"stat_{s}" for s in stats_meta) + " };\n\n"
+        if len(stats_meta) > 0:
+            code += "StatFunc stat_meta_ptr[] = { " + ", ".join(f"stat_{s}" for s in stats_meta) + " };\n\n"
+        else:
+            code += "StatFunc stat_meta_ptr[] = {};\n\n"
         code += 'void fill_arays_main(double &features[])\n'
         code += '  {\n'
         code += '   double pr[];\n'

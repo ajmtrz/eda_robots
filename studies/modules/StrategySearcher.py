@@ -24,8 +24,7 @@ from modules.labeling_lib import (
 )
 from modules.tester_lib import (
     tester,
-    tester_one_direction,
-    robust_oos_score_one_direction,
+    robust_oos_score,
     _ONNX_CACHE
 )
 from modules.export_lib import export_model_to_ONNX
@@ -519,20 +518,28 @@ class StrategySearcher:
             close_train_eval = ds_train_eval_sample['close'].to_numpy()
             close_test_eval = ds_test['close'].to_numpy()
             if self.direction == 'both':
-                df_ins = pd.DataFrame({
-                    'close': close_train_eval,
-                    'labels_main': model_main.predict_proba(ds_train_eval_main)[:, 1],
-                    'labels_meta': model_meta.predict_proba(ds_train_eval_meta)[:, 1],
-                })
-                df_oos = pd.DataFrame({
-                    'close': close_test_eval,
-                    'labels_main': model_main.predict_proba(ds_test_eval_main)[:, 1],
-                    'labels_meta': model_meta.predict_proba(ds_test_eval_meta)[:, 1],
-                })
-                score_ins = tester(df_ins, plot=False)
-                score_oos = tester(df_oos, plot=False)
+                score_ins = tester(
+                    ds_main=ds_train_eval_main,
+                    ds_meta=ds_train_eval_meta,
+                    close=close_train_eval,
+                    model_main=model_main,
+                    model_meta=model_meta,
+                    direction='both',
+                    plot=False,
+                    prd='insample',
+                )
+                score_oos = tester(
+                    ds_main=ds_test_eval_main,
+                    ds_meta=ds_test_eval_meta,
+                    close=close_test_eval,
+                    model_main=model_main,
+                    model_meta=model_meta,
+                    direction='both',
+                    plot=False,
+                    prd='outofsample',
+                )
             else:
-                score_ins = tester_one_direction(
+                score_ins = tester(
                     ds_main=ds_train_eval_main,
                     ds_meta=ds_train_eval_meta,
                     close=close_train_eval,
@@ -542,7 +549,7 @@ class StrategySearcher:
                     plot=False,
                     prd='insample',
                 )
-                score_oos = tester_one_direction(
+                score_oos = tester(
                     ds_main=ds_test_eval_main,
                     ds_meta=ds_test_eval_meta,
                     close=close_test_eval,
@@ -886,7 +893,7 @@ class StrategySearcher:
             ds_test_meta = ds_test[meta_feature_cols].to_numpy()
             close_test = ds_test['close'].to_numpy()
 
-            score_oos = robust_oos_score_one_direction(
+            score_oos = robust_oos_score(
                 ds_main=ds_test_main,
                 ds_meta=ds_test_meta,
                 close=close_test,

@@ -87,23 +87,73 @@ def process_data_one_direction(close, main_labels, meta_labels, direction):
 # ───────────────────────────────────────────────────────────────────
 # 2)  Wrappers del tester
 # ───────────────────────────────────────────────────────────────────
-def tester(dataset, plot=False):
+def tester(
+        ds_main: np.ndarray,
+        ds_meta: np.ndarray,
+        close: np.ndarray,
+        model_main: object,
+        model_meta: object,
+        direction: str = 'both',
+        plot: bool = False,
+        prd: str = '') -> float:
 
-    close = dataset['close'].to_numpy()
-    main   = dataset['labels_main'].to_numpy()
-    meta  = dataset['labels_meta'].to_numpy()
+    """Evalúa una estrategia para una o ambas direcciones.
 
-    # Pasamos los índices relativos al dataset filtrado
-    rpt, ch = process_data(close, main, meta)
+    Parameters
+    ----------
+    ds_main : np.ndarray
+        Conjunto de características para el modelo principal.
+    ds_meta : np.ndarray
+        Conjunto de características para el meta-modelo.
+    close : np.ndarray
+        Serie de precios de cierre.
+    model_main : object
+        Modelo principal entrenado con ``predict_proba``.
+    model_meta : object
+        Meta-modelo entrenado con ``predict_proba``.
+    direction : str, optional
+        ``'buy'``, ``'sell'`` o ``'both'``. Por defecto ``'both'``.
+    plot : bool, optional
+        Si ``True`` muestra la curva de equity.  Por defecto ``False``.
+    prd : str, optional
+        Etiqueta del periodo a mostrar en el gráfico.
 
-    # calcular el R² con signo directamente
-    score = _signed_r2(rpt)
-    sign = 1 if score >= 0 else -1
+    Returns
+    -------
+    float
+        Puntuación de la estrategia según :func:`evaluate_report`.
+    """
+
+    # Calcular probabilidades usando ambos modelos (sin binarizar)
+    main = model_main.predict_proba(ds_main)[:, 1]
+    meta = model_meta.predict_proba(ds_meta)[:, 1]
+
+    # Asegurar contigüidad en memoria
+    close = np.ascontiguousarray(close)
+    main = np.ascontiguousarray(main)
+    meta = np.ascontiguousarray(meta)
+
+    if direction == 'both':
+        rpt, _ = process_data(close, main, meta)
+    else:
+        rpt, _ = process_data_one_direction(close, main, meta, direction)
+
+    if rpt.size < 2:
+        return -1.0
+
+    score = evaluate_report(rpt)
 
     if plot:
-        plt.plot(rpt)
-        plt.plot(ch)
-        plt.title(f"R² {score:.2f}")
+        plt.figure(figsize=(8, 4))
+        plt.plot(rpt, label='Equity Curve')
+        plt.xlabel("Operations")
+        plt.ylabel("Cumulative Profit")
+        if prd:
+            plt.title(f"Period: {prd} | Score: {score:.2f}")
+        else:
+            plt.title(f"Score: {score:.2f}")
+        plt.legend()
+        plt.grid(alpha=0.3)
         plt.show()
 
     return score
@@ -186,42 +236,19 @@ def tester_one_direction(
         model_main: object,
         model_meta: object,
         direction: str = 'buy',
-        plot=False,
-        prd= ''):
-
-    # Calcular probabilidades usando ambos modelos (sin binarizar)
-    main = model_main.predict_proba(ds_main)[:, 1]
-    meta = model_meta.predict_proba(ds_meta)[:, 1]
-
-    # Extraer datos necesarios
-    close = np.ascontiguousarray(close)
-    main = np.ascontiguousarray(main)
-    meta = np.ascontiguousarray(meta)
-
-    # Pasamos los índices numéricos en lugar de fechas
-    rpt, ch= process_data_one_direction(
-        close, main, meta, direction)
-
-    # Si no hay suficientes operaciones, devolver valor negativo
-    if len(rpt) < 2:
-        return -1.0
-    
-    # Calcular score
-    score = evaluate_report(rpt)
-
-    # Visualizar resultados si se solicita
-    if plot:
-        plt.figure(figsize=(8, 4))
-        plt.plot(rpt, label='Equity Curve')
-        plt.xlabel("Operations")
-        plt.ylabel("Cumulative Profit")
-        plt.title(f"Period: {prd} | Score: {score:.2f}")
-        plt.legend()
-        plt.grid(alpha=0.3)
-        plt.show()
-
-    # Evaluar el reporte para obtener una puntuación completa
-    return score
+        plot: bool = False,
+        prd: str = '') -> float:
+    """Mantiene compatibilidad con la API anterior."""
+    return tester(
+        ds_main=ds_main,
+        ds_meta=ds_meta,
+        close=close,
+        model_main=model_main,
+        model_meta=model_meta,
+        direction=direction,
+        plot=plot,
+        prd=prd,
+    )
 
 # ─────────────────────────────────────────────
 # tester_slow  (mantenerlo o borrarlo)
@@ -281,17 +308,24 @@ def test_model(dataset: pd.DataFrame,
                result: list,
                backward: datetime,
                forward: datetime,
-               plt=False):
+               plt: bool = False) -> float:
 
     ext_dataset = dataset.copy()
     mask = (ext_dataset.index > backward) & (ext_dataset.index < forward)
     ext_dataset = ext_dataset[mask].reset_index(drop=True)
-    X = ext_dataset.iloc[:, 1:]
 
-    ext_dataset['labels_main'] = result[0].predict_proba(X)[:, 1]
-    ext_dataset['labels_meta'] = result[1].predict_proba(X)[:, 1]
+    X = ext_dataset.iloc[:, 1:].to_numpy()
+    close = ext_dataset['close'].to_numpy()
 
-    return tester(ext_dataset, plot=plt)
+    return tester(
+        ds_main=X,
+        ds_meta=X,
+        close=close,
+        model_main=result[0],
+        model_meta=result[1],
+        direction='both',
+        plot=plt,
+    )
 
 # ───────────────────────────────────────────────────────────────────
 # Monte-Carlo robustness utilities
@@ -393,7 +427,10 @@ def _simulate_batch(close, l_all, m_all, block_size, direction):
     scores = np.full(n_sim, -1.0)
     for i in prange(n_sim):
         c_n, l_n, m_n = _make_noisy_signals(close, l_all[i], m_all[i])
-        rpt, _ = process_data_one_direction(c_n, l_n, m_n, direction)
+        if direction == "both":
+            rpt, _ = process_data(c_n, l_n, m_n)
+        else:
+            rpt, _ = process_data_one_direction(c_n, l_n, m_n, direction)
         if rpt.size < 2:
             continue
         ret = np.diff(rpt)
@@ -468,7 +505,7 @@ def monte_carlo_full(
     close: np.ndarray,
     X_main: np.ndarray,
     X_meta: np.ndarray,
-    direction: str,
+    direction: str = "both",
     n_sim: int = 100,
     block_size: int = 20,
     plot: bool = False,
@@ -493,7 +530,10 @@ def monte_carlo_full(
         # Primero calculamos la curva original sin ruido
         main = model_main.predict_proba(X_main)[:, 1]
         meta = model_meta.predict_proba(X_meta)[:, 1]
-        rpt_original, _ = process_data_one_direction(close, main, meta, direction)
+        if direction == "both":
+            rpt_original, _ = process_data(close, main, meta)
+        else:
+            rpt_original, _ = process_data_one_direction(close, main, meta, direction)
         
         # Monte Carlo simulations
         noise_levels = np.random.uniform(0.005, 0.02, n_sim)
@@ -516,7 +556,10 @@ def monte_carlo_full(
                     equity_curves = []
                     for i in range(n_sim):
                         c_n, l_n, m_n = _make_noisy_signals(close, l_all[i], m_all[i])
-                        rpt, _ = process_data_one_direction(c_n, l_n, m_n, direction)
+                        if direction == "both":
+                            rpt, _ = process_data(c_n, l_n, m_n)
+                        else:
+                            rpt, _ = process_data_one_direction(c_n, l_n, m_n, direction)
                         if len(rpt) >= 2:
                             equity_curves.append(rpt)
                     
@@ -591,21 +634,21 @@ def monte_carlo_full(
         print(traceback.format_exc())
         return {"scores": np.array([-1.0]), "p_positive": 0.0, "quantiles": np.array([-1.0, -1.0, -1.0])}
 
-def robust_oos_score_one_direction(
+def robust_oos_score(
         ds_main: np.ndarray,
         ds_meta: np.ndarray,
         close: np.ndarray,
         model_main: object,
         model_meta: object,
-        direction: str,
+        direction: str = "both",
         n_sim: int = 100,
         block_size: int = 20,
         agg: str = "q05",
         plot: bool = False,
         prd: str = "") -> float:
 
+    """Calcula un score robusto en out-of-sample mediante Monte Carlo."""
 
-    # 3) Monte Carlo robusto -------------------------------------
     try:
         mc = monte_carlo_full(
             close=close,
@@ -619,7 +662,7 @@ def robust_oos_score_one_direction(
             plot=plot,
             prd=prd
         )
-        
+
         if agg == "q05":
             return float(mc["quantiles"][0])
         elif agg == "q50":
@@ -630,5 +673,34 @@ def robust_oos_score_one_direction(
             raise ValueError("agg must be 'q05', 'q50' or 'q95'")
 
     except Exception as e:
-        print(f"\nError en robust_oos_score_one_direction: {e}")
+        print(f"\nError en robust_oos_score: {e}")
         return -1.0
+
+
+def robust_oos_score_one_direction(
+        ds_main: np.ndarray,
+        ds_meta: np.ndarray,
+        close: np.ndarray,
+        model_main: object,
+        model_meta: object,
+        direction: str,
+        n_sim: int = 100,
+        block_size: int = 20,
+        agg: str = "q05",
+        plot: bool = False,
+        prd: str = "") -> float:
+    """Compatibilidad hacia atrás."""
+
+    return robust_oos_score(
+        ds_main=ds_main,
+        ds_meta=ds_meta,
+        close=close,
+        model_main=model_main,
+        model_meta=model_meta,
+        direction=direction,
+        n_sim=n_sim,
+        block_size=block_size,
+        agg=agg,
+        plot=plot,
+        prd=prd,
+    )

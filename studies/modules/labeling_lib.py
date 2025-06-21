@@ -13,6 +13,7 @@ from scipy.optimize import linear_sum_assignment
 from scipy.signal import savgol_filter
 from scipy.interpolate import UnivariateSpline
 from scipy.signal import find_peaks
+from sklearn.mixture import GaussianMixture
 import matplotlib.pyplot as plt
 logging.getLogger('hmmlearn').setLevel(logging.ERROR)
 
@@ -1264,7 +1265,8 @@ def get_labels_mean_reversion_v(dataset, markup, min_l=1, max_l=15, rolling=0.5,
                                  - 'spline': Deviation from a smoothed spline.
                                  - 'savgol': Deviation from a Savitzky-Golay filter.
                                  Defaults to 'spline'.
-        shift (int, optional): Shift the smoothed price data (lag/lead effect). Defaults to 1.
+        shift (int, optional): Shift the smoothed price data forward (positive) or backward (negative).
+                                 Useful for creating a lag/lead effect. Defaults to 1.
         volatility_window (int, optional): Window size for calculating volatility. Defaults to 20.
 
     Returns:
@@ -1452,7 +1454,7 @@ def get_labels_multiple_filters(dataset, rolling_periods=[200, 400, 600], quanti
         dataset (pd.DataFrame): DataFrame containing financial data with a 'close' column.
         rolling_periods (list, optional): List of rolling window sizes for the Savitzky-Golay filter. 
                                            Defaults to [200, 400, 600].
-        quantiles (list, optional): Quantiles to define the "reversion zone". Defaults to [.05, .95].
+        quantiles (list, optional): Quantiles to define the "reversion zone". Defaults to [.45, .55].
         window (int, optional): Window size for calculating rolling quantiles. Defaults to 100.
         polyorder (int, optional): Polynomial order for the Savitzky-Golay filter. Defaults to 3.
 
@@ -1495,7 +1497,7 @@ def get_labels_multiple_filters(dataset, rolling_periods=[200, 400, 600], quanti
     # Convert lists to NumPy arrays for faster calculations (potentially using Numba)
     lvls_array = np.array(all_levels)
     qs_array = np.array(all_quantiles)
-    
+
     # Calculate buy/sell labels using the 'calc_labels_multiple_filters' function 
     labels = calc_labels_multiple_filters(dataset['close'].values, lvls_array, qs_array)
     
@@ -1636,7 +1638,9 @@ def get_labels_filter_one_direction(dataset, rolling=200, quantiles=[.45, .55], 
     
     # Calculate the difference between the actual closing prices and the smoothed prices
     diff = dataset['close'] - smoothed_prices
-    dataset['lvl'] = diff  # Add the difference as a new column 'lvl' to the DataFrame
+    
+    # Add the difference as a new column 'lvl' to the DataFrame
+    dataset['lvl'] = diff
     
     # Remove any rows with NaN values 
     dataset = dataset.dropna()

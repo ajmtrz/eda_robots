@@ -336,37 +336,32 @@ class StrategySearcher:
                 pass
             gc.collect()
     
-    def check_constant_features(self, X: np.ndarray, feature_cols: list, std_epsilon: float = 1e-12) -> bool:
-        """Verifica si hay columnas que podrían causar inestabilidad numérica.
+    def check_constant_features(self, X: pd.DataFrame, feature_cols: list, std_epsilon: float = 1e-6) -> list:
+        """Return the list of columns that may cause numerical instability.
         
         Args:
-            X: Array numpy con los datos
+            X: DataFrame con los datos
             feature_cols: Lista con nombres de las columnas
             std_epsilon: Umbral para considerar una columna como constante
             
         Returns:
-            bool: True si hay columnas problemáticas, False en caso contrario
+            list: Lista de columnas problemáticas
         """
         problematic_cols = []
         
         # 1) Verificar columnas con nan/inf
-        for i, col in enumerate(feature_cols):
-            if not np.isfinite(X[:, i]).all():
-                problematic_cols.append(f"{col} (contiene valores inf/nan)")
+        for col in feature_cols:
+            series = X[col]
+            if not np.isfinite(series).all():
+                problematic_cols.append(col)
                 
         # 2) Verificar columnas (casi) constantes
-        stds = np.nanstd(X, axis=0)
-        for i, (std, col) in enumerate(zip(stds, feature_cols)):
+        stds = X[feature_cols].std(axis=0, skipna=True)
+        for col, std in stds.items():
             if std < std_epsilon:
-                problematic_cols.append(f"{col} (desviación estándar {std:.2e})")
+                problematic_cols.append(col)
                 
-        if problematic_cols:
-            # print("\n⚠️ Columnas problemáticas detectadas:")
-            # for col in problematic_cols:
-            #     print(f"  - {col}")
-            return True
-            
-        return False
+        return problematic_cols
     
     def suggest_all_params(self, trial: 'optuna.Trial') -> dict:
         try:
@@ -1027,8 +1022,12 @@ class StrategySearcher:
             if feature_cols.empty:
                 return None, None
 
-            if self.check_constant_features(full_ds[feature_cols].to_numpy('float32'), feature_cols):
-                return None, None
+            problematic = self.check_constant_features(full_ds, list(feature_cols))
+            if problematic:
+                full_ds.drop(columns=problematic, inplace=True)
+                feature_cols = [c for c in feature_cols if c not in problematic]
+                if not feature_cols:
+                    return None, None
 
             # ──────────────────────────────────────────────────────────────
             # 6) Máscaras de train / test

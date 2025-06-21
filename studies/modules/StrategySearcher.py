@@ -5,6 +5,7 @@ import traceback
 import random
 import os
 import psutil
+import inspect
 import numpy as np
 import pandas as pd
 from datetime import datetime
@@ -19,6 +20,14 @@ from mapie.classification import CrossConformalClassifier
 from modules.labeling_lib import (
     get_prices, get_features,
     get_labels_one_direction,
+    get_labels_trend, get_labels_trend_with_profit,
+    get_labels_trend_with_profit_multi, get_labels_clusters,
+    get_labels_multi_window, get_labels_validated_levels,
+    get_labels_filter_ZZ, get_labels_mean_reversion,
+    get_labels_mean_reversion_multi, get_labels_mean_reversion_v,
+    get_labels_filter, get_labels_multiple_filters,
+    get_labels_filter_bidirectional, get_labels_filter_one_direction,
+    get_labels_trend_one_direction, get_labels_filter_flat,
     sliding_window_clustering, clustering_simple,
     markov_regime_switching_simple, markov_regime_switching_advanced
 )
@@ -30,6 +39,25 @@ from modules.tester_lib import (
 from modules.export_lib import export_model_to_ONNX
 
 class StrategySearcher:
+    LABEL_FUNCS = {
+        "atr": get_labels_one_direction,
+        "trend": get_labels_trend,
+        "trend_profit": get_labels_trend_with_profit,
+        "trend_multi": get_labels_trend_with_profit_multi,
+        "clusters": get_labels_clusters,
+        "multi_window": get_labels_multi_window,
+        "validated_levels": get_labels_validated_levels,
+        "zigzag": get_labels_filter_ZZ,
+        "mean_rev": get_labels_mean_reversion,
+        "mean_rev_multi": get_labels_mean_reversion_multi,
+        "mean_rev_vol": get_labels_mean_reversion_v,
+        "filter": get_labels_filter,
+        "multi_filter": get_labels_multiple_filters,
+        "filter_bidirectional": get_labels_filter_bidirectional,
+        "filter_one": get_labels_filter_one_direction,
+        "trend_one": get_labels_trend_one_direction,
+        "filter_flat": get_labels_filter_flat,
+    }
     def __init__(
         self,
         symbol: str,
@@ -49,6 +77,7 @@ class StrategySearcher:
         search_type: str = 'clusters',
         search_subtype: str = 'simple',
         labels_deterministic: bool = False,
+        label_method: str = 'atr',
         tag: str = "",
     ):
         self.symbol = symbol
@@ -66,6 +95,7 @@ class StrategySearcher:
         self.search_type = search_type
         self.search_subtype = search_subtype
         self.labels_deterministic = labels_deterministic
+        self.label_method = label_method
         self.pruner_type = pruner_type
         self.n_trials = n_trials
         self.n_models = n_models
@@ -75,6 +105,25 @@ class StrategySearcher:
 
         # Configuración de sklearn y optuna
         optuna.logging.set_verbosity(optuna.logging.WARNING)
+
+    def _apply_labeling(self, dataset: pd.DataFrame, hp: dict) -> pd.DataFrame:
+        """Apply the selected labeling function dynamically."""
+        label_func = self.LABEL_FUNCS.get(self.label_method, get_labels_one_direction)
+        params = inspect.signature(label_func).parameters
+        kwargs = {}
+        if 'markup' in params:
+            kwargs['markup'] = hp['markup']
+        if 'max_val' in params:
+            kwargs['max_val'] = hp['label_max']
+        if 'max_l' in params:
+            kwargs['max_l'] = hp['label_max']
+        if 'direction' in params:
+            kwargs['direction'] = self.direction if self.direction != 'both' else 'both'
+        if 'atr_period' in params:
+            kwargs['atr_period'] = hp['atr_period']
+        if 'deterministic' in params:
+            kwargs['deterministic'] = self.labels_deterministic
+        return label_func(dataset, **kwargs)
 
     def _log_memory(self, msg: str = "") -> None:
         """Helper to print current RSS memory usage in MB."""
@@ -228,14 +277,7 @@ class StrategySearcher:
 
                 if len(model_main_data) <= hp["label_max"]:
                     continue
-                model_main_data = get_labels_one_direction(
-                    model_main_data,
-                    markup=hp['markup'],
-                    max_val=hp['label_max'],
-                    direction=self.direction if self.direction != 'both' else 'both',
-                    atr_period=hp['atr_period'],
-                    deterministic=self.labels_deterministic,
-                )
+                model_main_data = self._apply_labeling(model_main_data, hp)
                 main_feature_cols = model_main_data.columns[model_main_data.columns.str.contains('_feature') & \
                                                        ~model_main_data.columns.str.contains('_meta_feature')]
                 model_main_data = model_main_data[main_feature_cols.tolist() + ['labels_main']]
@@ -683,14 +725,7 @@ class StrategySearcher:
                 return -1.0, -1.0
 
             # Etiquetado según la dirección seleccionada
-            ds_train = get_labels_one_direction(
-                ds_train,
-                markup=hp['markup'],
-                max_val=hp['label_max'],
-                direction=self.direction if self.direction != 'both' else 'both',
-                atr_period=hp['atr_period'],
-                deterministic=self.labels_deterministic,
-            )
+            ds_train = self._apply_labeling(ds_train, hp)
             # Selección de features: todas las columnas *_feature
             feature_cols = [col for col in ds_train.columns if col.endswith('_feature')]
             X = ds_train[feature_cols]
@@ -765,14 +800,7 @@ class StrategySearcher:
                 return -1.0, -1.0
 
             # Etiquetado según la dirección
-            ds_train = get_labels_one_direction(
-                ds_train,
-                markup=hp['markup'],
-                max_val=hp['label_max'],
-                direction=self.direction if self.direction != 'both' else 'both',
-                atr_period=hp['atr_period'],
-                deterministic=self.labels_deterministic,
-            )
+            ds_train = self._apply_labeling(ds_train, hp)
 
             feature_cols = [c for c in ds_train.columns if c.endswith('_feature')]
             X = ds_train[feature_cols]

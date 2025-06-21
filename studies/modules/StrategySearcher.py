@@ -134,9 +134,10 @@ class StrategySearcher:
                                     study.set_user_attr("best_models", trial.user_attrs['models'])
                                     study.set_user_attr("best_scores", trial.user_attrs['scores'])
                                     study.set_user_attr("best_periods_main", trial.user_attrs['periods_main'])
-                                    study.set_user_attr("best_periods_meta", trial.user_attrs['periods_meta'])
+                                    # Cambia acceso directo por .get para evitar error si no existe
+                                    study.set_user_attr("best_periods_meta", trial.user_attrs.get('periods_meta'))
                                     study.set_user_attr("best_stats_main", trial.user_attrs['stats_main'])
-                                    study.set_user_attr("best_stats_meta", trial.user_attrs['stats_meta'])
+                                    study.set_user_attr("best_stats_meta", trial.user_attrs.get('stats_meta'))
 
                         # Log
                         if study.best_trials:

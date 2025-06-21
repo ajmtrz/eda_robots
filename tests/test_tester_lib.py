@@ -26,3 +26,14 @@ def test_evaluate_report_score_range():
     assert isinstance(score, float)
     assert 0.0 <= score <= 1.0
 
+
+def test_process_data_bidirectional_closes_open_position():
+    close = np.array([1.0, 2.0, 3.0, 4.0], dtype=np.float64)
+    labels = np.array([0.6, 0.6, 0.6, 0.6], dtype=np.float64)
+    meta = np.array([0.6, 0.4, 0.4, 0.4], dtype=np.float64)
+
+    rpt, chart = tester_lib.process_data(close, labels, meta)
+    assert rpt.size == 2
+    assert chart.size == 2
+    assert np.isclose(abs(rpt[-1]), 3.0)
+

@@ -125,11 +125,11 @@ class StrategySearcher:
             kwargs['deterministic'] = self.labels_deterministic
         return label_func(dataset, **kwargs)
 
-    def _log_memory(self, msg: str = "") -> None:
+    def _log_memory(self) -> float:
         """Helper to print current RSS memory usage in MB."""
         try:
             mem = psutil.Process(os.getpid()).memory_info().rss / (1024 ** 2)
-            print(f"{msg}RSS={mem:.2f} MB", flush=True)
+            return mem
         except Exception:
             pass
 
@@ -202,6 +202,7 @@ class StrategySearcher:
                             f"trial {n_done}/{self.n_trials} "
                             f"{best_str} "
                             f"avg={avg_time:6.2f}s",
+                            f"mem={self._log_memory():6.2f}MB ",
                             flush=True,
                         )
 
@@ -670,7 +671,6 @@ class StrategySearcher:
             except Exception:
                 pass
             gc.collect()
-            self._log_memory(f"[{self.tag}] markov trial end ")
 
     def search_clusters(self, trial: optuna.Trial) -> tuple[float, float]:
         """Implementa la búsqueda de estrategias usando clustering."""
@@ -714,7 +714,6 @@ class StrategySearcher:
             except Exception:
                 pass
             gc.collect()
-            self._log_memory(f"[{self.tag}] clusters trial end ")
 
     def search_mapie(self, trial) -> tuple[float, float]:
         """Implementa la búsqueda de estrategias usando conformal prediction (MAPIE) con CatBoost, usando el mismo conjunto de features para ambos modelos."""
@@ -788,7 +787,6 @@ class StrategySearcher:
             except Exception:
                 pass
             gc.collect()
-            self._log_memory(f"[{self.tag}] mapie trial end ")
 
     def search_causal(self, trial: optuna.Trial) -> tuple[float, float]:
         """Búsqueda basada en detección causal de muestras malas."""
@@ -925,7 +923,6 @@ class StrategySearcher:
             except Exception:
                 pass
             gc.collect()
-            self._log_memory(f"[{self.tag}] causal trial end ")
 
     # =========================================================================
     # Métodos auxiliares

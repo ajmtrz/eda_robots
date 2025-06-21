@@ -29,7 +29,8 @@ from modules.labeling_lib import (
     get_labels_filter_bidirectional, get_labels_filter_one_direction,
     get_labels_trend_one_direction, get_labels_filter_flat,
     sliding_window_clustering, clustering_simple,
-    markov_regime_switching_simple, markov_regime_switching_advanced
+    markov_regime_switching_simple, markov_regime_switching_advanced,
+    lgmm_clustering
 )
 from modules.tester_lib import (
     tester,
@@ -141,6 +142,7 @@ class StrategySearcher:
         search_funcs = {
             'clusters': self.search_clusters,
             'markov': self.search_markov,
+            'lgmm': self.search_lgmm,
             'mapie': self.search_mapie,
             'causal': self.search_causal,
         }
@@ -406,7 +408,7 @@ class StrategySearcher:
             stats_main = list(dict.fromkeys(stats_main))
             params['stats_main'] = tuple(stats_main[:params['max_main_stats']])
             # ---------- Hiperparámetros meta solo si no es mapie ----------
-            if self.search_type in ['clusters', 'markov']:
+            if self.search_type in ['clusters', 'markov', 'lgmm']:
                 params['max_meta_periods'] = trial.suggest_int('max_meta_periods', 1, MAX_META_PERIODS, log=True)
                 params['max_meta_stats'] = trial.suggest_int('max_meta_stats', 1, MAX_META_STATS, log=True)
                 periods_meta = [trial.suggest_int(f'period_meta_{i}', 3, 7)
@@ -433,6 +435,12 @@ class StrategySearcher:
                     params.update({
                         'window_size': trial.suggest_int('window_size', 100, 500, step=50)
                     })
+            elif self.search_type == 'lgmm':
+                params.update({
+                    'n_components': trial.suggest_int('n_components', 2, 10),
+                    'covariance_type': trial.suggest_categorical('covariance_type', ['full', 'diag']),
+                    'max_iter': trial.suggest_int('max_iter', 50, 300, step=10),
+                })
             elif self.search_type == 'mapie':
                 params.update({
                     'mapie_confidence_level': trial.suggest_float('mapie_confidence_level', 0.7, 0.99),
@@ -714,6 +722,42 @@ class StrategySearcher:
             except Exception:
                 pass
             gc.collect()
+
+    def search_lgmm(self, trial: optuna.Trial) -> tuple[float, float]:
+        """Búsqueda basada en GaussianMixture para etiquetar clusters."""
+        try:
+            hp = self.suggest_all_params(trial)
+
+            ds_train, ds_test = self.get_train_test_data(hp)
+            if ds_train is None or ds_test is None:
+                return -1.0, -1.0
+
+            ds_train = lgmm_clustering(
+                ds_train,
+                n_components=hp['n_components'],
+                covariance_type=hp['covariance_type'],
+                max_iter=hp['max_iter'],
+            )
+
+            scores, models = self._evaluate_clusters(ds_train, ds_test, hp)
+            if scores is None or models is None:
+                return -1.0, -1.0
+
+            trial.set_user_attr('models', models)
+            trial.set_user_attr('scores', scores)
+
+            return scores[0], scores[1]
+
+        except Exception as e:
+            print(f"Error en search_lgmm: {str(e)}")
+            return -1.0, -1.0
+        finally:
+            try:
+                del ds_train, ds_test
+            except Exception:
+                pass
+            gc.collect()
+            self._log_memory(f"[{self.tag}] lgmm trial end ")
 
     def search_mapie(self, trial) -> tuple[float, float]:
         """Implementa la búsqueda de estrategias usando conformal prediction (MAPIE) con CatBoost, usando el mismo conjunto de features para ambos modelos."""

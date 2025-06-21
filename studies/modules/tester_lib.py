@@ -17,7 +17,7 @@ from modules.export_lib import (
 rt.set_default_logger_severity(4)
 
 @njit(cache=True, nogil=True, fastmath=True)
-def process_data(close, labels, metalabels):
+def process_data(close, labels, metalabels, meta_thr=0.5):
     last_deal  = 2
     last_price = 0.0
     report, chart = [0.0], [0.0]
@@ -26,7 +26,7 @@ def process_data(close, labels, metalabels):
         pred, pr, pred_meta = labels[i], close[i], metalabels[i]
 
         # ── abrir posición
-        if last_deal == 2 and pred_meta == 1:
+        if last_deal == 2 and pred_meta > meta_thr:
             last_price = pr
             last_deal  = 0 if pred < 0.5 else 1
             continue
@@ -45,6 +45,16 @@ def process_data(close, labels, metalabels):
             report.append(report[-1] + profit)
             chart.append(chart[-1] + (pr - last_price))
             continue
+
+    # Cierre forzoso al final si sigue abierta
+    if last_deal == 0:
+        profit = close[-1] - last_price
+        report.append(report[-1] + profit)
+        chart.append(chart[-1] + profit)
+    elif last_deal == 1:
+        profit = last_price - close[-1]
+        report.append(report[-1] + profit)
+        chart.append(chart[-1] + (close[-1] - last_price))
 
     return np.array(report), np.array(chart)
 

@@ -193,7 +193,7 @@ class StrategySearcher:
                         # Log
                         if study.best_trials:
                             best_trial = max(study.best_trials, key=lambda t: min(*t.values))
-                            best_str = f"ins={best_trial.values[0]:.4f} oos={best_trial.values[1]:.4f}"
+                            best_str = f"ins={best_trial.values[0]:.6f} oos={best_trial.values[1]:.6f}"
                         else:
                             best_str = "ins=--- oos=---"
                         elapsed = perf_counter() - t0
@@ -203,8 +203,8 @@ class StrategySearcher:
                             f"[{self.tag}] modelo {i} "
                             f"trial {n_done}/{self.n_trials} "
                             f"{best_str} "
-                            f"avg={avg_time:6.2f}s",
-                            f"mem={self._log_memory():6.2f}MB ",
+                            f"avg={avg_time:.2f}s",
+                            f"mem={self._log_memory():.2f}MB ",
                             flush=True,
                         )
 

@@ -3,6 +3,8 @@ import math
 import time
 import traceback
 import random
+import os
+import psutil
 import numpy as np
 import pandas as pd
 from datetime import datetime
@@ -71,9 +73,17 @@ class StrategySearcher:
         self.n_jobs = n_jobs
         self.tag = tag
         self.base_df = get_prices(symbol, timeframe, history_path)
-        
+
         # Configuración de sklearn y optuna
         optuna.logging.set_verbosity(optuna.logging.WARNING)
+
+    def _log_memory(self, msg: str = "") -> None:
+        """Helper to print current RSS memory usage in MB."""
+        try:
+            mem = psutil.Process(os.getpid()).memory_info().rss / (1024 ** 2)
+            print(f"{msg}RSS={mem:.2f} MB", flush=True)
+        except Exception:
+            pass
 
     # =========================================================================
     # Métodos de búsqueda principales
@@ -274,10 +284,20 @@ class StrategySearcher:
                 return None, None
 
             return best_scores, best_models
-            
+
         except Exception as e:
             print(f"⚠️ ERROR en evaluación de clusters: {str(e)}")
             return None, None
+        finally:
+            try:
+                del model_main_data
+            except Exception:
+                pass
+            try:
+                del model_meta_data
+            except Exception:
+                pass
+            gc.collect()
     
     def check_constant_features(self, X: np.ndarray, feature_cols: list, std_epsilon: float = 1e-12) -> bool:
         """Verifica si hay columnas que podrían causar inestabilidad numérica.
@@ -544,6 +564,20 @@ class StrategySearcher:
             print(f"Error en función de entrenamiento y test: {str(e)}")
             return None, None
         finally:
+            try:
+                del X_main, X_meta, X_train_main, X_val_main, y_train_main, y_val_main
+                del X_train_meta, X_val_meta, y_train_meta, y_val_meta
+            except Exception:
+                pass
+            try:
+                del ds_train_eval_sample, ds_train_eval_main, ds_train_eval_meta
+                del ds_test_eval_main, ds_test_eval_meta
+            except Exception:
+                pass
+            try:
+                del model_main_data, model_meta_data
+            except Exception:
+                pass
             _ONNX_CACHE.clear()
             gc.collect()
 
@@ -588,6 +622,13 @@ class StrategySearcher:
         except Exception as e:
             print(f"Error en search_markov: {str(e)}")
             return -1.0, -1.0
+        finally:
+            try:
+                del ds_train, ds_test
+            except Exception:
+                pass
+            gc.collect()
+            self._log_memory(f"[{self.tag}] markov trial end ")
 
     def search_clusters(self, trial: optuna.Trial) -> tuple[float, float]:
         """Implementa la búsqueda de estrategias usando clustering."""
@@ -625,6 +666,13 @@ class StrategySearcher:
         except Exception as e:
             print(f"Error en search_clusters: {str(e)}")
             return -1.0, -1.0
+        finally:
+            try:
+                del ds_train, ds_test
+            except Exception:
+                pass
+            gc.collect()
+            self._log_memory(f"[{self.tag}] clusters trial end ")
 
     def search_mapie(self, trial) -> tuple[float, float]:
         """Implementa la búsqueda de estrategias usando conformal prediction (MAPIE) con CatBoost, usando el mismo conjunto de features para ambos modelos."""
@@ -706,6 +754,14 @@ class StrategySearcher:
         except Exception as e:
             print(f"Error en search_mapie: {str(e)}")
             return -1.0, -1.0
+        finally:
+            try:
+                del ds_train, ds_test
+                del model_main_data, model_meta_data, X, y
+            except Exception:
+                pass
+            gc.collect()
+            self._log_memory(f"[{self.tag}] mapie trial end ")
 
     def search_causal(self, trial: optuna.Trial) -> tuple[float, float]:
         """Búsqueda basada en detección causal de muestras malas."""
@@ -850,6 +906,14 @@ class StrategySearcher:
         except Exception as e:
             print(f"Error en search_causal: {str(e)}")
             return -1.0, -1.0
+        finally:
+            try:
+                del ds_train, ds_test
+                del model_main_data, model_meta_data, X, y
+            except Exception:
+                pass
+            gc.collect()
+            self._log_memory(f"[{self.tag}] causal trial end ")
 
     # =========================================================================
     # Métodos auxiliares
@@ -933,3 +997,5 @@ class StrategySearcher:
         except Exception as e:
             print(f"⚠️ ERROR en get_train_test_data: {str(e)}")
             return None, None
+        finally:
+            gc.collect()

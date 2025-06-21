@@ -203,9 +203,9 @@ class StrategySearcher:
                         n_done = trial.number + 1
                         avg_time = elapsed / n_done
                         print(
-                            f"[{self.tag}] modelo {i} "
-                            f"trial {n_done}/{self.n_trials} "
-                            f"{best_str} "
+                            f"[{self.tag}] modelo {i}",
+                            f"trial {n_done}/{self.n_trials}",
+                            f"{best_str}",
                             f"avg={avg_time:.2f}s",
                             f"mem={self._log_memory():.2f}MB ",
                             flush=True,

@@ -398,9 +398,13 @@ class StrategySearcher:
                 'max_main_stats': trial.suggest_int('max_main_stats', 1, MAX_MAIN_STATS, log=True),
             }
             # ---------- PERÍODOS MAIN ----------
-            periods_main = [trial.suggest_int(f'period_main_{i}', 3, 200, log=True)
-                            for i in range(MAX_MAIN_PERIODS)]
-            periods_main = sorted(set(periods_main))
+            periods_main = [
+                trial.suggest_int(f'period_main_{i}', 3, 200, log=True)
+                for i in range(MAX_MAIN_PERIODS)
+            ]
+            periods_main = list(dict.fromkeys(periods_main))
+            if len(periods_main) > params['max_main_periods']:
+                periods_main = random.sample(periods_main, params['max_main_periods'])
             params['periods_main'] = tuple(periods_main[:params['max_main_periods']])
             # ---------- STATS MAIN ----------
             stats_main = [trial.suggest_categorical(f'stat_main_{i}', all_stats)
@@ -411,9 +415,13 @@ class StrategySearcher:
             if self.search_type in ['clusters', 'markov', 'lgmm']:
                 params['max_meta_periods'] = trial.suggest_int('max_meta_periods', 1, MAX_META_PERIODS, log=True)
                 params['max_meta_stats'] = trial.suggest_int('max_meta_stats', 1, MAX_META_STATS, log=True)
-                periods_meta = [trial.suggest_int(f'period_meta_{i}', 3, 7)
-                                for i in range(MAX_META_PERIODS)]
-                periods_meta = sorted(set(periods_meta))
+                periods_meta = [
+                    trial.suggest_int(f'period_meta_{i}', 3, 7)
+                    for i in range(MAX_META_PERIODS)
+                ]
+                periods_meta = list(dict.fromkeys(periods_meta))
+                if len(periods_meta) > params['max_meta_periods']:
+                    periods_meta = random.sample(periods_meta, params['max_meta_periods'])
                 params['periods_meta'] = tuple(periods_meta[:params['max_meta_periods']])
                 stats_meta = [trial.suggest_categorical(f'stat_meta_{i}', all_stats)
                             for i in range(MAX_META_STATS)]
@@ -757,7 +765,6 @@ class StrategySearcher:
             except Exception:
                 pass
             gc.collect()
-            self._log_memory(f"[{self.tag}] lgmm trial end ")
 
     def search_mapie(self, trial) -> tuple[float, float]:
         """Implementa la búsqueda de estrategias usando conformal prediction (MAPIE) con CatBoost, usando el mismo conjunto de features para ambos modelos."""

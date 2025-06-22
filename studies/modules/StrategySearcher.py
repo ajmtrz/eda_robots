@@ -651,7 +651,21 @@ class StrategySearcher:
             # ── descartar clusters problemáticos ────────────────────────────
             if len(y_train_main.value_counts()) < 2 or len(y_val_main.value_counts()) < 2:
                 return None, None
-            
+            # --- NUEVO: asegurar que todas las clases de validación y test están en train ---
+            # Validación
+            if not set(y_val_main.unique()).issubset(set(y_train_main.unique())):
+                return None, None
+            # Test final (usando las mismas columnas)
+            y_test_main = ds_test[main_feature_cols].copy()
+            if 'labels_main' in ds_test.columns:
+                y_test_labels = ds_test['labels_main']
+            elif 'labels' in ds_test.columns:
+                y_test_labels = ds_test['labels']
+            else:
+                y_test_labels = None
+            if y_test_labels is not None:
+                if not set(y_test_labels.unique()).issubset(set(y_train_main.unique())):
+                    return None, None
             # ---------- 2) meta‑modelo ----------
             meta_feature_cols = [col for col in model_meta_data.columns if col != 'labels_meta']
             X_meta = model_meta_data[meta_feature_cols]

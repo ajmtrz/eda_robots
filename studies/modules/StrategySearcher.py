@@ -77,7 +77,6 @@ class StrategySearcher:
         history_path: str = r"/mnt/c/Users/Administrador/AppData/Roaming/MetaQuotes/Terminal/Common/Files/",
         search_type: str = 'clusters',
         search_subtype: str = 'simple',
-        labels_deterministic: bool = False,
         label_method: str = 'atr',
         tag: str = "",
     ):
@@ -95,7 +94,6 @@ class StrategySearcher:
         self.history_path = history_path
         self.search_type = search_type
         self.search_subtype = search_subtype
-        self.labels_deterministic = labels_deterministic
         self.label_method = label_method
         self.pruner_type = pruner_type
         self.n_trials = n_trials
@@ -122,8 +120,6 @@ class StrategySearcher:
             kwargs['direction'] = self.direction if self.direction != 'both' else 'both'
         if 'atr_period' in params:
             kwargs['atr_period'] = hp['atr_period']
-        if 'deterministic' in params:
-            kwargs['deterministic'] = self.labels_deterministic
         return label_func(dataset, **kwargs)
 
     def _log_memory(self) -> float:

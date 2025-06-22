@@ -529,8 +529,7 @@ def calculate_labels(close_data, markup, min_val, max_val):
             labels.append(2.0)
     return labels
 
-def get_labels(dataset, markup, min=1, max=15, atr_period=14,
-               deterministic=True) -> pd.DataFrame:
+def get_labels(dataset, markup, min=1, max=15, atr_period=14) -> pd.DataFrame:
     """Label trades for both directions using the ATR based methodology.
 
     This function is kept for backwards compatibility and internally delegates
@@ -544,7 +543,6 @@ def get_labels(dataset, markup, min=1, max=15, atr_period=14,
         max_val=max,
         direction='both',
         atr_period=atr_period,
-        deterministic=deterministic,
     )
     labeled = labeled.rename(columns={'labels_main': 'labels'})
     return labeled
@@ -1804,7 +1802,7 @@ def calculate_atr_simple(high, low, close, period=14):
 
 # ONE DIRECTION LABELING
 @njit(cache=True, nogil=True, fastmath=True)
-def calculate_labels_one_direction(high, low, close, markup, min_val, max_val, direction, atr_period=14, deterministic=True):
+def calculate_labels_one_direction(high, low, close, markup, min_val, max_val, direction, atr_period=14):
     # Verificar que hay suficientes datos  
     n = len(close)
     if n <= max_val:
@@ -1813,58 +1811,29 @@ def calculate_labels_one_direction(high, low, close, markup, min_val, max_val, d
     # Calcular ATR
     atr = calculate_atr_simple(high, low, close, period=atr_period)
 
-    if deterministic:
-        # Calcular la matriz de diferencias futuras
-        fwd_matrix = np.zeros((n - max_val, max_val - min_val + 1))
-        for i in range(n - max_val):
-            for j in range(min_val, max_val + 1):
-                fwd_matrix[i, j - min_val] = close[i + j]
-        close_slice = close[:-max_val].reshape(-1, 1)
-        diffs = fwd_matrix - close_slice
+    # Modo aleatorio permanente
+    result = np.zeros(n - max_val, dtype=np.float64)
 
-        # Calcular markup dinámico basado en ATR
-        atr_slice = atr[:-max_val].reshape(-1, 1) 
-        dyn_mk = markup * atr_slice
+    for i in range(n - max_val):
+        # Seleccionar barra aleatoria dentro del rango
+        rand_idx = np.random.randint(min_val, max_val + 1)
+        future_price = close[i + rand_idx]
 
-        # Calcular hits
-        hits = (diffs > dyn_mk) if direction=="buy" else (diffs < -dyn_mk)
+        # Calcular markup dinámico
+        dyn_mk = markup * atr[i]
 
-        # Calcular volatilidad relativa usando ATR
-        mean_atr = np.mean(atr)
-        vol_ratio = atr[:-max_val] / mean_atr
-
-        # Ajustar número de hits según volatilidad
-        result = np.zeros(len(hits), dtype=np.float64)
-        for i in range(len(hits)):
-            num_hits = np.sum(hits[i])
-            if num_hits >= max(1, int(vol_ratio[i])):
+        # Verificar condición según dirección
+        if direction == "buy":
+            if future_price > close[i] + dyn_mk:
                 result[i] = 1.0
-
-    else:
-        # Modo aleatorio
-        result = np.zeros(n - max_val, dtype=np.float64)
-        
-        for i in range(n - max_val):
-            # Seleccionar barra aleatoria dentro del rango
-            rand_idx = np.random.randint(min_val, max_val + 1)
-            future_price = close[i + rand_idx]
-            
-            # Calcular markup dinámico
-            dyn_mk = markup * atr[i]
-            
-            # Verificar condición según dirección
-            if direction == "buy":
-                if future_price > close[i] + dyn_mk:
-                    result[i] = 1.0
-            else:  # sell
-                if future_price < close[i] - dyn_mk:
-                    result[i] = 1.0
+        else:  # sell
+            if future_price < close[i] - dyn_mk:
+                result[i] = 1.0
 
     return result
 
 def get_labels_one_direction(dataset, markup, min_val=1, max_val=15,
-                             direction='buy', atr_period=14,
-                             deterministic=True) -> pd.DataFrame:
+                             direction='buy', atr_period=14) -> pd.DataFrame:
     """Label trades for a single or both directions using ATR based distance.
 
     Parameters
@@ -1880,9 +1849,6 @@ def get_labels_one_direction(dataset, markup, min_val=1, max_val=15,
         trades simultaneously.
     atr_period : int, optional
         Period for the ATR calculation.
-    deterministic : bool, optional
-        If ``True`` use all candles within the range, otherwise pick one
-        randomly.
 
     Returns
     -------
@@ -1900,7 +1866,7 @@ def get_labels_one_direction(dataset, markup, min_val=1, max_val=15,
         labels = calculate_labels_one_direction(
             high_data, low_data, close_data,
             markup, min_val, max_val, direction,
-            atr_period, deterministic
+            atr_period
         )
         dataset = dataset.iloc[:len(labels)].copy()
         dataset['labels_main'] = labels
@@ -1911,12 +1877,12 @@ def get_labels_one_direction(dataset, markup, min_val=1, max_val=15,
         labels_buy = calculate_labels_one_direction(
             high_data, low_data, close_data,
             markup, min_val, max_val, 'buy',
-            atr_period, deterministic
+            atr_period
         )
         labels_sell = calculate_labels_one_direction(
             high_data, low_data, close_data,
             markup, min_val, max_val, 'sell',
-            atr_period, deterministic
+            atr_period
         )
 
         n = min(len(labels_buy), len(labels_sell))

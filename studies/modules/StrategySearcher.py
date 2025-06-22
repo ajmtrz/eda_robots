@@ -376,6 +376,7 @@ class StrategySearcher:
                 "slope", "momentum", "autocorr", "max_dd", "hurst", "corr_skew",
                 "sharpe", "fisher", "chande", "var", "eff_ratio", "kurt",
                 "jump_vol", "fractal", "vol_skew", "approx_entropy",
+                "mean", "median", "iqr", "cv",
             ]
             params = {
                 'cat_main_iterations': trial.suggest_int('cat_main_iterations', 100, 1000),

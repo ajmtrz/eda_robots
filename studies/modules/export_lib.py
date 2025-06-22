@@ -197,6 +197,18 @@ def export_model_to_ONNX(**kwargs):
                         return tmp[n/2];
                 }
                 """,
+            "iqr": """
+                double stat_iqr(const double &a[])
+                {
+                    double tmp[];
+                    ArrayCopy(tmp, a);
+                    ArraySort(tmp);
+                    int n = ArraySize(tmp);
+                    int q1 = int((n-1)*0.25);
+                    int q3 = int((n-1)*0.75);
+                    return tmp[q3] - tmp[q1];
+                }
+                """,
             "mad": """
                 double stat_mad(const double &a[])
                 {
@@ -215,6 +227,15 @@ def export_model_to_ONNX(**kwargs):
                     for(int i = 0; i < ArraySize(a); i++)
                         sum += (a[i] - mean) * (a[i] - mean);
                     return sum / (ArraySize(a));
+                }
+                """,
+            "cv": """
+                double stat_cv(const double &a[])
+                {
+                    double mean = stat_mean(a);
+                    if(mean == 0.0) return 0.0;
+                    double sd = stat_std(a);
+                    return sd/mean;
                 }
                 """,
             "entropy": """

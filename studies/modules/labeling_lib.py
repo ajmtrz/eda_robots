@@ -312,6 +312,25 @@ def median_manual(a):
         return 0.5 * (b[mid-1] + b[mid])
 
 @njit(cache=True, nogil=True, fastmath=True)
+def iqr_manual(a):
+    n = a.size
+    if n == 0:
+        return 0.0
+    b = a.copy()
+    b.sort()
+    q1_idx = int(0.25 * (n - 1))
+    q3_idx = int(0.75 * (n - 1))
+    return b[q3_idx] - b[q1_idx]
+
+@njit(cache=True, nogil=True, fastmath=True)
+def coeff_var_manual(a):
+    m = mean_manual(a)
+    if m == 0:
+        return 0.0
+    s = std_manual(a)
+    return s / m
+
+@njit(cache=True, nogil=True, fastmath=True)
 def jump_volatility_manual(x):
     if x.size < 2:
         return 0.0
@@ -364,6 +383,14 @@ def compute_features(close, periods_main, periods_meta, stats_main, stats_meta):
                         features[i, col] = zscore_manual(window)
                     elif s == "range":
                         features[i, col] = np.max(window) - np.min(window)
+                    elif s == "mean":
+                        features[i, col] = mean_manual(window)
+                    elif s == "median":
+                        features[i, col] = median_manual(window)
+                    elif s == "iqr":
+                        features[i, col] = iqr_manual(window)
+                    elif s == "cv":
+                        features[i, col] = coeff_var_manual(window)
                     elif s == "mad":
                         m = mean_manual(window)
                         features[i, col] = mean_manual(np.abs(window - m))
@@ -421,6 +448,14 @@ def compute_features(close, periods_main, periods_meta, stats_main, stats_meta):
                             features[i, col] = zscore_manual(window)
                         elif s == "range":
                             features[i, col] = np.max(window) - np.min(window)
+                        elif s == "mean":
+                            features[i, col] = mean_manual(window)
+                        elif s == "median":
+                            features[i, col] = median_manual(window)
+                        elif s == "iqr":
+                            features[i, col] = iqr_manual(window)
+                        elif s == "cv":
+                            features[i, col] = coeff_var_manual(window)
                         elif s == "mad":
                             m = mean_manual(window)
                             features[i, col] = mean_manual(np.abs(window - m))

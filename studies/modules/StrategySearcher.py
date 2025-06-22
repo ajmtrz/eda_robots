@@ -138,6 +138,39 @@ class StrategySearcher:
             if len(dataset) < 2:
                 return pd.DataFrame()
 
+            # Ajuste automático para savgol_filter y similares
+            method = kwargs.get('method')
+            allowed = self.ALLOWED_METHODS.get(self.label_method)
+            polyorder = kwargs.get('polyorder', 2)
+            # Detectar parámetros de ventana relevantes
+            window_keys = [k for k in kwargs if any(x in k for x in ('rolling', 'window', 'window_size'))]
+            if method == 'savgol' and window_keys:
+                for k in window_keys:
+                    v = kwargs[k]
+                    # Si es lista, ajustar cada elemento
+                    if isinstance(v, list) or isinstance(v, tuple):
+                        new_v = []
+                        for val in v:
+                            win = int(val)
+                            # Debe ser impar, mayor que polyorder, menor que dataset
+                            win = max(win, polyorder + 1)
+                            if win % 2 == 0:
+                                win += 1
+                            win = min(win, len(dataset) - 1)
+                            if win % 2 == 0:
+                                win = max(win - 1, polyorder + 1)
+                            new_v.append(win)
+                        kwargs[k] = new_v
+                    else:
+                        win = int(v)
+                        win = max(win, polyorder + 1)
+                        if win % 2 == 0:
+                            win += 1
+                        win = min(win, len(dataset) - 1)
+                        if win % 2 == 0:
+                            win = max(win - 1, polyorder + 1)
+                        kwargs[k] = win
+
             # Clamp window/rolling parameters to dataset length
             for k, v in list(kwargs.items()):
                 if isinstance(v, (int, float)) and any(x in k for x in ('rolling', 'window', 'period', 'span', 'max_l', 'max_val')):

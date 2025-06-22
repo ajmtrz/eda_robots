@@ -35,6 +35,7 @@ from modules.labeling_lib import (
 from modules.tester_lib import (
     tester,
     robust_oos_score,
+    walk_forward_robust_score,
     _ONNX_CACHE
 )
 from modules.export_lib import export_model_to_ONNX
@@ -650,15 +651,16 @@ class StrategySearcher:
                     plot=False,
                     prd='insample',
                 )
-                score_oos = tester(
+                score_oos = walk_forward_robust_score(
                     ds_main=ds_test_eval_main,
                     ds_meta=ds_test_eval_meta,
                     close=close_test_eval,
                     model_main=model_main,
                     model_meta=model_meta,
                     direction='both',
+                    n_splits=3,
+                    agg='min',
                     plot=False,
-                    prd='outofsample',
                 )
             else:
                 score_ins = tester(
@@ -671,15 +673,16 @@ class StrategySearcher:
                     plot=False,
                     prd='insample',
                 )
-                score_oos = tester(
+                score_oos = walk_forward_robust_score(
                     ds_main=ds_test_eval_main,
                     ds_meta=ds_test_eval_meta,
                     close=close_test_eval,
                     model_main=model_main,
                     model_meta=model_meta,
                     direction=self.direction,
+                    n_splits=3,
+                    agg='min',
                     plot=False,
-                    prd='outofsample',
                 )
 
             # Manejar valores inválidos

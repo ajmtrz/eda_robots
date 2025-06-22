@@ -714,3 +714,65 @@ def robust_oos_score_one_direction(
         plot=plot,
         prd=prd,
     )
+
+
+def walk_forward_robust_score(
+    ds_main: np.ndarray,
+    ds_meta: np.ndarray,
+    close: np.ndarray,
+    model_main: object,
+    model_meta: object,
+    direction: str = "both",
+    n_splits: int = 3,
+    agg: str = "min",
+    plot: bool = False,
+) -> float:
+    """Calcula un score OOS mediante validación walk-forward."""
+
+    try:
+        n = len(close)
+        if n_splits <= 1 or n <= 1:
+            return robust_oos_score(
+                ds_main=ds_main,
+                ds_meta=ds_meta,
+                close=close,
+                model_main=model_main,
+                model_meta=model_meta,
+                direction=direction,
+                plot=plot,
+                prd="oos",
+            )
+
+        split_idx = np.linspace(0, n, n_splits + 1, dtype=int)
+        scores = []
+        for i in range(n_splits):
+            start = split_idx[i]
+            end = split_idx[i + 1]
+            if end - start < 2:
+                continue
+            s = robust_oos_score(
+                ds_main=ds_main[start:end],
+                ds_meta=ds_meta[start:end],
+                close=close[start:end],
+                model_main=model_main,
+                model_meta=model_meta,
+                direction=direction,
+                plot=plot,
+                prd=f"oos_{i+1}",
+            )
+            if np.isfinite(s):
+                scores.append(s)
+
+        if not scores:
+            return -1.0
+
+        if agg == "min":
+            return float(np.min(scores))
+        elif agg == "median":
+            return float(np.median(scores))
+        else:
+            raise ValueError("agg must be 'min' or 'median'")
+
+    except Exception as e:
+        print(f"\nError en walk_forward_robust_score: {e}")
+        return -1.0

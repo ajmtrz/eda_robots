@@ -23,7 +23,6 @@ class DummySearcher(StrategySearcher):
         self.history_path = ""
         self.search_type = "lgmm"
         self.search_subtype = "simple"
-        self.labels_deterministic = False
         self.label_method = "atr"
         self.pruner_type = "hyperband"
         self.n_trials = 1
@@ -65,7 +64,6 @@ class DummySearcherConstant(StrategySearcher):
         self.history_path = ""
         self.search_type = "lgmm"
         self.search_subtype = "simple"
-        self.labels_deterministic = False
         self.label_method = "atr"
         self.pruner_type = "hyperband"
         self.n_trials = 1

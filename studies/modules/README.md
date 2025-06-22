@@ -29,7 +29,11 @@ The file `labeling_lib.py` exposes a variety of `get_labels_*` functions. Each o
 
 ## Using `StrategySearcher`
 
-`StrategySearcher` now accepts a `label_method` parameter. This string selects any of the functions above via an internal map. By default it uses `"atr"` which maps to `get_labels_one_direction`.
+`StrategySearcher` accepts a `label_method` parameter. This string selects any of the labeling functions above via an internal map. By default it uses `"atr"` which maps to `get_labels_one_direction`.
+
+Label generation is always stochastic when a look-ahead window is involved. Previous deterministic behaviour has been removed and all labeling functions that required a random choice of future bar now select it randomly.
+
+The parameters `markup`, `label_max` and `atr_period` are suggested by Optuna only when the chosen labeling function defines arguments with those names. For example `get_labels_one_direction` and the mean reversion variants all require `markup` and a forward looking window (`max_val`/`max_l`). Trend based labelers usually only use a smoothing window and threshold, so those hyperparameters are ignored during optimization.
 
 Example:
 

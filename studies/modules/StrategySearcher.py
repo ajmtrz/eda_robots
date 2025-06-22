@@ -107,7 +107,10 @@ class StrategySearcher:
         optuna.logging.set_verbosity(optuna.logging.WARNING)
 
     def _apply_labeling(self, dataset: pd.DataFrame, hp: dict) -> pd.DataFrame:
-        """Apply the selected labeling function dynamically."""
+        """Apply the selected labeling function dynamically.
+
+        Returns an empty DataFrame if labeling fails or results in no rows.
+        """
         label_func = self.LABEL_FUNCS.get(self.label_method, get_labels_one_direction)
         params = inspect.signature(label_func).parameters
         kwargs = {}
@@ -123,14 +126,29 @@ class StrategySearcher:
             elif name in hp:
                 kwargs[name] = hp[name]
 
-        df = label_func(dataset, **kwargs)
+        # ── Validaciones simples ───────────────────────────────────────────
+        try:
+            if 'rolling' in kwargs and isinstance(kwargs['rolling'], (int, float)):
+                roll = int(kwargs['rolling'])
+                if len(dataset) <= roll:
+                    roll = max(len(dataset) - 1, 1)
+                kwargs['rolling'] = max(roll, 1)
+            if 'label_max' in hp and len(dataset) <= hp['label_max']:
+                return pd.DataFrame()
 
-        # Normalize label column name
-        if 'labels_main' in df.columns:
-            return df
-        if 'labels' in df.columns:
-            return df.rename(columns={'labels': 'labels_main'})
-        raise ValueError('Labeling function did not produce a labels column')
+            df = label_func(dataset, **kwargs)
+
+            if df.empty:
+                return pd.DataFrame()
+
+            if 'labels_main' in df.columns:
+                return df
+            if 'labels' in df.columns:
+                return df.rename(columns={'labels': 'labels_main'})
+            return pd.DataFrame()
+        except Exception as e:
+            print(f"⚠️ ERROR en _apply_labeling: {e}")
+            return pd.DataFrame()
 
     def _log_memory(self) -> float:
         """Helper to print current RSS memory usage in MB."""
@@ -290,6 +308,8 @@ class StrategySearcher:
                 if 'label_max' in hp and len(model_main_data) <= hp["label_max"]:
                     continue
                 model_main_data = self._apply_labeling(model_main_data, hp)
+                if model_main_data is None or model_main_data.empty:
+                    continue
                 main_feature_cols = model_main_data.columns[model_main_data.columns.str.contains('_feature') & \
                                                        ~model_main_data.columns.str.contains('_meta_feature')]
                 model_main_data = model_main_data[main_feature_cols.tolist() + ['labels_main']]
@@ -834,6 +854,8 @@ class StrategySearcher:
 
             # Etiquetado según la dirección seleccionada
             ds_train = self._apply_labeling(ds_train, hp)
+            if ds_train is None or ds_train.empty:
+                return -1.0, -1.0
             # Selección de features: todas las columnas *_feature
             feature_cols = [col for col in ds_train.columns if col.endswith('_feature')]
             X = ds_train[feature_cols]
@@ -908,6 +930,8 @@ class StrategySearcher:
 
             # Etiquetado según la dirección
             ds_train = self._apply_labeling(ds_train, hp)
+            if ds_train is None or ds_train.empty:
+                return -1.0, -1.0
 
             feature_cols = [c for c in ds_train.columns if c.endswith('_feature')]
             X = ds_train[feature_cols]

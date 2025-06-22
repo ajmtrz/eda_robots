@@ -60,6 +60,13 @@ class StrategySearcher:
         "trend_one": get_labels_trend_one_direction,
         "filter_flat": get_labels_filter_flat,
     }
+    # Allowed smoothing methods for label functions that support a 'method' kwarg
+    ALLOWED_METHODS = {
+        "trend_profit": {"savgol", "spline", "sma", "ema"},
+        "trend_multi": {"savgol", "spline", "sma", "ema"},
+        "mean_rev": {"mean", "spline", "savgol"},
+        "mean_rev_vol": {"mean", "spline", "savgol"},
+    }
     def __init__(
         self,
         symbol: str,
@@ -128,17 +135,33 @@ class StrategySearcher:
 
         # ── Validaciones simples ───────────────────────────────────────────
         try:
-            if 'rolling' in kwargs and isinstance(kwargs['rolling'], (int, float)):
-                roll = int(kwargs['rolling'])
-                if len(dataset) <= roll:
-                    roll = max(len(dataset) - 1, 1)
-                kwargs['rolling'] = max(roll, 1)
+            if len(dataset) < 2:
+                return pd.DataFrame()
+
+            # Clamp window/rolling parameters to dataset length
+            for k, v in list(kwargs.items()):
+                if isinstance(v, (int, float)) and any(x in k for x in ('rolling', 'window', 'period', 'span', 'max_l', 'max_val')):
+                    iv = max(int(v), 1)
+                    kwargs[k] = min(iv, max(len(dataset) - 1, 1))
+                elif isinstance(v, list) and any(x in k for x in ('rolling', 'window', 'period')):
+                    kwargs[k] = [min(max(int(val), 1), max(len(dataset) - 1, 1)) for val in v]
+
+            if 'min_l' in kwargs and 'max_l' in kwargs and kwargs['min_l'] > kwargs['max_l']:
+                kwargs['min_l'] = kwargs['max_l']
+            if 'min_val' in kwargs and 'max_val' in kwargs and kwargs['min_val'] > kwargs['max_val']:
+                kwargs['min_val'] = kwargs['max_val']
+
             if 'label_max' in hp and len(dataset) <= hp['label_max']:
+                return pd.DataFrame()
+
+            method = kwargs.get('method')
+            allowed = self.ALLOWED_METHODS.get(self.label_method)
+            if method and allowed and method not in allowed:
                 return pd.DataFrame()
 
             df = label_func(dataset, **kwargs)
 
-            if df.empty:
+            if df is None or df.empty:
                 return pd.DataFrame()
 
             if 'labels_main' in df.columns:

@@ -60,6 +60,13 @@ class StrategySearcher:
         "trend_one": get_labels_trend_one_direction,
         "filter_flat": get_labels_filter_flat,
     }
+    # Allowed smoothing methods for label functions that support a 'method' kwarg
+    ALLOWED_METHODS = {
+        "trend_profit": {"savgol", "spline", "sma", "ema"},
+        "trend_multi": {"savgol", "spline", "sma", "ema"},
+        "mean_rev": {"mean", "spline", "savgol"},
+        "mean_rev_vol": {"mean", "spline", "savgol"},
+    }
     def __init__(
         self,
         symbol: str,
@@ -107,7 +114,10 @@ class StrategySearcher:
         optuna.logging.set_verbosity(optuna.logging.WARNING)
 
     def _apply_labeling(self, dataset: pd.DataFrame, hp: dict) -> pd.DataFrame:
-        """Apply the selected labeling function dynamically."""
+        """Apply the selected labeling function dynamically.
+
+        Returns an empty DataFrame if labeling fails or results in no rows.
+        """
         label_func = self.LABEL_FUNCS.get(self.label_method, get_labels_one_direction)
         params = inspect.signature(label_func).parameters
         kwargs = {}
@@ -123,14 +133,45 @@ class StrategySearcher:
             elif name in hp:
                 kwargs[name] = hp[name]
 
-        df = label_func(dataset, **kwargs)
+        # ── Validaciones simples ───────────────────────────────────────────
+        try:
+            if len(dataset) < 2:
+                return pd.DataFrame()
 
-        # Normalize label column name
-        if 'labels_main' in df.columns:
-            return df
-        if 'labels' in df.columns:
-            return df.rename(columns={'labels': 'labels_main'})
-        raise ValueError('Labeling function did not produce a labels column')
+            # Clamp window/rolling parameters to dataset length
+            for k, v in list(kwargs.items()):
+                if isinstance(v, (int, float)) and any(x in k for x in ('rolling', 'window', 'period', 'span', 'max_l', 'max_val')):
+                    iv = max(int(v), 1)
+                    kwargs[k] = min(iv, max(len(dataset) - 1, 1))
+                elif isinstance(v, list) and any(x in k for x in ('rolling', 'window', 'period')):
+                    kwargs[k] = [min(max(int(val), 1), max(len(dataset) - 1, 1)) for val in v]
+
+            if 'min_l' in kwargs and 'max_l' in kwargs and kwargs['min_l'] > kwargs['max_l']:
+                kwargs['min_l'] = kwargs['max_l']
+            if 'min_val' in kwargs and 'max_val' in kwargs and kwargs['min_val'] > kwargs['max_val']:
+                kwargs['min_val'] = kwargs['max_val']
+
+            if 'label_max' in hp and len(dataset) <= hp['label_max']:
+                return pd.DataFrame()
+
+            method = kwargs.get('method')
+            allowed = self.ALLOWED_METHODS.get(self.label_method)
+            if method and allowed and method not in allowed:
+                return pd.DataFrame()
+
+            df = label_func(dataset, **kwargs)
+
+            if df is None or df.empty:
+                return pd.DataFrame()
+
+            if 'labels_main' in df.columns:
+                return df
+            if 'labels' in df.columns:
+                return df.rename(columns={'labels': 'labels_main'})
+            return pd.DataFrame()
+        except Exception as e:
+            print(f"⚠️ ERROR en _apply_labeling: {e}")
+            return pd.DataFrame()
 
     def _log_memory(self) -> float:
         """Helper to print current RSS memory usage in MB."""
@@ -290,6 +331,8 @@ class StrategySearcher:
                 if 'label_max' in hp and len(model_main_data) <= hp["label_max"]:
                     continue
                 model_main_data = self._apply_labeling(model_main_data, hp)
+                if model_main_data is None or model_main_data.empty:
+                    continue
                 main_feature_cols = model_main_data.columns[model_main_data.columns.str.contains('_feature') & \
                                                        ~model_main_data.columns.str.contains('_meta_feature')]
                 model_main_data = model_main_data[main_feature_cols.tolist() + ['labels_main']]
@@ -834,6 +877,8 @@ class StrategySearcher:
 
             # Etiquetado según la dirección seleccionada
             ds_train = self._apply_labeling(ds_train, hp)
+            if ds_train is None or ds_train.empty:
+                return -1.0, -1.0
             # Selección de features: todas las columnas *_feature
             feature_cols = [col for col in ds_train.columns if col.endswith('_feature')]
             X = ds_train[feature_cols]
@@ -908,6 +953,8 @@ class StrategySearcher:
 
             # Etiquetado según la dirección
             ds_train = self._apply_labeling(ds_train, hp)
+            if ds_train is None or ds_train.empty:
+                return -1.0, -1.0
 
             feature_cols = [c for c in ds_train.columns if c.endswith('_feature')]
             X = ds_train[feature_cols]

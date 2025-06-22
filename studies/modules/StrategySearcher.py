@@ -640,50 +640,27 @@ class StrategySearcher:
             ds_test_eval_meta = ds_test[meta_feature_cols].to_numpy()
             close_train_eval = ds_train_eval_sample['close'].to_numpy()
             close_test_eval = ds_test['close'].to_numpy()
-            if self.direction == 'both':
-                score_ins = tester(
-                    ds_main=ds_train_eval_main,
-                    ds_meta=ds_train_eval_meta,
-                    close=close_train_eval,
-                    model_main=model_main,
-                    model_meta=model_meta,
-                    direction='both',
-                    plot=False,
-                    prd='insample',
-                )
-                score_oos = walk_forward_robust_score(
-                    ds_main=ds_test_eval_main,
-                    ds_meta=ds_test_eval_meta,
-                    close=close_test_eval,
-                    model_main=model_main,
-                    model_meta=model_meta,
-                    direction='both',
-                    n_splits=3,
-                    agg='min',
-                    plot=False,
-                )
-            else:
-                score_ins = tester(
-                    ds_main=ds_train_eval_main,
-                    ds_meta=ds_train_eval_meta,
-                    close=close_train_eval,
-                    model_main=model_main,
-                    model_meta=model_meta,
-                    direction=self.direction,
-                    plot=False,
-                    prd='insample',
-                )
-                score_oos = walk_forward_robust_score(
-                    ds_main=ds_test_eval_main,
-                    ds_meta=ds_test_eval_meta,
-                    close=close_test_eval,
-                    model_main=model_main,
-                    model_meta=model_meta,
-                    direction=self.direction,
-                    n_splits=3,
-                    agg='min',
-                    plot=False,
-                )
+            score_ins = tester(
+                ds_main=ds_train_eval_main,
+                ds_meta=ds_train_eval_meta,
+                close=close_train_eval,
+                model_main=model_main,
+                model_meta=model_meta,
+                direction=self.direction,
+                plot=False,
+                prd='insample',
+            )
+            score_oos = walk_forward_robust_score(
+                ds_main=ds_test_eval_main,
+                ds_meta=ds_test_eval_meta,
+                close=close_test_eval,
+                model_main=model_main,
+                model_meta=model_meta,
+                direction=self.direction,
+                n_splits=3,
+                agg='min',
+                plot=False,
+            )
 
             # Manejar valores inválidos
             if not np.isfinite(score_ins) or not np.isfinite(score_oos):

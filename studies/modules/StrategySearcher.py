@@ -547,9 +547,9 @@ class StrategySearcher:
             
             # División de datos para el modelo principal según fechas
             X_train_main, X_val_main, y_train_main, y_val_main = train_test_split(
-                X_main, y_main, 
+                X_main, y_main,
                 test_size=0.2,
-                shuffle=True
+                shuffle=False
             )
             
             # ── descartar clusters problemáticos ────────────────────────────
@@ -563,9 +563,9 @@ class StrategySearcher:
 
             # División de datos para el modelo principal según fechas
             X_train_meta, X_val_meta, y_train_meta, y_val_meta = train_test_split(
-                X_meta, y_meta, 
+                X_meta, y_meta,
                 test_size=0.2,
-                shuffle=True
+                shuffle=False
             )
             
             # ── descartar clusters problemáticos ────────────────────────────

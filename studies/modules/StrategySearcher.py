@@ -146,6 +146,17 @@ class StrategySearcher:
                 elif isinstance(v, list) and any(x in k for x in ('rolling', 'window', 'period')):
                     kwargs[k] = [min(max(int(val), 1), max(len(dataset) - 1, 1)) for val in v]
 
+            # Check for negative or too large window/rolling/period parameters
+            for k, v in list(kwargs.items()):
+                if isinstance(v, int) and any(x in k for x in ('rolling', 'window', 'period', 'span', 'max_l', 'max_val')):
+                    if v <= 0 or v >= len(dataset):
+                        print(f"⚠️ ERROR en _apply_labeling: parámetro '{k}'={v} inválido para dataset de tamaño {len(dataset)}")
+                        return pd.DataFrame()
+                elif isinstance(v, list) and any(x in k for x in ('rolling', 'window', 'period')):
+                    if any((val <= 0 or val >= len(dataset)) for val in v):
+                        print(f"⚠️ ERROR en _apply_labeling: lista '{k}' contiene valores inválidos para dataset de tamaño {len(dataset)}")
+                        return pd.DataFrame()
+
             if 'min_l' in kwargs and 'max_l' in kwargs and kwargs['min_l'] > kwargs['max_l']:
                 kwargs['min_l'] = kwargs['max_l']
             if 'min_val' in kwargs and 'max_val' in kwargs and kwargs['min_val'] > kwargs['max_val']:

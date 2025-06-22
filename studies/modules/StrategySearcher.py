@@ -123,7 +123,14 @@ class StrategySearcher:
             elif name in hp:
                 kwargs[name] = hp[name]
 
-        return label_func(dataset, **kwargs)
+        df = label_func(dataset, **kwargs)
+
+        # Normalize label column name
+        if 'labels_main' in df.columns:
+            return df
+        if 'labels' in df.columns:
+            return df.rename(columns={'labels': 'labels_main'})
+        raise ValueError('Labeling function did not produce a labels column')
 
     def _log_memory(self) -> float:
         """Helper to print current RSS memory usage in MB."""
@@ -280,7 +287,7 @@ class StrategySearcher:
             for clust in cluster_sizes.index:
                 model_main_data = ds_train.loc[ds_train["labels_meta"] == clust].copy()
 
-                if len(model_main_data) <= hp["label_max"]:
+                if 'label_max' in hp and len(model_main_data) <= hp["label_max"]:
                     continue
                 model_main_data = self._apply_labeling(model_main_data, hp)
                 main_feature_cols = model_main_data.columns[model_main_data.columns.str.contains('_feature') & \

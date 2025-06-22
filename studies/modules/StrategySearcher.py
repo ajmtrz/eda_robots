@@ -110,16 +110,18 @@ class StrategySearcher:
         label_func = self.LABEL_FUNCS.get(self.label_method, get_labels_one_direction)
         params = inspect.signature(label_func).parameters
         kwargs = {}
-        if 'markup' in params:
-            kwargs['markup'] = hp['markup']
-        if 'max_val' in params:
-            kwargs['max_val'] = hp['label_max']
-        if 'max_l' in params:
-            kwargs['max_l'] = hp['label_max']
-        if 'direction' in params:
-            kwargs['direction'] = self.direction if self.direction != 'both' else 'both'
-        if 'atr_period' in params:
-            kwargs['atr_period'] = hp['atr_period']
+
+        for name in params:
+            if name == 'dataset':
+                continue
+            if name == 'direction':
+                kwargs['direction'] = self.direction if self.direction != 'both' else 'both'
+            elif name in {'max_val', 'max_l'}:
+                if 'label_max' in hp:
+                    kwargs[name] = hp['label_max']
+            elif name in hp:
+                kwargs[name] = hp[name]
+
         return label_func(dataset, **kwargs)
 
     def _log_memory(self) -> float:
@@ -375,9 +377,6 @@ class StrategySearcher:
                 "jump_vol", "fractal", "vol_skew", "approx_entropy",
             ]
             params = {
-                'markup': trial.suggest_float("markup", 0.1, 1.0, log=True),
-                'label_max': trial.suggest_int('label_max', 1, 15, log=True),
-                'atr_period': trial.suggest_int('atr_period', 5, 50, log=True),
                 'cat_main_iterations': trial.suggest_int('cat_main_iterations', 100, 1000),
                 'cat_main_depth': trial.suggest_int('cat_main_depth', 3, 10),
                 'cat_main_learning_rate': trial.suggest_float('cat_main_learning_rate', 0.01, 0.3, log=True),
@@ -391,6 +390,83 @@ class StrategySearcher:
                 'max_main_periods': trial.suggest_int('max_main_periods', 3, MAX_MAIN_PERIODS, log=True),
                 'max_main_stats': trial.suggest_int('max_main_stats', 1, MAX_MAIN_STATS, log=True),
             }
+            # ---------- Parámetros de etiquetado dinámicos ----------
+            label_func = self.LABEL_FUNCS.get(self.label_method, get_labels_one_direction)
+            label_params = inspect.signature(label_func).parameters
+
+            if 'markup' in label_params:
+                params['markup'] = trial.suggest_float('markup', 0.1, 1.0, log=True)
+
+            if 'max_val' in label_params or 'max_l' in label_params:
+                params['label_max'] = trial.suggest_int('label_max', 1, 15, log=True)
+
+            if 'atr_period' in label_params:
+                params['atr_period'] = trial.suggest_int('atr_period', 5, 50, log=True)
+
+            if 'rolling' in label_params:
+                params['rolling'] = trial.suggest_int('rolling', 20, 400, log=True)
+
+            if 'polyorder' in label_params:
+                params['polyorder'] = trial.suggest_int('polyorder', 2, 5)
+
+            if 'threshold' in label_params:
+                params['threshold'] = trial.suggest_float('threshold', 0.1, 1.0)
+
+            if 'vol_window' in label_params:
+                params['vol_window'] = trial.suggest_int('vol_window', 20, 100, log=True)
+
+            if 'num_clusters' in label_params:
+                params['num_clusters'] = trial.suggest_int('num_clusters', 5, 50)
+
+            if 'window_size' in label_params:
+                params['window_size'] = trial.suggest_int('window_size', 10, 100)
+
+            if 'threshold_pct' in label_params:
+                params['threshold_pct'] = trial.suggest_float('threshold_pct', 0.005, 0.05)
+
+            if 'min_touches' in label_params:
+                params['min_touches'] = trial.suggest_int('min_touches', 2, 5)
+
+            if 'peak_prominence' in label_params:
+                params['peak_prominence'] = trial.suggest_float('peak_prominence', 0.05, 0.5)
+
+            if 'decay_factor' in label_params:
+                params['decay_factor'] = trial.suggest_float('decay_factor', 0.8, 1.0)
+
+            if 'shift' in label_params:
+                params['shift'] = trial.suggest_int('shift', -5, 5)
+
+            if 'volatility_window' in label_params:
+                params['volatility_window'] = trial.suggest_int('volatility_window', 10, 50)
+
+            if 'rolling1' in label_params:
+                params['rolling1'] = trial.suggest_int('rolling1', 20, 400, log=True)
+
+            if 'rolling2' in label_params:
+                params['rolling2'] = trial.suggest_int('rolling2', 20, 400, log=True)
+
+            if 'method' in label_params:
+                params['method'] = trial.suggest_categorical('method', ['savgol', 'spline', 'sma', 'ema', 'mean'])
+
+            if 'rolling_periods' in label_params:
+                rps = [trial.suggest_int(f'rolling_period_{i}', 20, 400, log=True) for i in range(3)]
+                rps = list(dict.fromkeys(rps))
+                params['rolling_periods'] = tuple(rps)
+
+            if 'window_sizes' in label_params:
+                ws = [trial.suggest_int(f'window_size_{i}', 10, 100, step=10) for i in range(3)]
+                ws = list(dict.fromkeys(ws))
+                params['window_sizes'] = tuple(ws)
+
+            if 'windows' in label_params:
+                wnds = [trial.suggest_float(f'window_{i}', 0.1, 1.0) for i in range(3)]
+                wnds = list(dict.fromkeys(wnds))
+                params['windows'] = tuple(wnds)
+
+            if 'quantiles' in label_params:
+                q_low = trial.suggest_float('q_low', 0.3, 0.49)
+                q_high = trial.suggest_float('q_high', 0.51, 0.7)
+                params['quantiles'] = [q_low, q_high]
             # ---------- PERÍODOS MAIN ----------
             periods_main = [
                 trial.suggest_int(f'period_main_{i}', 3, 200, log=True)

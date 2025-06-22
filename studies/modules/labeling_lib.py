@@ -1994,8 +1994,12 @@ def sliding_window_clustering(
         n_clusters: int,
         window_size: int = 100,
         step: int = None) -> pd.DataFrame:
-    
+
     if dataset.empty:
+        dataset["labels_meta"] = -1
+        return dataset
+
+    if len(dataset) < n_clusters:
         dataset["labels_meta"] = -1
         return dataset
     

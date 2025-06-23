@@ -112,3 +112,68 @@ def test_get_train_test_data_drops_constant_features():
     assert train is not None and test is not None
     assert "constant_feature" not in train.columns
 
+
+class DummySearcherPrune(StrategySearcher):
+    def __init__(self):
+        self.symbol = "TEST"
+        self.timeframe = "M1"
+        self.direction = "buy"
+        self.train_start = datetime(2020, 1, 1)
+        self.train_end = datetime(2020, 4, 30)
+        self.test_start = datetime(2020, 5, 1)
+        self.test_end = datetime(2020, 6, 30)
+        self.models_export_path = ""
+        self.include_export_path = ""
+        self.history_path = ""
+        self.search_type = "lgmm"
+        self.search_subtype = "simple"
+        self.label_method = "atr"
+        self.pruner_type = "hyperband"
+        self.n_trials = 1
+        self.n_models = 1
+        self.n_jobs = 1
+        self.tag = ""
+        self.base_df = pd.DataFrame({"close": range(200)}, index=pd.date_range("2020-01-01", periods=200))
+
+
+def test_get_train_test_data_prunes_hp():
+    searcher = DummySearcherPrune()
+    hp = {
+        "periods_main": (10, 20),
+        "periods_meta": (5, 6),
+        "stats_main": ("std", "skew"),
+        "stats_meta": ("std",),
+    }
+
+    from modules import labeling_lib
+    import modules.StrategySearcher as ss
+
+    def fake_get_features(data, _hp):
+        idx = data.index
+        return pd.DataFrame({
+            "10_std_feature": [1.0] * len(idx),
+            "20_skew_feature": range(len(idx)),
+            "5_std_meta_feature": [0.0] * len(idx),
+            "6_std_meta_feature": range(len(idx)),
+            "open": range(len(idx)),
+            "high": range(len(idx)),
+            "low": range(len(idx)),
+            "close": range(len(idx)),
+            "volume": range(len(idx)),
+        }, index=idx)
+
+    original = labeling_lib.get_features
+    labeling_lib.get_features = fake_get_features
+    ss.get_features = fake_get_features
+    try:
+        train, test = searcher.get_train_test_data(hp)
+    finally:
+        labeling_lib.get_features = original
+        ss.get_features = original
+
+    assert train is not None and test is not None
+    assert hp["periods_main"] == (20,)
+    assert hp["stats_main"] == ("skew",)
+    assert hp["periods_meta"] == (6,)
+    assert hp["stats_meta"] == ("std",)
+

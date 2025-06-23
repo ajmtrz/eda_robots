@@ -51,3 +51,16 @@ def test_trend_one_direction_sell():
         direction="sell",
     )
     assert set(res["labels_main"].unique()) <= {0.0, 1.0}
+
+
+def test_trend_one_direction_buy():
+    df = _sample_df()
+    res = get_labels_trend_one_direction(
+        df,
+        rolling=5,
+        polyorder=2,
+        threshold=0.01,
+        vol_window=5,
+        direction="buy",
+    )
+    assert set(res["labels_main"].unique()) <= {0.0, 1.0}

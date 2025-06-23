@@ -501,7 +501,7 @@ class StrategySearcher:
                 'max_main_stats': trial.suggest_int('max_main_stats', 1, MAX_MAIN_STATS, log=True),
             }
             # ---------- Parámetros de etiquetado dinámicos ----------
-            label_func = self.LABEL_FUNCS.get(self.label_method, get_labels_one_direction)
+            label_func = self.LABEL_FUNCS.get(self.label_method)
             label_params = inspect.signature(label_func).parameters
 
             if 'markup' in label_params:
@@ -592,7 +592,7 @@ class StrategySearcher:
                         for i in range(MAX_MAIN_STATS)]
             stats_main = list(dict.fromkeys(stats_main))
             params['stats_main'] = tuple(stats_main[:params['max_main_stats']])
-            # ---------- Hiperparámetros meta solo si no es mapie ----------
+            # ---------- Hiperparámetros meta solo si no es mapie o causal ----------
             if self.search_type in ['clusters', 'markov', 'lgmm']:
                 params['max_meta_periods'] = trial.suggest_int('max_meta_periods', 1, MAX_META_PERIODS, log=True)
                 params['max_meta_stats'] = trial.suggest_int('max_meta_stats', 1, MAX_META_STATS, log=True)
@@ -675,7 +675,6 @@ class StrategySearcher:
             if not set(y_val_main.unique()).issubset(set(y_train_main.unique())):
                 return None, None
             # Test final (usando las mismas columnas)
-            y_test_main = ds_test[main_feature_cols].copy()
             if 'labels_main' in ds_test.columns:
                 y_test_labels = ds_test['labels_main']
             elif 'labels' in ds_test.columns:

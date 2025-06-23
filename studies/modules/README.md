@@ -73,3 +73,10 @@ searcher = StrategySearcher(
     search_type="lgmm",
 )
 ```
+
+### Causal search type
+
+The causal mode attempts to detect bad samples using bootstrapped models
+before training the main strategy. Set `search_type="causal"` to enable it.
+The number of bootstrap learners is controlled by the `n_meta_learners`
+hyperparameter suggested by Optuna (default range 5‑30).

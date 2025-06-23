@@ -635,6 +635,10 @@ class StrategySearcher:
                     'mapie_confidence_level': trial.suggest_float('mapie_confidence_level', 0.7, 0.99),
                     'mapie_cv': trial.suggest_int('mapie_cv', 3, 10),
                 })
+            elif self.search_type == 'causal':
+                params.update({
+                    'n_meta_learners': trial.suggest_int('n_meta_learners', 5, 30),
+                })
             # Actualizar trial.params con los valores procesados
             for key, value in params.items():
                 trial.set_user_attr(key, value)

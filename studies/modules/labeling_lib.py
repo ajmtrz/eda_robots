@@ -1269,11 +1269,12 @@ def get_labels_mean_reversion_multi(dataset, markup, min_l=1, max_l=15, windows=
     dataset = dataset.dropna()
     close_data = dataset['close'].values
 
-    # Convert windows to a tuple for Numba compatibility (optional)
-    labels = calculate_labels_mean_reversion_multi(close_data, atr, lvl_data, q, markup, min_l, max_l, tuple(windows))
     high = dataset["high"].values if "high" in dataset else close_data
     low = dataset["low"].values if "low" in dataset else close_data
     atr = calculate_atr_simple(high, low, close_data, period=atr_period)
+
+    # Convert windows to a tuple for Numba compatibility (optional)
+    labels = calculate_labels_mean_reversion_multi(close_data, atr, lvl_data, q, markup, min_l, max_l, tuple(windows))
 
     dataset = dataset.iloc[:len(labels)].copy()
     dataset['labels'] = labels

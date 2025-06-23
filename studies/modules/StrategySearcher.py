@@ -1213,6 +1213,39 @@ class StrategySearcher:
                     return None, None
 
             # ──────────────────────────────────────────────────────────────
+            # 5b) Ajustar hp según columnas restantes
+            remaining_periods_main = set()
+            remaining_periods_meta = set()
+            remaining_stats_main = set()
+            remaining_stats_meta = set()
+
+            for col in feature_cols:
+                if col.endswith('_meta_feature'):
+                    base = col[:-13]
+                    if '_' in base:
+                        p_str, stat = base.split('_', 1)
+                        if p_str.isdigit():
+                            remaining_periods_meta.add(int(p_str))
+                            remaining_stats_meta.add(stat)
+                elif col.endswith('_feature'):
+                    base = col[:-8]
+                    if '_' in base:
+                        p_str, stat = base.split('_', 1)
+                        if p_str.isdigit():
+                            remaining_periods_main.add(int(p_str))
+                            remaining_stats_main.add(stat)
+
+            hp['periods_main'] = tuple([p for p in hp.get('periods_main', ()) if p in remaining_periods_main])
+            hp['periods_meta'] = tuple([p for p in hp.get('periods_meta', ()) if p in remaining_periods_meta])
+            hp['stats_main'] = tuple([s for s in hp.get('stats_main', ()) if s in remaining_stats_main])
+            hp['stats_meta'] = tuple([s for s in hp.get('stats_meta', ()) if s in remaining_stats_meta])
+
+            if (hp.get('periods_main') and not hp['stats_main']) or (hp.get('stats_main') and not hp['periods_main']):
+                return None, None
+            if (hp.get('periods_meta') and not hp['stats_meta']) or (hp.get('stats_meta') and not hp['periods_meta']):
+                return None, None
+
+            # ──────────────────────────────────────────────────────────────
             # 6) Máscaras de train / test
             test_mask  = (full_ds.index >= self.test_start)  & (full_ds.index <= self.test_end)
             train_mask = (full_ds.index >= self.train_start) & (full_ds.index <= self.train_end)

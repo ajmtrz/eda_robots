@@ -1314,9 +1314,12 @@ def get_labels_mean_reversion_v(dataset, markup, min_l=1, max_l=15, rolling=0.5,
 
     # Calculate Volatility
     dataset['volatility'] = dataset['close'].pct_change().rolling(window=volatility_window).std()
-    
+    vol = dataset['volatility'].dropna()
+    if vol.nunique() < 2:
+        # No se puede hacer qcut, todos los valores son iguales
+        return pd.DataFrame()
     # Divide into 20 groups by volatility 
-    dataset['volatility_group'] = pd.qcut(dataset['volatility'], q=20, labels=False)
+    dataset['volatility_group'] = pd.qcut(dataset['volatility'], q=20, labels=False, duplicates='drop')
     
     # Calculate price deviation ('lvl') based on the chosen method
     if method == 'mean':

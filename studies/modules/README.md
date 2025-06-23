@@ -10,16 +10,16 @@ The file `labeling_lib.py` exposes a variety of `get_labels_*` functions. Each o
 | --- | --- |
 | `get_labels_one_direction` | ATR‑based labeling of long/short trades within a look‑ahead window. Can label one or both directions. |
 | `get_labels_trend` | Labels trades when the price trend normalized by volatility exceeds a threshold. |
-| `get_labels_trend_with_profit` | Like `get_labels_trend` but only keeps signals that achieve a minimum markup within a future window. |
-| `get_labels_trend_with_profit_different_filters` | Trend labeling with multiple smoothing methods (savgol, spline, etc.). |
-| `get_labels_trend_with_profit_multi` | Combines several smoothing windows and requires a markup to be hit. |
-| `get_labels_clusters` | Uses K‑Means clusters of closing prices and labels when switching clusters with sufficient price movement. |
+| `get_labels_trend_with_profit` | Like `get_labels_trend` but only keeps signals that achieve a minimum markup (ATR multiple) within a future window. |
+| `get_labels_trend_with_profit_different_filters` | Trend labeling with multiple smoothing methods (savgol, spline, etc.) and ATR-based markup. |
+| `get_labels_trend_with_profit_multi` | Combines several smoothing windows and requires a markup (ATR multiple) to be hit. |
+| `get_labels_clusters` | Uses K‑Means clusters of closing prices and labels when switching clusters with sufficient price movement (markup * ATR). |
 | `get_labels_multi_window` | Generates breakout labels from multiple support/resistance windows. |
 | `get_labels_validated_levels` | Similar to `get_labels_multi_window` but requires several touches to validate levels. |
 | `get_labels_filter_ZZ` | Zigzag peak/trough detection to label local highs and lows. |
-| `get_labels_mean_reversion` | Mean‑reversion labeling based on deviations from a smoothed trend. |
-| `get_labels_mean_reversion_multi` | Mean‑reversion using multiple smoothing windows. |
-| `get_labels_mean_reversion_v` | Mean‑reversion with volatility bands to adapt quantiles. |
+| `get_labels_mean_reversion` | Mean‑reversion labeling based on deviations from a smoothed trend. | Uses markup multiplied by ATR.
+| `get_labels_mean_reversion_multi` | Mean‑reversion using multiple smoothing windows. | Uses markup multiplied by ATR.
+| `get_labels_mean_reversion_v` | Mean‑reversion with volatility bands to adapt quantiles. | Uses markup multiplied by ATR.
 | `get_labels_filter` | Generates labels when price deviates from a Savitzky–Golay filter. |
 | `get_labels_multiple_filters` | Combines several filters and rolling quantiles for multi‑timeframe signals. |
 | `get_labels_filter_bidirectional` | Uses two Savitzky–Golay filters (forward/backward) and labels when price deviates from both. |

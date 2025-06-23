@@ -506,7 +506,8 @@ class StrategySearcher:
             label_params = inspect.signature(label_func).parameters
 
             if 'markup' in label_params:
-                params['markup'] = trial.suggest_float('markup', 0.1, 1.0, log=True)
+                # markup now acts as a multiplier of the ATR
+                params['markup'] = trial.suggest_float('markup', 0.2, 2.0, log=True)
 
             if 'max_val' in label_params or 'max_l' in label_params:
                 params['label_max'] = trial.suggest_int('label_max', 1, 15, log=True)

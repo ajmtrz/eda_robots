@@ -550,15 +550,17 @@ def get_features(data: pd.DataFrame, hp):
 
 # TREND OR NEUTRAL BASED LABELING
 @njit(nogil=True, fastmath=True)
-def calculate_labels(close_data, markup, min_val, max_val):
+def calculate_labels(close_data, atr, markup, min_val, max_val):
+    """Label trades using a dynamic markup based on ATR."""
     labels = []
     for i in range(len(close_data) - max_val):
         rand = random.randint(min_val, max_val)
         curr_pr = close_data[i]
         future_pr = close_data[i + rand]
-        if (future_pr + markup) < curr_pr:
+        dyn_mk = markup * atr[i]
+        if (future_pr + dyn_mk) < curr_pr:
             labels.append(1.0)
-        elif (future_pr - markup) > curr_pr:
+        elif (future_pr - dyn_mk) > curr_pr:
             labels.append(0.0)
         else:
             labels.append(2.0)
@@ -711,14 +713,15 @@ def plot_trading_signals(
     plt.show()
 
 @njit(nogil=True, fastmath=True)
-def calculate_labels_trend_with_profit(close, normalized_trend, threshold, markup, min_l, max_l):
+def calculate_labels_trend_with_profit(close, atr, normalized_trend, threshold, markup, min_l, max_l):
     labels = np.empty(len(normalized_trend) - max_l, dtype=np.float64)
     for i in range(len(normalized_trend) - max_l):
+        dyn_mk = markup * atr[i]
         if normalized_trend[i] > threshold:
             # Проверяем условие для Buy
             rand = random.randint(min_l, max_l)
             future_pr = close[i + rand]
-            if future_pr >= close[i] + markup:
+            if future_pr >= close[i] + dyn_mk:
                 labels[i] = 0.0  # Buy (Profit reached)
             else:
                 labels[i] = 2.0  # No profit
@@ -726,7 +729,7 @@ def calculate_labels_trend_with_profit(close, normalized_trend, threshold, marku
             # Проверяем условие для Sell
             rand = random.randint(min_l, max_l)
             future_pr = close[i + rand]
-            if future_pr <= close[i] - markup:
+            if future_pr <= close[i] - dyn_mk:
                 labels[i] = 1.0  # Sell (Profit reached)
             else:
                 labels[i] = 2.0  # No profit
@@ -735,7 +738,7 @@ def calculate_labels_trend_with_profit(close, normalized_trend, threshold, marku
     return labels
 
 def get_labels_trend_with_profit(dataset, rolling=200, polyorder=3, threshold=0.5, 
-                    vol_window=50, markup=0.5, min_l=1, max_l=15) -> pd.DataFrame:
+                    vol_window=50, markup=0.5, min_l=1, max_l=15, atr_period=14) -> pd.DataFrame:
     # Smoothing and trend calculation
     smoothed_prices = savgol_filter(dataset['close'].values, window_length=rolling, polyorder=polyorder)
     trend = np.gradient(smoothed_prices)
@@ -748,10 +751,14 @@ def get_labels_trend_with_profit(dataset, rolling=200, polyorder=3, threshold=0.
     valid_mask = ~np.isnan(normalized_trend)
     normalized_trend_clean = normalized_trend[valid_mask]
     close_clean = dataset['close'].values[valid_mask]
+    high = dataset["high"].values if "high" in dataset else dataset["close"].values
+    low = dataset["low"].values if "low" in dataset else dataset["close"].values
+    atr = calculate_atr_simple(high, low, dataset["close"].values, period=atr_period)
+    atr_clean = atr[valid_mask]
     dataset_clean = dataset[valid_mask].copy()
     
     # Generating labels
-    labels = calculate_labels_trend_with_profit(close_clean, normalized_trend_clean, threshold, markup, min_l, max_l)
+    labels = calculate_labels_trend_with_profit(close_clean, atr_clean, normalized_trend_clean, threshold, markup, min_l, max_l)
     
     # Trimming the dataset and adding labels
     dataset_clean = dataset_clean.iloc[:len(labels)].copy()
@@ -762,14 +769,15 @@ def get_labels_trend_with_profit(dataset, rolling=200, polyorder=3, threshold=0.
     return dataset_clean
 
 @njit(nogil=True, fastmath=True)
-def calculate_labels_trend_different_filters(close, normalized_trend, threshold, markup, min_l, max_l):
+def calculate_labels_trend_different_filters(close, atr, normalized_trend, threshold, markup, min_l, max_l):
     labels = np.empty(len(normalized_trend) - max_l, dtype=np.float64)
     for i in range(len(normalized_trend) - max_l):
+        dyn_mk = markup * atr[i]
         if normalized_trend[i] > threshold:
             # Проверяем условие для Buy
             rand = random.randint(min_l, max_l)
             future_pr = close[i + rand]
-            if future_pr >= close[i] + markup:
+            if future_pr >= close[i] + dyn_mk:
                 labels[i] = 0.0  # Buy (Profit reached)
             else:
                 labels[i] = 2.0  # No profit
@@ -777,7 +785,7 @@ def calculate_labels_trend_different_filters(close, normalized_trend, threshold,
             # Проверяем условие для Sell
             rand = random.randint(min_l, max_l)
             future_pr = close[i + rand]
-            if future_pr <= close[i] - markup:
+            if future_pr <= close[i] - dyn_mk:
                 labels[i] = 1.0  # Sell (Profit reached)
             else:
                 labels[i] = 2.0  # No profit
@@ -786,7 +794,7 @@ def calculate_labels_trend_different_filters(close, normalized_trend, threshold,
     return labels
 
 def get_labels_trend_with_profit_different_filters(dataset, method='savgol', rolling=200, polyorder=3, threshold=0.5, 
-                    vol_window=50, markup=0.5, min_l=1, max_l=15) -> pd.DataFrame:
+                    vol_window=50, markup=0.5, min_l=1, max_l=15, atr_period=14) -> pd.DataFrame:
     # Smoothing and trend calculation
     close_prices = dataset['close'].values
     if method == 'savgol':
@@ -815,9 +823,13 @@ def get_labels_trend_with_profit_different_filters(dataset, method='savgol', rol
     normalized_trend_clean = normalized_trend[valid_mask]
     close_clean = dataset['close'].values[valid_mask]
     dataset_clean = dataset[valid_mask].copy()
+    high = dataset["high"].values if "high" in dataset else dataset["close"].values
+    low = dataset["low"].values if "low" in dataset else dataset["close"].values
+    atr = calculate_atr_simple(high, low, dataset["close"].values, period=atr_period)
+    atr_clean = atr[valid_mask]
     
     # Generating labels
-    labels = calculate_labels_trend_different_filters(close_clean, normalized_trend_clean, threshold, markup, min_l, max_l)
+    labels = calculate_labels_trend_different_filters(close_clean, atr_clean, normalized_trend_clean, threshold, markup, min_l, max_l)
     
     # Trimming the dataset and adding labels
     dataset_clean = dataset_clean.iloc[:len(labels)].copy()
@@ -828,10 +840,11 @@ def get_labels_trend_with_profit_different_filters(dataset, method='savgol', rol
     return dataset_clean
 
 @njit(nogil=True, fastmath=True)
-def calculate_labels_trend_multi(close, normalized_trends, threshold, markup, min_l, max_l):
+def calculate_labels_trend_multi(close, atr, normalized_trends, threshold, markup, min_l, max_l):
     num_periods = normalized_trends.shape[0]  # Number of periods
     labels = np.empty(len(close) - max_l, dtype=np.float64)
     for i in range(len(close) - max_l):
+        dyn_mk = markup * atr[i]
         # Select a random number of bars forward once for all periods
         rand = np.random.randint(min_l, max_l + 1)
         buy_signals = 0
@@ -839,10 +852,10 @@ def calculate_labels_trend_multi(close, normalized_trends, threshold, markup, mi
         # Check conditions for each period
         for j in range(num_periods):
             if normalized_trends[j, i] > threshold:
-                if close[i + rand] >= close[i] + markup:
+                if close[i + rand] >= close[i] + dyn_mk:
                     buy_signals += 1
             elif normalized_trends[j, i] < -threshold:
-                if close[i + rand] <= close[i] - markup:
+                if close[i + rand] <= close[i] - dyn_mk:
                     sell_signals += 1
         # Combine signals
         if buy_signals > 0 and sell_signals == 0:
@@ -854,7 +867,7 @@ def calculate_labels_trend_multi(close, normalized_trends, threshold, markup, mi
     return labels
 
 def get_labels_trend_with_profit_multi(dataset, method='savgol', rolling_periods=[10, 20, 30], polyorder=3, threshold=0.5, 
-                                       vol_window=50, markup=0.5, min_l=1, max_l=15) -> pd.DataFrame:
+                                       vol_window=50, markup=0.5, min_l=1, max_l=15, atr_period=14) -> pd.DataFrame:
     """
     Generates labels for trading signals (Buy/Sell) based on the normalized trend,
     calculated for multiple smoothing periods.
@@ -910,8 +923,12 @@ def get_labels_trend_with_profit_multi(dataset, method='savgol', rolling_periods
     close_clean = close_prices[valid_mask]
     dataset_clean = dataset[valid_mask].copy()
 
+    high = dataset["high"].values if "high" in dataset else dataset["close"].values
+    low = dataset["low"].values if "low" in dataset else dataset["close"].values
+    atr = calculate_atr_simple(high, low, dataset["close"].values, period=atr_period)
+    atr_clean = atr[valid_mask]
     # Generate labels
-    labels = calculate_labels_trend_multi(close_clean, normalized_trends_clean, threshold, markup, min_l, max_l)
+    labels = calculate_labels_trend_multi(close_clean, atr_clean, normalized_trends_clean, threshold, markup, min_l, max_l)
 
     # Trim data and add labels
     dataset_clean = dataset_clean.iloc[:len(labels)].copy()
@@ -922,13 +939,14 @@ def get_labels_trend_with_profit_multi(dataset, method='savgol', rolling_periods
     return dataset_clean
 
 @njit(nogil=True, fastmath=True)
-def calculate_labels_clusters(close_data, clusters, markup):
+def calculate_labels_clusters(close_data, atr, clusters, markup):
     labels = []
     current_cluster = clusters[0]
     last_price = close_data[0]
     for i in range(1, len(close_data)):
         next_cluster = clusters[i]
-        if next_cluster != current_cluster and (abs(close_data[i] - last_price) > markup):
+        dyn_mk = markup * atr[i]
+        if next_cluster != current_cluster and (abs(close_data[i] - last_price) > dyn_mk):
             if close_data[i] > last_price:
                 labels.append(0.0)
             else:
@@ -942,14 +960,17 @@ def calculate_labels_clusters(close_data, clusters, markup):
         labels.append(2.0)
     return labels
 
-def get_labels_clusters(dataset, markup, num_clusters=20) -> pd.DataFrame:
+def get_labels_clusters(dataset, markup, num_clusters=20, atr_period=14) -> pd.DataFrame:
     kmeans = KMeans(n_clusters=num_clusters, n_init='auto')
     dataset['cluster'] = kmeans.fit_predict(dataset[['close']])
 
     close_data = dataset['close'].values
     clusters = dataset['cluster'].values
 
-    labels = calculate_labels_clusters(close_data, clusters, markup)
+    high = dataset["high"].values if "high" in dataset else dataset["close"].values
+    low = dataset["low"].values if "low" in dataset else dataset["close"].values
+    atr = calculate_atr_simple(high, low, dataset["close"].values, period=atr_period)
+    labels = calculate_labels_clusters(close_data, atr, clusters, markup)
 
     dataset['labels'] = labels
     dataset = dataset.drop(dataset[dataset.labels == 2.0].index)
@@ -1108,23 +1129,24 @@ def get_labels_filter_ZZ(dataset, peak_prominence=0.1) -> pd.DataFrame:
 
 # MEAN REVERSION WITH RESTRICTIONS BASED LABELING
 @njit(nogil=True, fastmath=True)
-def calculate_labels_mean_reversion(close, lvl, markup, min_l, max_l, q):
+def calculate_labels_mean_reversion(close, atr, lvl, markup, min_l, max_l, q):
     labels = np.empty(len(close) - max_l, dtype=np.float64)
     for i in range(len(close) - max_l):
+        dyn_mk = markup * atr[i]
         rand = random.randint(min_l, max_l)
         curr_pr = close[i]
         curr_lvl = lvl[i]
         future_pr = close[i + rand]
 
-        if curr_lvl > q[1] and (future_pr + markup) < curr_pr:
+        if curr_lvl > q[1] and (future_pr + dyn_mk) < curr_pr:
             labels[i] = 1.0
-        elif curr_lvl < q[0] and (future_pr - markup) > curr_pr:
+        elif curr_lvl < q[0] and (future_pr - dyn_mk) > curr_pr:
             labels[i] = 0.0
         else:
             labels[i] = 2.0
     return labels
 
-def get_labels_mean_reversion(dataset, markup, min_l=1, max_l=15, rolling=0.5, quantiles=[.45, .55], method='spline', decay_factor=0.95, shift=0) -> pd.DataFrame:
+def get_labels_mean_reversion(dataset, markup, min_l=1, max_l=15, rolling=0.5, quantiles=[.45, .55], method='spline', decay_factor=0.95, shift=0, atr_period=14) -> pd.DataFrame:
     """
     Generates labels for a financial dataset based on mean reversion principles.
 
@@ -1189,7 +1211,10 @@ def get_labels_mean_reversion(dataset, markup, min_l=1, max_l=15, rolling=0.5, q
     lvl = dataset['lvl'].values
     
     # Calculate buy/sell labels 
-    labels = calculate_labels_mean_reversion(close, lvl, markup, min_l, max_l, q) 
+    high = dataset["high"].values if "high" in dataset else close
+    low = dataset["low"].values if "low" in dataset else close
+    atr = calculate_atr_simple(high, low, close, period=atr_period)
+    labels = calculate_labels_mean_reversion(close, atr, lvl, markup, min_l, max_l, q) 
 
     # Process the dataset and labels
     dataset = dataset.iloc[:len(labels)].copy()
@@ -1199,9 +1224,10 @@ def get_labels_mean_reversion(dataset, markup, min_l=1, max_l=15, rolling=0.5, q
     return dataset.drop(columns=['lvl'])  # Remove the temporary 'lvl' column 
 
 @njit(nogil=True, fastmath=True)
-def calculate_labels_mean_reversion_multi(close_data, lvl_data, q, markup, min_l, max_l, windows):
+def calculate_labels_mean_reversion_multi(close_data, atr, lvl_data, q, markup, min_l, max_l, windows):
     labels = []
     for i in range(len(close_data) - max_l):
+        dyn_mk = markup * atr[i]
         rand = random.randint(min_l, max_l)
         curr_pr = close_data[i]
         future_pr = close_data[i + rand]
@@ -1217,15 +1243,15 @@ def calculate_labels_mean_reversion_multi(close_data, lvl_data, q, markup, min_l
                 buy_condition = False
             qq += 1
     
-        if sell_condition and (future_pr + markup) < curr_pr:
+        if sell_condition and (future_pr + dyn_mk) < curr_pr:
             labels.append(1.0)
-        elif buy_condition and (future_pr - markup) > curr_pr:
+        elif buy_condition and (future_pr - dyn_mk) > curr_pr:
             labels.append(0.0)
         else:
             labels.append(2.0)
     return labels
 
-def get_labels_mean_reversion_multi(dataset, markup, min_l=1, max_l=15, windows=[0.2, 0.3, 0.5], quantiles=[.45, .55]) -> pd.DataFrame:
+def get_labels_mean_reversion_multi(dataset, markup, min_l=1, max_l=15, windows=[0.2, 0.3, 0.5], quantiles=[.45, .55], atr_period=14) -> pd.DataFrame:
     q = np.empty((len(windows), 2))  # Initialize as 2D NumPy array
     lvl_data = np.empty((dataset.shape[0], len(windows)))
 
@@ -1244,7 +1270,10 @@ def get_labels_mean_reversion_multi(dataset, markup, min_l=1, max_l=15, windows=
     close_data = dataset['close'].values
 
     # Convert windows to a tuple for Numba compatibility (optional)
-    labels = calculate_labels_mean_reversion_multi(close_data, lvl_data, q, markup, min_l, max_l, tuple(windows))
+    labels = calculate_labels_mean_reversion_multi(close_data, atr, lvl_data, q, markup, min_l, max_l, tuple(windows))
+    high = dataset["high"].values if "high" in dataset else close_data
+    low = dataset["low"].values if "low" in dataset else close_data
+    atr = calculate_atr_simple(high, low, close_data, period=atr_period)
 
     dataset = dataset.iloc[:len(labels)].copy()
     dataset['labels'] = labels
@@ -1254,9 +1283,10 @@ def get_labels_mean_reversion_multi(dataset, markup, min_l=1, max_l=15, windows=
     return dataset
 
 @njit(nogil=True, fastmath=True)
-def calculate_labels_mean_reversion_v(close_data, lvl_data, volatility_group, quantile_groups_low, quantile_groups_high, markup, min_l, max_l):
+def calculate_labels_mean_reversion_v(close_data, atr, lvl_data, volatility_group, quantile_groups_low, quantile_groups_high, markup, min_l, max_l):
     labels = []
     for i in range(len(close_data) - max_l):
+        dyn_mk = markup * atr[i]
         rand = random.randint(min_l, max_l)
         curr_pr = close_data[i]
         curr_lvl = lvl_data[i]
@@ -1267,15 +1297,15 @@ def calculate_labels_mean_reversion_v(close_data, lvl_data, volatility_group, qu
         low_q = quantile_groups_low[int(curr_vol_group)]
         high_q = quantile_groups_high[int(curr_vol_group)]
 
-        if curr_lvl > high_q and (future_pr + markup) < curr_pr:
+        if curr_lvl > high_q and (future_pr + dyn_mk) < curr_pr:
             labels.append(1.0)
-        elif curr_lvl < low_q and (future_pr - markup) > curr_pr:
+        elif curr_lvl < low_q and (future_pr - dyn_mk) > curr_pr:
             labels.append(0.0)
         else:
             labels.append(2.0)
     return labels
 
-def get_labels_mean_reversion_v(dataset, markup, min_l=1, max_l=15, rolling=0.5, quantiles=[.45, .55], method='spline', shift=1, volatility_window=20) -> pd.DataFrame:
+def get_labels_mean_reversion_v(dataset, markup, min_l=1, max_l=15, rolling=0.5, quantiles=[.45, .55], method='spline', shift=1, volatility_window=20, atr_period=14) -> pd.DataFrame:
     """
     Generates trading labels based on mean reversion principles, incorporating
     volatility-based adjustments to identify buy opportunities.
@@ -1356,10 +1386,13 @@ def get_labels_mean_reversion_v(dataset, markup, min_l=1, max_l=15, rolling=0.5,
     
     # Convert quantile groups to numpy arrays
     quantile_groups_low = np.array(quantile_groups_low)
+    high = dataset["high"].values if "high" in dataset else close_data
+    low = dataset["low"].values if "low" in dataset else close_data
+    atr = calculate_atr_simple(high, low, close_data, period=atr_period)
     quantile_groups_high = np.array(quantile_groups_high)
 
     # Calculate buy/sell labels 
-    labels = calculate_labels_mean_reversion_v(close_data, lvl_data, volatility_group, quantile_groups_low, quantile_groups_high, markup, min_l, max_l)
+    labels = calculate_labels_mean_reversion_v(close_data, atr, lvl_data, volatility_group, quantile_groups_low, quantile_groups_high, markup, min_l, max_l)
     
     # Process dataset and labels
     dataset = dataset.iloc[:len(labels)].copy()

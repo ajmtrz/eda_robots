@@ -29,13 +29,24 @@ class DummySearcher(StrategySearcher):
         self.n_models = 1
         self.n_jobs = 1
         self.tag = ""
-        self.base_df = pd.DataFrame({"close": [1,2,3,4]}, index=pd.date_range("2020-01-01", periods=4))
+        rng = pd.date_range("2020-01-01", periods=4)
+        self.base_df = pd.DataFrame({
+            "open":   [1,2,3,4],
+            "high":   [1.1,2.1,3.1,4.1],
+            "low":    [0.9,1.9,2.9,3.9],
+            "close":  [1,2,3,4],
+            "volume": [1,1,1,1],
+        }, index=rng)
 
     def get_train_test_data(self, hp):
         data = pd.DataFrame({
             "meta_feature1": [0.1, 0.2, 0.3, 0.4],
             "meta_feature2": [0.0, 0.1, 0.0, 0.1],
-            "close": [1,2,3,4]
+            "open":  [1,2,3,4],
+            "high":  [1.1,2.1,3.1,4.1],
+            "low":   [0.9,1.9,2.9,3.9],
+            "close": [1,2,3,4],
+            "volume": [1,1,1,1],
         }, index=self.base_df.index)
         return data, data
 
@@ -70,13 +81,24 @@ class DummySearcherConstant(StrategySearcher):
         self.n_models = 1
         self.n_jobs = 1
         self.tag = ""
-        self.base_df = pd.DataFrame({"close": [1,2,3,4]}, index=pd.date_range("2020-01-01", periods=4))
+        rng = pd.date_range("2020-01-01", periods=4)
+        self.base_df = pd.DataFrame({
+            "open":   [1,2,3,4],
+            "high":   [1.1,2.1,3.1,4.1],
+            "low":    [0.9,1.9,2.9,3.9],
+            "close":  [1,2,3,4],
+            "volume": [1,1,1,1],
+        }, index=rng)
 
     def get_train_test_data(self, hp):
         data = pd.DataFrame({
             "constant_feature": [1.0, 1.0, 1.0, 1.0],
             "good_feature": [0.0, 1.0, 2.0, 3.0],
-            "close": [1,2,3,4]
+            "open":  [1,2,3,4],
+            "high":  [1.1,2.1,3.1,4.1],
+            "low":   [0.9,1.9,2.9,3.9],
+            "close": [1,2,3,4],
+            "volume": [1,1,1,1]
         }, index=self.base_df.index)
 
         feature_cols = ["constant_feature", "good_feature"]
@@ -111,4 +133,19 @@ def test_get_train_test_data_drops_constant_features():
     train, test = searcher.get_train_test_data({})
     assert train is not None and test is not None
     assert "constant_feature" not in train.columns
+
+
+def test_get_train_test_data_contains_ohlcv():
+    searcher = DummySearcher()
+    train, test = searcher.get_train_test_data({})
+    for df in (train, test):
+        assert {"open", "high", "low", "close", "volume"}.issubset(df.columns)
+
+
+def test_apply_labeling_preserves_ohlcv():
+    searcher = DummySearcher()
+    df, _ = searcher.get_train_test_data({})
+    searcher.label_method = "filter_one"
+    labeled = searcher._apply_labeling(df.copy(), {"rolling": 5, "polyorder": 2, "quantiles": [0.45, 0.55]})
+    assert {"open", "high", "low", "close", "volume"}.issubset(labeled.columns)
 

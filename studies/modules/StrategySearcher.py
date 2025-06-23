@@ -222,14 +222,6 @@ class StrategySearcher:
             print(f"⚠️ ERROR en _apply_labeling: {e}")
             return pd.DataFrame()
 
-    def _log_memory(self) -> float:
-        """Helper to print current RSS memory usage in MB."""
-        try:
-            mem = psutil.Process(os.getpid()).memory_info().rss / (1024 ** 2)
-            return mem
-        except Exception:
-            pass
-
     # =========================================================================
     # Métodos de búsqueda principales
     # =========================================================================
@@ -269,6 +261,12 @@ class StrategySearcher:
 
                 t0 = perf_counter()
                 def log_trial(study, trial):
+                    def _log_memory() -> float:
+                        try:
+                            mem = psutil.Process(os.getpid()).memory_info().rss / (1024 ** 2)
+                            return mem
+                        except Exception:
+                            pass
                     def delete_catboost_model(model):
                         try:
                             if model is not None:
@@ -313,7 +311,7 @@ class StrategySearcher:
                             f"trial {n_done}/{self.n_trials}",
                             f"{best_str}",
                             f"avg={avg_time:.2f}s",
-                            f"mem={self._log_memory():.2f}MB ",
+                            f"mem={_log_memory():.2f}MB ",
                             flush=True,
                         )
 

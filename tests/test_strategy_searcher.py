@@ -177,3 +177,35 @@ def test_get_train_test_data_prunes_hp():
     assert hp["periods_meta"] == (6,)
     assert hp["stats_meta"] == ("std",)
 
+
+class DummySearcherCausal(StrategySearcher):
+    def __init__(self):
+        self.symbol = "TEST"
+        self.timeframe = "M1"
+        self.direction = "buy"
+        self.train_start = datetime(2020, 1, 1)
+        self.train_end = datetime(2020, 1, 2)
+        self.test_start = datetime(2020, 1, 3)
+        self.test_end = datetime(2020, 1, 4)
+        self.models_export_path = ""
+        self.include_export_path = ""
+        self.history_path = ""
+        self.search_type = "causal"
+        self.search_subtype = "simple"
+        self.label_method = "atr"
+        self.pruner_type = "hyperband"
+        self.n_trials = 1
+        self.n_models = 1
+        self.n_jobs = 1
+        self.tag = ""
+        self.base_df = pd.DataFrame({"close": [1, 2, 3, 4]},
+                                    index=pd.date_range("2020-01-01", periods=4))
+
+
+def test_suggest_all_params_causal_includes_meta_learners():
+    searcher = DummySearcherCausal()
+    study = optuna.create_study(direction="maximize")
+    trial = study.ask()
+    params = searcher.suggest_all_params(trial)
+    assert "n_meta_learners" in params
+

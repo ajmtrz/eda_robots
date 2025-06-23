@@ -269,6 +269,12 @@ class StrategySearcher:
 
                 t0 = perf_counter()
                 def log_trial(study, trial):
+                    def delete_catboost_model(model):
+                        try:
+                            if model is not None:
+                                model.__del__()
+                        except Exception:
+                            pass
                     try:
                         # Obtener el mejor trial según criterio maximin
                         if study.best_trials:
@@ -286,8 +292,12 @@ class StrategySearcher:
                                     study.set_user_attr("best_stats_main", trial.user_attrs['stats_main'])
                                     study.set_user_attr("best_stats_meta", trial.user_attrs.get('stats_meta'))
                             # Liberar memoria eliminando datos pesados del trial
-                            trial.set_user_attr('models', None)
-                            trial.set_user_attr('scores', None)
+                            if 'models' in trial.user_attrs:
+                                models = trial.user_attrs['models']
+                                trial.set_user_attr('models', None)
+                                if isinstance(models, tuple) and len(models) == 2:
+                                    delete_catboost_model(models[0])
+                                    delete_catboost_model(models[1]) 
 
                         # Log
                         if study.best_trials:

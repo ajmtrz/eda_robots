@@ -337,6 +337,7 @@ class StrategySearcher:
                     "symbol": self.symbol,
                     "timeframe": self.timeframe,
                     "direction": self.direction,
+                    "label_method": self.label_method,
                     "models_export_path": self.models_export_path,
                     "include_export_path": self.include_export_path,
                     "search_type": self.search_type,

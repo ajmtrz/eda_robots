@@ -39,24 +39,24 @@ from modules.tester_lib import (
 from modules.export_lib import export_model_to_ONNX
 
 
-def track_memory(start=False):
-    """Decorator para registrar la memoria usada por cada función."""
-    def decorator(func):
-        def wrapper(self, *args, **kwargs):
-            if start:
-                self._trial_memory = []
-            process = psutil.Process(os.getpid())
-            mem_before = process.memory_info().rss
-            result = func(self, *args, **kwargs)
-            mem_after = process.memory_info().rss
-            mem_used = (mem_after - mem_before) / (1024 ** 2)
-            try:
-                self._trial_memory.append((func.__name__, mem_used))
-            except Exception:
-                pass
-            return result
-        return wrapper
-    return decorator
+# def track_memory(start=False):
+#     """Decorator para registrar la memoria usada por cada función."""
+#     def decorator(func):
+#         def wrapper(self, *args, **kwargs):
+#             if start:
+#                 self._trial_memory = []
+#             process = psutil.Process(os.getpid())
+#             mem_before = process.memory_info().rss
+#             result = func(self, *args, **kwargs)
+#             mem_after = process.memory_info().rss
+#             mem_used = (mem_after - mem_before) / (1024 ** 2)
+#             try:
+#                 self._trial_memory.append((func.__name__, mem_used))
+#             except Exception:
+#                 pass
+#             return result
+#         return wrapper
+#     return decorator
 
 class StrategySearcher:
     LABEL_FUNCS = {
@@ -131,7 +131,7 @@ class StrategySearcher:
         # Configuración de logging para optuna
         optuna.logging.set_verbosity(optuna.logging.WARNING)
 
-    @track_memory()
+    # @track_memory()
     def _apply_labeling(self, dataset: pd.DataFrame, hp: dict) -> pd.DataFrame:
         """Apply the selected labeling function dynamically.
 
@@ -287,8 +287,6 @@ class StrategySearcher:
                         except Exception:
                             pass
                     try:
-                        from modules.labeling_lib import compute_features
-                        print(len(compute_features.signatures))
                         # Obtener el mejor trial según criterio maximin
                         if study.best_trials:
                             best_trial = max(study.best_trials, 
@@ -386,7 +384,7 @@ class StrategySearcher:
     # Métodos de búsqueda específicos
     # =========================================================================
     
-    @track_memory()
+    # @track_memory()
     def _evaluate_clusters(self, ds_train: pd.DataFrame, ds_test: pd.DataFrame, hp: Dict[str, Any]) -> tuple[float, float]:
         """Función helper para evaluar clusters y entrenar modelos."""
         try:
@@ -461,7 +459,7 @@ class StrategySearcher:
         finally:
             gc.collect()
     
-    @track_memory()
+    # @track_memory()
     def check_constant_features(self, X: pd.DataFrame, feature_cols: list, std_epsilon: float = 1e-6) -> list:
         """Return the list of columns that may cause numerical instability.
         
@@ -663,7 +661,7 @@ class StrategySearcher:
             print(f"⚠️ ERROR en suggest_all_params: {str(e)}")
             return None
 
-    @track_memory()
+    # @track_memory()
     def fit_final_models(self, model_main_data: pd.DataFrame,
                         model_meta_data: pd.DataFrame,
                         ds_train: pd.DataFrame,
@@ -1120,7 +1118,7 @@ class StrategySearcher:
     # =========================================================================
     
     # ---------------------------------------------------------------------
-    @track_memory()
+    # @track_memory()
     def get_train_test_data(self, hp):
         try:
             if hp is None:

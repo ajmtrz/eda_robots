@@ -54,6 +54,7 @@ def export_model_to_ONNX(**kwargs):
     symbol = kwargs.get('symbol')
     timeframe = kwargs.get('timeframe')
     direction = kwargs.get('direction')
+    label_method = kwargs.get('label_method')
     models_export_path = kwargs.get('models_export_path')
     include_export_path = kwargs.get('include_export_path')
     search_type = kwargs.get('search_type')
@@ -95,12 +96,12 @@ def export_model_to_ONNX(**kwargs):
         #         model_onnx.graph.initializer.remove(initializer)
 
         # Guarda los modelos ONNX
-        filename_model = f"{symbol}_{timeframe}_{direction}_{search_type}_{search_subtype}_{model_seed}.onnx"
+        filename_model = f"{symbol}_{timeframe}_{direction}_{label_method}_{search_type}_{search_subtype}_{model_seed}.onnx"
         filepath_model = os.path.join(models_export_path, filename_model)
         with open(filepath_model, "wb") as f:
             f.write(model_main_onnx.SerializeToString())
-        
-        filename_model_m = f"{symbol}_{timeframe}_{direction}_{search_type}_{search_subtype}_{model_seed}_m.onnx"
+
+        filename_model_m = f"{symbol}_{timeframe}_{direction}_{label_method}_{search_type}_{search_subtype}_{model_seed}_m.onnx"
         filepath_model_m = os.path.join(models_export_path, filename_model_m)
         with open(filepath_model_m, "wb") as f:
             f.write(model_meta_onnx.SerializeToString())
@@ -706,11 +707,11 @@ def export_model_to_ONNX(**kwargs):
         code += '     }\n'
         code += '  }\n\n'
 
-        file_name = os.path.join(include_export_path, f"{symbol}_{timeframe}_{direction}_{search_type}_{search_subtype}_{model_seed}.mqh")
+        file_name = os.path.join(include_export_path, f"{symbol}_{timeframe}_{direction}_{label_method}_{search_type}_{search_subtype}_{model_seed}.mqh")
         with open(file_name, "w") as file:
             file.write(code)
-        
-        print(f"EXPORTACIÓN {symbol}_{timeframe}_{direction}_{search_type}_{search_subtype}_{model_seed} ONNX CORRECTA")
+
+        print(f"EXPORTACIÓN {symbol}_{timeframe}_{direction}_{label_method}_{search_type}_{search_subtype}_{model_seed} ONNX CORRECTA")
     except Exception as e:
         print(f"ERROR EN EXPORTACIÓN: {e}")
         raise

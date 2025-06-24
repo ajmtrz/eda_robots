@@ -40,6 +40,15 @@ from modules.tester_lib import (
 )
 from modules.export_lib import export_model_to_ONNX
 
+
+def _free_catboost_model(model):
+    """Helper to explicitly release CatBoost model memory."""
+    try:
+        if model is not None:
+            model.__del__()
+    except Exception:
+        pass
+
 class StrategySearcher:
     LABEL_FUNCS = {
         "atr": get_labels_one_direction,
@@ -267,10 +276,9 @@ class StrategySearcher:
                             return mem
                         except Exception:
                             pass
-                    def delete_catboost_model(model):
                         try:
-                            if model is not None:
-                                model.__del__()
+                            mem = psutil.Process(os.getpid()).memory_info().rss / (1024 ** 2)
+                            return mem
                         except Exception:
                             pass
                     try:
@@ -282,6 +290,8 @@ class StrategySearcher:
                             # Si este trial es el mejor, guardar sus modelos
                             if trial.number == best_trial.number:
                                 if trial.user_attrs.get('models') is not None:
+                                    prev_best = study.user_attrs.get("best_models")
+                                    # Guardar nuevos modelos como mejores
                                     study.set_user_attr("best_models", trial.user_attrs['models'])
                                     study.set_user_attr("best_scores", trial.user_attrs['scores'])
                                     study.set_user_attr("best_periods_main", trial.user_attrs['periods_main'])
@@ -289,13 +299,18 @@ class StrategySearcher:
                                     study.set_user_attr("best_periods_meta", trial.user_attrs.get('periods_meta'))
                                     study.set_user_attr("best_stats_main", trial.user_attrs['stats_main'])
                                     study.set_user_attr("best_stats_meta", trial.user_attrs.get('stats_meta'))
+                                    # Liberar modelos previos almacenados en el estudio
+                                    if prev_best is not None:
+                                        if isinstance(prev_best, tuple) and len(prev_best) == 2:
+                                            _free_catboost_model(prev_best[0])
+                                            _free_catboost_model(prev_best[1])
                             # Liberar memoria eliminando datos pesados del trial
                             if 'models' in trial.user_attrs:
                                 models = trial.user_attrs['models']
                                 trial.set_user_attr('models', None)
                                 if isinstance(models, tuple) and len(models) == 2:
-                                    delete_catboost_model(models[0])
-                                    delete_catboost_model(models[1]) 
+                                    _free_catboost_model(models[0])
+                                    _free_catboost_model(models[1])
 
                         # Log
                         if study.best_trials:
@@ -337,6 +352,7 @@ class StrategySearcher:
                     "symbol": self.symbol,
                     "timeframe": self.timeframe,
                     "direction": self.direction,
+                    "label_method": self.label_method,
                     "models_export_path": self.models_export_path,
                     "include_export_path": self.include_export_path,
                     "search_type": self.search_type,
@@ -351,6 +367,16 @@ class StrategySearcher:
                 }
                 
                 export_model_to_ONNX(**export_params)
+
+                # Liberar modelos tras exportarlos para evitar fugas de memoria
+                try:
+                    if best_models and isinstance(best_models, tuple) and len(best_models) == 2:
+                        _free_catboost_model(best_models[0])
+                        _free_catboost_model(best_models[1])
+                        study.set_user_attr("best_models", None)
+                except Exception:
+                    pass
+                gc.collect()
                 
             except Exception as e:
                 print(f"\nError procesando modelo {i}:")
@@ -407,23 +433,34 @@ class StrategySearcher:
 
                 # ── Evaluación en ambos períodos ──────────────────────────────
                 scores, models = self.fit_final_models(
-                    model_main_data=model_main_data, 
+                    model_main_data=model_main_data,
                     model_meta_data=model_meta_data,
-                    ds_train=ds_train, 
-                    ds_test=ds_test, 
+                    ds_train=ds_train,
+                    ds_test=ds_test,
                     hp=hp.copy()
                 )
                 if scores is None or models is None:
+                    _free_catboost_model(models[0]) if models else None
+                    _free_catboost_model(models[1]) if models else None
                     continue
 
                 # Verificar scores
                 if not all(np.isfinite(scores)):
+                    _free_catboost_model(models[0])
+                    _free_catboost_model(models[1])
                     continue
 
                 # Aplicar criterio maximin: maximizar el peor valor entre ins/oos
                 if min(scores) > min(best_scores):
+                    if best_models[0] is not None:
+                        _free_catboost_model(best_models[0])
+                    if best_models[1] is not None:
+                        _free_catboost_model(best_models[1])
                     best_scores = scores
                     best_models = models
+                else:
+                    _free_catboost_model(models[0])
+                    _free_catboost_model(models[1])
 
             # Verificar que encontramos algún cluster válido
             if best_scores == (-math.inf, -math.inf) or best_models == (None, None):
@@ -500,7 +537,7 @@ class StrategySearcher:
                 'max_main_stats': trial.suggest_int('max_main_stats', 1, MAX_MAIN_STATS, log=True),
             }
             # ---------- Parámetros de etiquetado dinámicos ----------
-            label_func = self.LABEL_FUNCS.get(self.label_method, get_labels_one_direction)
+            label_func = self.LABEL_FUNCS.get(self.label_method)
             label_params = inspect.signature(label_func).parameters
 
             if 'markup' in label_params:
@@ -591,7 +628,7 @@ class StrategySearcher:
                         for i in range(MAX_MAIN_STATS)]
             stats_main = list(dict.fromkeys(stats_main))
             params['stats_main'] = tuple(stats_main[:params['max_main_stats']])
-            # ---------- Hiperparámetros meta solo si no es mapie ----------
+            # ---------- Hiperparámetros meta solo si no es mapie o causal ----------
             if self.search_type in ['clusters', 'markov', 'lgmm']:
                 params['max_meta_periods'] = trial.suggest_int('max_meta_periods', 1, MAX_META_PERIODS, log=True)
                 params['max_meta_stats'] = trial.suggest_int('max_meta_stats', 1, MAX_META_STATS, log=True)
@@ -634,6 +671,10 @@ class StrategySearcher:
                     'mapie_confidence_level': trial.suggest_float('mapie_confidence_level', 0.7, 0.99),
                     'mapie_cv': trial.suggest_int('mapie_cv', 3, 10),
                 })
+            elif self.search_type == 'causal':
+                params.update({
+                    'n_meta_learners': trial.suggest_int('n_meta_learners', 5, 30),
+                })
             # Actualizar trial.params con los valores procesados
             for key, value in params.items():
                 trial.set_user_attr(key, value)
@@ -670,7 +711,6 @@ class StrategySearcher:
             if not set(y_val_main.unique()).issubset(set(y_train_main.unique())):
                 return None, None
             # Test final (usando las mismas columnas)
-            y_test_main = ds_test[main_feature_cols].copy()
             if 'labels_main' in ds_test.columns:
                 y_test_labels = ds_test['labels_main']
             elif 'labels' in ds_test.columns:
@@ -1210,6 +1250,39 @@ class StrategySearcher:
                 feature_cols = [c for c in feature_cols if c not in problematic]
                 if not feature_cols:
                     return None, None
+
+            # ──────────────────────────────────────────────────────────────
+            # 5b) Ajustar hp según columnas restantes
+            remaining_periods_main = set()
+            remaining_periods_meta = set()
+            remaining_stats_main = set()
+            remaining_stats_meta = set()
+
+            for col in feature_cols:
+                if col.endswith('_meta_feature'):
+                    base = col[:-13]
+                    if '_' in base:
+                        p_str, stat = base.split('_', 1)
+                        if p_str.isdigit():
+                            remaining_periods_meta.add(int(p_str))
+                            remaining_stats_meta.add(stat)
+                elif col.endswith('_feature'):
+                    base = col[:-8]
+                    if '_' in base:
+                        p_str, stat = base.split('_', 1)
+                        if p_str.isdigit():
+                            remaining_periods_main.add(int(p_str))
+                            remaining_stats_main.add(stat)
+
+            hp['periods_main'] = tuple([p for p in hp.get('periods_main', ()) if p in remaining_periods_main])
+            hp['periods_meta'] = tuple([p for p in hp.get('periods_meta', ()) if p in remaining_periods_meta])
+            hp['stats_main'] = tuple([s for s in hp.get('stats_main', ()) if s in remaining_stats_main])
+            hp['stats_meta'] = tuple([s for s in hp.get('stats_meta', ()) if s in remaining_stats_meta])
+
+            if (hp.get('periods_main') and not hp['stats_main']) or (hp.get('stats_main') and not hp['periods_main']):
+                return None, None
+            if (hp.get('periods_meta') and not hp['stats_meta']) or (hp.get('stats_meta') and not hp['periods_meta']):
+                return None, None
 
             # ──────────────────────────────────────────────────────────────
             # 6) Máscaras de train / test

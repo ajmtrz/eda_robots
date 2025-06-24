@@ -282,6 +282,8 @@ class StrategySearcher:
                             # Si este trial es el mejor, guardar sus modelos
                             if trial.number == best_trial.number:
                                 if trial.user_attrs.get('models') is not None:
+                                    prev_best = study.user_attrs.get("best_models")
+                                    # Guardar nuevos modelos como mejores
                                     study.set_user_attr("best_models", trial.user_attrs['models'])
                                     study.set_user_attr("best_scores", trial.user_attrs['scores'])
                                     study.set_user_attr("best_periods_main", trial.user_attrs['periods_main'])
@@ -289,6 +291,11 @@ class StrategySearcher:
                                     study.set_user_attr("best_periods_meta", trial.user_attrs.get('periods_meta'))
                                     study.set_user_attr("best_stats_main", trial.user_attrs['stats_main'])
                                     study.set_user_attr("best_stats_meta", trial.user_attrs.get('stats_meta'))
+                                    # Liberar modelos previos almacenados en el estudio
+                                    if prev_best is not None:
+                                        if isinstance(prev_best, tuple) and len(prev_best) == 2:
+                                            delete_catboost_model(prev_best[0])
+                                            delete_catboost_model(prev_best[1])
                             # Liberar memoria eliminando datos pesados del trial
                             if 'models' in trial.user_attrs:
                                 models = trial.user_attrs['models']
@@ -352,6 +359,15 @@ class StrategySearcher:
                 }
                 
                 export_model_to_ONNX(**export_params)
+
+                # Liberar modelos tras exportarlos para evitar fugas de memoria
+                try:
+                    if best_models and isinstance(best_models, tuple) and len(best_models) == 2:
+                        best_models[0].__del__()
+                        best_models[1].__del__()
+                except Exception:
+                    pass
+                gc.collect()
                 
             except Exception as e:
                 print(f"\nError procesando modelo {i}:")

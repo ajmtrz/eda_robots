@@ -4,6 +4,7 @@ import logging
 import numpy as np
 import pandas as pd
 from numba import njit
+from numba.typed import List
 from hdbscan import HDBSCAN
 from sklearn.cluster import KMeans
 from sklearn.preprocessing import StandardScaler
@@ -514,7 +515,13 @@ def get_features(data: pd.DataFrame, hp):
     # Asegurar que los arrays sean contiguos
     close = np.ascontiguousarray(close)
     
-    feats = compute_features(close, periods_main, periods_meta, stats_main, stats_meta)
+    # Convert lists/tuples to Numba typed.List to avoid repeated JIT compilation
+    periods_main_t = List(periods_main)
+    stats_main_t = List(stats_main)
+    periods_meta_t = List(periods_meta) if periods_meta is not None else None
+    stats_meta_t = List(stats_meta) if stats_meta is not None else None
+
+    feats = compute_features(close, periods_main_t, periods_meta_t, stats_main_t, stats_meta_t)
     if np.isnan(feats).all():
         return pd.DataFrame(index=index)
     

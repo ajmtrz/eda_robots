@@ -270,7 +270,12 @@ class StrategySearcher:
 
                 t0 = perf_counter()
                 def log_trial(study, trial):
-                    def _log_memory() -> float:
+                    def _log_memory(self) -> float:
+                        try:
+                            mem = psutil.Process(os.getpid()).memory_info().rss / (1024 ** 2)
+                            return mem
+                        except Exception:
+                            pass
                         try:
                             mem = psutil.Process(os.getpid()).memory_info().rss / (1024 ** 2)
                             return mem

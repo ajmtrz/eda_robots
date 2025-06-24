@@ -12,19 +12,28 @@ from modules.labeling_lib import (
 
 
 def _sample_df(n=50):
-    return pd.DataFrame({"close": np.linspace(1, 10, n)})
+    values = np.linspace(1, 10, n)
+    return pd.DataFrame({
+        "open": values,
+        "high": values + 0.1,
+        "low": values - 0.1,
+        "close": values,
+        "volume": np.ones(n),
+    })
 
 
 def test_filter_one_direction_both():
     df = _sample_df()
     res = get_labels_filter_one_direction(df, rolling=5, polyorder=2, direction="both")
     assert set(res["labels_main"].unique()) <= {0.0, 1.0}
+    assert {"open", "high", "low", "close", "volume"}.issubset(res.columns)
 
 
 def test_filter_one_direction_buy():
     df = _sample_df()
     res = get_labels_filter_one_direction(df, rolling=5, polyorder=2, direction="buy")
     assert set(res["labels_main"].unique()) <= {0.0, 1.0}
+    assert {"open", "high", "low", "close", "volume"}.issubset(res.columns)
 
 
 def test_trend_one_direction_both():
@@ -38,6 +47,7 @@ def test_trend_one_direction_both():
         direction="both",
     )
     assert set(res["labels_main"].unique()) <= {0.0, 1.0}
+    assert {"open", "high", "low", "close", "volume"}.issubset(res.columns)
 
 
 def test_trend_one_direction_sell():
@@ -51,8 +61,9 @@ def test_trend_one_direction_sell():
         direction="sell",
     )
     assert set(res["labels_main"].unique()) <= {0.0, 1.0}
-
-
+    assert {"open", "high", "low", "close", "volume"}.issubset(res.columns)
+    
+    
 def test_trend_one_direction_buy():
     df = _sample_df()
     res = get_labels_trend_one_direction(
@@ -64,3 +75,4 @@ def test_trend_one_direction_buy():
         direction="buy",
     )
     assert set(res["labels_main"].unique()) <= {0.0, 1.0}
+    assert {"open", "high", "low", "close", "volume"}.issubset(res.columns)

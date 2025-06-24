@@ -4,6 +4,7 @@ import logging
 import numpy as np
 import pandas as pd
 from numba import njit
+from numba.typed import List
 from hdbscan import HDBSCAN
 from sklearn.cluster import KMeans
 from sklearn.preprocessing import StandardScaler
@@ -514,7 +515,13 @@ def get_features(data: pd.DataFrame, hp):
     # Asegurar que los arrays sean contiguos
     close = np.ascontiguousarray(close)
     
-    feats = compute_features(close, periods_main, periods_meta, stats_main, stats_meta)
+    # Convert lists/tuples to Numba typed.List to avoid repeated JIT compilation
+    periods_main_t = List(periods_main)
+    stats_main_t = List(stats_main)
+    periods_meta_t = List(periods_meta) if periods_meta is not None else None
+    stats_meta_t = List(stats_meta) if stats_meta is not None else None
+
+    feats = compute_features(close, periods_main_t, periods_meta_t, stats_main_t, stats_meta_t)
     if np.isnan(feats).all():
         return pd.DataFrame(index=index)
     
@@ -1003,7 +1010,8 @@ def calculate_signals(prices, window_sizes, threshold_pct):
 
 def get_labels_multi_window(dataset, window_sizes=[20, 50, 100], threshold_pct=0.02) -> pd.DataFrame:
     prices = dataset['close'].values
-    signals = calculate_signals(prices, window_sizes, threshold_pct)
+    window_sizes_t = List(window_sizes)
+    signals = calculate_signals(prices, window_sizes_t, threshold_pct)
     signals = [2.0] * max(window_sizes) + signals
     dataset['labels'] = signals
     dataset = dataset.drop(dataset[dataset.labels == 2.0].index)
@@ -1204,7 +1212,7 @@ def get_labels_mean_reversion(dataset, markup, min_l=1, max_l=15, rolling=0.5, q
         dataset['lvl'] = weighted_diff # Add the weighted difference as 'lvl'
 
     dataset = dataset.dropna()  # Remove NaN values before proceeding
-    q = dataset['lvl'].quantile(quantiles).to_list()  # Calculate quantiles for the 'reversion zone'
+    q = tuple(dataset['lvl'].quantile(quantiles).to_list())  # Calculate quantiles for the 'reversion zone'
 
     # Prepare data for label calculation
     close = dataset['close'].values
@@ -1224,8 +1232,9 @@ def get_labels_mean_reversion(dataset, markup, min_l=1, max_l=15, rolling=0.5, q
     return dataset.drop(columns=['lvl'])  # Remove the temporary 'lvl' column 
 
 @njit
-def calculate_labels_mean_reversion_multi(close_data, atr, lvl_data, q, markup, min_l, max_l, windows):
+def calculate_labels_mean_reversion_multi(close_data, atr, lvl_data, q_list, markup, min_l, max_l, windows):
     labels = []
+    n_win = len(windows)
     for i in range(len(close_data) - max_l):
         dyn_mk = markup * atr[i]
         rand = random.randint(min_l, max_l)
@@ -1234,15 +1243,18 @@ def calculate_labels_mean_reversion_multi(close_data, atr, lvl_data, q, markup, 
 
         buy_condition = True
         sell_condition = True
-        qq = 0
-        for _ in windows:  # Loop over each window, variable unused
-            curr_lvl = lvl_data[i, qq]            
-            if not (curr_lvl >= q[qq, 1]):  # Access q as 2D array
+        for qq in range(n_win):
+            curr_lvl = lvl_data[i, qq]
+            q_low, q_high = q_list[qq]
+            if curr_lvl >= q_high:
+                pass
+            else:
                 sell_condition = False
-            if not (curr_lvl <= q[qq, 0]):
+            if curr_lvl <= q_low:
+                pass
+            else:
                 buy_condition = False
-            qq += 1
-    
+
         if sell_condition and (future_pr + dyn_mk) < curr_pr:
             labels.append(1.0)
         elif buy_condition and (future_pr - dyn_mk) > curr_pr:
@@ -1273,8 +1285,10 @@ def get_labels_mean_reversion_multi(dataset, markup, min_l=1, max_l=15, windows=
     low = dataset["low"].values if "low" in dataset else close_data
     atr = calculate_atr_simple(high, low, close_data, period=atr_period)
 
-    # Convert windows to a tuple for Numba compatibility (optional)
-    labels = calculate_labels_mean_reversion_multi(close_data, atr, lvl_data, q, markup, min_l, max_l, tuple(windows))
+    # Convert parameters to Numba typed.List to avoid repeated JIT compilations
+    windows_t = List(windows)
+    q_t = List([(float(q[i,0]), float(q[i,1])) for i in range(len(windows))])
+    labels = calculate_labels_mean_reversion_multi(close_data, atr, lvl_data, q_t, markup, min_l, max_l, windows_t)
 
     dataset = dataset.iloc[:len(labels)].copy()
     dataset['labels'] = labels
@@ -1462,7 +1476,7 @@ def get_labels_filter(dataset, rolling=200, quantiles=[.45, .55], polyorder=3, d
     dataset = dataset.dropna()
     
     # Calculate the quantiles of the 'lvl' column (price deviation)
-    q = dataset['lvl'].quantile(quantiles).to_list() 
+    q = tuple(dataset['lvl'].quantile(quantiles).to_list())
 
     # Extract the closing prices and the calculated 'lvl' values as NumPy arrays
     close = dataset['close'].values
@@ -1640,8 +1654,8 @@ def get_labels_filter_bidirectional(dataset, rolling1=200, rolling2=200, quantil
     dataset = dataset.dropna()
 
     # Calculate quantiles for the "reversion zones" for both price deviation series
-    q1 = dataset['lvl1'].quantile(quantiles).to_list()
-    q2 = dataset['lvl2'].quantile(quantiles).to_list()
+    q1 = tuple(dataset['lvl1'].quantile(quantiles).to_list())
+    q2 = tuple(dataset['lvl2'].quantile(quantiles).to_list())
 
     # Extract relevant data for label calculation
     close = dataset['close'].values
@@ -1720,7 +1734,7 @@ def get_labels_filter_one_direction(dataset, rolling=200, quantiles=[.45, .55], 
     dataset = dataset.dropna()
     
     # Calculate the quantiles of the 'lvl' column (price deviation)
-    q = dataset['lvl'].quantile(quantiles).to_list() 
+    q = tuple(dataset['lvl'].quantile(quantiles).to_list())
 
     # Extract the closing prices and the calculated 'lvl' values as NumPy arrays
     close = dataset['close'].values
@@ -1874,7 +1888,7 @@ def get_labels_filter_flat(dataset, rolling=200, quantiles=[.45, .55], polyorder
     dataset = dataset.dropna()
     
     # Calculate the quantiles of the 'lvl' column (price deviation)
-    q = dataset['lvl'].quantile(quantiles).to_list() 
+    q = tuple(dataset['lvl'].quantile(quantiles).to_list())
 
     # Extract the closing prices and the calculated 'lvl' values as NumPy arrays
     close = dataset['close'].values

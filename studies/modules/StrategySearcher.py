@@ -11,6 +11,7 @@ import pandas as pd
 from datetime import datetime
 from time import perf_counter
 from typing import Dict, Any
+import multiprocessing as mp
 import optuna
 from optuna.pruners import HyperbandPruner, SuccessiveHalvingPruner
 #from optuna.integration import CatBoostPruningCallback
@@ -57,6 +58,12 @@ def track_memory(start=False):
             return result
         return wrapper
     return decorator
+
+
+def _fit_final_models_worker(q, self_obj, main_d, meta_d, d_train, d_test, params):
+    """Worker para ejecutar _fit_final_models_impl en un subproceso."""
+    res = self_obj._fit_final_models_impl(main_d, meta_d, d_train, d_test, params)
+    q.put(res)
 
 class StrategySearcher:
     LABEL_FUNCS = {
@@ -657,8 +664,7 @@ class StrategySearcher:
             print(f"⚠️ ERROR en suggest_all_params: {str(e)}")
             return None
 
-    @track_memory()
-    def fit_final_models(self, model_main_data: pd.DataFrame,
+    def _fit_final_models_impl(self, model_main_data: pd.DataFrame,
                         model_meta_data: pd.DataFrame,
                         ds_train: pd.DataFrame,
                         ds_test: pd.DataFrame,
@@ -806,10 +812,25 @@ class StrategySearcher:
                 score_oos = -1.0
 
             return (score_ins, score_oos), (model_main, model_meta)
-        
+
         except Exception as e:
             print(f"Error en función de entrenamiento y test: {str(e)}")
             return None, None
+
+    @track_memory()
+    def fit_final_models(self, model_main_data: pd.DataFrame,
+                        model_meta_data: pd.DataFrame,
+                        ds_train: pd.DataFrame,
+                        ds_test: pd.DataFrame,
+                        hp: Dict[str, Any]) -> tuple[tuple[float, float], object, object]:
+        """Ejecuta el ajuste de modelos en un subproceso para liberar memoria."""
+        q = mp.Queue()
+        p = mp.Process(target=_fit_final_models_worker, args=(q, self, model_main_data, model_meta_data, ds_train, ds_test, hp))
+        p.start()
+        p.join()
+        if not q.empty():
+            return q.get()
+        return None, None
 
     @track_memory(start=True)
     def search_markov(self, trial: optuna.Trial) -> tuple[float, float]:

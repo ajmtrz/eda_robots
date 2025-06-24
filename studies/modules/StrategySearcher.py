@@ -38,26 +38,6 @@ from modules.tester_lib import (
 )
 from modules.export_lib import export_model_to_ONNX
 
-
-# def track_memory(start=False):
-#     """Decorator para registrar la memoria usada por cada función."""
-#     def decorator(func):
-#         def wrapper(self, *args, **kwargs):
-#             if start:
-#                 self._trial_memory = []
-#             process = psutil.Process(os.getpid())
-#             mem_before = process.memory_info().rss
-#             result = func(self, *args, **kwargs)
-#             mem_after = process.memory_info().rss
-#             mem_used = (mem_after - mem_before) / (1024 ** 2)
-#             try:
-#                 self._trial_memory.append((func.__name__, mem_used))
-#             except Exception:
-#                 pass
-#             return result
-#         return wrapper
-#     return decorator
-
 class StrategySearcher:
     LABEL_FUNCS = {
         "atr": get_labels_one_direction,
@@ -131,118 +111,8 @@ class StrategySearcher:
         # Configuración de logging para optuna
         optuna.logging.set_verbosity(optuna.logging.WARNING)
 
-    # @track_memory()
-    def _apply_labeling(self, dataset: pd.DataFrame, hp: dict) -> pd.DataFrame:
-        """Apply the selected labeling function dynamically.
-
-        Returns an empty DataFrame if labeling fails or results in no rows.
-        """
-        label_func = self.LABEL_FUNCS.get(self.label_method, get_labels_one_direction)
-        params = inspect.signature(label_func).parameters
-        kwargs = {}
-
-        for name in params:
-            if name == 'dataset':
-                continue
-            if name == 'direction':
-                kwargs['direction'] = self.direction if self.direction != 'both' else 'both'
-            elif name in {'max_val', 'max_l'}:
-                if 'label_max' in hp:
-                    kwargs[name] = hp['label_max']
-            elif name in hp:
-                kwargs[name] = hp[name]
-
-        # ── Validaciones simples ───────────────────────────────────────────
-        try:
-            if len(dataset) < 2:
-                return pd.DataFrame()
-
-            polyorder = kwargs.get('polyorder', 2)
-            if len(dataset) <= polyorder:
-                return pd.DataFrame()
-
-            # Ajuste automático para savgol_filter y similares
-            method = kwargs.get('method')
-            allowed = self.ALLOWED_METHODS.get(self.label_method)
-            # Detectar parámetros de ventana relevantes
-            window_keys = [k for k in kwargs if any(x in k for x in ('rolling', 'window', 'window_size'))]
-            if method == 'savgol' and window_keys:
-                for k in window_keys:
-                    v = kwargs[k]
-                    if isinstance(v, list) or isinstance(v, tuple):
-                        new_v = []
-                        for val in v:
-                            win = int(val)
-                            win = max(win, polyorder + 1)
-                            if win % 2 == 0:
-                                win += 1
-                            win = min(win, len(dataset))
-                            if win % 2 == 0:
-                                win = max(win - 1, polyorder + 1)
-                            if win <= polyorder:
-                                return pd.DataFrame()
-                            new_v.append(win)
-                        kwargs[k] = new_v
-                    else:
-                        win = int(v)
-                        win = max(win, polyorder + 1)
-                        if win % 2 == 0:
-                            win += 1
-                        win = min(win, len(dataset))
-                        if win % 2 == 0:
-                            win = max(win - 1, polyorder + 1)
-                        if win <= polyorder:
-                            return pd.DataFrame()
-                        kwargs[k] = win
-
-            # Clamp window/rolling parameters to dataset length
-            for k, v in list(kwargs.items()):
-                if isinstance(v, (int, float)) and any(x in k for x in ('rolling', 'window', 'period', 'span', 'max_l', 'max_val')):
-                    iv = max(int(v), 1)
-                    kwargs[k] = min(iv, max(len(dataset) - 1, 1))
-                elif isinstance(v, list) and any(x in k for x in ('rolling', 'window', 'period')):
-                    kwargs[k] = [min(max(int(val), 1), max(len(dataset) - 1, 1)) for val in v]
-
-            # Check for negative or too large window/rolling/period parameters
-            for k, v in list(kwargs.items()):
-                if isinstance(v, int) and any(x in k for x in ('rolling', 'window', 'period', 'span', 'max_l', 'max_val')):
-                    if v <= 0 or v >= len(dataset):
-                        print(f"⚠️ ERROR en _apply_labeling: parámetro '{k}'={v} inválido para dataset de tamaño {len(dataset)}")
-                        return pd.DataFrame()
-                elif isinstance(v, list) and any(x in k for x in ('rolling', 'window', 'period')):
-                    if any((val <= 0 or val >= len(dataset)) for val in v):
-                        print(f"⚠️ ERROR en _apply_labeling: lista '{k}' contiene valores inválidos para dataset de tamaño {len(dataset)}")
-                        return pd.DataFrame()
-
-            if 'min_l' in kwargs and 'max_l' in kwargs and kwargs['min_l'] > kwargs['max_l']:
-                kwargs['min_l'] = kwargs['max_l']
-            if 'min_val' in kwargs and 'max_val' in kwargs and kwargs['min_val'] > kwargs['max_val']:
-                kwargs['min_val'] = kwargs['max_val']
-
-            if 'label_max' in hp and len(dataset) <= hp['label_max']:
-                return pd.DataFrame()
-
-            method = kwargs.get('method')
-            allowed = self.ALLOWED_METHODS.get(self.label_method)
-            if method and allowed and method not in allowed:
-                return pd.DataFrame()
-
-            df = label_func(dataset, **kwargs)
-
-            if df is None or df.empty:
-                return pd.DataFrame()
-
-            if 'labels_main' in df.columns:
-                return df
-            if 'labels' in df.columns:
-                return df.rename(columns={'labels': 'labels_main'})
-            return pd.DataFrame()
-        except Exception as e:
-            print(f"⚠️ ERROR en _apply_labeling: {e}")
-            return pd.DataFrame()
-
     # =========================================================================
-    # Métodos de búsqueda principales
+    # Método principal
     # =========================================================================
 
     def run_search(self) -> None:
@@ -383,9 +253,305 @@ class StrategySearcher:
     # =========================================================================
     # Métodos de búsqueda específicos
     # =========================================================================
+
+    def search_markov(self, trial: optuna.Trial) -> tuple[float, float]:
+        """Implementa la búsqueda de estrategias usando modelos markovianos."""
+        try:
+            # Obtener todos los parámetros de una vez
+            hp = self.suggest_all_params(trial)
+
+            # Obtener datos de entrenamiento y prueba
+            ds_train, ds_test = self.get_train_test_data(hp)
+            if ds_train is None or ds_test is None:
+                return -1.0, -1.0
+            
+            # Markov
+            if self.search_subtype == 'simple':
+                ds_train = markov_regime_switching_simple(
+                    ds_train,
+                    model_type=hp['model_type'],
+                    n_regimes=hp['n_regimes'],
+                    n_iter=hp['n_iter'],
+                    n_mix=hp['n_mix'] if hp['model_type'] == 'VARHMM' else 3
+                )
+            elif self.search_subtype == 'advanced':
+                ds_train = markov_regime_switching_advanced(
+                    ds_train,
+                    model_type=hp['model_type'],
+                    n_regimes=hp['n_regimes'],
+                    n_iter=hp['n_iter'],
+                    n_mix=hp['n_mix'] if hp['model_type'] == 'VARHMM' else 3
+                )
+
+            scores, models = self.evaluate_clusters(ds_train, ds_test, hp)
+            if scores is None or models is None:
+                return -1.0, -1.0
+            
+            trial.set_user_attr('models', models)
+            trial.set_user_attr('scores', scores)
+
+            return trial.user_attrs.get('scores', (-1.0, -1.0))
+            
+        except Exception as e:
+            print(f"Error en search_markov: {str(e)}")
+            return -1.0, -1.0
+
+    def search_clusters(self, trial: optuna.Trial) -> tuple[float, float]:
+        """Implementa la búsqueda de estrategias usando clustering."""
+        try:
+            # Obtener todos los parámetros de una vez
+            hp = self.suggest_all_params(trial)
+
+            # Obtener datos de entrenamiento y prueba
+            ds_train, ds_test = self.get_train_test_data(hp)
+            if ds_train is None or ds_test is None:
+                return -1.0, -1.0
+            
+            # Clustering
+            if self.search_subtype == 'simple':
+                ds_train = clustering_simple(
+                    ds_train,
+                    min_cluster_size=hp['n_clusters']
+                )
+            elif self.search_subtype == 'advanced':
+                ds_train = sliding_window_clustering(
+                    ds_train,
+                    n_clusters=hp['n_clusters'],
+                    window_size=hp['window_size'],
+                    step=hp.get('step', None),
+                )
+            scores, models = self.evaluate_clusters(ds_train, ds_test, hp)
+            if scores is None or models is None:
+                return -1.0, -1.0
+            
+            trial.set_user_attr('models', models)
+            trial.set_user_attr('scores', scores)
+
+            return trial.user_attrs.get('scores', (-1.0, -1.0))
+        
+        except Exception as e:
+            print(f"Error en search_clusters: {str(e)}")
+            return -1.0, -1.0
+
+    def search_lgmm(self, trial: optuna.Trial) -> tuple[float, float]:
+        """Búsqueda basada en GaussianMixture para etiquetar clusters."""
+        try:
+            hp = self.suggest_all_params(trial)
+
+            ds_train, ds_test = self.get_train_test_data(hp)
+            if ds_train is None or ds_test is None:
+                return -1.0, -1.0
+
+            ds_train = lgmm_clustering(
+                ds_train,
+                n_components=hp['n_components'],
+                covariance_type=hp['covariance_type'],
+                max_iter=hp['max_iter'],
+            )
+
+            scores, models = self.evaluate_clusters(ds_train, ds_test, hp)
+
+            if scores is None or models is None:
+                return -1.0, -1.0
+            
+            trial.set_user_attr('models', models)
+            trial.set_user_attr('scores', scores)
+
+            return trial.user_attrs.get('scores', (-1.0, -1.0))
+
+        except Exception as e:
+            print(f"Error en search_lgmm: {str(e)}")
+            return -1.0, -1.0
+
+    def search_mapie(self, trial) -> tuple[float, float]:
+        """Implementa la búsqueda de estrategias usando conformal prediction (MAPIE) con CatBoost, usando el mismo conjunto de features para ambos modelos."""
+        try:
+            hp = self.suggest_all_params(trial)
+            ds_train, ds_test = self.get_train_test_data(hp)
+            if ds_train is None or ds_test is None:
+                return -1.0, -1.0
+
+            # Etiquetado según la dirección seleccionada
+            ds_train = self.apply_labeling(ds_train, hp)
+            if ds_train is None or ds_train.empty:
+                return -1.0, -1.0
+            # Selección de features: todas las columnas *_feature
+            feature_cols = [col for col in ds_train.columns if col.endswith('_feature')]
+            X = ds_train[feature_cols]
+            y = ds_train['labels_main'] if 'labels_main' in ds_train.columns else ds_train['labels']
+
+            # CatBoost como estimador base para MAPIE
+            catboost_params = dict(
+                iterations=hp['cat_main_iterations'],
+                depth=hp['cat_main_depth'],
+                learning_rate=hp['cat_main_learning_rate'],
+                l2_leaf_reg=hp['cat_main_l2_leaf_reg'],
+                eval_metric='Accuracy',
+                store_all_simple_ctr=False,
+                allow_writing_files=False,
+                thread_count=-1,
+                task_type='CPU',
+                verbose=False,
+            )
+            base_estimator = CatBoostClassifier(**catboost_params)
+
+            mapie = CrossConformalClassifier(
+                estimator=base_estimator,
+                confidence_level=hp.get('mapie_confidence_level', 0.9),
+                cv=hp.get('mapie_cv', 5),
+            )
+            mapie.fit_conformalize(X, y)
+            predicted, y_prediction_sets = mapie.predict_set(X)
+            y_prediction_sets = np.squeeze(y_prediction_sets, axis=-1)
+            set_sizes = np.sum(y_prediction_sets, axis=1)
+            ds_train['conformal_labels'] = 0.0
+            ds_train.loc[set_sizes == 1, 'conformal_labels'] = 1.0
+            ds_train['meta_labels'] = 0.0
+            ds_train.loc[predicted == y, 'meta_labels'] = 1.0
+
+            # Ambos modelos usan el mismo conjunto de features
+            # Main: solo donde meta_labels==1
+            model_main_data = ds_train[ds_train['meta_labels'] == 1][feature_cols + ['labels_main']]
+            # Meta: todas las filas, target = conformal_labels
+            model_meta_data = ds_train[feature_cols]
+            model_meta_data['labels_meta'] = ds_train['conformal_labels']
+
+            # Llamar a fit_final_models
+            scores, models = self.fit_final_models(
+                model_main_data=model_main_data,
+                model_meta_data=model_meta_data,
+                ds_train=ds_train,
+                ds_test=ds_test,
+                hp=hp.copy()
+            )
+            if scores is None or models is None:
+                return -1.0, -1.0
+            
+            trial.set_user_attr('models', models)
+            trial.set_user_attr('scores', scores)
+
+            return trial.user_attrs.get('scores', (-1.0, -1.0))
+        except Exception as e:
+            print(f"Error en search_mapie: {str(e)}")
+            return -1.0, -1.0
+
+    def search_causal(self, trial: optuna.Trial) -> tuple[float, float]:
+        """Búsqueda basada en detección causal de muestras malas."""
+        try:
+            hp = self.suggest_all_params(trial)
+
+            ds_train, ds_test = self.get_train_test_data(hp)
+            if ds_train is None or ds_test is None:
+                return -1.0, -1.0
+
+            # Etiquetado según la dirección
+            ds_train = self.apply_labeling(ds_train, hp)
+            if ds_train is None or ds_train.empty:
+                return -1.0, -1.0
+
+            feature_cols = [c for c in ds_train.columns if c.endswith('_feature')]
+            X = ds_train[feature_cols]
+            y = ds_train['labels_main']
+
+            def _bootstrap_oob_identification(X: pd.DataFrame, y: pd.Series, n_models: int = 25):
+                oob_counts = pd.Series(0, index=X.index)
+                error_counts_0 = pd.Series(0, index=X.index)
+                error_counts_1 = pd.Series(0, index=X.index)
+                for _ in range(n_models):
+                    frac = random.uniform(0.4, 0.6)
+                    train_idx = X.sample(frac=frac, replace=True).index
+                    val_idx = X.index.difference(train_idx)
+                    if len(val_idx) == 0:
+                        continue
+                    catboost_params = dict(
+                        iterations=hp['cat_main_iterations'],
+                        depth=hp['cat_main_depth'],
+                        learning_rate=hp['cat_main_learning_rate'],
+                        l2_leaf_reg=hp['cat_main_l2_leaf_reg'],
+                        eval_metric='Accuracy',
+                        store_all_simple_ctr=False,
+                        allow_writing_files=False,
+                        thread_count=-1,
+                        task_type='CPU',
+                        verbose=False,
+                    )
+                    model = CatBoostClassifier(**catboost_params)
+                    model.fit(X.loc[train_idx], y.loc[train_idx])
+                    pred = (model.predict_proba(X.loc[val_idx])[:, 1] >= 0.5).astype(int)
+                    val_y = y.loc[val_idx]
+                    val0 = val_idx[val_y == 0]
+                    val1 = val_idx[val_y == 1]
+                    diff0 = val0[pred[val_y == 0] != 0]
+                    diff1 = val1[pred[val_y == 1] != 1]
+                    oob_counts.loc[val_idx] += 1
+                    error_counts_0.loc[diff0] += 1
+                    error_counts_1.loc[diff1] += 1
+                return error_counts_0, error_counts_1, oob_counts
+
+            def _optimize_bad_samples_threshold(err0, err1, oob, fracs=[0.5, 0.6, 0.7, 0.8]):
+                to_mark_0 = (err0 / oob.replace(0, 1)).fillna(0)
+                to_mark_1 = (err1 / oob.replace(0, 1)).fillna(0)
+                best_f = None
+                best_s = np.inf
+                for frac in fracs:
+                    thr0 = np.percentile(to_mark_0[to_mark_0 > 0], 75) * frac if len(to_mark_0[to_mark_0 > 0]) else 0
+                    thr1 = np.percentile(to_mark_1[to_mark_1 > 0], 75) * frac if len(to_mark_1[to_mark_1 > 0]) else 0
+                    marked0 = to_mark_0[to_mark_0 > thr0].index
+                    marked1 = to_mark_1[to_mark_1 > thr1].index
+                    all_bad = pd.Index(marked0).union(marked1)
+                    good_mask = ~to_mark_0.index.isin(all_bad)
+                    ratios = []
+                    for idx in to_mark_0[good_mask].index:
+                        if to_mark_0[idx] > 0:
+                            ratios.append(to_mark_0[idx])
+                        if to_mark_1[idx] > 0:
+                            ratios.append(to_mark_1[idx])
+                    mean_err = np.mean(ratios) if ratios else 1.0
+                    if mean_err < best_s:
+                        best_s = mean_err
+                        best_f = frac
+                return best_f
+
+            err0, err1, oob = _bootstrap_oob_identification(X, y, n_models=hp.get('n_meta_learners', 5))
+            best_frac = _optimize_bad_samples_threshold(err0, err1, oob)
+            to_mark_0 = (err0 / oob.replace(0, 1)).fillna(0)
+            to_mark_1 = (err1 / oob.replace(0, 1)).fillna(0)
+            thr0 = np.percentile(to_mark_0[to_mark_0 > 0], 75) * best_frac if len(to_mark_0[to_mark_0 > 0]) else 0
+            thr1 = np.percentile(to_mark_1[to_mark_1 > 0], 75) * best_frac if len(to_mark_1[to_mark_1 > 0]) else 0
+            marked0 = to_mark_0[to_mark_0 > thr0].index
+            marked1 = to_mark_1[to_mark_1 > thr1].index
+            all_bad = pd.Index(marked0).union(marked1)
+            ds_train['meta_labels'] = 1.0
+            ds_train.loc[ds_train.index.isin(all_bad), 'meta_labels'] = 0.0
+
+            model_main_data = ds_train[ds_train['meta_labels'] == 1.0][feature_cols + ['labels_main']]
+            model_meta_data = ds_train[feature_cols]
+            model_meta_data['labels_meta'] = ds_train['meta_labels']
+
+            scores, models = self.fit_final_models(
+                model_main_data=model_main_data,
+                model_meta_data=model_meta_data,
+                ds_train=ds_train,
+                ds_test=ds_test,
+                hp=hp.copy()
+            )
+            if scores is None or models is None:
+                return -1.0, -1.0
+            
+            trial.set_user_attr('models', models)
+            trial.set_user_attr('scores', scores)
+
+            return trial.user_attrs.get('scores', (-1.0, -1.0))
+
+        except Exception as e:
+            print(f"Error en search_causal: {str(e)}")
+            return -1.0, -1.0
+
+    # =========================================================================
+    # Métodos auxiliares
+    # =========================================================================
     
-    # @track_memory()
-    def _evaluate_clusters(self, ds_train: pd.DataFrame, ds_test: pd.DataFrame, hp: Dict[str, Any]) -> tuple[float, float]:
+    def evaluate_clusters(self, ds_train: pd.DataFrame, ds_test: pd.DataFrame, hp: Dict[str, Any]) -> tuple[float, float]:
         """Función helper para evaluar clusters y entrenar modelos."""
         try:
             best_models = (None, None)
@@ -409,7 +575,7 @@ class StrategySearcher:
 
                 if 'label_max' in hp and len(model_main_data) <= hp["label_max"]:
                     continue
-                model_main_data = self._apply_labeling(model_main_data, hp)
+                model_main_data = self.apply_labeling(model_main_data, hp)
                 if model_main_data is None or model_main_data.empty:
                     continue
                 main_feature_cols = model_main_data.columns[model_main_data.columns.str.contains('_feature') & \
@@ -458,34 +624,6 @@ class StrategySearcher:
             return None, None
         finally:
             gc.collect()
-    
-    # @track_memory()
-    def check_constant_features(self, X: pd.DataFrame, feature_cols: list, std_epsilon: float = 1e-6) -> list:
-        """Return the list of columns that may cause numerical instability.
-        
-        Args:
-            X: DataFrame con los datos
-            feature_cols: Lista con nombres de las columnas
-            std_epsilon: Umbral para considerar una columna como constante
-            
-        Returns:
-            list: Lista de columnas problemáticas
-        """
-        problematic_cols = []
-        
-        # 1) Verificar columnas con nan/inf
-        for col in feature_cols:
-            series = X[col]
-            if not np.isfinite(series).all():
-                problematic_cols.append(col)
-                
-        # 2) Verificar columnas (casi) constantes
-        stds = X[feature_cols].std(axis=0, skipna=True)
-        for col, std in stds.items():
-            if std < std_epsilon:
-                problematic_cols.append(col)
-                
-        return problematic_cols
     
     def suggest_all_params(self, trial: 'optuna.Trial') -> dict:
         try:
@@ -661,7 +799,6 @@ class StrategySearcher:
             print(f"⚠️ ERROR en suggest_all_params: {str(e)}")
             return None
 
-    # @track_memory()
     def fit_final_models(self, model_main_data: pd.DataFrame,
                         model_meta_data: pd.DataFrame,
                         ds_train: pd.DataFrame,
@@ -814,311 +951,116 @@ class StrategySearcher:
         except Exception as e:
             print(f"Error en función de entrenamiento y test: {str(e)}")
             return None, None
-
-    @track_memory(start=True)
-    def search_markov(self, trial: optuna.Trial) -> tuple[float, float]:
-        """Implementa la búsqueda de estrategias usando modelos markovianos."""
-        try:
-            # Obtener todos los parámetros de una vez
-            hp = self.suggest_all_params(trial)
-
-            # Obtener datos de entrenamiento y prueba
-            ds_train, ds_test = self.get_train_test_data(hp)
-            if ds_train is None or ds_test is None:
-                return -1.0, -1.0
-            
-            # Markov
-            if self.search_subtype == 'simple':
-                ds_train = markov_regime_switching_simple(
-                    ds_train,
-                    model_type=hp['model_type'],
-                    n_regimes=hp['n_regimes'],
-                    n_iter=hp['n_iter'],
-                    n_mix=hp['n_mix'] if hp['model_type'] == 'VARHMM' else 3
-                )
-            elif self.search_subtype == 'advanced':
-                ds_train = markov_regime_switching_advanced(
-                    ds_train,
-                    model_type=hp['model_type'],
-                    n_regimes=hp['n_regimes'],
-                    n_iter=hp['n_iter'],
-                    n_mix=hp['n_mix'] if hp['model_type'] == 'VARHMM' else 3
-                )
-
-            scores, models = self._evaluate_clusters(ds_train, ds_test, hp)
-            if scores is None or models is None:
-                return -1.0, -1.0
-            
-            trial.set_user_attr('models', models)
-            trial.set_user_attr('scores', scores)
-
-            return trial.user_attrs.get('scores', (-1.0, -1.0))
-            
-        except Exception as e:
-            print(f"Error en search_markov: {str(e)}")
-            return -1.0, -1.0
-
-    @track_memory(start=True)
-    def search_clusters(self, trial: optuna.Trial) -> tuple[float, float]:
-        """Implementa la búsqueda de estrategias usando clustering."""
-        try:
-            # Obtener todos los parámetros de una vez
-            hp = self.suggest_all_params(trial)
-
-            # Obtener datos de entrenamiento y prueba
-            ds_train, ds_test = self.get_train_test_data(hp)
-            if ds_train is None or ds_test is None:
-                return -1.0, -1.0
-            
-            # Clustering
-            if self.search_subtype == 'simple':
-                ds_train = clustering_simple(
-                    ds_train,
-                    min_cluster_size=hp['n_clusters']
-                )
-            elif self.search_subtype == 'advanced':
-                ds_train = sliding_window_clustering(
-                    ds_train,
-                    n_clusters=hp['n_clusters'],
-                    window_size=hp['window_size'],
-                    step=hp.get('step', None),
-                )
-            scores, models = self._evaluate_clusters(ds_train, ds_test, hp)
-            if scores is None or models is None:
-                return -1.0, -1.0
-            
-            trial.set_user_attr('models', models)
-            trial.set_user_attr('scores', scores)
-
-            return trial.user_attrs.get('scores', (-1.0, -1.0))
         
-        except Exception as e:
-            print(f"Error en search_clusters: {str(e)}")
-            return -1.0, -1.0
+    def apply_labeling(self, dataset: pd.DataFrame, hp: dict) -> pd.DataFrame:
+        """Apply the selected labeling function dynamically.
 
-    @track_memory(start=True)
-    def search_lgmm(self, trial: optuna.Trial) -> tuple[float, float]:
-        """Búsqueda basada en GaussianMixture para etiquetar clusters."""
+        Returns an empty DataFrame if labeling fails or results in no rows.
+        """
+        label_func = self.LABEL_FUNCS.get(self.label_method, get_labels_one_direction)
+        params = inspect.signature(label_func).parameters
+        kwargs = {}
+
+        for name in params:
+            if name == 'dataset':
+                continue
+            if name == 'direction':
+                kwargs['direction'] = self.direction if self.direction != 'both' else 'both'
+            elif name in {'max_val', 'max_l'}:
+                if 'label_max' in hp:
+                    kwargs[name] = hp['label_max']
+            elif name in hp:
+                kwargs[name] = hp[name]
+
+        # ── Validaciones simples ───────────────────────────────────────────
         try:
-            hp = self.suggest_all_params(trial)
+            if len(dataset) < 2:
+                return pd.DataFrame()
 
-            ds_train, ds_test = self.get_train_test_data(hp)
-            if ds_train is None or ds_test is None:
-                return -1.0, -1.0
+            polyorder = kwargs.get('polyorder', 2)
+            if len(dataset) <= polyorder:
+                return pd.DataFrame()
 
-            ds_train = lgmm_clustering(
-                ds_train,
-                n_components=hp['n_components'],
-                covariance_type=hp['covariance_type'],
-                max_iter=hp['max_iter'],
-            )
+            # Ajuste automático para savgol_filter y similares
+            method = kwargs.get('method')
+            allowed = self.ALLOWED_METHODS.get(self.label_method)
+            # Detectar parámetros de ventana relevantes
+            window_keys = [k for k in kwargs if any(x in k for x in ('rolling', 'window', 'window_size'))]
+            if method == 'savgol' and window_keys:
+                for k in window_keys:
+                    v = kwargs[k]
+                    if isinstance(v, list) or isinstance(v, tuple):
+                        new_v = []
+                        for val in v:
+                            win = int(val)
+                            win = max(win, polyorder + 1)
+                            if win % 2 == 0:
+                                win += 1
+                            win = min(win, len(dataset))
+                            if win % 2 == 0:
+                                win = max(win - 1, polyorder + 1)
+                            if win <= polyorder:
+                                return pd.DataFrame()
+                            new_v.append(win)
+                        kwargs[k] = new_v
+                    else:
+                        win = int(v)
+                        win = max(win, polyorder + 1)
+                        if win % 2 == 0:
+                            win += 1
+                        win = min(win, len(dataset))
+                        if win % 2 == 0:
+                            win = max(win - 1, polyorder + 1)
+                        if win <= polyorder:
+                            return pd.DataFrame()
+                        kwargs[k] = win
 
-            scores, models = self._evaluate_clusters(ds_train, ds_test, hp)
+            # Clamp window/rolling parameters to dataset length
+            for k, v in list(kwargs.items()):
+                if isinstance(v, (int, float)) and any(x in k for x in ('rolling', 'window', 'period', 'span', 'max_l', 'max_val')):
+                    iv = max(int(v), 1)
+                    kwargs[k] = min(iv, max(len(dataset) - 1, 1))
+                elif isinstance(v, list) and any(x in k for x in ('rolling', 'window', 'period')):
+                    kwargs[k] = [min(max(int(val), 1), max(len(dataset) - 1, 1)) for val in v]
 
-            if scores is None or models is None:
-                return -1.0, -1.0
-            
-            trial.set_user_attr('models', models)
-            trial.set_user_attr('scores', scores)
+            # Check for negative or too large window/rolling/period parameters
+            for k, v in list(kwargs.items()):
+                if isinstance(v, int) and any(x in k for x in ('rolling', 'window', 'period', 'span', 'max_l', 'max_val')):
+                    if v <= 0 or v >= len(dataset):
+                        print(f"⚠️ ERROR en apply_labeling: parámetro '{k}'={v} inválido para dataset de tamaño {len(dataset)}")
+                        return pd.DataFrame()
+                elif isinstance(v, list) and any(x in k for x in ('rolling', 'window', 'period')):
+                    if any((val <= 0 or val >= len(dataset)) for val in v):
+                        print(f"⚠️ ERROR en apply_labeling: lista '{k}' contiene valores inválidos para dataset de tamaño {len(dataset)}")
+                        return pd.DataFrame()
 
-            return trial.user_attrs.get('scores', (-1.0, -1.0))
+            if 'min_l' in kwargs and 'max_l' in kwargs and kwargs['min_l'] > kwargs['max_l']:
+                kwargs['min_l'] = kwargs['max_l']
+            if 'min_val' in kwargs and 'max_val' in kwargs and kwargs['min_val'] > kwargs['max_val']:
+                kwargs['min_val'] = kwargs['max_val']
 
+            if 'label_max' in hp and len(dataset) <= hp['label_max']:
+                return pd.DataFrame()
+
+            method = kwargs.get('method')
+            allowed = self.ALLOWED_METHODS.get(self.label_method)
+            if method and allowed and method not in allowed:
+                return pd.DataFrame()
+
+            df = label_func(dataset, **kwargs)
+
+            if df is None or df.empty:
+                return pd.DataFrame()
+
+            if 'labels_main' in df.columns:
+                return df
+            if 'labels' in df.columns:
+                return df.rename(columns={'labels': 'labels_main'})
+            return pd.DataFrame()
         except Exception as e:
-            print(f"Error en search_lgmm: {str(e)}")
-            return -1.0, -1.0
+            print(f"⚠️ ERROR en apply_labeling: {e}")
+            return pd.DataFrame()
 
-    @track_memory(start=True)
-    def search_mapie(self, trial) -> tuple[float, float]:
-        """Implementa la búsqueda de estrategias usando conformal prediction (MAPIE) con CatBoost, usando el mismo conjunto de features para ambos modelos."""
-        try:
-            hp = self.suggest_all_params(trial)
-            ds_train, ds_test = self.get_train_test_data(hp)
-            if ds_train is None or ds_test is None:
-                return -1.0, -1.0
-
-            # Etiquetado según la dirección seleccionada
-            ds_train = self._apply_labeling(ds_train, hp)
-            if ds_train is None or ds_train.empty:
-                return -1.0, -1.0
-            # Selección de features: todas las columnas *_feature
-            feature_cols = [col for col in ds_train.columns if col.endswith('_feature')]
-            X = ds_train[feature_cols]
-            y = ds_train['labels_main'] if 'labels_main' in ds_train.columns else ds_train['labels']
-
-            # CatBoost como estimador base para MAPIE
-            catboost_params = dict(
-                iterations=hp['cat_main_iterations'],
-                depth=hp['cat_main_depth'],
-                learning_rate=hp['cat_main_learning_rate'],
-                l2_leaf_reg=hp['cat_main_l2_leaf_reg'],
-                eval_metric='Accuracy',
-                store_all_simple_ctr=False,
-                allow_writing_files=False,
-                thread_count=-1,
-                task_type='CPU',
-                verbose=False,
-            )
-            base_estimator = CatBoostClassifier(**catboost_params)
-
-            mapie = CrossConformalClassifier(
-                estimator=base_estimator,
-                confidence_level=hp.get('mapie_confidence_level', 0.9),
-                cv=hp.get('mapie_cv', 5),
-            )
-            mapie.fit_conformalize(X, y)
-            predicted, y_prediction_sets = mapie.predict_set(X)
-            y_prediction_sets = np.squeeze(y_prediction_sets, axis=-1)
-            set_sizes = np.sum(y_prediction_sets, axis=1)
-            ds_train['conformal_labels'] = 0.0
-            ds_train.loc[set_sizes == 1, 'conformal_labels'] = 1.0
-            ds_train['meta_labels'] = 0.0
-            ds_train.loc[predicted == y, 'meta_labels'] = 1.0
-
-            # Ambos modelos usan el mismo conjunto de features
-            # Main: solo donde meta_labels==1
-            model_main_data = ds_train[ds_train['meta_labels'] == 1][feature_cols + ['labels_main']]
-            # Meta: todas las filas, target = conformal_labels
-            model_meta_data = ds_train[feature_cols]
-            model_meta_data['labels_meta'] = ds_train['conformal_labels']
-
-            # Llamar a fit_final_models
-            scores, models = self.fit_final_models(
-                model_main_data=model_main_data,
-                model_meta_data=model_meta_data,
-                ds_train=ds_train,
-                ds_test=ds_test,
-                hp=hp.copy()
-            )
-            if scores is None or models is None:
-                return -1.0, -1.0
-            
-            trial.set_user_attr('models', models)
-            trial.set_user_attr('scores', scores)
-
-            return trial.user_attrs.get('scores', (-1.0, -1.0))
-        except Exception as e:
-            print(f"Error en search_mapie: {str(e)}")
-            return -1.0, -1.0
-
-    @track_memory(start=True)
-    def search_causal(self, trial: optuna.Trial) -> tuple[float, float]:
-        """Búsqueda basada en detección causal de muestras malas."""
-        try:
-            hp = self.suggest_all_params(trial)
-
-            ds_train, ds_test = self.get_train_test_data(hp)
-            if ds_train is None or ds_test is None:
-                return -1.0, -1.0
-
-            # Etiquetado según la dirección
-            ds_train = self._apply_labeling(ds_train, hp)
-            if ds_train is None or ds_train.empty:
-                return -1.0, -1.0
-
-            feature_cols = [c for c in ds_train.columns if c.endswith('_feature')]
-            X = ds_train[feature_cols]
-            y = ds_train['labels_main']
-
-            def _bootstrap_oob_identification(X: pd.DataFrame, y: pd.Series, n_models: int = 25):
-                oob_counts = pd.Series(0, index=X.index)
-                error_counts_0 = pd.Series(0, index=X.index)
-                error_counts_1 = pd.Series(0, index=X.index)
-                for _ in range(n_models):
-                    frac = random.uniform(0.4, 0.6)
-                    train_idx = X.sample(frac=frac, replace=True).index
-                    val_idx = X.index.difference(train_idx)
-                    if len(val_idx) == 0:
-                        continue
-                    catboost_params = dict(
-                        iterations=hp['cat_main_iterations'],
-                        depth=hp['cat_main_depth'],
-                        learning_rate=hp['cat_main_learning_rate'],
-                        l2_leaf_reg=hp['cat_main_l2_leaf_reg'],
-                        eval_metric='Accuracy',
-                        store_all_simple_ctr=False,
-                        allow_writing_files=False,
-                        thread_count=-1,
-                        task_type='CPU',
-                        verbose=False,
-                    )
-                    model = CatBoostClassifier(**catboost_params)
-                    model.fit(X.loc[train_idx], y.loc[train_idx])
-                    pred = (model.predict_proba(X.loc[val_idx])[:, 1] >= 0.5).astype(int)
-                    val_y = y.loc[val_idx]
-                    val0 = val_idx[val_y == 0]
-                    val1 = val_idx[val_y == 1]
-                    diff0 = val0[pred[val_y == 0] != 0]
-                    diff1 = val1[pred[val_y == 1] != 1]
-                    oob_counts.loc[val_idx] += 1
-                    error_counts_0.loc[diff0] += 1
-                    error_counts_1.loc[diff1] += 1
-                return error_counts_0, error_counts_1, oob_counts
-
-            def _optimize_bad_samples_threshold(err0, err1, oob, fracs=[0.5, 0.6, 0.7, 0.8]):
-                to_mark_0 = (err0 / oob.replace(0, 1)).fillna(0)
-                to_mark_1 = (err1 / oob.replace(0, 1)).fillna(0)
-                best_f = None
-                best_s = np.inf
-                for frac in fracs:
-                    thr0 = np.percentile(to_mark_0[to_mark_0 > 0], 75) * frac if len(to_mark_0[to_mark_0 > 0]) else 0
-                    thr1 = np.percentile(to_mark_1[to_mark_1 > 0], 75) * frac if len(to_mark_1[to_mark_1 > 0]) else 0
-                    marked0 = to_mark_0[to_mark_0 > thr0].index
-                    marked1 = to_mark_1[to_mark_1 > thr1].index
-                    all_bad = pd.Index(marked0).union(marked1)
-                    good_mask = ~to_mark_0.index.isin(all_bad)
-                    ratios = []
-                    for idx in to_mark_0[good_mask].index:
-                        if to_mark_0[idx] > 0:
-                            ratios.append(to_mark_0[idx])
-                        if to_mark_1[idx] > 0:
-                            ratios.append(to_mark_1[idx])
-                    mean_err = np.mean(ratios) if ratios else 1.0
-                    if mean_err < best_s:
-                        best_s = mean_err
-                        best_f = frac
-                return best_f
-
-            err0, err1, oob = _bootstrap_oob_identification(X, y, n_models=hp.get('n_meta_learners', 5))
-            best_frac = _optimize_bad_samples_threshold(err0, err1, oob)
-            to_mark_0 = (err0 / oob.replace(0, 1)).fillna(0)
-            to_mark_1 = (err1 / oob.replace(0, 1)).fillna(0)
-            thr0 = np.percentile(to_mark_0[to_mark_0 > 0], 75) * best_frac if len(to_mark_0[to_mark_0 > 0]) else 0
-            thr1 = np.percentile(to_mark_1[to_mark_1 > 0], 75) * best_frac if len(to_mark_1[to_mark_1 > 0]) else 0
-            marked0 = to_mark_0[to_mark_0 > thr0].index
-            marked1 = to_mark_1[to_mark_1 > thr1].index
-            all_bad = pd.Index(marked0).union(marked1)
-            ds_train['meta_labels'] = 1.0
-            ds_train.loc[ds_train.index.isin(all_bad), 'meta_labels'] = 0.0
-
-            model_main_data = ds_train[ds_train['meta_labels'] == 1.0][feature_cols + ['labels_main']]
-            model_meta_data = ds_train[feature_cols]
-            model_meta_data['labels_meta'] = ds_train['meta_labels']
-
-            scores, models = self.fit_final_models(
-                model_main_data=model_main_data,
-                model_meta_data=model_meta_data,
-                ds_train=ds_train,
-                ds_test=ds_test,
-                hp=hp.copy()
-            )
-            if scores is None or models is None:
-                return -1.0, -1.0
-            
-            trial.set_user_attr('models', models)
-            trial.set_user_attr('scores', scores)
-
-            return trial.user_attrs.get('scores', (-1.0, -1.0))
-
-        except Exception as e:
-            print(f"Error en search_causal: {str(e)}")
-            return -1.0, -1.0
-
-    # =========================================================================
-    # Métodos auxiliares
-    # =========================================================================
-    
-    # ---------------------------------------------------------------------
-    # @track_memory()
     def get_train_test_data(self, hp):
         try:
             if hp is None:
@@ -1233,3 +1175,30 @@ class StrategySearcher:
         except Exception as e:
             print(f"⚠️ ERROR en get_train_test_data: {str(e)}")
             return None, None
+
+    def check_constant_features(self, X: pd.DataFrame, feature_cols: list, std_epsilon: float = 1e-6) -> list:
+        """Return the list of columns that may cause numerical instability.
+        
+        Args:
+            X: DataFrame con los datos
+            feature_cols: Lista con nombres de las columnas
+            std_epsilon: Umbral para considerar una columna como constante
+            
+        Returns:
+            list: Lista de columnas problemáticas
+        """
+        problematic_cols = []
+        
+        # 1) Verificar columnas con nan/inf
+        for col in feature_cols:
+            series = X[col]
+            if not np.isfinite(series).all():
+                problematic_cols.append(col)
+                
+        # 2) Verificar columnas (casi) constantes
+        stds = X[feature_cols].std(axis=0, skipna=True)
+        for col, std in stds.items():
+            if std < std_epsilon:
+                problematic_cols.append(col)
+                
+        return problematic_cols

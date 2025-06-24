@@ -146,7 +146,9 @@ def test_apply_labeling_preserves_ohlcv():
     searcher = DummySearcher()
     df, _ = searcher.get_train_test_data({})
     searcher.label_method = "filter_one"
-    labeled = searcher._apply_labeling(df.copy(), {"rolling": 5, "polyorder": 2, "quantiles": [0.45, 0.55]})
+    labeled = searcher.apply_labeling(
+        df.copy(), {"rolling": 5, "polyorder": 2, "quantiles": [0.45, 0.55]}
+    )
     assert {"open", "high", "low", "close", "volume"}.issubset(labeled.columns)
 
     

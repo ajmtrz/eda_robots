@@ -1010,7 +1010,8 @@ def calculate_signals(prices, window_sizes, threshold_pct):
 
 def get_labels_multi_window(dataset, window_sizes=[20, 50, 100], threshold_pct=0.02) -> pd.DataFrame:
     prices = dataset['close'].values
-    signals = calculate_signals(prices, window_sizes, threshold_pct)
+    window_sizes_t = List(window_sizes)
+    signals = calculate_signals(prices, window_sizes_t, threshold_pct)
     signals = [2.0] * max(window_sizes) + signals
     dataset['labels'] = signals
     dataset = dataset.drop(dataset[dataset.labels == 2.0].index)
@@ -1231,8 +1232,9 @@ def get_labels_mean_reversion(dataset, markup, min_l=1, max_l=15, rolling=0.5, q
     return dataset.drop(columns=['lvl'])  # Remove the temporary 'lvl' column 
 
 @njit
-def calculate_labels_mean_reversion_multi(close_data, atr, lvl_data, q, markup, min_l, max_l, windows):
+def calculate_labels_mean_reversion_multi(close_data, atr, lvl_data, q_list, markup, min_l, max_l, windows):
     labels = []
+    n_win = len(windows)
     for i in range(len(close_data) - max_l):
         dyn_mk = markup * atr[i]
         rand = random.randint(min_l, max_l)
@@ -1241,15 +1243,18 @@ def calculate_labels_mean_reversion_multi(close_data, atr, lvl_data, q, markup, 
 
         buy_condition = True
         sell_condition = True
-        qq = 0
-        for _ in windows:  # Loop over each window, variable unused
-            curr_lvl = lvl_data[i, qq]            
-            if not (curr_lvl >= q[qq, 1]):  # Access q as 2D array
+        for qq in range(n_win):
+            curr_lvl = lvl_data[i, qq]
+            q_low, q_high = q_list[qq]
+            if curr_lvl >= q_high:
+                pass
+            else:
                 sell_condition = False
-            if not (curr_lvl <= q[qq, 0]):
+            if curr_lvl <= q_low:
+                pass
+            else:
                 buy_condition = False
-            qq += 1
-    
+
         if sell_condition and (future_pr + dyn_mk) < curr_pr:
             labels.append(1.0)
         elif buy_condition and (future_pr - dyn_mk) > curr_pr:
@@ -1280,8 +1285,10 @@ def get_labels_mean_reversion_multi(dataset, markup, min_l=1, max_l=15, windows=
     low = dataset["low"].values if "low" in dataset else close_data
     atr = calculate_atr_simple(high, low, close_data, period=atr_period)
 
-    # Convert windows to a tuple for Numba compatibility (optional)
-    labels = calculate_labels_mean_reversion_multi(close_data, atr, lvl_data, q, markup, min_l, max_l, tuple(windows))
+    # Convert parameters to Numba typed.List to avoid repeated JIT compilations
+    windows_t = List(windows)
+    q_t = List([(float(q[i,0]), float(q[i,1])) for i in range(len(windows))])
+    labels = calculate_labels_mean_reversion_multi(close_data, atr, lvl_data, q_t, markup, min_l, max_l, windows_t)
 
     dataset = dataset.iloc[:len(labels)].copy()
     dataset['labels'] = labels

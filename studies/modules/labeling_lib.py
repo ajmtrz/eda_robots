@@ -1212,7 +1212,7 @@ def get_labels_mean_reversion(dataset, markup, min_l=1, max_l=15, rolling=0.5, q
         dataset['lvl'] = weighted_diff # Add the weighted difference as 'lvl'
 
     dataset = dataset.dropna()  # Remove NaN values before proceeding
-    q = dataset['lvl'].quantile(quantiles).to_list()  # Calculate quantiles for the 'reversion zone'
+    q = tuple(dataset['lvl'].quantile(quantiles).to_list())  # Calculate quantiles for the 'reversion zone'
 
     # Prepare data for label calculation
     close = dataset['close'].values
@@ -1476,7 +1476,7 @@ def get_labels_filter(dataset, rolling=200, quantiles=[.45, .55], polyorder=3, d
     dataset = dataset.dropna()
     
     # Calculate the quantiles of the 'lvl' column (price deviation)
-    q = dataset['lvl'].quantile(quantiles).to_list() 
+    q = tuple(dataset['lvl'].quantile(quantiles).to_list())
 
     # Extract the closing prices and the calculated 'lvl' values as NumPy arrays
     close = dataset['close'].values
@@ -1654,8 +1654,8 @@ def get_labels_filter_bidirectional(dataset, rolling1=200, rolling2=200, quantil
     dataset = dataset.dropna()
 
     # Calculate quantiles for the "reversion zones" for both price deviation series
-    q1 = dataset['lvl1'].quantile(quantiles).to_list()
-    q2 = dataset['lvl2'].quantile(quantiles).to_list()
+    q1 = tuple(dataset['lvl1'].quantile(quantiles).to_list())
+    q2 = tuple(dataset['lvl2'].quantile(quantiles).to_list())
 
     # Extract relevant data for label calculation
     close = dataset['close'].values
@@ -1734,7 +1734,7 @@ def get_labels_filter_one_direction(dataset, rolling=200, quantiles=[.45, .55], 
     dataset = dataset.dropna()
     
     # Calculate the quantiles of the 'lvl' column (price deviation)
-    q = dataset['lvl'].quantile(quantiles).to_list() 
+    q = tuple(dataset['lvl'].quantile(quantiles).to_list())
 
     # Extract the closing prices and the calculated 'lvl' values as NumPy arrays
     close = dataset['close'].values
@@ -1888,7 +1888,7 @@ def get_labels_filter_flat(dataset, rolling=200, quantiles=[.45, .55], polyorder
     dataset = dataset.dropna()
     
     # Calculate the quantiles of the 'lvl' column (price deviation)
-    q = dataset['lvl'].quantile(quantiles).to_list() 
+    q = tuple(dataset['lvl'].quantile(quantiles).to_list())
 
     # Extract the closing prices and the calculated 'lvl' values as NumPy arrays
     close = dataset['close'].values

@@ -38,6 +38,26 @@ from modules.tester_lib import (
 )
 from modules.export_lib import export_model_to_ONNX
 
+
+def track_memory(start=False):
+    """Decorator para registrar la memoria usada por cada función."""
+    def decorator(func):
+        def wrapper(self, *args, **kwargs):
+            if start:
+                self._trial_memory = []
+            process = psutil.Process(os.getpid())
+            mem_before = process.memory_info().rss
+            result = func(self, *args, **kwargs)
+            mem_after = process.memory_info().rss
+            mem_used = (mem_after - mem_before) / (1024 ** 2)
+            try:
+                self._trial_memory.append((func.__name__, mem_used))
+            except Exception:
+                pass
+            return result
+        return wrapper
+    return decorator
+
 class StrategySearcher:
     LABEL_FUNCS = {
         "atr": get_labels_one_direction,
@@ -111,6 +131,7 @@ class StrategySearcher:
         # Configuración de logging para optuna
         optuna.logging.set_verbosity(optuna.logging.WARNING)
 
+    @track_memory()
     def _apply_labeling(self, dataset: pd.DataFrame, hp: dict) -> pd.DataFrame:
         """Apply the selected labeling function dynamically.
 
@@ -295,12 +316,18 @@ class StrategySearcher:
                         elapsed = perf_counter() - t0
                         n_done = trial.number + 1
                         avg_time = elapsed / n_done
+                        mem_details = ""
+                        if hasattr(self, "_trial_memory"):
+                            mem_details = " ".join(
+                                f"{name}:{mem:.2f}MB" for name, mem in self._trial_memory
+                            )
                         print(
                             f"[{self.tag}] modelo {i}",
                             f"trial {n_done}/{self.n_trials}",
                             f"{best_str}",
                             f"avg={avg_time:.2f}s",
-                            f"mem={_log_memory():.2f}MB ",
+                            f"mem={_log_memory():.2f}MB",
+                            mem_details,
                             flush=True,
                         )
 
@@ -356,6 +383,7 @@ class StrategySearcher:
     # Métodos de búsqueda específicos
     # =========================================================================
     
+    @track_memory()
     def _evaluate_clusters(self, ds_train: pd.DataFrame, ds_test: pd.DataFrame, hp: Dict[str, Any]) -> tuple[float, float]:
         """Función helper para evaluar clusters y entrenar modelos."""
         try:
@@ -427,6 +455,7 @@ class StrategySearcher:
         finally:
             gc.collect()
     
+    @track_memory()
     def check_constant_features(self, X: pd.DataFrame, feature_cols: list, std_epsilon: float = 1e-6) -> list:
         """Return the list of columns that may cause numerical instability.
         
@@ -628,6 +657,7 @@ class StrategySearcher:
             print(f"⚠️ ERROR en suggest_all_params: {str(e)}")
             return None
 
+    @track_memory()
     def fit_final_models(self, model_main_data: pd.DataFrame,
                         model_meta_data: pd.DataFrame,
                         ds_train: pd.DataFrame,
@@ -781,6 +811,7 @@ class StrategySearcher:
             print(f"Error en función de entrenamiento y test: {str(e)}")
             return None, None
 
+    @track_memory(start=True)
     def search_markov(self, trial: optuna.Trial) -> tuple[float, float]:
         """Implementa la búsqueda de estrategias usando modelos markovianos."""
         try:
@@ -823,6 +854,7 @@ class StrategySearcher:
             print(f"Error en search_markov: {str(e)}")
             return -1.0, -1.0
 
+    @track_memory(start=True)
     def search_clusters(self, trial: optuna.Trial) -> tuple[float, float]:
         """Implementa la búsqueda de estrategias usando clustering."""
         try:
@@ -860,6 +892,7 @@ class StrategySearcher:
             print(f"Error en search_clusters: {str(e)}")
             return -1.0, -1.0
 
+    @track_memory(start=True)
     def search_lgmm(self, trial: optuna.Trial) -> tuple[float, float]:
         """Búsqueda basada en GaussianMixture para etiquetar clusters."""
         try:
@@ -890,6 +923,7 @@ class StrategySearcher:
             print(f"Error en search_lgmm: {str(e)}")
             return -1.0, -1.0
 
+    @track_memory(start=True)
     def search_mapie(self, trial) -> tuple[float, float]:
         """Implementa la búsqueda de estrategias usando conformal prediction (MAPIE) con CatBoost, usando el mismo conjunto de features para ambos modelos."""
         try:
@@ -960,6 +994,7 @@ class StrategySearcher:
             print(f"Error en search_mapie: {str(e)}")
             return -1.0, -1.0
 
+    @track_memory(start=True)
     def search_causal(self, trial: optuna.Trial) -> tuple[float, float]:
         """Búsqueda basada en detección causal de muestras malas."""
         try:
@@ -1075,6 +1110,7 @@ class StrategySearcher:
     # =========================================================================
     
     # ---------------------------------------------------------------------
+    @track_memory()
     def get_train_test_data(self, hp):
         try:
             if hp is None:

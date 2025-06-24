@@ -463,48 +463,37 @@ update_registered_converter(
     options={"nocl": [True, False], "zipmap": [True, False]}
 )
 
-_ONNX_CACHE: dict[int, rt.InferenceSession] = {}
-_ONNX_LOCK = Lock()
-
 def _predict_batch(model, X_base, noise_levels):
-    sid = id(model)
-    sess = _ONNX_CACHE.get(sid)
-
-    if sess is None:
-        with _ONNX_LOCK:
-            sess = _ONNX_CACHE.get(sid)
-            if sess is None:
-                onnx_model = convert_sklearn(
-                    model,
-                    initial_types=[('x', FloatTensorType([None, X_base.shape[1]]))],
-                    target_opset={"": 18, "ai.onnx.ml": 2},
-                    options={id(model): {'zipmap': False}}
-                )
-                sess = rt.InferenceSession(
-                    onnx_model.SerializeToString(),
-                    providers=['CPUExecutionProvider']
-                )
-                _ONNX_CACHE[sid] = sess
-
+    # 1. Convertir modelo a ONNX
+    onnx_model = convert_sklearn(
+        model,
+        initial_types=[('x', FloatTensorType([None, X_base.shape[1]]))],
+        target_opset={"": 18, "ai.onnx.ml": 2},
+        options={id(model): {'zipmap': False}}
+    )
+    sess = rt.InferenceSession(
+        onnx_model.SerializeToString(),
+        providers=['CPUExecutionProvider']
+    )
     iname = sess.get_inputs()[0].name
     onnx_run = sess.run
 
-    # 1. Preparar los datos base
+    # 2. Preparar los datos base
     n_sim, n_samples, n_feat = len(noise_levels), *X_base.shape
     X_big = np.repeat(X_base[None, :, :], n_sim, axis=0)
     
-    # 2. Calcular sensibilidad de cada feature
+    # 3. Calcular sensibilidad de cada feature
     fi = model.get_feature_importance()
     max_fi = fi.max() or 1.0
     sensitivity = fi / max_fi
     
-    # 3. Generar y aplicar el ruido ajustado
+    # 4. Generar y aplicar el ruido ajustado
     std = X_base.std(axis=0, keepdims=True)
     eps = np.random.normal(0.0, std, size=X_big.shape)
     adjusted_noise = noise_levels[:, None, None] * sensitivity[None, None, :]
     X_big += eps * adjusted_noise
 
-    # 4. Realizar la predicción
+    # 5. Realizar la predicción
     proba_flat = onnx_run(None, {iname: X_big.reshape(-1, n_feat).astype(np.float32)})[0]
     proba = proba_flat.reshape(n_sim, n_samples)
     return proba

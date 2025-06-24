@@ -36,18 +36,8 @@ from modules.tester_lib import (
     tester,
     robust_oos_score,
     walk_forward_robust_score,
-    _ONNX_CACHE
 )
 from modules.export_lib import export_model_to_ONNX
-
-
-def _free_catboost_model(model):
-    """Helper to explicitly release CatBoost model memory."""
-    try:
-        if model is not None:
-            model.__del__()
-    except Exception:
-        pass
 
 class StrategySearcher:
     LABEL_FUNCS = {
@@ -290,7 +280,6 @@ class StrategySearcher:
                             # Si este trial es el mejor, guardar sus modelos
                             if trial.number == best_trial.number:
                                 if trial.user_attrs.get('models') is not None:
-                                    prev_best = study.user_attrs.get("best_models")
                                     # Guardar nuevos modelos como mejores
                                     study.set_user_attr("best_models", trial.user_attrs['models'])
                                     study.set_user_attr("best_scores", trial.user_attrs['scores'])
@@ -299,18 +288,9 @@ class StrategySearcher:
                                     study.set_user_attr("best_periods_meta", trial.user_attrs.get('periods_meta'))
                                     study.set_user_attr("best_stats_main", trial.user_attrs['stats_main'])
                                     study.set_user_attr("best_stats_meta", trial.user_attrs.get('stats_meta'))
-                                    # Liberar modelos previos almacenados en el estudio
-                                    if prev_best is not None:
-                                        if isinstance(prev_best, tuple) and len(prev_best) == 2:
-                                            _free_catboost_model(prev_best[0])
-                                            _free_catboost_model(prev_best[1])
                             # Liberar memoria eliminando datos pesados del trial
                             if 'models' in trial.user_attrs:
-                                models = trial.user_attrs['models']
                                 trial.set_user_attr('models', None)
-                                if isinstance(models, tuple) and len(models) == 2:
-                                    _free_catboost_model(models[0])
-                                    _free_catboost_model(models[1])
 
                         # Log
                         if study.best_trials:
@@ -367,16 +347,6 @@ class StrategySearcher:
                 }
                 
                 export_model_to_ONNX(**export_params)
-
-                # Liberar modelos tras exportarlos para evitar fugas de memoria
-                try:
-                    if best_models and isinstance(best_models, tuple) and len(best_models) == 2:
-                        _free_catboost_model(best_models[0])
-                        _free_catboost_model(best_models[1])
-                        study.set_user_attr("best_models", None)
-                except Exception:
-                    pass
-                gc.collect()
                 
             except Exception as e:
                 print(f"\nError procesando modelo {i}:")
@@ -384,6 +354,9 @@ class StrategySearcher:
                 print("Traceback:")
                 print(traceback.format_exc())
                 continue
+            finally:
+                # Liberar memoria
+                gc.collect()
 
     # =========================================================================
     # Métodos de búsqueda específicos
@@ -439,28 +412,6 @@ class StrategySearcher:
                     ds_test=ds_test,
                     hp=hp.copy()
                 )
-                if scores is None or models is None:
-                    _free_catboost_model(models[0]) if models else None
-                    _free_catboost_model(models[1]) if models else None
-                    continue
-
-                # Verificar scores
-                if not all(np.isfinite(scores)):
-                    _free_catboost_model(models[0])
-                    _free_catboost_model(models[1])
-                    continue
-
-                # Aplicar criterio maximin: maximizar el peor valor entre ins/oos
-                if min(scores) > min(best_scores):
-                    if best_models[0] is not None:
-                        _free_catboost_model(best_models[0])
-                    if best_models[1] is not None:
-                        _free_catboost_model(best_models[1])
-                    best_scores = scores
-                    best_models = models
-                else:
-                    _free_catboost_model(models[0])
-                    _free_catboost_model(models[1])
 
             # Verificar que encontramos algún cluster válido
             if best_scores == (-math.inf, -math.inf) or best_models == (None, None):
@@ -472,14 +423,6 @@ class StrategySearcher:
             print(f"⚠️ ERROR en evaluación de clusters: {str(e)}")
             return None, None
         finally:
-            try:
-                del model_main_data
-            except Exception:
-                pass
-            try:
-                del model_meta_data
-            except Exception:
-                pass
             gc.collect()
     
     def check_constant_features(self, X: pd.DataFrame, feature_cols: list, std_epsilon: float = 1e-6) -> list:
@@ -835,23 +778,6 @@ class StrategySearcher:
         except Exception as e:
             print(f"Error en función de entrenamiento y test: {str(e)}")
             return None, None
-        finally:
-            try:
-                del X_main, X_meta, X_train_main, X_val_main, y_train_main, y_val_main
-                del X_train_meta, X_val_meta, y_train_meta, y_val_meta
-            except Exception:
-                pass
-            try:
-                del ds_train_eval_sample, ds_train_eval_main, ds_train_eval_meta
-                del ds_test_eval_main, ds_test_eval_meta
-            except Exception:
-                pass
-            try:
-                del model_main_data, model_meta_data
-            except Exception:
-                pass
-            _ONNX_CACHE.clear()
-            gc.collect()
 
     def search_markov(self, trial: optuna.Trial) -> tuple[float, float]:
         """Implementa la búsqueda de estrategias usando modelos markovianos."""
@@ -885,21 +811,15 @@ class StrategySearcher:
             scores, models = self._evaluate_clusters(ds_train, ds_test, hp)
             if scores is None or models is None:
                 return -1.0, -1.0
-            else:
-                trial.set_user_attr('models', models)
-                trial.set_user_attr('scores', scores)
+            
+            trial.set_user_attr('models', models)
+            trial.set_user_attr('scores', scores)
 
-            return scores[0], scores[1]
+            return trial.user_attrs.get('scores', (-1.0, -1.0))
             
         except Exception as e:
             print(f"Error en search_markov: {str(e)}")
             return -1.0, -1.0
-        finally:
-            try:
-                del ds_train, ds_test
-            except Exception:
-                pass
-            gc.collect()
 
     def search_clusters(self, trial: optuna.Trial) -> tuple[float, float]:
         """Implementa la búsqueda de estrategias usando clustering."""
@@ -928,21 +848,15 @@ class StrategySearcher:
             scores, models = self._evaluate_clusters(ds_train, ds_test, hp)
             if scores is None or models is None:
                 return -1.0, -1.0
-            else:
-                trial.set_user_attr('models', models)
-                trial.set_user_attr('scores', scores)
+            
+            trial.set_user_attr('models', models)
+            trial.set_user_attr('scores', scores)
 
-            return scores[0], scores[1]
+            return trial.user_attrs.get('scores', (-1.0, -1.0))
         
         except Exception as e:
             print(f"Error en search_clusters: {str(e)}")
             return -1.0, -1.0
-        finally:
-            try:
-                del ds_train, ds_test
-            except Exception:
-                pass
-            gc.collect()
 
     def search_lgmm(self, trial: optuna.Trial) -> tuple[float, float]:
         """Búsqueda basada en GaussianMixture para etiquetar clusters."""
@@ -961,23 +875,18 @@ class StrategySearcher:
             )
 
             scores, models = self._evaluate_clusters(ds_train, ds_test, hp)
+
             if scores is None or models is None:
                 return -1.0, -1.0
-
+            
             trial.set_user_attr('models', models)
             trial.set_user_attr('scores', scores)
 
-            return scores[0], scores[1]
+            return trial.user_attrs.get('scores', (-1.0, -1.0))
 
         except Exception as e:
             print(f"Error en search_lgmm: {str(e)}")
             return -1.0, -1.0
-        finally:
-            try:
-                del ds_train, ds_test
-            except Exception:
-                pass
-            gc.collect()
 
     def search_mapie(self, trial) -> tuple[float, float]:
         """Implementa la búsqueda de estrategias usando conformal prediction (MAPIE) con CatBoost, usando el mismo conjunto de features para ambos modelos."""
@@ -1040,19 +949,14 @@ class StrategySearcher:
             )
             if scores is None or models is None:
                 return -1.0, -1.0
+            
             trial.set_user_attr('models', models)
             trial.set_user_attr('scores', scores)
-            return scores[0], scores[1]
+
+            return trial.user_attrs.get('scores', (-1.0, -1.0))
         except Exception as e:
             print(f"Error en search_mapie: {str(e)}")
             return -1.0, -1.0
-        finally:
-            try:
-                del ds_train, ds_test
-                del model_main_data, model_meta_data, X, y
-            except Exception:
-                pass
-            gc.collect()
 
     def search_causal(self, trial: optuna.Trial) -> tuple[float, float]:
         """Búsqueda basada en detección causal de muestras malas."""
@@ -1154,43 +1058,15 @@ class StrategySearcher:
             )
             if scores is None or models is None:
                 return -1.0, -1.0
-
-            score_ins, score_oos_raw = scores
-            model_main, model_meta = models
-
-            main_feature_cols = [c for c in model_main_data.columns if c != 'labels_main']
-            meta_feature_cols = [c for c in model_meta_data.columns if c != 'labels_meta']
-            ds_test_main = ds_test[main_feature_cols].to_numpy()
-            ds_test_meta = ds_test[meta_feature_cols].to_numpy()
-            close_test = ds_test['close'].to_numpy()
-
-            score_oos = robust_oos_score(
-                ds_main=ds_test_main,
-                ds_meta=ds_test_meta,
-                close=close_test,
-                model_main=model_main,
-                model_meta=model_meta,
-                direction=self.direction,
-                plot=False,
-                prd='outofsample'
-            )
-
+            
             trial.set_user_attr('models', models)
-            trial.set_user_attr('scores', (score_ins, score_oos))
-            trial.set_user_attr('oos_raw', score_oos_raw)
+            trial.set_user_attr('scores', scores)
 
-            return score_ins, score_oos
+            return trial.user_attrs.get('scores', (-1.0, -1.0))
 
         except Exception as e:
             print(f"Error en search_causal: {str(e)}")
             return -1.0, -1.0
-        finally:
-            try:
-                del ds_train, ds_test
-                del model_main_data, model_meta_data, X, y
-            except Exception:
-                pass
-            gc.collect()
 
     # =========================================================================
     # Métodos auxiliares
@@ -1311,5 +1187,3 @@ class StrategySearcher:
         except Exception as e:
             print(f"⚠️ ERROR en get_train_test_data: {str(e)}")
             return None, None
-        finally:
-            gc.collect()

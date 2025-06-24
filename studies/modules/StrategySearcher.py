@@ -40,6 +40,15 @@ from modules.tester_lib import (
 )
 from modules.export_lib import export_model_to_ONNX
 
+
+def _free_catboost_model(model):
+    """Helper to explicitly release CatBoost model memory."""
+    try:
+        if model is not None:
+            model.__del__()
+    except Exception:
+        pass
+
 class StrategySearcher:
     LABEL_FUNCS = {
         "atr": get_labels_one_direction,
@@ -267,12 +276,6 @@ class StrategySearcher:
                             return mem
                         except Exception:
                             pass
-                    def delete_catboost_model(model):
-                        try:
-                            if model is not None:
-                                model.__del__()
-                        except Exception:
-                            pass
                     try:
                         # Obtener el mejor trial según criterio maximin
                         if study.best_trials:
@@ -294,15 +297,15 @@ class StrategySearcher:
                                     # Liberar modelos previos almacenados en el estudio
                                     if prev_best is not None:
                                         if isinstance(prev_best, tuple) and len(prev_best) == 2:
-                                            delete_catboost_model(prev_best[0])
-                                            delete_catboost_model(prev_best[1])
+                                            _free_catboost_model(prev_best[0])
+                                            _free_catboost_model(prev_best[1])
                             # Liberar memoria eliminando datos pesados del trial
                             if 'models' in trial.user_attrs:
                                 models = trial.user_attrs['models']
                                 trial.set_user_attr('models', None)
                                 if isinstance(models, tuple) and len(models) == 2:
-                                    delete_catboost_model(models[0])
-                                    delete_catboost_model(models[1]) 
+                                    _free_catboost_model(models[0])
+                                    _free_catboost_model(models[1])
 
                         # Log
                         if study.best_trials:
@@ -363,8 +366,9 @@ class StrategySearcher:
                 # Liberar modelos tras exportarlos para evitar fugas de memoria
                 try:
                     if best_models and isinstance(best_models, tuple) and len(best_models) == 2:
-                        best_models[0].__del__()
-                        best_models[1].__del__()
+                        _free_catboost_model(best_models[0])
+                        _free_catboost_model(best_models[1])
+                        study.set_user_attr("best_models", None)
                 except Exception:
                     pass
                 gc.collect()
@@ -424,23 +428,34 @@ class StrategySearcher:
 
                 # ── Evaluación en ambos períodos ──────────────────────────────
                 scores, models = self.fit_final_models(
-                    model_main_data=model_main_data, 
+                    model_main_data=model_main_data,
                     model_meta_data=model_meta_data,
-                    ds_train=ds_train, 
-                    ds_test=ds_test, 
+                    ds_train=ds_train,
+                    ds_test=ds_test,
                     hp=hp.copy()
                 )
                 if scores is None or models is None:
+                    _free_catboost_model(models[0]) if models else None
+                    _free_catboost_model(models[1]) if models else None
                     continue
 
                 # Verificar scores
                 if not all(np.isfinite(scores)):
+                    _free_catboost_model(models[0])
+                    _free_catboost_model(models[1])
                     continue
 
                 # Aplicar criterio maximin: maximizar el peor valor entre ins/oos
                 if min(scores) > min(best_scores):
+                    if best_models[0] is not None:
+                        _free_catboost_model(best_models[0])
+                    if best_models[1] is not None:
+                        _free_catboost_model(best_models[1])
                     best_scores = scores
                     best_models = models
+                else:
+                    _free_catboost_model(models[0])
+                    _free_catboost_model(models[1])
 
             # Verificar que encontramos algún cluster válido
             if best_scores == (-math.inf, -math.inf) or best_models == (None, None):

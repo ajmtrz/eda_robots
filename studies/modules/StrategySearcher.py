@@ -15,7 +15,7 @@ import optuna
 from optuna.pruners import HyperbandPruner, SuccessiveHalvingPruner
 #from optuna.integration import CatBoostPruningCallback
 from sklearn.model_selection import train_test_split
-from catboost import CatBoostClassifier, Pool
+from catboost import CatBoostClassifier
 from mapie.classification import CrossConformalClassifier
 from modules.labeling_lib import (
     get_prices, get_features,
@@ -287,6 +287,8 @@ class StrategySearcher:
                         except Exception:
                             pass
                     try:
+                        from modules.labeling_lib import compute_features
+                        print(len(compute_features.signatures))
                         # Obtener el mejor trial según criterio maximin
                         if study.best_trials:
                             best_trial = max(study.best_trials, 
@@ -305,7 +307,7 @@ class StrategySearcher:
                                     study.set_user_attr("best_stats_meta", trial.user_attrs.get('stats_meta'))
                             # Liberar memoria eliminando datos pesados del trial
                             if 'models' in trial.user_attrs:
-                                trial.set_user_attr('models', None)
+                                del trial.user_attrs["models"]
 
                         # Log
                         if study.best_trials:
@@ -377,6 +379,7 @@ class StrategySearcher:
                 continue
             finally:
                 # Liberar memoria
+                del study.user_attrs["best_models"]
                 gc.collect()
 
     # =========================================================================
@@ -440,8 +443,11 @@ class StrategySearcher:
 
                 # ── Actualizar mejores modelos y scores usando maximin method ─────────────────────
                 if min(scores) > min(best_scores):
-                    best_scores = scores 
+                    del best_models
+                    best_scores = scores
                     best_models = models
+                else:
+                    del models
 
             # Verificar que encontramos algún cluster válido
             if best_scores == (-math.inf, -math.inf) or best_models == (None, None):
@@ -726,7 +732,7 @@ class StrategySearcher:
             )
             model_main = CatBoostClassifier(**cat_main_params)
             model_main.fit(X_train_main, y_train_main, 
-                           eval_set=Pool(X_val_main, y_val_main), 
+                           eval_set=(X_val_main, y_val_main), 
                            early_stopping_rounds=hp['cat_main_early_stopping'],
                            use_best_model=True,
                            verbose=False
@@ -747,7 +753,7 @@ class StrategySearcher:
             )
             model_meta = CatBoostClassifier(**cat_meta_params)
             model_meta.fit(X_train_meta, y_train_meta, 
-                           eval_set=Pool(X_val_meta, y_val_meta), 
+                           eval_set=(X_val_meta, y_val_meta), 
                            early_stopping_rounds=hp['cat_meta_early_stopping'],
                            use_best_model=True,
                            verbose=False
@@ -948,6 +954,8 @@ class StrategySearcher:
                 learning_rate=hp['cat_main_learning_rate'],
                 l2_leaf_reg=hp['cat_main_l2_leaf_reg'],
                 eval_metric='Accuracy',
+                store_all_simple_ctr=False,
+                allow_writing_files=False,
                 thread_count=-1,
                 task_type='CPU',
                 verbose=False,
@@ -1029,6 +1037,8 @@ class StrategySearcher:
                         learning_rate=hp['cat_main_learning_rate'],
                         l2_leaf_reg=hp['cat_main_l2_leaf_reg'],
                         eval_metric='Accuracy',
+                        store_all_simple_ctr=False,
+                        allow_writing_files=False,
                         thread_count=-1,
                         task_type='CPU',
                         verbose=False,

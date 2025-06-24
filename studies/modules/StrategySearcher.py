@@ -34,7 +34,6 @@ from modules.labeling_lib import (
 )
 from modules.tester_lib import (
     tester,
-    robust_oos_score,
     walk_forward_robust_score,
 )
 from modules.export_lib import export_model_to_ONNX
@@ -109,7 +108,7 @@ class StrategySearcher:
         self.tag = tag
         self.base_df = get_prices(symbol, timeframe, history_path)
 
-        # Configuración de sklearn y optuna
+        # Configuración de logging para optuna
         optuna.logging.set_verbosity(optuna.logging.WARNING)
 
     def _apply_labeling(self, dataset: pd.DataFrame, hp: dict) -> pd.DataFrame:
@@ -260,12 +259,7 @@ class StrategySearcher:
 
                 t0 = perf_counter()
                 def log_trial(study, trial):
-                    def _log_memory(self) -> float:
-                        try:
-                            mem = psutil.Process(os.getpid()).memory_info().rss / (1024 ** 2)
-                            return mem
-                        except Exception:
-                            pass
+                    def _log_memory() -> float:
                         try:
                             mem = psutil.Process(os.getpid()).memory_info().rss / (1024 ** 2)
                             return mem
@@ -382,7 +376,7 @@ class StrategySearcher:
 
             # Evaluar cada cluster
             for clust in cluster_sizes.index:
-                model_main_data = ds_train.loc[ds_train["labels_meta"] == clust].copy()
+                model_main_data = ds_train.loc[ds_train["labels_meta"] == clust]
 
                 if 'label_max' in hp and len(model_main_data) <= hp["label_max"]:
                     continue
@@ -398,7 +392,7 @@ class StrategySearcher:
 
                 # Meta data
                 meta_feature_cols = ds_train.filter(like='_meta_feature').columns
-                model_meta_data = ds_train.loc[:, meta_feature_cols].copy()
+                model_meta_data = ds_train.loc[:, meta_feature_cols]
                 model_meta_data['labels_meta'] = (ds_train['labels_meta'] == clust).astype('int8')
 
                 if (model_meta_data['labels_meta'].value_counts() < 2).any():
@@ -412,6 +406,14 @@ class StrategySearcher:
                     ds_test=ds_test,
                     hp=hp.copy()
                 )
+                
+                if scores is None or models is None:
+                    continue
+
+                # ── Actualizar mejores modelos y scores usando maximin method ─────────────────────
+                if min(scores) > min(best_scores):
+                    best_scores = scores 
+                    best_models = models
 
             # Verificar que encontramos algún cluster válido
             if best_scores == (-math.inf, -math.inf) or best_models == (None, None):
@@ -934,9 +936,9 @@ class StrategySearcher:
 
             # Ambos modelos usan el mismo conjunto de features
             # Main: solo donde meta_labels==1
-            model_main_data = ds_train[ds_train['meta_labels'] == 1][feature_cols + ['labels_main']].copy()
+            model_main_data = ds_train[ds_train['meta_labels'] == 1][feature_cols + ['labels_main']]
             # Meta: todas las filas, target = conformal_labels
-            model_meta_data = ds_train[feature_cols].copy()
+            model_meta_data = ds_train[feature_cols]
             model_meta_data['labels_meta'] = ds_train['conformal_labels']
 
             # Llamar a fit_final_models
@@ -1045,8 +1047,8 @@ class StrategySearcher:
             ds_train['meta_labels'] = 1.0
             ds_train.loc[ds_train.index.isin(all_bad), 'meta_labels'] = 0.0
 
-            model_main_data = ds_train[ds_train['meta_labels'] == 1.0][feature_cols + ['labels_main']].copy()
-            model_meta_data = ds_train[feature_cols].copy()
+            model_main_data = ds_train[ds_train['meta_labels'] == 1.0][feature_cols + ['labels_main']]
+            model_meta_data = ds_train[feature_cols]
             model_meta_data['labels_meta'] = ds_train['meta_labels']
 
             scores, models = self.fit_final_models(
@@ -1102,7 +1104,7 @@ class StrategySearcher:
             # ──────────────────────────────────────────────────────────────
             # 4) Obtener features de todo el rango extendido
             hp_tuple = tuple(sorted(hp.items()))
-            ds_slice = self.base_df.loc[start_ext:end_ext].copy()
+            ds_slice = self.base_df.loc[start_ext:end_ext]
             full_ds = get_features(ds_slice, dict(hp_tuple))
 
             # y recortar exactamente al rango que interesa

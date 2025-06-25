@@ -175,7 +175,9 @@ class StrategySearcher:
                                     study.set_user_attr("best_stats_meta", trial.user_attrs.get('stats_meta'))
                             # Liberar memoria eliminando datos pesados del trial
                             if 'models' in trial.user_attrs:
-                                del trial.user_attrs["models"]
+                                for model in trial.user_attrs["models"]:
+                                    if model is not None:
+                                        del model
 
                         # Log
                         if study.best_trials:
@@ -247,7 +249,9 @@ class StrategySearcher:
                 continue
             finally:
                 # Liberar memoria
-                del study.user_attrs["best_models"]
+                for model in study.user_attrs["best_models"]:
+                    if model is not None:
+                        del model
                 gc.collect()
 
     # =========================================================================
@@ -389,7 +393,7 @@ class StrategySearcher:
                 eval_metric='Accuracy',
                 store_all_simple_ctr=False,
                 allow_writing_files=False,
-                used_ram_limit='2gb',
+                used_ram_limit='1gb',
                 thread_count=-1,
                 task_type='CPU',
                 verbose=False,
@@ -472,7 +476,7 @@ class StrategySearcher:
                         eval_metric='Accuracy',
                         store_all_simple_ctr=False,
                         allow_writing_files=False,
-                        used_ram_limit='2gb',
+                        used_ram_limit='1gb',
                         thread_count=-1,
                         task_type='CPU',
                         verbose=False,
@@ -609,11 +613,15 @@ class StrategySearcher:
 
                 # ── Actualizar mejores modelos y scores usando maximin method ─────────────────────
                 if min(scores) > min(best_scores):
-                    del best_models
+                    for model in best_models:
+                        if model is not None:
+                            del model
                     best_scores = scores
                     best_models = models
                 else:
-                    del models
+                    for model in models:
+                        if model is not None:
+                            del model
 
             # Verificar que encontramos algún cluster válido
             if best_scores == (-math.inf, -math.inf) or best_models == (None, None):
@@ -866,7 +874,7 @@ class StrategySearcher:
                 eval_metric='Accuracy',
                 store_all_simple_ctr=False,
                 allow_writing_files=False,
-                used_ram_limit='2gb',
+                used_ram_limit='1gb',
                 thread_count=-1,
                 task_type='CPU',
                 verbose=False,
@@ -888,7 +896,7 @@ class StrategySearcher:
                 eval_metric='F1',
                 store_all_simple_ctr=False,
                 allow_writing_files=False,
-                used_ram_limit='2gb',
+                used_ram_limit='1gb',
                 thread_count=-1,
                 task_type='CPU',
                 verbose=False,

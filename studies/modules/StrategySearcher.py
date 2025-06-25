@@ -13,9 +13,13 @@ from time import perf_counter
 from typing import Dict, Any
 import optuna
 from optuna.pruners import HyperbandPruner, SuccessiveHalvingPruner
+
+# ─── NUEVO ─────────────────────────────────────────────────────────────
+from functools import lru_cache
+from catboost import Pool
 #from optuna.integration import CatBoostPruningCallback
 from sklearn.model_selection import train_test_split
-from catboost import CatBoostClassifier, Pool
+from catboost import CatBoostClassifier
 from mapie.classification import CrossConformalClassifier
 from modules.labeling_lib import (
     get_prices, get_features,
@@ -65,6 +69,25 @@ class StrategySearcher:
         "mean_rev": {"mean", "spline", "savgol"},
         "mean_rev_vol": {"mean", "spline", "savgol"},
     }
+
+    # ------------------------------------------------------------------
+    #  CACHÉ GLOBAL DE CATBOOST.Pool (una por combinación X + y)
+    # ------------------------------------------------------------------
+    _dataset_bank: dict[int, Any] = {}
+
+    @staticmethod
+    def _remember(o) -> int:
+        """Guarda la referencia y devuelve id(obj) (hashable para lru_cache)."""
+        StrategySearcher._dataset_bank[id(o)] = o
+        return id(o)
+
+    @staticmethod
+    @lru_cache(maxsize=None)
+    def _get_pool(x_id: int, y_id: int, cat_idx: tuple):
+        """Devuelve un Pool cacheado; si no existe, lo crea y lo memoriza."""
+        X = StrategySearcher._dataset_bank[x_id]
+        y = StrategySearcher._dataset_bank[y_id]
+        return Pool(X, y, cat_features=cat_idx)
 
     def __init__(
         self,
@@ -249,6 +272,9 @@ class StrategySearcher:
             finally:
                 # Liberar memoria
                 gc.collect(generation=2)
+                # ─── Vacía la LRU para que no viva toda la ejecución ─────────────
+                StrategySearcher._get_pool.cache_clear()
+                StrategySearcher._dataset_bank.clear()
 
     # =========================================================================
     # Métodos de búsqueda específicos
@@ -861,10 +887,21 @@ class StrategySearcher:
                 task_type='CPU',
                 verbose=False,
             )
+            cat_idx = ()
+
+            train_pool_main = self._get_pool(
+                self._remember(X_train_main),
+                self._remember(y_train_main),
+                cat_idx,
+            )
+            val_pool_main = self._get_pool(
+                self._remember(X_val_main),
+                self._remember(y_val_main),
+                cat_idx,
+            )
+
             model_main = CatBoostClassifier(**cat_main_params)
-            train_pool_main = Pool(X_train_main, y_train_main)
-            val_pool_main = Pool(X_val_main, y_val_main)
-            model_main.fit(train_pool_main, 
+            model_main.fit(train_pool_main,
                            eval_set=val_pool_main,
                            early_stopping_rounds=hp['cat_main_early_stopping'],
                            use_best_model=True,
@@ -883,10 +920,18 @@ class StrategySearcher:
                 verbose=False,
             )
             model_meta = CatBoostClassifier(**cat_meta_params)
-            train_pool_meta = Pool(X_train_meta, y_train_meta)
-            val_pool_meta = Pool(X_val_meta, y_val_meta)
-            model_meta.fit(train_pool_meta, 
-                           eval_set=val_pool_meta, 
+            train_pool_meta = self._get_pool(
+                self._remember(X_train_meta),
+                self._remember(y_train_meta),
+                cat_idx,
+            )
+            val_pool_meta = self._get_pool(
+                self._remember(X_val_meta),
+                self._remember(y_val_meta),
+                cat_idx,
+            )
+            model_meta.fit(train_pool_meta,
+                           eval_set=val_pool_meta,
                            early_stopping_rounds=hp['cat_meta_early_stopping'],
                            use_best_model=True,
                            verbose=False

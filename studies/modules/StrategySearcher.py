@@ -15,7 +15,7 @@ import optuna
 from optuna.pruners import HyperbandPruner, SuccessiveHalvingPruner
 #from optuna.integration import CatBoostPruningCallback
 from sklearn.model_selection import train_test_split
-from catboost import CatBoostClassifier
+from catboost import CatBoostClassifier, Pool
 from mapie.classification import CrossConformalClassifier
 from modules.labeling_lib import (
     get_prices, get_features,
@@ -488,7 +488,7 @@ class StrategySearcher:
                         verbose=False,
                     )
                     model = CatBoostClassifier(**catboost_params)
-                    model.fit(X.loc[train_idx], y.loc[train_idx])
+                    model.fit(Pool(X.loc[train_idx], y.loc[train_idx]))
                     pred = (model.predict_proba(X.loc[val_idx])[:, 1] >= 0.5).astype(int)
                     val_y = y.loc[val_idx]
                     val0 = val_idx[val_y == 0]
@@ -880,8 +880,8 @@ class StrategySearcher:
                 verbose=False,
             )
             model_main = CatBoostClassifier(**cat_main_params)
-            model_main.fit(X_train_main, y_train_main, 
-                           eval_set=(X_val_main, y_val_main), 
+            model_main.fit(Pool(X_train_main, y_train_main), 
+                           eval_set=Pool(X_val_main, y_val_main), 
                            early_stopping_rounds=hp['cat_main_early_stopping'],
                            use_best_model=True,
                            verbose=False
@@ -899,8 +899,8 @@ class StrategySearcher:
                 verbose=False,
             )
             model_meta = CatBoostClassifier(**cat_meta_params)
-            model_meta.fit(X_train_meta, y_train_meta, 
-                           eval_set=(X_val_meta, y_val_meta), 
+            model_meta.fit(Pool(X_train_meta, y_train_meta), 
+                           eval_set=Pool(X_val_meta, y_val_meta), 
                            early_stopping_rounds=hp['cat_meta_early_stopping'],
                            use_best_model=True,
                            verbose=False

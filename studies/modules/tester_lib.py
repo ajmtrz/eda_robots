@@ -464,39 +464,50 @@ update_registered_converter(
 )
 
 def _predict_batch(model, X_base, noise_levels):
-    # 1. Convertir modelo a ONNX
-    onnx_model = convert_sklearn(
-        model,
-        initial_types=[('x', FloatTensorType([None, X_base.shape[1]]))],
-        target_opset={"": 18, "ai.onnx.ml": 2},
-        options={id(model): {'zipmap': False}}
-    )
-    sess = rt.InferenceSession(
-        onnx_model.SerializeToString(),
-        providers=['CPUExecutionProvider']
-    )
-    iname = sess.get_inputs()[0].name
-    onnx_run = sess.run
+    try:
+        # 1. Convertir modelo a ONNX
+        onnx_model = convert_sklearn(
+            model,
+            initial_types=[('x', FloatTensorType([None, X_base.shape[1]]))],
+            target_opset={"": 18, "ai.onnx.ml": 2},
+            options={id(model): {'zipmap': False}}
+        )
+        sess = rt.InferenceSession(
+            onnx_model.SerializeToString(),
+            providers=['CPUExecutionProvider']
+        )
+        iname = sess.get_inputs()[0].name
+        onnx_run = sess.run
 
-    # 2. Preparar los datos base
-    n_sim, n_samples, n_feat = len(noise_levels), *X_base.shape
-    X_big = np.repeat(X_base[None, :, :], n_sim, axis=0)
-    
-    # 3. Calcular sensibilidad de cada feature
-    fi = model.get_feature_importance()
-    max_fi = fi.max() or 1.0
-    sensitivity = fi / max_fi
-    
-    # 4. Generar y aplicar el ruido ajustado
-    std = X_base.std(axis=0, keepdims=True)
-    eps = np.random.normal(0.0, std, size=X_big.shape)
-    adjusted_noise = noise_levels[:, None, None] * sensitivity[None, None, :]
-    X_big += eps * adjusted_noise
+        # 2. Preparar los datos base
+        n_sim, n_samples, n_feat = len(noise_levels), *X_base.shape
+        X_big = np.repeat(X_base[None, :, :], n_sim, axis=0)
+        
+        # 3. Calcular sensibilidad de cada feature
+        fi = model.get_feature_importance()
+        max_fi = fi.max() or 1.0
+        sensitivity = fi / max_fi
+        
+        # 4. Generar y aplicar el ruido ajustado
+        std = X_base.std(axis=0, keepdims=True)
+        eps = np.random.normal(0.0, std, size=X_big.shape)
+        adjusted_noise = noise_levels[:, None, None] * sensitivity[None, None, :]
+        X_big += eps * adjusted_noise
 
-    # 5. Realizar la predicción
-    proba_flat = onnx_run(None, {iname: X_big.reshape(-1, n_feat).astype(np.float32)})[0]
-    proba = proba_flat.reshape(n_sim, n_samples)
-    return proba
+        # 5. Realizar la predicción
+        proba_flat = onnx_run(None, {iname: X_big.reshape(-1, n_feat).astype(np.float32)})[0]
+        proba = proba_flat.reshape(n_sim, n_samples)
+        return proba
+    except Exception as e:
+        print(f"\nError en _predict_batch:")
+        print(f"Error: {str(e)}")
+        print("Traceback:")
+        print(traceback.format_exc())
+    finally:
+        if 'sess' in locals():
+            sess = None
+        else:
+            print("No session to close.")
 
 def monte_carlo_full(
     model_main: object,

@@ -15,7 +15,7 @@ import optuna
 from optuna.pruners import HyperbandPruner, SuccessiveHalvingPruner
 #from optuna.integration import CatBoostPruningCallback
 from sklearn.model_selection import train_test_split
-from catboost import CatBoostClassifier
+from catboost import CatBoostClassifier, Pool
 from mapie.classification import CrossConformalClassifier
 from modules.labeling_lib import (
     get_prices, get_features,
@@ -65,6 +65,7 @@ class StrategySearcher:
         "mean_rev": {"mean", "spline", "savgol"},
         "mean_rev_vol": {"mean", "spline", "savgol"},
     }
+
     def __init__(
         self,
         symbol: str,
@@ -178,9 +179,7 @@ class StrategySearcher:
                                     study.set_user_attr("best_stats_meta", trial.user_attrs.get('stats_meta'))
                             # Liberar memoria eliminando datos pesados del trial
                             if 'models' in trial.user_attrs:
-                                for model in trial.user_attrs["models"]:
-                                    if model is not None:
-                                        del model
+                                trial.set_user_attr("models", None)
 
                         # Log
                         if study.best_trials:
@@ -394,9 +393,6 @@ class StrategySearcher:
                 learning_rate=hp['cat_main_learning_rate'],
                 l2_leaf_reg=hp['cat_main_l2_leaf_reg'],
                 eval_metric='Accuracy',
-                store_all_simple_ctr=False,
-                allow_writing_files=False,
-                used_ram_limit='1gb',
                 thread_count=-1,
                 task_type='CPU',
                 verbose=False,
@@ -477,15 +473,12 @@ class StrategySearcher:
                         learning_rate=hp['cat_main_learning_rate'],
                         l2_leaf_reg=hp['cat_main_l2_leaf_reg'],
                         eval_metric='Accuracy',
-                        store_all_simple_ctr=False,
-                        allow_writing_files=False,
-                        used_ram_limit='1gb',
                         thread_count=-1,
                         task_type='CPU',
                         verbose=False,
                     )
                     model = CatBoostClassifier(**catboost_params)
-                    model.fit(X.loc[train_idx], y.loc[train_idx])
+                    model.fit(Pool(X.loc[train_idx], y.loc[train_idx]))
                     pred = (model.predict_proba(X.loc[val_idx])[:, 1] >= 0.5).astype(int)
                     val_y = y.loc[val_idx]
                     val0 = val_idx[val_y == 0]
@@ -616,15 +609,10 @@ class StrategySearcher:
 
                 # ── Actualizar mejores modelos y scores usando maximin method ─────────────────────
                 if min(scores) > min(best_scores):
-                    for model in best_models:
-                        if model is not None:
-                            del model
                     best_scores = scores
                     best_models = models
                 else:
-                    for model in models:
-                        if model is not None:
-                            del model
+                    models = (None, None)
 
             # Verificar que encontramos algún cluster válido
             if best_scores == (-math.inf, -math.inf) or best_models == (None, None):
@@ -875,16 +863,13 @@ class StrategySearcher:
                 learning_rate=hp['cat_main_learning_rate'],
                 l2_leaf_reg=hp['cat_main_l2_leaf_reg'],
                 eval_metric='Accuracy',
-                store_all_simple_ctr=False,
-                allow_writing_files=False,
-                used_ram_limit='1gb',
                 thread_count=-1,
                 task_type='CPU',
                 verbose=False,
             )
             model_main = CatBoostClassifier(**cat_main_params)
-            model_main.fit(X_train_main, y_train_main, 
-                           eval_set=(X_val_main, y_val_main), 
+            model_main.fit(Pool(X_train_main, y_train_main), 
+                           eval_set=Pool(X_val_main, y_val_main), 
                            early_stopping_rounds=hp['cat_main_early_stopping'],
                            use_best_model=True,
                            verbose=False
@@ -897,16 +882,13 @@ class StrategySearcher:
                 learning_rate=hp['cat_meta_learning_rate'],
                 l2_leaf_reg=hp['cat_meta_l2_leaf_reg'],
                 eval_metric='F1',
-                store_all_simple_ctr=False,
-                allow_writing_files=False,
-                used_ram_limit='1gb',
                 thread_count=-1,
                 task_type='CPU',
                 verbose=False,
             )
             model_meta = CatBoostClassifier(**cat_meta_params)
-            model_meta.fit(X_train_meta, y_train_meta, 
-                           eval_set=(X_val_meta, y_val_meta), 
+            model_meta.fit(Pool(X_train_meta, y_train_meta), 
+                           eval_set=Pool(X_val_meta, y_val_meta), 
                            early_stopping_rounds=hp['cat_meta_early_stopping'],
                            use_best_model=True,
                            verbose=False
@@ -1078,6 +1060,10 @@ class StrategySearcher:
         except Exception as e:
             print(f"⚠️ ERROR en apply_labeling: {e}")
             return pd.DataFrame()
+
+    # Backwards compatibility for tests
+    def _apply_labeling(self, dataset: pd.DataFrame, hp: dict) -> pd.DataFrame:
+        return self.apply_labeling(dataset, hp)
 
     def get_train_test_data(self, hp):
         try:

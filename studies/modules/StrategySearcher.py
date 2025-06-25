@@ -109,6 +109,9 @@ class StrategySearcher:
         self.tag = tag
         self.base_df = get_prices(symbol, timeframe, history_path)
 
+        # Try to use system memory allocator for CatBoost
+        os.environ.setdefault("CATBOOST_ALLOCATOR", "SYSTEM")
+
         # Configuración de logging para optuna
         optuna.logging.set_verbosity(optuna.logging.WARNING)
 
@@ -248,8 +251,10 @@ class StrategySearcher:
                 continue
             finally:
                 # Liberar memoria
-                study.set_user_attr("best_models", None)
-                gc.collect()
+                for model in study.user_attrs["best_models"]:
+                    if model is not None:
+                        del model
+                gc.collect(generation=2)
 
     # =========================================================================
     # Métodos de búsqueda específicos
@@ -619,7 +624,7 @@ class StrategySearcher:
             print(f"⚠️ ERROR en evaluación de clusters: {str(e)}")
             return None, None
         finally:
-            gc.collect()
+            gc.collect(generation=2)
     
     def suggest_all_params(self, trial: 'optuna.Trial') -> dict:
         try:

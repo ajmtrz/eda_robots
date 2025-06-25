@@ -389,6 +389,7 @@ class StrategySearcher:
                 eval_metric='Accuracy',
                 store_all_simple_ctr=False,
                 allow_writing_files=False,
+                used_ram_limit='2gb',
                 thread_count=-1,
                 task_type='CPU',
                 verbose=False,
@@ -471,6 +472,7 @@ class StrategySearcher:
                         eval_metric='Accuracy',
                         store_all_simple_ctr=False,
                         allow_writing_files=False,
+                        used_ram_limit='2gb',
                         thread_count=-1,
                         task_type='CPU',
                         verbose=False,
@@ -666,11 +668,14 @@ class StrategySearcher:
             if 'atr_period' in label_params:
                 params['atr_period'] = trial.suggest_int('atr_period', 5, 50, log=True)
 
-            if 'rolling' in label_params:
-                params['rolling'] = trial.suggest_int('rolling', 20, 400, log=True)
-
             if 'polyorder' in label_params:
                 params['polyorder'] = trial.suggest_int('polyorder', 2, 5)
+
+            if 'rolling' in label_params:
+                params['rolling'] = trial.suggest_int('rolling', 20, 400, log=True)
+                # Ajuste para cumplir la condición rolling > polyorder
+                if params['rolling'] <= params['polyorder']:
+                    params['rolling'] = params['polyorder'] + 2 + (params['polyorder'] % 2)
 
             if 'threshold' in label_params:
                 params['threshold'] = trial.suggest_float('threshold', 0.1, 1.0)
@@ -861,6 +866,7 @@ class StrategySearcher:
                 eval_metric='Accuracy',
                 store_all_simple_ctr=False,
                 allow_writing_files=False,
+                used_ram_limit='2gb',
                 thread_count=-1,
                 task_type='CPU',
                 verbose=False,
@@ -882,6 +888,7 @@ class StrategySearcher:
                 eval_metric='F1',
                 store_all_simple_ctr=False,
                 allow_writing_files=False,
+                used_ram_limit='2gb',
                 thread_count=-1,
                 task_type='CPU',
                 verbose=False,

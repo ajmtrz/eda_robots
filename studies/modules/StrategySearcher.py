@@ -109,9 +109,6 @@ class StrategySearcher:
         self.tag = tag
         self.base_df = get_prices(symbol, timeframe, history_path)
 
-        # Try to use system memory allocator for CatBoost
-        os.environ.setdefault("CATBOOST_ALLOCATOR", "SYSTEM")
-
         # Configuración de logging para optuna
         optuna.logging.set_verbosity(optuna.logging.WARNING)
 
@@ -251,9 +248,6 @@ class StrategySearcher:
                 continue
             finally:
                 # Liberar memoria
-                for model in study.user_attrs["best_models"]:
-                    if model is not None:
-                        del model
                 gc.collect(generation=2)
 
     # =========================================================================
@@ -478,7 +472,9 @@ class StrategySearcher:
                         verbose=False,
                     )
                     model = CatBoostClassifier(**catboost_params)
-                    model.fit(Pool(X.loc[train_idx], y.loc[train_idx]))
+                    train_pool = Pool(X.loc[train_idx], y.loc[train_idx])
+                    val_pool = Pool(X.loc[val_idx], y.loc[val_idx])
+                    model.fit(train_pool, eval_set=val_pool)
                     pred = (model.predict_proba(X.loc[val_idx])[:, 1] >= 0.5).astype(int)
                     val_y = y.loc[val_idx]
                     val0 = val_idx[val_y == 0]
@@ -611,8 +607,6 @@ class StrategySearcher:
                 if min(scores) > min(best_scores):
                     best_scores = scores
                     best_models = models
-                else:
-                    models = (None, None)
 
             # Verificar que encontramos algún cluster válido
             if best_scores == (-math.inf, -math.inf) or best_models == (None, None):
@@ -868,8 +862,10 @@ class StrategySearcher:
                 verbose=False,
             )
             model_main = CatBoostClassifier(**cat_main_params)
-            model_main.fit(Pool(X_train_main, y_train_main), 
-                           eval_set=Pool(X_val_main, y_val_main), 
+            train_pool_main = Pool(X_train_main, y_train_main)
+            val_pool_main = Pool(X_val_main, y_val_main)
+            model_main.fit(train_pool_main, 
+                           eval_set=val_pool_main,
                            early_stopping_rounds=hp['cat_main_early_stopping'],
                            use_best_model=True,
                            verbose=False
@@ -887,8 +883,10 @@ class StrategySearcher:
                 verbose=False,
             )
             model_meta = CatBoostClassifier(**cat_meta_params)
-            model_meta.fit(Pool(X_train_meta, y_train_meta), 
-                           eval_set=Pool(X_val_meta, y_val_meta), 
+            train_pool_meta = Pool(X_train_meta, y_train_meta)
+            val_pool_meta = Pool(X_val_meta, y_val_meta)
+            model_meta.fit(train_pool_meta, 
+                           eval_set=val_pool_meta, 
                            early_stopping_rounds=hp['cat_meta_early_stopping'],
                            use_best_model=True,
                            verbose=False

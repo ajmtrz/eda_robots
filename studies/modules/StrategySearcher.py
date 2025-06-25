@@ -66,19 +66,6 @@ class StrategySearcher:
         "mean_rev_vol": {"mean", "spline", "savgol"},
     }
 
-    def _release_models(self, models):
-        """Clear CatBoost internal caches and drop references."""
-        if not models:
-            return
-        for m in models:
-            if m is None:
-                continue
-            try:
-                if hasattr(m, "_clear_cache"):
-                    m._clear_cache()
-            except Exception:
-                pass
-
     def __init__(
         self,
         symbol: str,
@@ -189,7 +176,6 @@ class StrategySearcher:
                                     study.set_user_attr("best_stats_meta", trial.user_attrs.get('stats_meta'))
                             # Liberar memoria eliminando datos pesados del trial
                             if 'models' in trial.user_attrs:
-                                self._release_models(trial.user_attrs["models"])
                                 trial.set_user_attr("models", None)
 
                         # Log
@@ -262,7 +248,6 @@ class StrategySearcher:
                 continue
             finally:
                 # Liberar memoria
-                self._release_models(study.user_attrs.get("best_models"))
                 study.set_user_attr("best_models", None)
                 gc.collect()
 
@@ -619,11 +604,10 @@ class StrategySearcher:
 
                 # ── Actualizar mejores modelos y scores usando maximin method ─────────────────────
                 if min(scores) > min(best_scores):
-                    self._release_models(best_models)
                     best_scores = scores
                     best_models = models
                 else:
-                    self._release_models(models)
+                    models = (None, None)
 
             # Verificar que encontramos algún cluster válido
             if best_scores == (-math.inf, -math.inf) or best_models == (None, None):
@@ -635,7 +619,6 @@ class StrategySearcher:
             print(f"⚠️ ERROR en evaluación de clusters: {str(e)}")
             return None, None
         finally:
-            self._release_models(best_models)
             gc.collect()
     
     def suggest_all_params(self, trial: 'optuna.Trial') -> dict:

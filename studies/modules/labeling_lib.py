@@ -1014,7 +1014,8 @@ def get_labels_multi_window(dataset, window_sizes=[20, 50, 100], threshold_pct=0
     window_sizes_t = List(window_sizes)
     signals = calculate_signals(prices, window_sizes_t, threshold_pct)
     signals = [2.0] * max(window_sizes) + signals
-    dataset['labels'] = signals
+    dataset = dataset.iloc[: len(signals)].copy()
+    dataset['labels'] = signals[: len(dataset)]
     dataset = dataset.drop(dataset[dataset.labels == 2.0].index)
     return dataset
 

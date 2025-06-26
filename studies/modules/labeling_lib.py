@@ -1214,6 +1214,11 @@ def get_labels_mean_reversion(dataset, markup, min_l=1, max_l=15, rolling=0.5, q
         dataset['lvl'] = weighted_diff # Add the weighted difference as 'lvl'
 
     dataset = dataset.dropna()  # Remove NaN values before proceeding
+
+    # Ensure max_l does not exceed dataset length
+    max_l = min(int(max_l), max(len(dataset) - 1, 1))
+    if len(dataset) <= max_l:
+        return pd.DataFrame()
     q = tuple(dataset['lvl'].quantile(quantiles).to_list())  # Calculate quantiles for the 'reversion zone'
 
     # Prepare data for label calculation
@@ -1224,7 +1229,7 @@ def get_labels_mean_reversion(dataset, markup, min_l=1, max_l=15, rolling=0.5, q
     high = dataset["high"].values if "high" in dataset else close
     low = dataset["low"].values if "low" in dataset else close
     atr = calculate_atr_simple(high, low, close, period=atr_period)
-    labels = calculate_labels_mean_reversion(close, atr, lvl, markup, min_l, max_l, q) 
+    labels = calculate_labels_mean_reversion(close, atr, lvl, markup, min_l, max_l, q)
 
     # Process the dataset and labels
     dataset = dataset.iloc[:len(labels)].copy()
@@ -1281,6 +1286,9 @@ def get_labels_mean_reversion_multi(dataset, markup, min_l=1, max_l=15, windows=
         q[i, 1] = quantile_values[1]
 
     dataset = dataset.dropna()
+    max_l = min(int(max_l), max(len(dataset) - 1, 1))
+    if len(dataset) <= max_l:
+        return pd.DataFrame()
     close_data = dataset['close'].values
 
     high = dataset["high"].values if "high" in dataset else close_data
@@ -1384,7 +1392,12 @@ def get_labels_mean_reversion_v(dataset, markup, min_l=1, max_l=15, rolling=0.5,
         dataset['lvl'] = dataset['close'] - smoothed_prices
 
     dataset = dataset.dropna()
-    
+
+    # Ensure max_l does not exceed dataset length
+    max_l = min(int(max_l), max(len(dataset) - 1, 1))
+    if len(dataset) <= max_l:
+        return pd.DataFrame()
+
     # Calculate quantiles for each volatility group
     quantile_groups = {}
     quantile_groups_low = []
@@ -1408,7 +1421,7 @@ def get_labels_mean_reversion_v(dataset, markup, min_l=1, max_l=15, rolling=0.5,
     atr = calculate_atr_simple(high, low, close_data, period=atr_period)
     quantile_groups_high = np.array(quantile_groups_high)
 
-    # Calculate buy/sell labels 
+    # Calculate buy/sell labels
     labels = calculate_labels_mean_reversion_v(close_data, atr, lvl_data, volatility_group, quantile_groups_low, quantile_groups_high, markup, min_l, max_l)
     
     # Process dataset and labels

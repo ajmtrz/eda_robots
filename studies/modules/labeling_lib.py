@@ -770,7 +770,7 @@ def get_labels_trend_with_profit(dataset, rolling=200, polyorder=3, threshold=0.
     
     # Trimming the dataset and adding labels
     dataset_clean = dataset_clean.iloc[:len(labels)].copy()
-    dataset_clean['labels'] = labels
+    dataset_clean['labels'] = labels[: len(dataset_clean)]
     
     # Filtering the results
     dataset_clean = dataset_clean.dropna()    
@@ -841,7 +841,7 @@ def get_labels_trend_with_profit_different_filters(dataset, method='savgol', rol
     
     # Trimming the dataset and adding labels
     dataset_clean = dataset_clean.iloc[:len(labels)].copy()
-    dataset_clean['labels'] = labels
+    dataset_clean['labels'] = labels[: len(dataset_clean)]
     
     # Filtering the results
     dataset_clean = dataset_clean.dropna()    
@@ -940,7 +940,7 @@ def get_labels_trend_with_profit_multi(dataset, method='savgol', rolling_periods
 
     # Trim data and add labels
     dataset_clean = dataset_clean.iloc[:len(labels)].copy()
-    dataset_clean['labels'] = labels
+    dataset_clean['labels'] = labels[: len(dataset_clean)]
 
     # Remove remaining NaN
     dataset_clean = dataset_clean.dropna()

@@ -667,7 +667,7 @@ class StrategySearcher:
             if 'rolling' in label_params:
                 params['rolling'] = trial.suggest_int('rolling', 20, 400, log=True)
                 # Ajuste para cumplir la condición rolling > polyorder
-                if params['rolling'] <= params['polyorder']:
+                if 'polyorder' in label_params and params['rolling'] <= params['polyorder']:
                     params['rolling'] = params['polyorder'] + 2 + (params['polyorder'] % 2)
 
             if 'threshold' in label_params:

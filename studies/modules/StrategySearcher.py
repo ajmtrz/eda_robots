@@ -656,7 +656,8 @@ class StrategySearcher:
                 params['markup'] = trial.suggest_float('markup', 0.2, 2.0, log=True)
 
             if 'max_val' in label_params or 'max_l' in label_params:
-                params['label_max'] = trial.suggest_int('label_max', 1, 15, log=True)
+                max_possible = min(15, max(len(self.base_df) - 1, 1))
+                params['label_max'] = trial.suggest_int('label_max', 1, max_possible, log=True)
 
             if 'atr_period' in label_params:
                 params['atr_period'] = trial.suggest_int('atr_period', 5, 50, log=True)

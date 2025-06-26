@@ -561,7 +561,8 @@ def calculate_labels(close_data, atr, markup, min_val, max_val):
     """Label trades using a dynamic markup based on ATR."""
     labels = []
     for i in range(len(close_data) - max_val):
-        rand = random.randint(min_val, max_val)
+        # Numba-friendly random integer
+        rand = np.random.randint(min_val, max_val + 1)
         curr_pr = close_data[i]
         future_pr = close_data[i + rand]
         dyn_mk = markup * atr[i]
@@ -725,16 +726,16 @@ def calculate_labels_trend_with_profit(close, atr, normalized_trend, threshold, 
     for i in range(len(normalized_trend) - max_l):
         dyn_mk = markup * atr[i]
         if normalized_trend[i] > threshold:
-            # Проверяем условие для Buy
-            rand = random.randint(min_l, max_l)
+            # Проверяем condición para Buy
+            rand = np.random.randint(min_l, max_l + 1)
             future_pr = close[i + rand]
             if future_pr >= close[i] + dyn_mk:
                 labels[i] = 0.0  # Buy (Profit reached)
             else:
                 labels[i] = 2.0  # No profit
         elif normalized_trend[i] < -threshold:
-            # Проверяем условие для Sell
-            rand = random.randint(min_l, max_l)
+            # Проверяем condición para Sell
+            rand = np.random.randint(min_l, max_l + 1)
             future_pr = close[i + rand]
             if future_pr <= close[i] - dyn_mk:
                 labels[i] = 1.0  # Sell (Profit reached)
@@ -781,16 +782,16 @@ def calculate_labels_trend_different_filters(close, atr, normalized_trend, thres
     for i in range(len(normalized_trend) - max_l):
         dyn_mk = markup * atr[i]
         if normalized_trend[i] > threshold:
-            # Проверяем условие для Buy
-            rand = random.randint(min_l, max_l)
+            # Проверяем condición para Buy
+            rand = np.random.randint(min_l, max_l + 1)
             future_pr = close[i + rand]
             if future_pr >= close[i] + dyn_mk:
                 labels[i] = 0.0  # Buy (Profit reached)
             else:
                 labels[i] = 2.0  # No profit
         elif normalized_trend[i] < -threshold:
-            # Проверяем условие для Sell
-            rand = random.randint(min_l, max_l)
+            # Проверяем condición para Sell
+            rand = np.random.randint(min_l, max_l + 1)
             future_pr = close[i + rand]
             if future_pr <= close[i] - dyn_mk:
                 labels[i] = 1.0  # Sell (Profit reached)
@@ -1141,7 +1142,7 @@ def calculate_labels_mean_reversion(close, atr, lvl, markup, min_l, max_l, q):
     labels = np.empty(len(close) - max_l, dtype=np.float64)
     for i in range(len(close) - max_l):
         dyn_mk = markup * atr[i]
-        rand = random.randint(min_l, max_l)
+        rand = np.random.randint(min_l, max_l + 1)
         curr_pr = close[i]
         curr_lvl = lvl[i]
         future_pr = close[i + rand]
@@ -1237,7 +1238,7 @@ def calculate_labels_mean_reversion_multi(close_data, atr, lvl_data, q_list, mar
     n_win = len(windows)
     for i in range(len(close_data) - max_l):
         dyn_mk = markup * atr[i]
-        rand = random.randint(min_l, max_l)
+        rand = np.random.randint(min_l, max_l + 1)
         curr_pr = close_data[i]
         future_pr = close_data[i + rand]
 
@@ -1302,7 +1303,7 @@ def calculate_labels_mean_reversion_v(close_data, atr, lvl_data, volatility_grou
     labels = []
     for i in range(len(close_data) - max_l):
         dyn_mk = markup * atr[i]
-        rand = random.randint(min_l, max_l)
+        rand = np.random.randint(min_l, max_l + 1)
         curr_pr = close_data[i]
         curr_lvl = lvl_data[i]
         curr_vol_group = volatility_group[i]

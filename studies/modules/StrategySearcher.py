@@ -6,6 +6,7 @@ import random
 import os
 import psutil
 import inspect
+import tempfile
 import numpy as np
 import pandas as pd
 from datetime import datetime
@@ -165,9 +166,14 @@ class StrategySearcher:
                             
                             # Si este trial es el mejor, guardar sus modelos
                             if trial.number == best_trial.number:
-                                if trial.user_attrs.get('models') is not None:
-                                    # Guardar nuevos modelos como mejores
-                                    study.set_user_attr("best_models", trial.user_attrs['models'])
+                                if trial.user_attrs.get('model_paths') is not None:
+                                    # Eliminar modelos anteriores
+                                    if study.user_attrs.get("best_model_paths"):
+                                        for p in study.user_attrs["best_model_paths"]:
+                                            if p and os.path.exists(p):
+                                                os.remove(p)
+                                    # Guardar nuevas rutas de modelos
+                                    study.set_user_attr("best_model_paths", trial.user_attrs['model_paths'])
                                     study.set_user_attr("best_scores", trial.user_attrs['scores'])
                                     study.set_user_attr("best_periods_main", trial.user_attrs['periods_main'])
                                     # Cambia acceso directo por .get para evitar error si no existe
@@ -175,8 +181,12 @@ class StrategySearcher:
                                     study.set_user_attr("best_stats_main", trial.user_attrs['stats_main'])
                                     study.set_user_attr("best_stats_meta", trial.user_attrs.get('stats_meta'))
                             # Liberar memoria eliminando datos pesados del trial
-                            if 'models' in trial.user_attrs:
-                                trial.set_user_attr("models", None)
+                            if 'model_paths' in trial.user_attrs:
+                                if trial.user_attrs['model_paths'] != study.user_attrs.get('best_model_paths'):
+                                    for p in trial.user_attrs['model_paths']:
+                                        if p and os.path.exists(p):
+                                            os.remove(p)
+                                trial.set_user_attr("model_paths", None)
 
                         # Log
                         if study.best_trials:
@@ -215,9 +225,9 @@ class StrategySearcher:
                 )
 
                 # Verificar y exportar el mejor modelo
-                best_models = study.user_attrs.get("best_models", None)
-                if best_models is None or not best_models:
-                    print(f"⚠️ ERROR: best_models VACÍO")
+                best_model_paths = study.user_attrs.get("best_model_paths", None)
+                if best_model_paths is None or not best_model_paths:
+                    print(f"⚠️ ERROR: best_model_paths VACÍO")
                     continue
                 
                 export_params = {
@@ -230,7 +240,7 @@ class StrategySearcher:
                     "search_type": self.search_type,
                     "search_subtype": self.search_subtype,
                     "best_model_seed": model_seed,
-                    "best_models": study.user_attrs["best_models"],
+                    "best_model_paths": study.user_attrs["best_model_paths"],
                     "best_scores": study.user_attrs["best_scores"],
                     "best_periods_main": study.user_attrs["best_periods_main"],
                     "best_periods_meta": study.user_attrs["best_periods_meta"],
@@ -239,6 +249,11 @@ class StrategySearcher:
                 }
                 
                 export_model_to_ONNX(**export_params)
+
+                # Eliminar archivos temporales del mejor modelo
+                for p in study.user_attrs.get("best_model_paths", []):
+                    if p and os.path.exists(p):
+                        os.remove(p)
                 
             except Exception as e:
                 print(f"\nError procesando modelo {i}:")
@@ -283,11 +298,11 @@ class StrategySearcher:
                     n_mix=hp['n_mix'] if hp['model_type'] == 'VARHMM' else 3
                 )
 
-            scores, models = self.evaluate_clusters(ds_train, ds_test, hp)
-            if scores is None or models is None:
+            scores, model_paths = self.evaluate_clusters(ds_train, ds_test, hp)
+            if scores is None or model_paths is None:
                 return -1.0, -1.0
-            
-            trial.set_user_attr('models', models)
+
+            trial.set_user_attr('model_paths', model_paths)
             trial.set_user_attr('scores', scores)
 
             return trial.user_attrs.get('scores', (-1.0, -1.0))
@@ -320,11 +335,11 @@ class StrategySearcher:
                     window_size=hp['window_size'],
                     step=hp.get('step', None),
                 )
-            scores, models = self.evaluate_clusters(ds_train, ds_test, hp)
-            if scores is None or models is None:
+            scores, model_paths = self.evaluate_clusters(ds_train, ds_test, hp)
+            if scores is None or model_paths is None:
                 return -1.0, -1.0
-            
-            trial.set_user_attr('models', models)
+
+            trial.set_user_attr('model_paths', model_paths)
             trial.set_user_attr('scores', scores)
 
             return trial.user_attrs.get('scores', (-1.0, -1.0))
@@ -349,12 +364,12 @@ class StrategySearcher:
                 max_iter=hp['max_iter'],
             )
 
-            scores, models = self.evaluate_clusters(ds_train, ds_test, hp)
+            scores, model_paths = self.evaluate_clusters(ds_train, ds_test, hp)
 
-            if scores is None or models is None:
+            if scores is None or model_paths is None:
                 return -1.0, -1.0
-            
-            trial.set_user_attr('models', models)
+
+            trial.set_user_attr('model_paths', model_paths)
             trial.set_user_attr('scores', scores)
 
             return trial.user_attrs.get('scores', (-1.0, -1.0))
@@ -417,17 +432,17 @@ class StrategySearcher:
             model_meta_data['labels_meta'] = ds_train['conformal_labels']
 
             # Llamar a fit_final_models
-            scores, models = self.fit_final_models(
+            scores, model_paths = self.fit_final_models(
                 model_main_data=model_main_data,
                 model_meta_data=model_meta_data,
                 ds_train=ds_train,
                 ds_test=ds_test,
                 hp=hp.copy()
             )
-            if scores is None or models is None:
+            if scores is None or model_paths is None:
                 return -1.0, -1.0
-            
-            trial.set_user_attr('models', models)
+
+            trial.set_user_attr('model_paths', model_paths)
             trial.set_user_attr('scores', scores)
 
             return trial.user_attrs.get('scores', (-1.0, -1.0))
@@ -528,17 +543,17 @@ class StrategySearcher:
             model_meta_data = ds_train[feature_cols]
             model_meta_data['labels_meta'] = ds_train['meta_labels']
 
-            scores, models = self.fit_final_models(
+            scores, model_paths = self.fit_final_models(
                 model_main_data=model_main_data,
                 model_meta_data=model_meta_data,
                 ds_train=ds_train,
                 ds_test=ds_test,
                 hp=hp.copy()
             )
-            if scores is None or models is None:
+            if scores is None or model_paths is None:
                 return -1.0, -1.0
-            
-            trial.set_user_attr('models', models)
+
+            trial.set_user_attr('model_paths', model_paths)
             trial.set_user_attr('scores', scores)
 
             return trial.user_attrs.get('scores', (-1.0, -1.0))
@@ -554,7 +569,7 @@ class StrategySearcher:
     def evaluate_clusters(self, ds_train: pd.DataFrame, ds_test: pd.DataFrame, hp: Dict[str, Any]) -> tuple[float, float]:
         """Función helper para evaluar clusters y entrenar modelos."""
         try:
-            best_models = (None, None)
+            best_model_paths = (None, None)
             best_scores = (-math.inf, -math.inf)
             cluster_sizes = ds_train['labels_meta'].value_counts()
 
@@ -594,7 +609,7 @@ class StrategySearcher:
                     continue
 
                 # ── Evaluación en ambos períodos ──────────────────────────────
-                scores, models = self.fit_final_models(
+                scores, model_paths = self.fit_final_models(
                     model_main_data=model_main_data,
                     model_meta_data=model_meta_data,
                     ds_train=ds_train,
@@ -602,19 +617,29 @@ class StrategySearcher:
                     hp=hp.copy()
                 )
                 
-                if scores is None or models is None:
+                if scores is None or model_paths is None:
                     continue
 
                 # ── Actualizar mejores modelos y scores usando maximin method ─────────────────────
                 if min(scores) > min(best_scores):
+                    # Remove previous best temporary files
+                    if best_model_paths != (None, None):
+                        for p in best_model_paths:
+                            if p and os.path.exists(p):
+                                os.remove(p)
                     best_scores = scores
-                    best_models = models
+                    best_model_paths = model_paths
+                else:
+                    # Remove non-best temporary files
+                    for p in model_paths:
+                        if p and os.path.exists(p):
+                            os.remove(p)
 
             # Verificar que encontramos algún cluster válido
-            if best_scores == (-math.inf, -math.inf) or best_models == (None, None):
+            if best_scores == (-math.inf, -math.inf) or best_model_paths == (None, None):
                 return None, None
 
-            return best_scores, best_models
+            return best_scores, best_model_paths
 
         except Exception as e:
             print(f"⚠️ ERROR en evaluación de clusters: {str(e)}")
@@ -807,8 +832,8 @@ class StrategySearcher:
                         model_meta_data: pd.DataFrame,
                         ds_train: pd.DataFrame,
                         ds_test: pd.DataFrame,
-                        hp: Dict[str, Any]) -> tuple[tuple[float, float], object, object]:
-        """Ajusta los modelos finales."""
+                        hp: Dict[str, Any]) -> tuple[tuple[float, float], tuple[str, str]]:
+        """Ajusta los modelos finales y devuelve rutas a archivos temporales."""
         try:
             # ---------- 1) main model_main ----------
             # Get feature columns and rename them to follow f%d pattern
@@ -950,7 +975,15 @@ class StrategySearcher:
                 score_ins = -1.0
                 score_oos = -1.0
 
-            return (score_ins, score_oos), (model_main, model_meta)
+            # Guardar modelos en archivos temporales para liberar memoria
+            tmp_main = tempfile.NamedTemporaryFile(delete=False, suffix=".cbm")
+            model_main.save_model(tmp_main.name)
+            tmp_main.close()
+            tmp_meta = tempfile.NamedTemporaryFile(delete=False, suffix=".cbm")
+            model_meta.save_model(tmp_meta.name)
+            tmp_meta.close()
+
+            return (score_ins, score_oos), (tmp_main.name, tmp_meta.name)
         
         except Exception as e:
             print(f"Error en función de entrenamiento y test: {str(e)}")

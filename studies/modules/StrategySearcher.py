@@ -720,6 +720,10 @@ class StrategySearcher:
                 ws = list(dict.fromkeys(ws))
                 params['window_sizes'] = tuple(ws)
 
+            if 'window' in label_params:
+                max_possible = min(400, max(len(self.base_df) - 1, 20))
+                params['window'] = trial.suggest_int('window', 20, max_possible)
+
             if 'windows' in label_params:
                 wnds = [trial.suggest_float(f'window_{i}', 0.1, 1.0) for i in range(3)]
                 wnds = list(dict.fromkeys(wnds))
@@ -961,7 +965,7 @@ class StrategySearcher:
         params = inspect.signature(label_func).parameters
         kwargs = {}
 
-        for name in params:
+        for name, param in params.items():
             if name == 'dataset':
                 continue
             if name == 'direction':
@@ -969,8 +973,12 @@ class StrategySearcher:
             elif name in {'max_val', 'max_l'}:
                 if 'label_max' in hp:
                     kwargs[name] = hp['label_max']
+                elif param.default is not inspect.Parameter.empty:
+                    kwargs[name] = param.default
             elif name in hp:
                 kwargs[name] = hp[name]
+            elif param.default is not inspect.Parameter.empty:
+                kwargs[name] = param.default
 
         # ── Validaciones simples ───────────────────────────────────────────
         try:

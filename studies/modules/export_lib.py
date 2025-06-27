@@ -40,11 +40,20 @@ def skl2onnx_convert_catboost(scope, operator, container):
 def export_model_to_ONNX(**kwargs):
     model_seed = kwargs.get('best_model_seed')
     models = kwargs.get('best_models')
+    model_paths = kwargs.get('best_model_paths')
     best_scores = kwargs.get('best_scores')
     periods_main = kwargs.get('best_periods_main')
     periods_meta = kwargs.get('best_periods_meta')
     stats_main = kwargs.get('best_stats_main')
     stats_meta = kwargs.get('best_stats_meta')
+
+    # Load models from file paths if provided
+    if model_paths and not models:
+        models = []
+        for p in model_paths:
+            m = CatBoostClassifier()
+            m.load_model(p)
+            models.append(m)
 
     # Permitir que periods_meta y stats_meta sean opcionales
     if periods_meta is None:
@@ -105,6 +114,14 @@ def export_model_to_ONNX(**kwargs):
         filepath_model_m = os.path.join(models_export_path, filename_model_m)
         with open(filepath_model_m, "wb") as f:
             f.write(model_meta_onnx.SerializeToString())
+
+        # Remove temporary CatBoost model files if provided
+        if model_paths:
+            for p in model_paths:
+                try:
+                    os.remove(p)
+                except Exception:
+                    pass
 
         stat_function_templates = {
             "std": """

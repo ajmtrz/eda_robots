@@ -87,6 +87,7 @@ class StrategySearcher:
         search_subtype: str = 'simple',
         label_method: str = 'atr',
         tag: str = "",
+        debug: bool = False,
     ):
         self.symbol = symbol
         self.timeframe = timeframe
@@ -108,6 +109,7 @@ class StrategySearcher:
         self.n_models = n_models
         self.n_jobs = n_jobs
         self.tag = tag
+        self.debug = debug
         self.base_df = get_prices(symbol, timeframe, history_path)
 
         # Configuración de logging para optuna
@@ -572,13 +574,22 @@ class StrategySearcher:
             best_model_paths = (None, None)
             best_scores = (-math.inf, -math.inf)
             
+            if self.debug:
+                print(f"🔍 DEBUG evaluate_clusters: ds_train.shape = {ds_train.shape}")
+                print(f"🔍 DEBUG evaluate_clusters: ds_test.shape = {ds_test.shape}")
+            
             # Etiquetar todo el dataset antes del bucle
             ds_train_labeled = self.apply_labeling(ds_train, hp)
             if ds_train_labeled is None or ds_train_labeled.empty:
                 print("⚠️ ERROR: Etiquetado falló")
                 return None, None
             
+            if self.debug:
+                print(f"🔍 DEBUG evaluate_clusters: ds_train_labeled.shape = {ds_train_labeled.shape}")
+            
             cluster_sizes = ds_train_labeled['labels_meta'].value_counts()
+            if self.debug:
+                print(f"🔍 DEBUG evaluate_clusters: cluster_sizes = {cluster_sizes}")
 
             # Verificar que hay clusters
             if cluster_sizes.empty:
@@ -593,15 +604,22 @@ class StrategySearcher:
 
             # Evaluar cada cluster
             for clust in cluster_sizes.index:
+                if self.debug:
+                    print(f"🔍 DEBUG evaluate_clusters: Procesando cluster {clust} con {cluster_sizes[clust]} muestras")
+                
                 # Filtrar datos ya etiquetados del cluster
                 model_main_data = ds_train_labeled.loc[ds_train_labeled["labels_meta"] == clust]
 
                 # Verificar tamaño después de filtrar
                 if 'label_max' in hp and len(model_main_data) <= hp["label_max"]:
+                    if self.debug:
+                        print(f"🔍 DEBUG evaluate_clusters: Cluster {clust} descartado por label_max")
                     continue
 
                 # No necesita re-etiquetado, ya está etiquetado
                 if model_main_data is None or model_main_data.empty:
+                    if self.debug:
+                        print(f"🔍 DEBUG evaluate_clusters: Cluster {clust} vacío después de filtrado")
                     continue
 
                 # Preparar features después del filtrado
@@ -610,6 +628,8 @@ class StrategySearcher:
                 model_main_data = model_main_data[main_feature_cols.tolist() + ['labels_main']]
 
                 if (model_main_data['labels_main'].value_counts() < 2).any():
+                    if self.debug:
+                        print(f"🔍 DEBUG evaluate_clusters: Cluster {clust} descartado por falta de clases")
                     continue
 
                 # Meta data
@@ -618,13 +638,19 @@ class StrategySearcher:
                 model_meta_data['labels_meta'] = (ds_train_labeled['labels_meta'] == clust).astype('int8')
 
                 if (model_meta_data['labels_meta'].value_counts() < 2).any():
+                    if self.debug:
+                        print(f"🔍 DEBUG evaluate_clusters: Cluster {clust} descartado por falta de clases en meta")
                     continue
+
+                if self.debug:
+                    print(f"🔍 DEBUG evaluate_clusters: Cluster {clust} - model_main_data.shape = {model_main_data.shape}")
+                    print(f"🔍 DEBUG evaluate_clusters: Cluster {clust} - model_meta_data.shape = {model_meta_data.shape}")
 
                 # ── Evaluación en ambos períodos ──────────────────────────────
                 scores, model_paths = self.fit_final_models(
                     model_main_data=model_main_data,
                     model_meta_data=model_meta_data,
-                    ds_train=ds_train_labeled,
+                    ds_train=ds_train,
                     ds_test=ds_test,
                     hp=hp.copy()
                 )
@@ -685,7 +711,7 @@ class StrategySearcher:
                 'max_main_stats': trial.suggest_int('max_main_stats', 1, MAX_MAIN_STATS, log=True),
             }
             # ---------- Parámetros de etiquetado dinámicos ----------
-            label_func = self.LABEL_FUNCS.get(self.label_method)
+            label_func = self.LABEL_FUNCS.get(self.label_method, get_labels_one_direction)
             label_params = inspect.signature(label_func).parameters
 
             if 'markup' in label_params:
@@ -848,6 +874,11 @@ class StrategySearcher:
         """Ajusta los modelos finales y devuelve rutas a archivos temporales."""
         try:
             # ---------- 1) main model_main ----------
+            if self.debug:
+                print("model_main_data.shape:", model_main_data.shape)
+                print("model_meta_data.shape:", model_meta_data.shape)
+                print("ds_train.shape:", ds_train.shape)
+                print("ds_test.shape:", ds_test.shape)
             # Get feature columns and rename them to follow f%d pattern
             main_feature_cols = [col for col in model_main_data.columns if col != 'labels_main']
             X_main = model_main_data[main_feature_cols]
@@ -1119,10 +1150,17 @@ class StrategySearcher:
             if hp is None:
                 return None, None
 
+            if self.debug:
+                print(f"🔍 DEBUG: base_df.shape = {self.base_df.shape}")
+                print(f"🔍 DEBUG: train_start = {self.train_start}, train_end = {self.train_end}")
+                print(f"🔍 DEBUG: test_start = {self.test_start}, test_end = {self.test_end}")
+
             # ──────────────────────────────────────────────────────────────
             # 1) Calcular el colchón de barras necesario
             pad = max(hp.get('periods_main', ()) + hp.get('periods_meta', ()), default=0)
             pad = int(pad)
+            if self.debug:
+                print(f"🔍 DEBUG: pad = {pad}")
 
             # ──────────────────────────────────────────────────────────────
             # 2) Paso típico de la serie (mediana -> inmune a huecos)
@@ -1131,6 +1169,8 @@ class StrategySearcher:
                 bar_delta = pd.Timedelta(0)
             else:
                 bar_delta = idx.to_series().diff().dropna().median()
+            if self.debug:
+                print(f"🔍 DEBUG: bar_delta = {bar_delta}")
 
             # ──────────────────────────────────────────────────────────────
             # 3) Rango extendido para calcular features "con contexto"
@@ -1139,18 +1179,27 @@ class StrategySearcher:
                 start_ext = idx[0]
 
             end_ext = max(self.train_end, self.test_end)
+            if self.debug:
+                print(f"🔍 DEBUG: start_ext = {start_ext}, end_ext = {end_ext}")
 
             # ──────────────────────────────────────────────────────────────
             # 4) Obtener features de todo el rango extendido
             hp_tuple = tuple(sorted(hp.items()))
             ds_slice = self.base_df.loc[start_ext:end_ext].copy()
+            if self.debug:
+                print(f"🔍 DEBUG: ds_slice.shape = {ds_slice.shape}")
+            
             full_ds = get_features(ds_slice, dict(hp_tuple))
+            if self.debug:
+                print(f"🔍 DEBUG: full_ds.shape después de get_features = {full_ds.shape}")
 
             # y recortar exactamente al rango que interesa
             full_ds = full_ds.loc[
                 min(self.train_start, self.test_start):
                 max(self.train_end,   self.test_end)
             ]
+            if self.debug:
+                print(f"🔍 DEBUG: full_ds.shape después de recorte = {full_ds.shape}")
 
             if full_ds.empty:
                 return None, None
@@ -1163,6 +1212,8 @@ class StrategySearcher:
 
             problematic = self.check_constant_features(full_ds, list(feature_cols))
             if problematic:
+                if self.debug:
+                    print(f"🔍 DEBUG: Columnas problemáticas eliminadas: {len(problematic)}")
                 full_ds.drop(columns=problematic, inplace=True)
                 feature_cols = [c for c in feature_cols if c not in problematic]
                 if not feature_cols:
@@ -1206,6 +1257,10 @@ class StrategySearcher:
             test_mask  = (full_ds.index >= self.test_start)  & (full_ds.index <= self.test_end)
             train_mask = (full_ds.index >= self.train_start) & (full_ds.index <= self.train_end)
 
+            if self.debug:
+                print(f"🔍 DEBUG: test_mask.sum() = {test_mask.sum()}")
+                print(f"🔍 DEBUG: train_mask.sum() = {train_mask.sum()}")
+
             if not test_mask.any() or not train_mask.any():
                 print("⚠️ ERROR: Períodos sin datos")
                 return None, None
@@ -1213,11 +1268,17 @@ class StrategySearcher:
             # Evitar solapamiento
             if self.test_start <= self.train_end and self.test_end >= self.train_start:
                 train_mask &= ~test_mask
+                if self.debug:
+                    print(f"🔍 DEBUG: train_mask.sum() después de evitar solapamiento = {train_mask.sum()}")
 
             # ──────────────────────────────────────────────────────────────
             # 7) DataFrames finales, ordenados cronológicamente
             train_data = full_ds[train_mask].sort_index().copy()
             test_data  = full_ds[test_mask].sort_index().copy()
+
+            if self.debug:
+                print(f"🔍 DEBUG: train_data.shape final = {train_data.shape}")
+                print(f"🔍 DEBUG: test_data.shape final = {test_data.shape}")
 
             if len(train_data) < 100 or len(test_data) < 50:
                 print("⚠️ ERROR: Datasets demasiado pequeños")

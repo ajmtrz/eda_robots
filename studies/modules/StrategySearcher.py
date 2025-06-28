@@ -426,9 +426,9 @@ class StrategySearcher:
 
             # Ambos modelos usan el mismo conjunto de features
             # Main: solo donde meta_labels==1
-            model_main_data = ds_train[ds_train['meta_labels'] == 1][feature_cols + ['labels_main']]
+            model_main_data = ds_train[ds_train['meta_labels'] == 1][feature_cols + ['labels_main']].copy()
             # Meta: todas las filas, target = conformal_labels
-            model_meta_data = ds_train[feature_cols]
+            model_meta_data = ds_train[feature_cols].copy()
             model_meta_data['labels_meta'] = ds_train['conformal_labels']
 
             # Llamar a fit_final_models
@@ -539,8 +539,8 @@ class StrategySearcher:
             ds_train['meta_labels'] = 1.0
             ds_train.loc[ds_train.index.isin(all_bad), 'meta_labels'] = 0.0
 
-            model_main_data = ds_train[ds_train['meta_labels'] == 1.0][feature_cols + ['labels_main']]
-            model_meta_data = ds_train[feature_cols]
+            model_main_data = ds_train[ds_train['meta_labels'] == 1.0][feature_cols + ['labels_main']].copy()
+            model_meta_data = ds_train[feature_cols].copy()
             model_meta_data['labels_meta'] = ds_train['meta_labels']
 
             scores, model_paths = self.fit_final_models(
@@ -571,7 +571,14 @@ class StrategySearcher:
         try:
             best_model_paths = (None, None)
             best_scores = (-math.inf, -math.inf)
-            cluster_sizes = ds_train['labels_meta'].value_counts()
+            
+            # Etiquetar todo el dataset antes del bucle
+            ds_train_labeled = self.apply_labeling(ds_train, hp)
+            if ds_train_labeled is None or ds_train_labeled.empty:
+                print("⚠️ ERROR: Etiquetado falló")
+                return None, None
+            
+            cluster_sizes = ds_train_labeled['labels_meta'].value_counts()
 
             # Verificar que hay clusters
             if cluster_sizes.empty:
@@ -586,13 +593,18 @@ class StrategySearcher:
 
             # Evaluar cada cluster
             for clust in cluster_sizes.index:
-                model_main_data = ds_train.loc[ds_train["labels_meta"] == clust]
+                # Filtrar datos ya etiquetados del cluster
+                model_main_data = ds_train_labeled.loc[ds_train_labeled["labels_meta"] == clust]
 
+                # Verificar tamaño después de filtrar
                 if 'label_max' in hp and len(model_main_data) <= hp["label_max"]:
                     continue
-                model_main_data = self.apply_labeling(model_main_data, hp)
+
+                # No necesita re-etiquetado, ya está etiquetado
                 if model_main_data is None or model_main_data.empty:
                     continue
+
+                # Preparar features después del filtrado
                 main_feature_cols = model_main_data.columns[model_main_data.columns.str.contains('_feature') & \
                                                        ~model_main_data.columns.str.contains('_meta_feature')]
                 model_main_data = model_main_data[main_feature_cols.tolist() + ['labels_main']]
@@ -601,9 +613,9 @@ class StrategySearcher:
                     continue
 
                 # Meta data
-                meta_feature_cols = ds_train.filter(like='_meta_feature').columns
-                model_meta_data = ds_train.loc[:, meta_feature_cols]
-                model_meta_data['labels_meta'] = (ds_train['labels_meta'] == clust).astype('int8')
+                meta_feature_cols = ds_train_labeled.filter(like='_meta_feature').columns
+                model_meta_data = ds_train_labeled.loc[:, meta_feature_cols].copy()
+                model_meta_data['labels_meta'] = (ds_train_labeled['labels_meta'] == clust).astype('int8')
 
                 if (model_meta_data['labels_meta'].value_counts() < 2).any():
                     continue
@@ -612,7 +624,7 @@ class StrategySearcher:
                 scores, model_paths = self.fit_final_models(
                     model_main_data=model_main_data,
                     model_meta_data=model_meta_data,
-                    ds_train=ds_train,
+                    ds_train=ds_train_labeled,
                     ds_test=ds_test,
                     hp=hp.copy()
                 )
@@ -1121,7 +1133,7 @@ class StrategySearcher:
                 bar_delta = idx.to_series().diff().dropna().median()
 
             # ──────────────────────────────────────────────────────────────
-            # 3) Rango extendido para calcular features “con contexto”
+            # 3) Rango extendido para calcular features "con contexto"
             start_ext = min(self.train_start, self.test_start) - pad * bar_delta
             if start_ext < idx[0]:                      # evita pedir antes de que existan datos
                 start_ext = idx[0]
@@ -1131,7 +1143,7 @@ class StrategySearcher:
             # ──────────────────────────────────────────────────────────────
             # 4) Obtener features de todo el rango extendido
             hp_tuple = tuple(sorted(hp.items()))
-            ds_slice = self.base_df.loc[start_ext:end_ext]
+            ds_slice = self.base_df.loc[start_ext:end_ext].copy()
             full_ds = get_features(ds_slice, dict(hp_tuple))
 
             # y recortar exactamente al rango que interesa
@@ -1204,8 +1216,8 @@ class StrategySearcher:
 
             # ──────────────────────────────────────────────────────────────
             # 7) DataFrames finales, ordenados cronológicamente
-            train_data = full_ds[train_mask].sort_index()
-            test_data  = full_ds[test_mask].sort_index()
+            train_data = full_ds[train_mask].sort_index().copy()
+            test_data  = full_ds[test_mask].sort_index().copy()
 
             if len(train_data) < 100 or len(test_data) < 50:
                 print("⚠️ ERROR: Datasets demasiado pequeños")

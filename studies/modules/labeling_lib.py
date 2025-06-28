@@ -627,7 +627,6 @@ def get_labels(dataset, markup, min=1, max=15, atr_period=14) -> pd.DataFrame:
         direction='both',
         atr_period=atr_period,
     )
-    labeled = labeled.rename(columns={'labels_main': 'labels'})
     return labeled
 
 @njit(cache=True, fastmath=True)
@@ -649,7 +648,7 @@ def get_labels_trend(dataset, rolling=200, polyorder=3, threshold=0.5, vol_windo
     normalized_trend = np.where(vol != 0, trend / vol, np.nan)  # Set NaN where vol is 0
     labels = calculate_labels_trend(normalized_trend, threshold)
     dataset = dataset.iloc[:len(labels)].copy()
-    dataset['labels'] = labels
+    dataset['labels_main'] = labels
     dataset = dataset.dropna()  # Remove rows with NaN
     return dataset
 
@@ -808,7 +807,7 @@ def get_labels_trend_with_profit(dataset, rolling=200, polyorder=3, threshold=0.
     
     # Trimming the dataset and adding labels
     dataset_clean = dataset_clean.iloc[:len(labels)].copy()
-    dataset_clean['labels'] = labels[: len(dataset_clean)]
+    dataset_clean['labels_main'] = labels[: len(dataset_clean)]
     
     # Filtering the results
     dataset_clean = dataset_clean.dropna()    
@@ -879,7 +878,7 @@ def get_labels_trend_with_profit_different_filters(dataset, method='savgol', rol
     
     # Trimming the dataset and adding labels
     dataset_clean = dataset_clean.iloc[:len(labels)].copy()
-    dataset_clean['labels'] = labels[: len(dataset_clean)]
+    dataset_clean['labels_main'] = labels[: len(dataset_clean)]
     
     # Filtering the results
     dataset_clean = dataset_clean.dropna()    
@@ -930,7 +929,7 @@ def get_labels_trend_with_profit_multi(dataset, method='savgol', rolling_periods
         max_l (int): Maximum number of bars forward.
 
     Returns:
-        pd.DataFrame: DataFrame with added 'labels' column:
+        pd.DataFrame: DataFrame with added 'labels_main' column:
                       - 0.0: Buy
                       - 1.0: Sell
                       - 2.0: No signal
@@ -978,7 +977,7 @@ def get_labels_trend_with_profit_multi(dataset, method='savgol', rolling_periods
 
     # Trim data and add labels
     dataset_clean = dataset_clean.iloc[:len(labels)].copy()
-    dataset_clean['labels'] = labels[: len(dataset_clean)]
+    dataset_clean['labels_main'] = labels[: len(dataset_clean)]
 
     # Remove remaining NaN
     dataset_clean = dataset_clean.dropna()
@@ -1018,7 +1017,7 @@ def get_labels_clusters(dataset, markup, num_clusters=20, atr_period=14) -> pd.D
     atr = calculate_atr_simple(high, low, dataset["close"].values, period=atr_period)
     labels = calculate_labels_clusters(close_data, atr, clusters, markup)
 
-    dataset['labels'] = labels
+    dataset['labels_main'] = labels
     dataset = dataset.drop(columns=['cluster'])
     return dataset
 
@@ -1052,7 +1051,7 @@ def get_labels_multi_window(dataset, window_sizes=[20, 50, 100], threshold_pct=0
     signals = calculate_signals(prices, window_sizes_t, threshold_pct)
     signals = [2.0] * max(window_sizes) + signals
     dataset = dataset.iloc[: len(signals)].copy()
-    dataset['labels'] = signals[: len(dataset)]
+    dataset['labels_main'] = signals[: len(dataset)]
     return dataset
 
 @njit(cache=True, fastmath=True)
@@ -1098,7 +1097,7 @@ def get_labels_validated_levels(dataset, window_size=20, threshold_pct=0.02, min
     labels = calculate_labels_validated_levels(prices, window_size, threshold_pct, min_touches)
     
     labels = [2.0] * window_size + labels
-    dataset['labels'] = labels
+    dataset['labels_main'] = labels
     return dataset
 
 @njit(cache=True, fastmath=True)
@@ -1148,8 +1147,8 @@ def get_labels_filter_ZZ(dataset, peak_prominence=0.1) -> pd.DataFrame:
                                            Defaults to 0.1.
 
     Returns:
-        pd.DataFrame: The original DataFrame with a new 'labels' column and filtered rows:
-                       - 'labels' column: 
+        pd.DataFrame: The original DataFrame with a new 'labels_main' column and filtered rows:
+                       - 'labels_main' column: 
                             - 0: Buy
                             - 1: Sell
                        - Rows with missing values (NaN) are removed.
@@ -1162,10 +1161,8 @@ def get_labels_filter_ZZ(dataset, peak_prominence=0.1) -> pd.DataFrame:
     # Calculate buy/sell labels using the new zigzag-based labeling function
     labels = calculate_labels_zigzag(peaks, troughs, len(dataset)) 
 
-    # Add the calculated labels as a new 'labels' column to the DataFrame
-    dataset['labels'] = labels
-
-    # Remove rows where the 'labels' column has a value of 2.0 (no signal)
+    # Add the calculated labels as a new 'labels_main' column to the DataFrame
+    dataset['labels_main'] = labels
         
     # Return the modified DataFrame 
     return dataset
@@ -1216,8 +1213,8 @@ def get_labels_mean_reversion(dataset, markup, min_l=1, max_l=15, rolling=0.5, q
                                  Useful for creating a lag/lead effect. Defaults to 0.
 
     Returns:
-        pd.DataFrame: The original DataFrame with a new 'labels' column and filtered rows:
-                       - 'labels' column: 
+        pd.DataFrame: The original DataFrame with a new 'labels_main' column and filtered rows:
+                       - 'labels_main' column: 
                             - 0: Buy
                             - 1: Sell
                        - Rows with missing values (NaN) are removed.
@@ -1265,7 +1262,7 @@ def get_labels_mean_reversion(dataset, markup, min_l=1, max_l=15, rolling=0.5, q
 
     # Process the dataset and labels
     dataset = dataset.iloc[:len(labels)].copy()
-    dataset['labels'] = labels
+    dataset['labels_main'] = labels
     dataset = dataset.dropna()
     return dataset.drop(columns=['lvl'])  # Remove the temporary 'lvl' column 
 
@@ -1332,9 +1329,8 @@ def get_labels_mean_reversion_multi(dataset, markup, min_l=1, max_l=15, windows=
     labels = calculate_labels_mean_reversion_multi(close_data, atr, lvl_data, q_t, markup, min_l, max_l, windows_t)
 
     dataset = dataset.iloc[:len(labels)].copy()
-    dataset['labels'] = labels
+    dataset['labels_main'] = labels
     dataset = dataset.dropna()
-    dataset = dataset[dataset.labels != 2.0]
     
     return dataset
 
@@ -1389,8 +1385,8 @@ def get_labels_mean_reversion_v(dataset, markup, min_l=1, max_l=15, rolling=0.5,
         volatility_window (int, optional): Window size for calculating volatility. Defaults to 20.
 
     Returns:
-        pd.DataFrame: The original DataFrame with a new 'labels' column and filtered rows:
-                       - 'labels' column: 
+        pd.DataFrame: The original DataFrame with a new 'labels_main' column and filtered rows:
+                       - 'labels_main' column: 
                             - 0: Buy
                             - 1: Sell
                        - Rows with missing values (NaN) are removed.
@@ -1456,7 +1452,7 @@ def get_labels_mean_reversion_v(dataset, markup, min_l=1, max_l=15, rolling=0.5,
     
     # Process dataset and labels
     dataset = dataset.iloc[:len(labels)].copy()
-    dataset['labels'] = labels
+    dataset['labels_main'] = labels
     dataset = dataset.dropna()
     
     # Remove temporary columns and return
@@ -1496,8 +1492,8 @@ def get_labels_filter(dataset, rolling=200, quantiles=[.45, .55], polyorder=3, d
                                           Defaults to None.
 
     Returns:
-        pd.DataFrame: The original DataFrame with a new 'labels' column and filtered rows:
-                       - 'labels' column: 
+        pd.DataFrame: The original DataFrame with a new 'labels_main' column and filtered rows:
+                       - 'labels_main' column: 
                             - 0: Buy
                             - 1: Sell
                        - Rows with missing values (NaN) are removed.
@@ -1531,8 +1527,8 @@ def get_labels_filter(dataset, rolling=200, quantiles=[.45, .55], polyorder=3, d
     # Trim the dataset to match the length of the calculated labels
     dataset = dataset.iloc[:len(labels)].copy()
     
-    # Add the calculated labels as a new 'labels' column to the DataFrame
-    dataset['labels'] = labels
+    # Add the calculated labels as a new 'labels_main' column to the DataFrame
+    dataset['labels_main'] = labels
     
     # Remove any rows with NaN values
     dataset = dataset.dropna()
@@ -1586,8 +1582,8 @@ def get_labels_multiple_filters(dataset, rolling_periods=[200, 400, 600], quanti
         polyorder (int, optional): Polynomial order for the Savitzky-Golay filter. Defaults to 3.
 
     Returns:
-        pd.DataFrame: The original DataFrame with a new 'labels' column and filtered rows:
-                       - 'labels' column: 
+        pd.DataFrame: The original DataFrame with a new 'labels_main' column and filtered rows:
+                       - 'labels_main' column: 
                             - 0: Buy
                             - 1: Sell
                        - Rows with missing values (NaN) are removed. 
@@ -1628,12 +1624,12 @@ def get_labels_multiple_filters(dataset, rolling_periods=[200, 400, 600], quanti
     labels = calc_labels_multiple_filters(dataset['close'].values, lvls_array, qs_array)
     
     # Add the calculated labels to the DataFrame
-    dataset['labels'] = labels
+    dataset['labels_main'] = labels
     
     # Remove rows with NaN values
     dataset = dataset.dropna()
         
-    # Return the DataFrame with the new 'labels' column
+    # Return the DataFrame with the new 'labels_main' column
     return dataset
 
 @njit(cache=True, fastmath=True)
@@ -1668,8 +1664,8 @@ def get_labels_filter_bidirectional(dataset, rolling1=200, rolling2=200, quantil
         polyorder (int, optional): Polynomial order for both Savitzky-Golay filters. Defaults to 3.
 
     Returns:
-        pd.DataFrame: The original DataFrame with a new 'labels' column and filtered rows:
-                       - 'labels' column: 
+        pd.DataFrame: The original DataFrame with a new 'labels_main' column and filtered rows:
+                       - 'labels_main' column: 
                             - 0: Buy
                             - 1: Sell
                        - Rows with missing values (NaN) are removed.
@@ -1707,7 +1703,7 @@ def get_labels_filter_bidirectional(dataset, rolling1=200, rolling2=200, quantil
 
     # Process the dataset and labels
     dataset = dataset.iloc[:len(labels)].copy()
-    dataset['labels'] = labels
+    dataset['labels_main'] = labels
     dataset = dataset.dropna()
     
     # Return the DataFrame with temporary columns removed
@@ -1901,8 +1897,8 @@ def get_labels_filter_flat(dataset, rolling=200, quantiles=[.45, .55], polyorder
                                           Defaults to None.
 
     Returns:
-        pd.DataFrame: The original DataFrame with a new 'labels' column and filtered rows:
-                       - 'labels' column: 
+        pd.DataFrame: The original DataFrame with a new 'labels_main' column and filtered rows:
+                       - 'labels_main' column: 
                             - 0: Buy
                             - 1: Sell
                        - Rows with missing values (NaN) are removed.
@@ -1936,14 +1932,12 @@ def get_labels_filter_flat(dataset, rolling=200, quantiles=[.45, .55], polyorder
     # Trim the dataset to match the length of the calculated labels
     dataset = dataset.iloc[:len(labels)].copy()
     
-    # Add the calculated labels as a new 'labels' column to the DataFrame
-    dataset['labels'] = labels
+    # Add the calculated labels as a new 'labels_main' column to the DataFrame
+    dataset['labels_main'] = labels
     
     # Remove any rows with NaN values
     dataset = dataset.dropna()
-    
-    # Remove rows where the 'labels' column has a value of 2.0 (sell signals)
-    #     
+
     # Return the modified DataFrame with the 'lvl' column removed
     return dataset.drop(columns=['lvl'])
 

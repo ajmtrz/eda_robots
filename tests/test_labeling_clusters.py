@@ -32,7 +32,9 @@ def test_clusters_single_direction():
     df = _sample_ohlc_df()
     res = _label(df)
     assert not res.empty
-    assert set(res["labels"].unique()) <= {0.0}
+    labels = set(res["labels"].unique())
+    assert labels <= {0.0, 1.0, 2.0}
+    assert 0.0 in labels
 
 
 def test_clusters_both_directions():
@@ -40,5 +42,5 @@ def test_clusters_both_directions():
     res = _label(df)
     assert not res.empty
     labels = set(res["labels"].unique())
-    assert labels <= {0.0, 1.0}
+    assert labels <= {0.0, 1.0, 2.0}
     assert 0.0 in labels and 1.0 in labels

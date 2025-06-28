@@ -861,6 +861,14 @@ class StrategySearcher:
                 print("model_meta_data.shape:", model_meta_data.shape)
                 print("ds_train.shape:", ds_train.shape)
                 print("ds_test.shape:", ds_test.shape)
+
+            # Remove neutral labels before training
+            if 'labels_main' in model_main_data.columns:
+                model_main_data = model_main_data[model_main_data['labels_main'].isin([0.0, 1.0])]
+            if 'labels_main' in ds_train.columns:
+                ds_train = ds_train[ds_train['labels_main'].isin([0.0, 1.0])]
+            if 'labels_main' in ds_test.columns:
+                ds_test = ds_test[ds_test['labels_main'].isin([0.0, 1.0])]
             # Get feature columns and rename them to follow f%d pattern
             main_feature_cols = [col for col in model_main_data.columns if col != 'labels_main']
             X_main = model_main_data[main_feature_cols]
@@ -1132,7 +1140,8 @@ class StrategySearcher:
             if hp is None:
                 return None, None
 
-            if self.debug:
+            debug = getattr(self, "debug", False)
+            if debug:
                 print(f"🔍 DEBUG: base_df.shape = {self.base_df.shape}")
                 print(f"🔍 DEBUG: train_start = {self.train_start}, train_end = {self.train_end}")
                 print(f"🔍 DEBUG: test_start = {self.test_start}, test_end = {self.test_end}")
@@ -1141,7 +1150,7 @@ class StrategySearcher:
             # 1) Calcular el colchón de barras necesario
             pad = max(hp.get('periods_main', ()) + hp.get('periods_meta', ()), default=0)
             pad = int(pad)
-            if self.debug:
+            if debug:
                 print(f"🔍 DEBUG: pad = {pad}")
 
             # ──────────────────────────────────────────────────────────────
@@ -1151,7 +1160,7 @@ class StrategySearcher:
                 bar_delta = pd.Timedelta(0)
             else:
                 bar_delta = idx.to_series().diff().dropna().median()
-            if self.debug:
+            if debug:
                 print(f"🔍 DEBUG: bar_delta = {bar_delta}")
 
             # ──────────────────────────────────────────────────────────────
@@ -1161,23 +1170,23 @@ class StrategySearcher:
                 start_ext = idx[0]
 
             end_ext = max(self.train_end, self.test_end)
-            if self.debug:
+            if debug:
                 print(f"🔍 DEBUG: start_ext = {start_ext}, end_ext = {end_ext}")
 
             # ──────────────────────────────────────────────────────────────
             # 4) Obtener features de todo el rango extendido
             hp_tuple = tuple(sorted(hp.items()))
             ds_slice = self.base_df.loc[start_ext:end_ext].copy()
-            if self.debug:
+            if debug:
                 print(f"🔍 DEBUG: ds_slice.shape = {ds_slice.shape}")
             
             full_ds = get_features(ds_slice, dict(hp_tuple))
             
-            if self.debug:
+            if debug:
                 print(f"🔍 DEBUG: full_ds.shape después de get_features = {full_ds.shape}")
 
             full_ds = self.apply_labeling(full_ds, hp)
-            if self.debug:
+            if debug:
                 print(f"🔍 DEBUG: full_ds.shape después de apply_labeling = {full_ds.shape}")
 
             # y recortar exactamente al rango que interesa
@@ -1185,7 +1194,7 @@ class StrategySearcher:
                 min(self.train_start, self.test_start):
                 max(self.train_end,   self.test_end)
             ]
-            if self.debug:
+            if debug:
                 print(f"🔍 DEBUG: full_ds.shape después de recorte = {full_ds.shape}")
 
             if full_ds.empty:
@@ -1199,7 +1208,7 @@ class StrategySearcher:
 
             problematic = self.check_constant_features(full_ds, list(feature_cols))
             if problematic:
-                if self.debug:
+                if debug:
                     print(f"🔍 DEBUG: Columnas problemáticas eliminadas: {len(problematic)}")
                 full_ds.drop(columns=problematic, inplace=True)
                 feature_cols = [c for c in feature_cols if c not in problematic]
@@ -1244,7 +1253,7 @@ class StrategySearcher:
             test_mask  = (full_ds.index >= self.test_start)  & (full_ds.index <= self.test_end)
             train_mask = (full_ds.index >= self.train_start) & (full_ds.index <= self.train_end)
 
-            if self.debug:
+            if debug:
                 print(f"🔍 DEBUG: test_mask.sum() = {test_mask.sum()}")
                 print(f"🔍 DEBUG: train_mask.sum() = {train_mask.sum()}")
 
@@ -1255,7 +1264,7 @@ class StrategySearcher:
             # Evitar solapamiento
             if self.test_start <= self.train_end and self.test_end >= self.train_start:
                 train_mask &= ~test_mask
-                if self.debug:
+                if debug:
                     print(f"🔍 DEBUG: train_mask.sum() después de evitar solapamiento = {train_mask.sum()}")
 
             # ──────────────────────────────────────────────────────────────
@@ -1263,7 +1272,7 @@ class StrategySearcher:
             train_data = full_ds[train_mask].sort_index().copy()
             test_data  = full_ds[test_mask].sort_index().copy()
 
-            if self.debug:
+            if debug:
                 print(f"🔍 DEBUG: train_data.shape final = {train_data.shape}")
                 print(f"🔍 DEBUG: test_data.shape final = {test_data.shape}")
 

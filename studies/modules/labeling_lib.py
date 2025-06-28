@@ -1019,7 +1019,6 @@ def get_labels_clusters(dataset, markup, num_clusters=20, atr_period=14) -> pd.D
     labels = calculate_labels_clusters(close_data, atr, clusters, markup)
 
     dataset['labels'] = labels
-    dataset = dataset.drop(dataset[dataset.labels == 2.0].index)
     dataset = dataset.drop(columns=['cluster'])
     return dataset
 
@@ -1054,7 +1053,6 @@ def get_labels_multi_window(dataset, window_sizes=[20, 50, 100], threshold_pct=0
     signals = [2.0] * max(window_sizes) + signals
     dataset = dataset.iloc[: len(signals)].copy()
     dataset['labels'] = signals[: len(dataset)]
-    dataset = dataset.drop(dataset[dataset.labels == 2.0].index)
     return dataset
 
 @njit(cache=True, fastmath=True)
@@ -1101,7 +1099,6 @@ def get_labels_validated_levels(dataset, window_size=20, threshold_pct=0.02, min
     
     labels = [2.0] * window_size + labels
     dataset['labels'] = labels
-    dataset = dataset.drop(dataset[dataset.labels == 2.0].index)
     return dataset
 
 @njit(cache=True, fastmath=True)
@@ -1155,7 +1152,6 @@ def get_labels_filter_ZZ(dataset, peak_prominence=0.1) -> pd.DataFrame:
                        - 'labels' column: 
                             - 0: Buy
                             - 1: Sell
-                       - Rows where 'labels' is 2 (no signal) are removed.
                        - Rows with missing values (NaN) are removed.
     """
 
@@ -1170,8 +1166,7 @@ def get_labels_filter_ZZ(dataset, peak_prominence=0.1) -> pd.DataFrame:
     dataset['labels'] = labels
 
     # Remove rows where the 'labels' column has a value of 2.0 (no signal)
-    dataset = dataset.drop(dataset[dataset.labels == 2.0].index)
-    
+        
     # Return the modified DataFrame 
     return dataset
 
@@ -1225,7 +1220,6 @@ def get_labels_mean_reversion(dataset, markup, min_l=1, max_l=15, rolling=0.5, q
                        - 'labels' column: 
                             - 0: Buy
                             - 1: Sell
-                       - Rows where 'labels' is 2 (no signal) are removed.
                        - Rows with missing values (NaN) are removed.
                        - The temporary 'lvl' column is removed. 
     """
@@ -1273,7 +1267,6 @@ def get_labels_mean_reversion(dataset, markup, min_l=1, max_l=15, rolling=0.5, q
     dataset = dataset.iloc[:len(labels)].copy()
     dataset['labels'] = labels
     dataset = dataset.dropna()
-    dataset = dataset.drop(dataset[dataset.labels == 2.0].index)  # Remove sell signals (if any)
     return dataset.drop(columns=['lvl'])  # Remove the temporary 'lvl' column 
 
 @njit(cache=True, fastmath=True)
@@ -1400,7 +1393,6 @@ def get_labels_mean_reversion_v(dataset, markup, min_l=1, max_l=15, rolling=0.5,
                        - 'labels' column: 
                             - 0: Buy
                             - 1: Sell
-                       - Rows where 'labels' is 2 (no signal) are removed.
                        - Rows with missing values (NaN) are removed.
                        - Temporary 'lvl', 'volatility', 'volatility_group' columns are removed.
     """
@@ -1466,7 +1458,6 @@ def get_labels_mean_reversion_v(dataset, markup, min_l=1, max_l=15, rolling=0.5,
     dataset = dataset.iloc[:len(labels)].copy()
     dataset['labels'] = labels
     dataset = dataset.dropna()
-    dataset = dataset.drop(dataset[dataset.labels == 2.0].index) # Remove sell signals
     
     # Remove temporary columns and return
     return dataset.drop(columns=['lvl', 'volatility', 'volatility_group'])
@@ -1509,7 +1500,6 @@ def get_labels_filter(dataset, rolling=200, quantiles=[.45, .55], polyorder=3, d
                        - 'labels' column: 
                             - 0: Buy
                             - 1: Sell
-                       - Rows where 'labels' is 2 (no signal) are removed.
                        - Rows with missing values (NaN) are removed.
                        - The temporary 'lvl' column is removed. 
     """
@@ -1600,7 +1590,6 @@ def get_labels_multiple_filters(dataset, rolling_periods=[200, 400, 600], quanti
                        - 'labels' column: 
                             - 0: Buy
                             - 1: Sell
-                       - Rows where 'labels' is 2 (no signal) are removed.
                        - Rows with missing values (NaN) are removed. 
     """
     
@@ -1641,10 +1630,9 @@ def get_labels_multiple_filters(dataset, rolling_periods=[200, 400, 600], quanti
     # Add the calculated labels to the DataFrame
     dataset['labels'] = labels
     
-    # Remove rows with NaN values and sell signals (labels == 2.0)
+    # Remove rows with NaN values
     dataset = dataset.dropna()
-    dataset = dataset.drop(dataset[dataset.labels == 2.0].index)
-    
+        
     # Return the DataFrame with the new 'labels' column
     return dataset
 
@@ -1684,7 +1672,6 @@ def get_labels_filter_bidirectional(dataset, rolling1=200, rolling2=200, quantil
                        - 'labels' column: 
                             - 0: Buy
                             - 1: Sell
-                       - Rows where 'labels' is 2 (no signal) are removed.
                        - Rows with missing values (NaN) are removed.
                        - Temporary 'lvl1' and 'lvl2' columns are removed.
     """
@@ -1722,7 +1709,6 @@ def get_labels_filter_bidirectional(dataset, rolling1=200, rolling2=200, quantil
     dataset = dataset.iloc[:len(labels)].copy()
     dataset['labels'] = labels
     dataset = dataset.dropna()
-    dataset = dataset.drop(dataset[dataset.labels == 2.0].index) # Remove bad signals (if any)
     
     # Return the DataFrame with temporary columns removed
     return dataset.drop(columns=['lvl1', 'lvl2']) 
@@ -1817,7 +1803,6 @@ def get_labels_filter_one_direction(dataset, rolling=200, quantiles=[.45, .55], 
         dataset = dataset.iloc[:n].copy()
         dataset['labels_main'] = labels
         dataset = dataset.dropna()
-        dataset = dataset.drop(dataset[dataset.labels_main == 2.0].index)
         return dataset.drop(columns=['lvl'])
 
     raise ValueError("direction must be 'buy', 'sell', or 'both'")
@@ -1879,7 +1864,6 @@ def get_labels_trend_one_direction(dataset, rolling=50, polyorder=3, threshold=0
         dataset = dataset.iloc[:n].copy()
         dataset['labels_main'] = labels
         dataset = dataset.dropna()
-        dataset = dataset.drop(dataset[dataset.labels_main == 2.0].index)
         return dataset
 
     raise ValueError("direction must be 'buy', 'sell', or 'both'")
@@ -1921,7 +1905,6 @@ def get_labels_filter_flat(dataset, rolling=200, quantiles=[.45, .55], polyorder
                        - 'labels' column: 
                             - 0: Buy
                             - 1: Sell
-                       - Rows where 'labels' is 2 (no signal) are removed.
                        - Rows with missing values (NaN) are removed.
                        - The temporary 'lvl' column is removed. 
     """
@@ -1960,8 +1943,7 @@ def get_labels_filter_flat(dataset, rolling=200, quantiles=[.45, .55], polyorder
     dataset = dataset.dropna()
     
     # Remove rows where the 'labels' column has a value of 2.0 (sell signals)
-    # dataset = dataset.drop(dataset[dataset.labels == 2.0].index)
-    
+    #     
     # Return the modified DataFrame with the 'lvl' column removed
     return dataset.drop(columns=['lvl'])
 
@@ -2024,7 +2006,7 @@ def calculate_labels_one_direction(high, low, close, markup, min_val, max_val, d
 
     return result
 
-def get_labels_one_direction(dataset, markup, min_val=1, max_val=15,
+def get_labels_one_direction(dataset, markup=0.5, min_val=1, max_val=5,
                              direction='buy', atr_period=14) -> pd.DataFrame:
     """Label trades for a single or both directions using ATR based distance.
 
@@ -2088,7 +2070,6 @@ def get_labels_one_direction(dataset, markup, min_val=1, max_val=15,
         dataset = dataset.iloc[:n].copy()
         dataset['labels_main'] = labels
         dataset = dataset.dropna()
-        dataset = dataset.drop(dataset[dataset.labels_main == 2.0].index)
         return dataset
 
     raise ValueError("direction must be 'buy', 'sell', or 'both'")

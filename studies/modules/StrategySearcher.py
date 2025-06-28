@@ -387,11 +387,7 @@ class StrategySearcher:
             ds_train, ds_test = self.get_train_test_data(hp)
             if ds_train is None or ds_test is None:
                 return -1.0, -1.0
-
-            # Etiquetado según la dirección seleccionada
-            ds_train = self.apply_labeling(ds_train, hp)
-            if ds_train is None or ds_train.empty:
-                return -1.0, -1.0
+            
             # Selección de features: todas las columnas *_feature
             feature_cols = [col for col in ds_train.columns if col.endswith('_feature')]
             X = ds_train[feature_cols]
@@ -459,11 +455,6 @@ class StrategySearcher:
 
             ds_train, ds_test = self.get_train_test_data(hp)
             if ds_train is None or ds_test is None:
-                return -1.0, -1.0
-
-            # Etiquetado según la dirección
-            ds_train = self.apply_labeling(ds_train, hp)
-            if ds_train is None or ds_train.empty:
                 return -1.0, -1.0
 
             feature_cols = [c for c in ds_train.columns if c.endswith('_feature')]
@@ -578,16 +569,7 @@ class StrategySearcher:
                 print(f"🔍 DEBUG evaluate_clusters: ds_train.shape = {ds_train.shape}")
                 print(f"🔍 DEBUG evaluate_clusters: ds_test.shape = {ds_test.shape}")
             
-            # Etiquetar todo el dataset antes del bucle
-            ds_train_labeled = self.apply_labeling(ds_train, hp)
-            if ds_train_labeled is None or ds_train_labeled.empty:
-                print("⚠️ ERROR: Etiquetado falló")
-                return None, None
-            
-            if self.debug:
-                print(f"🔍 DEBUG evaluate_clusters: ds_train_labeled.shape = {ds_train_labeled.shape}")
-            
-            cluster_sizes = ds_train_labeled['labels_meta'].value_counts()
+            cluster_sizes = ds_train['labels_meta'].value_counts()
             if self.debug:
                 print(f"🔍 DEBUG evaluate_clusters: cluster_sizes = {cluster_sizes}")
 
@@ -608,7 +590,7 @@ class StrategySearcher:
                     print(f"🔍 DEBUG evaluate_clusters: Procesando cluster {clust} con {cluster_sizes[clust]} muestras")
                 
                 # Filtrar datos ya etiquetados del cluster
-                model_main_data = ds_train_labeled.loc[ds_train_labeled["labels_meta"] == clust]
+                model_main_data = ds_train.loc[ds_train["labels_meta"] == clust]
 
                 # Verificar tamaño después de filtrar
                 if 'label_max' in hp and len(model_main_data) <= hp["label_max"]:
@@ -633,9 +615,9 @@ class StrategySearcher:
                     continue
 
                 # Meta data
-                meta_feature_cols = ds_train_labeled.filter(like='_meta_feature').columns
-                model_meta_data = ds_train_labeled.loc[:, meta_feature_cols].copy()
-                model_meta_data['labels_meta'] = (ds_train_labeled['labels_meta'] == clust).astype('int8')
+                meta_feature_cols = ds_train.filter(like='_meta_feature').columns
+                model_meta_data = ds_train.loc[:, meta_feature_cols].copy()
+                model_meta_data['labels_meta'] = (ds_train['labels_meta'] == clust).astype('int8')
 
                 if (model_meta_data['labels_meta'].value_counts() < 2).any():
                     if self.debug:
@@ -1190,8 +1172,13 @@ class StrategySearcher:
                 print(f"🔍 DEBUG: ds_slice.shape = {ds_slice.shape}")
             
             full_ds = get_features(ds_slice, dict(hp_tuple))
+            
             if self.debug:
                 print(f"🔍 DEBUG: full_ds.shape después de get_features = {full_ds.shape}")
+
+            full_ds = self.apply_labeling(full_ds, hp)
+            if self.debug:
+                print(f"🔍 DEBUG: full_ds.shape después de apply_labeling = {full_ds.shape}")
 
             # y recortar exactamente al rango que interesa
             full_ds = full_ds.loc[

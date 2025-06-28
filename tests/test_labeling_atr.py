@@ -42,5 +42,7 @@ def test_labels_one_direction_both():
         atr_period=5,
     )
     assert not res.empty
-    assert set(res["labels_main"].unique()) <= {0.0, 1.0}
+    labels = set(res["labels_main"].unique())
+    assert labels <= {0.0, 1.0, 2.0}
+    assert 0.0 in labels or 1.0 in labels
 

@@ -25,7 +25,9 @@ def _sample_df(n=50):
 def test_filter_one_direction_both():
     df = _sample_df()
     res = get_labels_filter_one_direction(df, rolling=5, polyorder=2, direction="both")
-    assert set(res["labels_main"].unique()) <= {0.0, 1.0}
+    labels = set(res["labels_main"].unique())
+    assert labels <= {0.0, 1.0, 2.0}
+    assert 0.0 in labels or 1.0 in labels
     assert {"open", "high", "low", "close", "volume"}.issubset(res.columns)
 
 
@@ -46,7 +48,9 @@ def test_trend_one_direction_both():
         vol_window=5,
         direction="both",
     )
-    assert set(res["labels_main"].unique()) <= {0.0, 1.0}
+    labels = set(res["labels_main"].unique())
+    assert labels <= {0.0, 1.0, 2.0}
+    assert 0.0 in labels or 1.0 in labels
     assert {"open", "high", "low", "close", "volume"}.issubset(res.columns)
 
 

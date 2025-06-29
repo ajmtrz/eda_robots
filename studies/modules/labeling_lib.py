@@ -1970,27 +1970,32 @@ def calculate_atr_simple(high, low, close, period=14):
 
 # ONE DIRECTION LABELING
 @njit(cache=True, fastmath=True)
-def calculate_labels_one_direction(high, low, close, markup, min_val, max_val, direction, atr_period=14):
-    # Verificar que hay suficientes datos  
+def calculate_labels_one_direction(high, low, close, markup, min_val, max_val, direction, atr_period=14, method='mean'):
     n = len(close)
     if n <= max_val:
         return np.zeros(0, dtype=np.float64)
 
-    # Calcular ATR
     atr = calculate_atr_simple(high, low, close, period=atr_period)
-
-    # Modo aleatorio permanente
     result = np.zeros(n - max_val, dtype=np.float64)
 
     for i in range(n - max_val):
-        # Seleccionar barra aleatoria dentro del rango
-        rand_idx = np.random.randint(min_val, max_val + 1)
-        future_price = close[i + rand_idx]
-
-        # Calcular markup dinámico
+        window = close[i + min_val : i + max_val + 1]
+        if window.size == 0:
+            continue
+        if method == 'first':
+            future_price = close[i + min_val]
+        elif method == 'last':
+            future_price = close[i + max_val]
+        elif method == 'mean':
+            future_price = np.mean(window)
+        elif method == 'max':
+            future_price = np.max(window)
+        elif method == 'min':
+            future_price = np.min(window)
+        else:
+            future_price = np.mean(window)  # fallback
         dyn_mk = markup * atr[i]
 
-        # Verificar condición según dirección
         if direction == "buy":
             if future_price > close[i] + dyn_mk:
                 result[i] = 1.0
@@ -2000,32 +2005,14 @@ def calculate_labels_one_direction(high, low, close, markup, min_val, max_val, d
 
     return result
 
+
 def get_labels_one_direction(dataset, markup=0.5, min_val=1, max_val=5,
-                             direction='buy', atr_period=14) -> pd.DataFrame:
+                             direction='buy', atr_period=14, method='mean') -> pd.DataFrame:
     """Label trades for a single or both directions using ATR based distance.
 
-    Parameters
-    ----------
-    dataset : pd.DataFrame
-        Input OHLCV data.
-    markup : float
-        Multiplier for the ATR to define the distance to the target candle.
-    min_val, max_val : int, optional
-        Range (in candles) to evaluate the trade outcome.
-    direction : {'buy', 'sell', 'both'}, optional
-        Direction to evaluate. ``'both'`` returns labels for long and short
-        trades simultaneously.
-    atr_period : int, optional
-        Period for the ATR calculation.
-
-    Returns
-    -------
-    pd.DataFrame
-        The original dataset trimmed and with a ``labels_main`` column.
-        When ``direction`` is ``'both'`` the labels are ``0`` for buy and ``1``
-        for sell trades. Rows without a clear signal are removed.
+    El parámetro 'method' controla cómo se selecciona el precio de lookahead en la ventana:
+    'first', 'last', 'mean', 'max', 'min'.
     """
-
     close_data = np.ascontiguousarray(dataset['close'].values)
     high_data = np.ascontiguousarray(dataset['high'].values)
     low_data = np.ascontiguousarray(dataset['low'].values)
@@ -2034,7 +2021,7 @@ def get_labels_one_direction(dataset, markup=0.5, min_val=1, max_val=5,
         labels = calculate_labels_one_direction(
             high_data, low_data, close_data,
             markup, min_val, max_val, direction,
-            atr_period
+            atr_period, method
         )
         dataset = dataset.iloc[:len(labels)].copy()
         dataset['labels_main'] = labels
@@ -2045,12 +2032,12 @@ def get_labels_one_direction(dataset, markup=0.5, min_val=1, max_val=5,
         labels_buy = calculate_labels_one_direction(
             high_data, low_data, close_data,
             markup, min_val, max_val, 'buy',
-            atr_period
+            atr_period, method
         )
         labels_sell = calculate_labels_one_direction(
             high_data, low_data, close_data,
             markup, min_val, max_val, 'sell',
-            atr_period
+            atr_period, method
         )
 
         n = min(len(labels_buy), len(labels_sell))

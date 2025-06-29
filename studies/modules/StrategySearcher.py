@@ -680,13 +680,27 @@ class StrategySearcher:
             label_func = self.LABEL_FUNCS.get(self.label_method, get_labels_one_direction)
             label_params = inspect.signature(label_func).parameters
 
+            # Si el método de etiquetado es 'random', permitir elegir el método determinista
+            if 'method' in label_params:
+                params['method'] = trial.suggest_categorical('random_method', ['first', 'last', 'mean', 'max', 'min'])
+
             if 'markup' in label_params:
                 # markup now acts as a multiplier of the ATR
                 params['markup'] = trial.suggest_float('markup', 0.2, 2.0, log=True)
 
+            if 'min_val' in label_params:
+                max_possible = min(5, max(len(self.base_df) - 1, 1))
+                params['min_val'] = trial.suggest_int('min_val', 1, max_possible, log=True)
+
             if 'max_val' in label_params or 'max_l' in label_params:
                 max_possible = min(15, max(len(self.base_df) - 1, 1))
-                params['label_max'] = trial.suggest_int('label_max', 1, max_possible, log=True)
+                if 'min_val' in params:
+                    min_label_max = params['min_val'] + 1
+                else:
+                    min_label_max = 1
+                # Asegurarse de que min_label_max no exceda max_possible
+                min_label_max = min(min_label_max, max_possible)
+                params['label_max'] = trial.suggest_int('label_max', min_label_max, max_possible, log=True)
 
             if 'atr_period' in label_params:
                 params['atr_period'] = trial.suggest_int('atr_period', 5, 50, log=True)

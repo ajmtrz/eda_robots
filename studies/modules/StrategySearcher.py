@@ -41,7 +41,7 @@ from modules.export_lib import export_model_to_ONNX
 
 class StrategySearcher:
     LABEL_FUNCS = {
-        "atr": get_labels_one_direction,
+        "random": get_labels_one_direction,
         "trend": get_labels_trend,
         "trend_profit": get_labels_trend_with_profit,
         "trend_multi": get_labels_trend_with_profit_multi,

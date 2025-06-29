@@ -686,36 +686,6 @@ def robust_oos_score(
         print(f"\nError en robust_oos_score: {e}")
         return -1.0
 
-
-def robust_oos_score_one_direction(
-        ds_main: np.ndarray,
-        ds_meta: np.ndarray,
-        close: np.ndarray,
-        model_main: object,
-        model_meta: object,
-        direction: str,
-        n_sim: int = 100,
-        block_size: int = 20,
-        agg: str = "q05",
-        plot: bool = False,
-        prd: str = "") -> float:
-    """Compatibilidad hacia atrás."""
-
-    return robust_oos_score(
-        ds_main=ds_main,
-        ds_meta=ds_meta,
-        close=close,
-        model_main=model_main,
-        model_meta=model_meta,
-        direction=direction,
-        n_sim=n_sim,
-        block_size=block_size,
-        agg=agg,
-        plot=plot,
-        prd=prd,
-    )
-
-
 def walk_forward_robust_score(
     ds_main: np.ndarray,
     ds_meta: np.ndarray,

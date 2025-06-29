@@ -685,22 +685,13 @@ class StrategySearcher:
                 params['method'] = trial.suggest_categorical('random_method', ['first', 'last', 'mean', 'max', 'min'])
 
             if 'markup' in label_params:
-                # markup now acts as a multiplier of the ATR
                 params['markup'] = trial.suggest_float('markup', 0.2, 2.0, log=True)
 
-            if 'min_val' in label_params:
-                max_possible = min(5, max(len(self.base_df) - 1, 1))
-                params['min_val'] = trial.suggest_int('min_val', 1, max_possible, log=True)
+            if 'min_val' in label_params: 
+                params['min_val'] = trial.suggest_int('min_val', 1, 5)
 
-            if 'max_val' in label_params or 'max_l' in label_params:
-                max_possible = min(15, max(len(self.base_df) - 1, 1))
-                if 'min_val' in params:
-                    min_label_max = params['min_val'] + 1
-                else:
-                    min_label_max = 1
-                # Asegurarse de que min_label_max no exceda max_possible
-                min_label_max = min(min_label_max, max_possible)
-                params['label_max'] = trial.suggest_int('label_max', min_label_max, max_possible, log=True)
+            if 'max_val' in label_params:
+                params['max_val'] = trial.suggest_int('max_val', 6, 20)
 
             if 'atr_period' in label_params:
                 params['atr_period'] = trial.suggest_int('atr_period', 5, 50, log=True)
@@ -1026,11 +1017,6 @@ class StrategySearcher:
                 continue
             if name == 'direction':
                 kwargs['direction'] = self.direction if self.direction != 'both' else 'both'
-            elif name in {'max_val', 'max_l'}:
-                if 'label_max' in hp:
-                    kwargs[name] = hp['label_max']
-                elif param.default is not inspect.Parameter.empty:
-                    kwargs[name] = param.default
             elif name in hp:
                 kwargs[name] = hp[name]
             elif param.default is not inspect.Parameter.empty:
@@ -1081,7 +1067,7 @@ class StrategySearcher:
 
             # Clamp window/rolling parameters to dataset length
             for k, v in list(kwargs.items()):
-                if isinstance(v, (int, float)) and any(x in k for x in ('rolling', 'window', 'period', 'span', 'max_l', 'max_val')):
+                if isinstance(v, (int, float)) and any(x in k for x in ('rolling', 'window', 'period', 'span', 'max_val')):
                     iv = max(int(v), 1)
                     kwargs[k] = min(iv, max(len(dataset) - 1, 1))
                 elif isinstance(v, list) and any(x in k for x in ('rolling', 'window', 'period')):
@@ -1089,7 +1075,7 @@ class StrategySearcher:
 
             # Check for negative or too large window/rolling/period parameters
             for k, v in list(kwargs.items()):
-                if isinstance(v, int) and any(x in k for x in ('rolling', 'window', 'period', 'span', 'max_l', 'max_val')):
+                if isinstance(v, int) and any(x in k for x in ('rolling', 'window', 'period', 'span', 'max_val')):
                     if v <= 0 or v >= len(dataset):
                         print(f"⚠️ ERROR en apply_labeling: parámetro '{k}'={v} inválido para dataset de tamaño {len(dataset)}")
                         return pd.DataFrame()
@@ -1098,12 +1084,10 @@ class StrategySearcher:
                         print(f"⚠️ ERROR en apply_labeling: lista '{k}' contiene valores inválidos para dataset de tamaño {len(dataset)}")
                         return pd.DataFrame()
 
-            if 'min_l' in kwargs and 'max_l' in kwargs and kwargs['min_l'] > kwargs['max_l']:
-                kwargs['min_l'] = kwargs['max_l']
             if 'min_val' in kwargs and 'max_val' in kwargs and kwargs['min_val'] > kwargs['max_val']:
                 kwargs['min_val'] = kwargs['max_val']
 
-            if 'label_max' in hp and len(dataset) <= hp['label_max']:
+            if 'max_val' in hp and len(dataset) <= hp['max_val']:
                 return pd.DataFrame()
 
             method = kwargs.get('method')

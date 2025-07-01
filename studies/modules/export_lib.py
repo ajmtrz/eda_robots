@@ -404,7 +404,7 @@ def export_model_to_ONNX(**kwargs):
                     return den==0.0 ? 0.0 : num/den;
                 }
                 """,
-            "max_dd":"""
+            "maxdd":"""
                 double stat_max_dd(const double &a[])
                 {
                     int n = ArraySize(a);
@@ -468,7 +468,7 @@ def export_model_to_ONNX(**kwargs):
                     return sum==0.0 ? 0.0 : (up - down)/sum;
                 }
             """,
-            "approx_entropy": """
+            "approxentropy": """
                 double stat_approx_entropy(const double &a[])
                 {
                     int n = ArraySize(a);
@@ -517,7 +517,7 @@ def export_model_to_ONNX(**kwargs):
                     return phi1 - phi2;
                 }
                 """,
-            "eff_ratio": """
+            "effratio": """
                 double stat_eff_ratio(const double &a[])
                 {
                     int n = ArraySize(a);
@@ -553,7 +553,7 @@ def export_model_to_ONNX(**kwargs):
                 return cov / (n * std_a * std_b);
             }
             """,
-            "corr_skew": """
+            "corrskew": """
             double stat_corr_skew(const double &a[])
             {
                 int n = ArraySize(a);
@@ -584,7 +584,7 @@ def export_model_to_ONNX(**kwargs):
                 return corr_pos - corr_neg;
             }
             """,
-            "jump_vol": """
+            "jumpvol": """
                 double stat_jump_vol(const double &a[])
                 {
                     int n = ArraySize(a);
@@ -617,7 +617,7 @@ def export_model_to_ONNX(**kwargs):
                     return (double)jumps/(n-1);
                 }
                 """,
-            "vol_skew": """
+            "volskew": """
                 double stat_vol_skew(const double &a[])
                 {
                     int n = ArraySize(a);
@@ -680,7 +680,7 @@ def export_model_to_ONNX(**kwargs):
             code += stat_function_templates["median"] + "\n"
         if "fisher" in stats_total and "momentum" not in stats_total:
             code += stat_function_templates["momentum"] + "\n"
-        if "corr_skew" in stats_total and "corr" not in stats_total:
+        if "corrskew" in stats_total and "corr" not in stats_total:
             code += stat_function_templates["corr"] + "\n"
         for stat in stats_total:
             code += stat_function_templates[stat] + "\n"

@@ -14,6 +14,7 @@ from modules.export_lib import (
     skl2onnx_parser_catboost_classifier,
     skl2onnx_convert_catboost,
 )
+from modules.labeling_lib import get_features
 rt.set_default_logger_severity(4)
 
 @njit(cache=True, fastmath=True)
@@ -431,6 +432,18 @@ def _make_noisy_signals(close: np.ndarray,
     # Labels y meta-labels se mantienen sin distorsionar
     return close_noisy, labels, meta
 
+def _make_noisy_close(close: np.ndarray) -> np.ndarray:
+    """Devuelve una serie de precios alterada con ruido laplaciano."""
+    n = close.size
+    if n < 2:
+        return close.copy()
+    volatility = np.std(np.diff(close) / close[:-1])
+    price_noise = np.random.uniform(volatility * 0.5, volatility * 2.0)
+    if price_noise <= 0:
+        return close.copy()
+    noise = np.random.laplace(0.0, price_noise, size=n)
+    return close * (1.0 + noise)
+
 @njit(cache=True, fastmath=True, parallel=True)
 def _simulate_batch(close, l_all, m_all, block_size, direction):
     n_sim, n = l_all.shape
@@ -512,144 +525,137 @@ def _predict_batch(model, X_base, noise_levels):
 def monte_carlo_full(
     model_main: object,
     model_meta: object,
-    close: np.ndarray,
-    X_main: np.ndarray,
-    X_meta: np.ndarray,
+    ds_test: pd.DataFrame,
+    hp: dict,
     direction: str = "both",
     n_sim: int = 100,
     block_size: int = 20,
     plot: bool = False,
-    prd: str = ""
+    prd: str = "",
 ) -> dict:
-    """
-    Lanza Monte-Carlo combinando ruido en inputs y bootstrapping de retornos.
-    Si se pasan modelos y features, añade ruido a las features y predice en cada simulación.
+    """Lanza Monte Carlo alterando solo el cierre y recalculando las features."""
 
-    Args:
-        plot: Si True, muestra un gráfico con las curvas de equity de todas las simulaciones
-    """
-    # Validación de inputs
-    close = np.ascontiguousarray(close)
-    if X_main is not None and X_meta is not None:
-        if X_main.shape[0] != close.shape[0] or X_meta.shape[0] != close.shape[0]:
-            raise ValueError("X_main y X_meta deben tener el mismo número de filas que close")
-        if model_main is None or model_meta is None:
-            raise ValueError("Si se pasan features, también deben pasarse los modelos")
+    # extraer serie de cierre original
+    close = np.ascontiguousarray(ds_test["close"].to_numpy())
 
     try:
-        # Primero calculamos la curva original sin ruido
+        base_df = ds_test.copy()
+        feats = get_features(base_df, dict(hp))
+        if feats.empty:
+            return {"scores": np.array([-1.0]), "p_positive": 0.0, "quantiles": np.array([-1.0, -1.0, -1.0])}
+
+        X_main = feats.filter(regex=r"(?<!_meta)_feature$").to_numpy()
+        X_meta = feats.filter(like="_meta_feature").to_numpy()
+        close_feat = feats["close"].to_numpy()
+
         main = model_main.predict_proba(X_main)[:, 1]
         meta = model_meta.predict_proba(X_meta)[:, 1]
         if direction == "both":
-            rpt_original, _ = process_data(close, main, meta)
+            rpt_original, _ = process_data(close_feat, main, meta)
         else:
-            rpt_original, _ = process_data_one_direction(close, main, meta, direction)
-        
-        # Monte Carlo simulations
-        noise_levels = np.random.uniform(0.005, 0.02, n_sim)
-        l_all = _predict_batch(model_main, X_main, noise_levels)
-        m_all = _predict_batch(model_meta, X_meta, noise_levels)
+            rpt_original, _ = process_data_one_direction(close_feat, main, meta, direction)
 
-        scores = _simulate_batch(close, l_all, m_all, block_size, direction)
+        scores = np.full(n_sim, -1.0)
+        equity_curves = [] if plot else None
+
+        for i in range(n_sim):
+            c_n = _make_noisy_close(close)
+            df_n = ds_test.copy()
+            df_n["close"] = c_n
+            feats_n = get_features(df_n, dict(hp))
+            if feats_n.empty:
+                continue
+            X_m = feats_n.filter(regex=r"(?<!_meta)_feature$").to_numpy()
+            X_me = feats_n.filter(like="_meta_feature").to_numpy()
+            c_feat = feats_n["close"].to_numpy()
+
+            m_main = model_main.predict_proba(X_m)[:, 1]
+            m_meta = model_meta.predict_proba(X_me)[:, 1]
+
+            if direction == "both":
+                rpt, _ = process_data(c_feat, m_main, m_meta)
+            else:
+                rpt, _ = process_data_one_direction(c_feat, m_main, m_meta, direction)
+
+            if len(rpt) < 2:
+                continue
+            ret = np.diff(rpt)
+            if ret.size == 0:
+                continue
+            eq = _equity_from_returns(_bootstrap_returns(ret, block_size))
+            scores[i] = evaluate_report(eq)
+            if equity_curves is not None:
+                equity_curves.append(rpt)
+
         valid = scores[scores > 0.0]
-        
-        # Visualización si se solicita
+
         if plot:
             try:
                 import matplotlib.pyplot as plt
-                
+
                 fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 8), height_ratios=[3, 1])
-                
-                # Plot superior: Curvas de equity
-                if valid.size > 0:
-                    # Recolectar todas las curvas de simulación
-                    equity_curves = []
-                    for i in range(n_sim):
-                        c_n, l_n, m_n = _make_noisy_signals(close, l_all[i], m_all[i])
-                        if direction == "both":
-                            rpt, _ = process_data(c_n, l_n, m_n)
-                        else:
-                            rpt, _ = process_data_one_direction(c_n, l_n, m_n, direction)
-                        if len(rpt) >= 2:
-                            equity_curves.append(rpt)
-                    
-                    # Plotear simulaciones en gris claro
+
+                if valid.size > 0 and equity_curves:
                     for eq in equity_curves:
                         ax1.plot(eq, color='gray', alpha=0.1)
-                    
-                    # Plotear curva original en azul
                     ax1.plot(rpt_original, color='blue', linewidth=2, label='Original')
-                    
-                    # Calcular y plotear percentiles
-                    if equity_curves:
-                        # Encontrar la longitud mínima común
-                        min_len = min(len(curve) for curve in equity_curves)
-                        curves_array = np.array([curve[:min_len] for curve in equity_curves])
-                        
-                        p05 = np.percentile(curves_array, 5, axis=0)
-                        p95 = np.percentile(curves_array, 95, axis=0)
-                        median = np.median(curves_array, axis=0)
-                        
-                        ax1.plot(p05, 'r--', alpha=0.5, label='5%')
-                        ax1.plot(p95, 'r--', alpha=0.5, label='95%')
-                        ax1.plot(median, 'g-', alpha=0.5, label='Mediana')
-                    
+
+                    min_len = min(len(curve) for curve in equity_curves)
+                    curves_array = np.array([curve[:min_len] for curve in equity_curves])
+                    p05 = np.percentile(curves_array, 5, axis=0)
+                    p95 = np.percentile(curves_array, 95, axis=0)
+                    median = np.median(curves_array, axis=0)
+                    ax1.plot(p05, 'r--', alpha=0.5, label='5%')
+                    ax1.plot(p95, 'r--', alpha=0.5, label='95%')
+                    ax1.plot(median, 'g-', alpha=0.5, label='Mediana')
+
                     if prd:
-                        ax1.set_title(f'Simulaciones Monte Carlo - {prd}\n'
-                                   f'(n={valid.size}, {direction})')
+                        ax1.set_title(f'Simulaciones Monte Carlo - {prd}\n(n={valid.size}, {direction})')
                     else:
-                        ax1.set_title(f'Simulaciones Monte Carlo\n'
-                                   f'(n={valid.size}, {direction})')
+                        ax1.set_title(f'Simulaciones Monte Carlo\n(n={valid.size}, {direction})')
                 else:
-                    ax1.text(0.5, 0.5, 'No hay simulaciones válidas', 
-                           ha='center', va='center')
-                
+                    ax1.text(0.5, 0.5, 'No hay simulaciones válidas', ha='center', va='center')
+
                 ax1.set_xlabel('Operaciones')
                 ax1.set_ylabel('Beneficio Acumulado')
                 ax1.legend()
                 ax1.grid(True, alpha=0.3)
-                
-                # Plot inferior: Histograma de scores
+
                 if valid.size > 0:
                     ax2.hist(valid, bins=30, density=True, alpha=0.6, color='skyblue')
-                    ax2.axvline(np.median(valid), color='red', linestyle='--', 
-                             label=f'Mediana: {np.median(valid):.2f}')
-                    
+                    ax2.axvline(np.median(valid), color='red', linestyle='--', label=f'Mediana: {np.median(valid):.2f}')
                     q05, q50, q95 = np.quantile(valid, [0.05, 0.5, 0.95])
-                    ax2.axvline(q05, color='orange', linestyle=':', 
-                             label=f'Q05: {q05:.2f}')
-                    ax2.axvline(q95, color='green', linestyle=':', 
-                             label=f'Q95: {q95:.2f}')
-                
+                    ax2.axvline(q05, color='orange', linestyle=':', label=f'Q05: {q05:.2f}')
+                    ax2.axvline(q95, color='green', linestyle=':', label=f'Q95: {q95:.2f}')
+
                 ax2.set_xlabel('Score')
                 ax2.set_ylabel('Densidad')
                 ax2.legend()
                 ax2.grid(True, alpha=0.3)
-                
+
                 plt.tight_layout()
                 plt.show()
-                
+
             except Exception as viz_error:
                 print(f"Error en visualización: {viz_error}")
 
         return {
             "scores": scores,
             "p_positive": np.mean(scores > 0),
-            "quantiles": np.quantile(valid, [0.05, 0.5, 0.95]) if valid.size else [-1,-1,-1],
+            "quantiles": np.quantile(valid, [0.05, 0.5, 0.95]) if valid.size else [-1, -1, -1],
         }
     except Exception as e:
         print(f"\nError en monte_carlo_full:")
         print(f"Error: {str(e)}")
         print("Traceback:")
         print(traceback.format_exc())
-        return {"scores": np.array([-1.0]), "p_positive": 0.0, "quantiles": np.array([-1.0, -1.0, -1.0])}
+
 
 def robust_oos_score(
-        ds_main: np.ndarray,
-        ds_meta: np.ndarray,
-        close: np.ndarray,
+        ds_test: pd.DataFrame,
         model_main: object,
         model_meta: object,
+        hp: dict,
         direction: str = "both",
         n_sim: int = 100,
         block_size: int = 20,
@@ -661,16 +667,15 @@ def robust_oos_score(
 
     try:
         mc = monte_carlo_full(
-            close=close,
-            X_main=ds_main,
-            X_meta=ds_meta,
             model_main=model_main,
             model_meta=model_meta,
+            ds_test=ds_test,
+            hp=hp,
             direction=direction,
             n_sim=n_sim,
             block_size=block_size,
             plot=plot,
-            prd=prd
+            prd=prd,
         )
 
         if agg == "q05":
@@ -687,11 +692,10 @@ def robust_oos_score(
         return -1.0
 
 def walk_forward_robust_score(
-    ds_main: np.ndarray,
-    ds_meta: np.ndarray,
-    close: np.ndarray,
+    ds_test: pd.DataFrame,
     model_main: object,
     model_meta: object,
+    hp: dict,
     direction: str = "both",
     n_splits: int = 3,
     agg: str = "min",
@@ -700,14 +704,13 @@ def walk_forward_robust_score(
     """Calcula un score OOS mediante validación walk-forward."""
 
     try:
-        n = len(close)
+        n = len(ds_test)
         if n_splits <= 1 or n <= 1:
             return robust_oos_score(
-                ds_main=ds_main,
-                ds_meta=ds_meta,
-                close=close,
+                ds_test=ds_test,
                 model_main=model_main,
                 model_meta=model_meta,
+                hp=hp,
                 direction=direction,
                 plot=plot,
                 prd="oos",
@@ -721,11 +724,10 @@ def walk_forward_robust_score(
             if end - start < 2:
                 continue
             s = robust_oos_score(
-                ds_main=ds_main[start:end],
-                ds_meta=ds_meta[start:end],
-                close=close[start:end],
+                ds_test=ds_test.iloc[start:end],
                 model_main=model_main,
                 model_meta=model_meta,
+                hp=hp,
                 direction=direction,
                 plot=plot,
                 prd=f"oos_{i+1}",

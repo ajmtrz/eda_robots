@@ -657,9 +657,9 @@ class StrategySearcher:
             MAX_META_STATS = 3
             all_stats = [
                 "std", "skew", "zscore", "range", "mad", "entropy",
-                "slope", "momentum", "autocorr", "max_dd", "hurst", "corr_skew",
-                "sharpe", "fisher", "chande", "var", "eff_ratio", "kurt",
-                "jump_vol", "fractal", "vol_skew", "approx_entropy",
+                "slope", "momentum", "autocorr", "maxdd", "hurst", "corrskew",
+                "sharpe", "fisher", "chande", "var", "effratio", "kurt",
+                "jump_vol", "fractal", "volskew", "approxentropy",
                 "mean", "median", "iqr", "cv",
             ]
             params = {
@@ -945,20 +945,23 @@ class StrategySearcher:
             # Extraer datos para evaluación
             ds_train_eval_main = ds_train[main_feature_cols].to_numpy()
             ds_train_eval_meta = ds_train[meta_feature_cols].to_numpy()
-            ds_test_eval_main = ds_test[main_feature_cols].to_numpy()
-            ds_test_eval_meta = ds_test[meta_feature_cols].to_numpy()
+            ds_test = ds_test[["open", "high", "low", "close", "volume"]]
             close_train_eval = ds_train['close'].to_numpy()
-            close_test_eval = ds_test['close'].to_numpy()
 
             # Verificar correspondencia de tamaños de los precios con respecto a los datos de entrenamiento
-            if len(ds_train_eval_main) != len(close_train_eval) or len(ds_test_eval_main) != len(close_test_eval):
+            if len(ds_train_eval_main) != len(close_train_eval):
                 print("⚠️ ERROR: Tamaños de precios no coinciden con los datos de entrenamiento")
                 return None, None
             
             if self.debug:
-                print(f"🔍 DEBUG: Tamaños de entrenamiento: {len(ds_train_eval_main)}, Test: {len(ds_test_eval_main)}")
-                print(f"🔍 DEBUG: Tamaños de precios entrenamiento: {len(close_train_eval)}, Test: {len(close_test_eval)}")
+                print(f"🔍 DEBUG: Tamaños de entrenamiento: {len(ds_train_eval_main)}, Test: {len(ds_test)}")
 
+            # Print de periods_main y periods_meta y de stats
+            if True:
+                print(f"🔍 DEBUG: Períodos main: {hp['periods_main']}")
+                print(f"🔍 DEBUG: Períodos meta: {hp['periods_meta']}")
+                print(f"🔍 DEBUG: Stats main: {hp['stats_main']}")
+                print(f"🔍 DEBUG: Stats meta: {hp['stats_meta']}")
             # Evaluación in-sample y out-of-sample
             score_ins = tester(
                 ds_main=ds_train_eval_main,
@@ -971,11 +974,10 @@ class StrategySearcher:
                 prd='insample',
             )
             score_oos = walk_forward_robust_score(
-                ds_main=ds_test_eval_main,
-                ds_meta=ds_test_eval_meta,
-                close=close_test_eval,
+                ds_test=ds_test,
                 model_main=model_main,
                 model_meta=model_meta,
+                hp=hp,
                 direction=self.direction,
                 n_splits=3,
                 agg='min',
@@ -1187,30 +1189,51 @@ class StrategySearcher:
                 feature_cols = [c for c in feature_cols if c not in problematic]
                 if not feature_cols:
                     return None, None
+            # --- 5b) Reconstruir hp manteniendo el orden original ---------
+            main_periods_ordered = []
+            main_stats_ordered   = []
+            meta_periods_ordered = []
+            meta_stats_ordered   = []
 
-            # ──────────────────────────────────────────────────────────────
-            # 5b) Ajustar hp según columnas restantes (solo pares válidos)
-            main_pairs = []
-            meta_pairs = []
+            seen_main_periods = set()
+            seen_main_stats   = set()
+            seen_meta_periods = set()
+            seen_meta_stats   = set()
+
             for col in feature_cols:
                 if col.endswith('_meta_feature'):
-                    base = col[:-13]
-                    if '_' in base:
-                        p_str, stat = base.split('_', 1)
-                        if p_str.isdigit():
-                            meta_pairs.append((int(p_str), stat))
-                elif col.endswith('_feature'):
-                    base = col[:-8]
-                    if '_' in base:
-                        p_str, stat = base.split('_', 1)
-                        if p_str.isdigit():
-                            main_pairs.append((int(p_str), stat))
+                    p_str, stat = col[:-13].split('_', 1)
+                    p = int(p_str)
 
-            # Reconstruir listas de periodos y stats solo con los pares válidos
-            hp['periods_main'] = tuple(p for p, s in main_pairs)
-            hp['stats_main'] = tuple(s for p, s in main_pairs)
-            hp['periods_meta'] = tuple(p for p, s in meta_pairs)
-            hp['stats_meta'] = tuple(s for p, s in meta_pairs)
+                    # periodo meta
+                    if p not in seen_meta_periods:
+                        meta_periods_ordered.append(p)
+                        seen_meta_periods.add(p)
+
+                    # estadístico meta
+                    if stat not in seen_meta_stats:
+                        meta_stats_ordered.append(stat)
+                        seen_meta_stats.add(stat)
+
+                elif col.endswith('_feature'):
+                    p_str, stat = col[:-8].split('_', 1)
+                    p = int(p_str)
+
+                    # periodo main
+                    if p not in seen_main_periods:
+                        main_periods_ordered.append(p)
+                        seen_main_periods.add(p)
+
+                    # estadístico main
+                    if stat not in seen_main_stats:
+                        main_stats_ordered.append(stat)
+                        seen_main_stats.add(stat)
+
+            # -------- aplicar a hp ----------------------------------------
+            hp['periods_main'] = tuple(main_periods_ordered)
+            hp['stats_main']   = tuple(main_stats_ordered)
+            hp['periods_meta'] = tuple(meta_periods_ordered)
+            hp['stats_meta']   = tuple(meta_stats_ordered)
 
             if (hp.get('periods_main') and not hp['stats_main']) or (hp.get('stats_main') and not hp['periods_main']):
                 return None, None

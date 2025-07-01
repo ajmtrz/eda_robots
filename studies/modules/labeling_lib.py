@@ -445,7 +445,7 @@ def compute_features(close, periods_main, periods_meta, stats_main, stats_meta):
                         features[i, col] = hurst_manual(window)
                     elif s == "autocorr":
                         features[i, col] = autocorr1_manual(window)
-                    elif s == "max_dd":
+                    elif s == "maxdd":
                         features[i, col] = max_dd_manual(window)
                     elif s == "sharpe":
                         features[i, col] = sharpe_manual(window)
@@ -456,15 +456,15 @@ def compute_features(close, periods_main, periods_meta, stats_main, stats_meta):
                     elif s == "var":
                         std = std_manual(window)
                         features[i, col] = std * std * (window.size - 1) / window.size
-                    elif s == "approx_entropy":
+                    elif s == "approxentropy":
                         features[i, col] = approximate_entropy(window)
-                    elif s == "eff_ratio":
+                    elif s == "effratio":
                         features[i, col] = efficiency_ratio(window)
-                    elif s == "corr_skew":
+                    elif s == "corrskew":
                         features[i, col] = correlation_skew_manual(window)
-                    elif s == "jump_vol":
+                    elif s == "jumpvol":
                         features[i, col] = jump_volatility_manual(window)
-                    elif s == "vol_skew":
+                    elif s == "volskew":
                         features[i, col] = volatility_skew(window)
                 except:
                     return np.full((n, total_features), np.nan)
@@ -510,7 +510,7 @@ def compute_features(close, periods_main, periods_meta, stats_main, stats_meta):
                             features[i, col] = hurst_manual(window)
                         elif s == "autocorr":
                             features[i, col] = autocorr1_manual(window)
-                        elif s == "max_dd":
+                        elif s == "maxdd":
                             features[i, col] = max_dd_manual(window)
                         elif s == "sharpe":
                             features[i, col] = sharpe_manual(window)
@@ -521,15 +521,15 @@ def compute_features(close, periods_main, periods_meta, stats_main, stats_meta):
                         elif s == "var":
                             std = std_manual(window)
                             features[i, col] = std * std * (window.size - 1) / window.size
-                        elif s == "approx_entropy":
+                        elif s == "approxentropy":
                             features[i, col] = approximate_entropy(window)
-                        elif s == "eff_ratio":
+                        elif s == "effratio":
                             features[i, col] = efficiency_ratio(window)
-                        elif s == "corr_skew":
+                        elif s == "corrskew":
                             features[i, col] = correlation_skew_manual(window)
-                        elif s == "jump_vol":
+                        elif s == "jumpvol":
                             features[i, col] = jump_volatility_manual(window)
-                        elif s == "vol_skew":
+                        elif s == "volskew":
                             features[i, col] = volatility_skew(window)
                     except:
                         return np.full((n, total_features), np.nan)

@@ -6,6 +6,7 @@ import pandas as pd
 from datetime import datetime
 import matplotlib.pyplot as plt
 import onnxruntime as rt
+from functools import lru_cache
 from catboost import CatBoostClassifier
 from skl2onnx import convert_sklearn, update_registered_converter
 from skl2onnx.common.data_types import FloatTensorType
@@ -434,12 +435,18 @@ update_registered_converter(
     options={"nocl": [True, False], "zipmap": [True, False]}
 )
 
-def _predict_onnx(model_path: str, X_3d: np.ndarray) -> np.ndarray:
-    n_sim, n_rows, n_feat = X_3d.shape
-
-    sess  = rt.InferenceSession(model_path, providers=['CPUExecutionProvider'])
+@lru_cache(maxsize=16)
+def _ort_session(model_path:str):
+    sess  = rt.InferenceSession(model_path,
+                                providers=['CPUExecutionProvider'])
     iname = sess.get_inputs()[0].name
-    raw   = sess.run(None, {iname: X_3d.reshape(-1, n_feat).astype(np.float32)})[0]
+    return sess, iname
+
+def _predict_onnx(model_path:str, X_3d:np.ndarray) -> np.ndarray:
+    n_sim, n_rows, n_feat = X_3d.shape
+    sess, iname = _ort_session(model_path)
+
+    raw = sess.run(None, {iname: X_3d.reshape(-1, n_feat).astype(np.float32)})[0]
 
     # ─── des-ZipMap / distintos formatos de salida ─────────────────────
     if raw.dtype == object:                     # lista de dicts

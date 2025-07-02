@@ -912,12 +912,16 @@ class StrategySearcher:
                 verbose=False,
             )
             model_main = CatBoostClassifier(**cat_main_params)
+            t_train_main_start = time.time()
             model_main.fit(X_train_main, y_train_main, 
                            eval_set=[(X_val_main, y_val_main)],
                            early_stopping_rounds=hp['cat_main_early_stopping'],
                            use_best_model=True,
                            verbose=False
             )
+            t_train_main_end = time.time()
+            if self.debug:
+                print(f"🔍 DEBUG: Tiempo de entrenamiento modelo main: {t_train_main_end - t_train_main_start:.2f} segundos")
 
             # Meta-modelo
             cat_meta_params = dict(
@@ -933,12 +937,16 @@ class StrategySearcher:
                 verbose=False,
             )
             model_meta = CatBoostClassifier(**cat_meta_params)
+            t_train_meta_start = time.time()
             model_meta.fit(X_train_meta, y_train_meta, 
                            eval_set=[(X_val_meta, y_val_meta)], 
                            early_stopping_rounds=hp['cat_meta_early_stopping'],
                            use_best_model=True,
                            verbose=False
             )
+            t_train_meta_end = time.time()
+            if self.debug:
+                print(f"🔍 DEBUG: Tiempo de entrenamiento modelo meta: {t_train_meta_end - t_train_meta_start:.2f} segundos")
 
             # ── EVALUACIÓN ───────────────────────────────────────────────
 
@@ -963,17 +971,11 @@ class StrategySearcher:
             
             if self.debug:
                 print(f"🔍 DEBUG: Test train: {len(ds_train_eval_main)}, Test eval: {len(ds_test)}")
-
-            # Print de periods_main y periods_meta y de stats
-            if self.debug:
-                print(f"🔍 DEBUG: Períodos main: {hp['periods_main']}")
-                print(f"🔍 DEBUG: Períodos meta: {hp['periods_meta']}")
-                print(f"🔍 DEBUG: Stats main: {hp['stats_main']}")
-                print(f"🔍 DEBUG: Stats meta: {hp['stats_meta']}")
             
             # Evaluación in-sample y out-of-sample
             model_main_path, model_meta_path = export_models_to_ONNX(models=(model_main, model_meta))
 
+            test_train_time_start = time.time()
             score_ins = tester(
                 ds_main=ds_train_eval_main,
                 ds_meta=ds_train_eval_meta,
@@ -984,7 +986,11 @@ class StrategySearcher:
                 plot=False,
                 prd='insample',
             )
+            test_train_time_end = time.time()
+            if self.debug:
+                print(f"🔍 DEBUG: Tiempo de test in-sample: {test_train_time_end - test_train_time_start:.2f} segundos")
 
+            test_test_time_start = time.time()
             score_oos = walk_forward_robust_score(
                 ds_test=ds_test,
                 model_main=model_main_path,
@@ -997,7 +1003,9 @@ class StrategySearcher:
                 agg='min',
                 plot=False,
             )
-
+            test_test_time_end = time.time()
+            if self.debug:
+                print(f"🔍 DEBUG: Tiempo de test out-of-sample: {test_test_time_end - test_test_time_start:.2f} segundos")
             # Manejar valores inválidos
             if not np.isfinite(score_ins) or not np.isfinite(score_oos):
                 score_ins = -1.0

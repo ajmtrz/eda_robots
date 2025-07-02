@@ -858,7 +858,7 @@ class StrategySearcher:
             if 'labels_main' in model_main_data.columns:
                 model_main_data = model_main_data[model_main_data['labels_main'].isin([0.0, 1.0])]
             if model_main_data.empty:
-                return None, None
+                return None, None, None
 
             # Get feature columns
             main_feature_cols = [col for col in model_main_data.columns if col != 'labels_main']
@@ -877,7 +877,7 @@ class StrategySearcher:
             
             # ── descartar clusters problemáticos ────────────────────────────
             if len(y_train_main.value_counts()) < 2 or len(y_val_main.value_counts()) < 2:
-                return None, None
+                return None, None, None
 
             # ---------- 2) MODEL META ----------
             meta_feature_cols = [col for col in model_meta_data.columns if col != 'labels_meta']
@@ -896,7 +896,7 @@ class StrategySearcher:
             
             # ── descartar clusters problemáticos ────────────────────────────
             if len(y_train_meta.value_counts()) < 2 or len(y_val_meta.value_counts()) < 2:
-                return None, None
+                return None, None, None
 
             # Main model
             cat_main_params = dict(
@@ -953,10 +953,10 @@ class StrategySearcher:
             # Verificar orden exacto
             if not (ds_test[main_feature_cols].columns == main_feature_cols).all():
                 print("⚠️ ERROR: El orden de las columnas main no coincide en test")
-                return None, None
+                return None, None, None
             if not (ds_test[meta_feature_cols].columns == meta_feature_cols).all():
                 print("⚠️ ERROR: El orden de las columnas meta no coincide en test")
-                return None, None
+                return None, None, None
             
             # Extraer datos para evaluación
             ds_train_eval_main = ds_train[main_feature_cols].to_numpy()
@@ -967,7 +967,7 @@ class StrategySearcher:
             # Verificar correspondencia de tamaños de los precios con respecto a los datos de entrenamiento
             if len(ds_train_eval_main) != len(close_train_eval):
                 print("⚠️ ERROR: Tamaños de precios no coinciden con los datos de entrenamiento")
-                return None, None
+                return None, None, None
             
             if self.debug:
                 print(f"🔍 DEBUG: Test train: {len(ds_train_eval_main)}, Test eval: {len(ds_test)}")
@@ -1006,6 +1006,7 @@ class StrategySearcher:
             test_test_time_end = time.time()
             if self.debug:
                 print(f"🔍 DEBUG: Tiempo de test out-of-sample: {test_test_time_end - test_test_time_start:.2f} segundos")
+
             # Manejar valores inválidos
             if not np.isfinite(score_ins) or not np.isfinite(score_oos):
                 score_ins = -1.0
@@ -1018,7 +1019,7 @@ class StrategySearcher:
 
         except Exception as e:
             print(f"Error en función de entrenamiento y test: {str(e)}")
-            return None, None
+            return None, None, None
         
     def apply_labeling(self, dataset: pd.DataFrame, hp: dict) -> pd.DataFrame:
         """Apply the selected labeling function dynamically.

@@ -136,8 +136,8 @@ def tester(
     """
 
     # Calcular probabilidades usando ambos modelos (sin binarizar)
-    main = model_main.predict_proba(ds_main)[:, 1]
-    meta = model_meta.predict_proba(ds_meta)[:, 1]
+    main = _predict_one(model_main, ds_main)
+    meta = _predict_one(model_meta, ds_meta)
 
     # Asegurar contigüidad en memoria
     close = np.ascontiguousarray(close)
@@ -343,6 +343,28 @@ def test_model(dataset: pd.DataFrame,
 # ───────────────────────────────────────────────────────────────────
 
 # ---------- helpers ------------------------------------------------
+
+@njit(cache=True, fastmath=True)
+def _signed_r2(equity: np.ndarray) -> float:
+    n = equity.size
+    x_mean = (n - 1) * 0.5
+    y_mean = equity.mean()
+    cov = varx = 0.0
+    for i in range(n):
+        dx = i - x_mean
+        cov += dx * (equity[i] - y_mean)
+        varx += dx * dx
+    slope = cov / varx if varx else 0.0
+    sse = sst = 0.0
+    for i in range(n):
+        pred = y_mean + slope * (i - x_mean)
+        diff = equity[i] - pred
+        sse += diff * diff
+        diff2 = equity[i] - y_mean
+        sst += diff2 * diff2
+    r2 = 1.0 - sse / sst if sst else 0.0
+    return r2 if slope >= 0 else -r2
+
 @njit(cache=True, fastmath=True)
 def _bootstrap_returns(returns: np.ndarray,
                        block_size: int) -> np.ndarray:
@@ -388,50 +410,6 @@ def _equity_from_returns(resampled_returns: np.ndarray) -> np.ndarray:
         equity[i + 1] = cumsum
     return equity
 
-
-@njit(cache=True, fastmath=True)
-def _signed_r2(equity: np.ndarray) -> float:
-    n = equity.size
-    x_mean = (n - 1) * 0.5
-    y_mean = equity.mean()
-    cov = varx = 0.0
-    for i in range(n):
-        dx = i - x_mean
-        cov += dx * (equity[i] - y_mean)
-        varx += dx * dx
-    slope = cov / varx if varx else 0.0
-    sse = sst = 0.0
-    for i in range(n):
-        pred = y_mean + slope * (i - x_mean)
-        diff = equity[i] - pred
-        sse += diff * diff
-        diff2 = equity[i] - y_mean
-        sst += diff2 * diff2
-    r2 = 1.0 - sse / sst if sst else 0.0
-    return r2 if slope >= 0 else -r2
-
-@njit(cache=True, fastmath=True)
-def _make_noisy_signals(close: np.ndarray,
-                       labels: np.ndarray,
-                       meta: np.ndarray) -> tuple:
-    """Añade ruido a precios, labels y meta-labels."""
-    n = close.size
-    volatility = np.std(np.diff(close) / close[:-1])
-    price_noise_range = (volatility * 0.5, volatility * 2.0)
-
-    # ------ precios ------------------------------------------------
-    # Añadir ruido a los precios para simular slippage y volatilidad
-    price_noise = np.random.uniform(price_noise_range[0], price_noise_range[1])
-    close_noisy = np.empty_like(close)
-    if price_noise > 0:
-        for i in range(n):
-            close_noisy[i] = close[i] * (1 + np.random.laplace(0.0, price_noise))
-    else:
-        close_noisy[:] = close
-
-    # Labels y meta-labels se mantienen sin distorsionar
-    return close_noisy, labels, meta
-
 def _make_noisy_close(close: np.ndarray) -> np.ndarray:
     """Devuelve una serie de precios alterada con ruido laplaciano."""
     n = close.size
@@ -443,26 +421,6 @@ def _make_noisy_close(close: np.ndarray) -> np.ndarray:
         return close.copy()
     noise = np.random.laplace(0.0, price_noise, size=n)
     return close * (1.0 + noise)
-
-@njit(cache=True, fastmath=True, parallel=True)
-def _simulate_batch(close, l_all, m_all, block_size, direction):
-    n_sim, n = l_all.shape
-    scores = np.full(n_sim, -1.0)
-    for i in prange(n_sim):
-        c_n, l_n, m_n = _make_noisy_signals(close, l_all[i], m_all[i])
-        if direction == "both":
-            rpt, _ = process_data(c_n, l_n, m_n)
-        else:
-            rpt, _ = process_data_one_direction(c_n, l_n, m_n, direction)
-        if rpt.size < 2:
-            continue
-        ret = np.diff(rpt)
-        if ret.size == 0:
-            continue
-        eq = _equity_from_returns(_bootstrap_returns(ret, block_size))
-        score = evaluate_report(eq)
-        scores[i] = score
-    return scores
 
 # -----------------------------------------------------------------------------
 #  ONNX-accelerated batch prediction
@@ -476,56 +434,72 @@ update_registered_converter(
     options={"nocl": [True, False], "zipmap": [True, False]}
 )
 
-def _predict_batch(model, X_base, noise_levels):
-    try:
-        # 1. Convertir modelo a ONNX
-        onnx_model = convert_sklearn(
-            model,
-            initial_types=[('x', FloatTensorType([None, X_base.shape[1]]))],
-            target_opset={"": 18, "ai.onnx.ml": 2},
-            options={id(model): {'zipmap': False}}
-        )
-        sess = rt.InferenceSession(
-            onnx_model.SerializeToString(),
-            providers=['CPUExecutionProvider']
-        )
-        iname = sess.get_inputs()[0].name
-        onnx_run = sess.run
+def _predict_onnx(model_path: str, X_3d: np.ndarray) -> np.ndarray:
+    n_sim, n_rows, n_feat = X_3d.shape
 
-        # 2. Preparar los datos base
-        n_sim, n_samples, n_feat = len(noise_levels), *X_base.shape
-        X_big = np.repeat(X_base[None, :, :], n_sim, axis=0)
-        
-        # 3. Calcular sensibilidad de cada feature
-        fi = model.get_feature_importance()
-        max_fi = fi.max() or 1.0
-        sensitivity = fi / max_fi
-        
-        # 4. Generar y aplicar el ruido ajustado
-        std = X_base.std(axis=0, keepdims=True)
-        eps = np.random.normal(0.0, std, size=X_big.shape)
-        adjusted_noise = noise_levels[:, None, None] * sensitivity[None, None, :]
-        X_big += eps * adjusted_noise
+    sess  = rt.InferenceSession(model_path, providers=['CPUExecutionProvider'])
+    iname = sess.get_inputs()[0].name
+    raw   = sess.run(None, {iname: X_3d.reshape(-1, n_feat).astype(np.float32)})[0]
 
-        # 5. Realizar la predicción
-        proba_flat = onnx_run(None, {iname: X_big.reshape(-1, n_feat).astype(np.float32)})[0]
-        proba = proba_flat.reshape(n_sim, n_samples)
-        return proba
-    except Exception as e:
-        print(f"\nError en _predict_batch:")
-        print(f"Error: {str(e)}")
-        print("Traceback:")
-        print(traceback.format_exc())
-    finally:
-        if 'sess' in locals():
-            sess = None
+    # ─── des-ZipMap / distintos formatos de salida ─────────────────────
+    if raw.dtype == object:                     # lista de dicts
+        prob_pos = np.fromiter((row[b'1'] for row in raw), dtype=np.float32)
+
+    elif raw.ndim == 2:                         # matriz (n,2)
+        prob_pos = raw[:, 1].astype(np.float32)
+
+    elif raw.ndim == 1:                         # vector (n,)  → ya es proba+
+        prob_pos = raw.astype(np.float32)
+
+    else:
+        raise RuntimeError(f"Formato de salida ONNX no soportado: {raw.shape}")
+
+    return prob_pos.reshape(n_sim, n_rows)
+
+def _predict_one(model_any, X_2d: np.ndarray) -> np.ndarray:
+    """
+    Devuelve la probabilidad de la clase positiva para una sola matriz 2-D.
+      · Si 'model_any' es CatBoost -> usa predict_proba.
+      · Si es ruta .onnx, bytes, o ModelProto -> usa _predict_onnx.
+    Resultado shape: (n_rows,)
+    """
+    if hasattr(model_any, "predict_proba"):
+        return model_any.predict_proba(X_2d)[:, 1]
+    else:
+        # _predict_onnx espera tensor 3-D: (n_sim, n_rows, n_feat)
+        return _predict_onnx(model_any, X_2d[None, :, :])[0]
+
+@njit(cache=True, fastmath=True, parallel=True)
+def _score_batch(close_all, l_all, m_all, block_size, direction):
+    """
+    Calcula el score para cada simulación *tal cual*, sin volver a alterar
+    precios ni señales (ya vienen ruidosos).
+    """
+    n_sim, n = l_all.shape
+    scores = np.full(n_sim, -1.0)
+    for i in prange(n_sim):
+        if direction == "both":
+            rpt, _ = process_data(close_all[i], l_all[i], m_all[i])
         else:
-            print("No session to close.")
+            rpt, _ = process_data_one_direction(close_all[i],
+                                                l_all[i],
+                                                m_all[i],
+                                                direction)
+        if rpt.size < 2:
+            continue
+        ret = np.diff(rpt)
+        if ret.size == 0:
+            continue
+        eq = _equity_from_returns(_bootstrap_returns(ret, block_size))
+        scores[i] = evaluate_report(eq)
+    return scores
 
 def monte_carlo_full(
+    ds_test: pd.DataFrame,
     model_main: object,
     model_meta: object,
-    ds_test: pd.DataFrame,
+    model_main_cols: list[str],
+    model_meta_cols: list[str],
     hp: dict,
     direction: str = "both",
     n_sim: int = 100,
@@ -544,50 +518,55 @@ def monte_carlo_full(
         if feats.empty:
             return {"scores": np.array([-1.0]), "p_positive": 0.0, "quantiles": np.array([-1.0, -1.0, -1.0])}
 
-        X_main = feats.filter(regex=r"(?<!_meta)_feature$").to_numpy()
-        X_meta = feats.filter(like="_meta_feature").to_numpy()
+        X_main = feats[model_main_cols].to_numpy()
+        X_meta = feats[model_meta_cols].to_numpy()
         close_feat = feats["close"].to_numpy()
 
-        main = model_main.predict_proba(X_main)[:, 1]
-        meta = model_meta.predict_proba(X_meta)[:, 1]
+        main = _predict_one(model_main, X_main)
+        meta = _predict_one(model_meta, X_meta)
         if direction == "both":
             rpt_original, _ = process_data(close_feat, main, meta)
         else:
             rpt_original, _ = process_data_one_direction(close_feat, main, meta, direction)
 
-        scores = np.full(n_sim, -1.0)
-        equity_curves = [] if plot else None
+        # ───── 3-D batch build ──────────────────────────────────────────────
+        X_main_batch, X_meta_batch, close_batch = [], [], []
 
-        for i in range(n_sim):
-            c_n = _make_noisy_close(close)
-            df_n = ds_test.copy()
-            df_n["close"] = c_n
-            feats_n = get_features(df_n, dict(hp))
-            if feats_n.empty:
-                continue
-            X_m = feats_n.filter(regex=r"(?<!_meta)_feature$").to_numpy()
-            X_me = feats_n.filter(like="_meta_feature").to_numpy()
-            c_feat = feats_n["close"].to_numpy()
+        for _ in range(n_sim):
+            noisy_close = _make_noisy_close(close)
+            df_sim      = ds_test.copy()
+            df_sim["close"] = noisy_close
 
-            m_main = model_main.predict_proba(X_m)[:, 1]
-            m_meta = model_meta.predict_proba(X_me)[:, 1]
+            feats_sim = get_features(df_sim, dict(hp))
+            if feats_sim.empty:
+                continue                          # descarta simulaciones inválidas
 
-            if direction == "both":
-                rpt, _ = process_data(c_feat, m_main, m_meta)
-            else:
-                rpt, _ = process_data_one_direction(c_feat, m_main, m_meta, direction)
+            X_main_batch.append(feats_sim[model_main_cols].to_numpy())
+            X_meta_batch.append(feats_sim[model_meta_cols].to_numpy())
+            close_batch.append(feats_sim["close"].to_numpy())
 
-            if len(rpt) < 2:
-                continue
-            ret = np.diff(rpt)
-            if ret.size == 0:
-                continue
-            eq = _equity_from_returns(_bootstrap_returns(ret, block_size))
-            scores[i] = evaluate_report(eq)
-            if equity_curves is not None:
-                equity_curves.append(rpt)
+        if not X_main_batch:                     # ninguna simulación válida
+            return {"scores": np.array([-1.0]), "p_positive": 0.0,
+                    "quantiles": np.array([-1.0, -1.0, -1.0])}
 
-        valid = scores[scores > 0.0]
+        # → tensors 3-D
+        X_main_arr  = np.stack(X_main_batch)              # (n_sim, n_rows, n_featM)
+        X_meta_arr  = np.stack(X_meta_batch)              # (n_sim, n_rows, n_featm)
+        close_arr   = np.stack(close_batch)               # (n_sim, n_rows)
+
+        # ───── inferencia ONNX en bloque ────────────────────────────────────
+        pred_main = _predict_onnx(model_main, X_main_arr)   # ← ruta .onnx
+        pred_meta = _predict_onnx(model_meta, X_meta_arr)
+
+        # ───── score vectorizado (Numba) ────────────────────────────────────
+        scores = _score_batch(close_arr,
+                                    pred_main,
+                                    pred_meta,
+                                    block_size,
+                                    0 if direction == "both" else 1)
+
+        valid  = scores[scores > 0.0]
+        equity_curves = None      # si quieres conservar plot usa otro buffer
 
         if plot:
             try:
@@ -655,6 +634,8 @@ def robust_oos_score(
         ds_test: pd.DataFrame,
         model_main: object,
         model_meta: object,
+        model_main_cols: list[str],
+        model_meta_cols: list[str],
         hp: dict,
         direction: str = "both",
         n_sim: int = 100,
@@ -667,9 +648,11 @@ def robust_oos_score(
 
     try:
         mc = monte_carlo_full(
+            ds_test=ds_test,
             model_main=model_main,
             model_meta=model_meta,
-            ds_test=ds_test,
+            model_main_cols=model_main_cols,
+            model_meta_cols=model_meta_cols,
             hp=hp,
             direction=direction,
             n_sim=n_sim,
@@ -695,6 +678,8 @@ def walk_forward_robust_score(
     ds_test: pd.DataFrame,
     model_main: object,
     model_meta: object,
+    model_main_cols: list[str],
+    model_meta_cols: list[str],
     hp: dict,
     direction: str = "both",
     n_splits: int = 3,
@@ -710,6 +695,8 @@ def walk_forward_robust_score(
                 ds_test=ds_test,
                 model_main=model_main,
                 model_meta=model_meta,
+                model_main_cols=model_main_cols,
+                model_meta_cols=model_meta_cols,
                 hp=hp,
                 direction=direction,
                 plot=plot,
@@ -727,6 +714,8 @@ def walk_forward_robust_score(
                 ds_test=ds_test.iloc[start:end],
                 model_main=model_main,
                 model_meta=model_meta,
+                model_main_cols=model_main_cols,
+                model_meta_cols=model_meta_cols,
                 hp=hp,
                 direction=direction,
                 plot=plot,

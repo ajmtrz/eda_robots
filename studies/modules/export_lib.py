@@ -1,5 +1,6 @@
 import os
 import re
+import tempfile
 from catboost import CatBoostClassifier
 from skl2onnx import convert_sklearn, update_registered_converter
 from skl2onnx.common.shape_calculator import calculate_linear_classifier_output_shapes
@@ -36,30 +37,46 @@ def skl2onnx_convert_catboost(scope, operator, container):
         op_domain=node.domain,
         **{att.name: get_attribute_value(att) for att in node.attribute}
     )
+def export_models_to_ONNX(models):
+    """
+    Convierte una lista de modelos CatBoost a ONNX.
+    
+    :param models: Lista de modelos CatBoost a convertir.
+    :param feature_names: Nombres de las características del modelo.
+    :param target_opset: Versión del opset de ONNX a utilizar.
+    :return: Lista de modelos convertidos a ONNX.
+    """
+    # Registrar el convertidor personalizado para CatBoostClassifier
+    update_registered_converter(
+        CatBoostClassifier,
+        "CatBoostClassifier",
+        calculate_linear_classifier_output_shapes,
+        skl2onnx_convert_catboost,
+        parser=skl2onnx_parser_catboost_classifier,
+        options={"nocl": [True, False], "zipmap": [True, False]}
+    )
+    # Convertir cada modelo a ONNX
+    onnx_models = []
+    for model in models:
+        onnx_model = convert_sklearn(
+            model,
+            initial_types=[('input', FloatTensorType([None, len(model.feature_names_)]))],
+            target_opset={"": 18, "ai.onnx.ml": 2}
+        )
+        tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".onnx")
+        tmp.write(onnx_model.SerializeToString())
+        tmp.close()
+        onnx_models.append(tmp.name)
+        del model
+    return onnx_models
 
-def export_model_to_ONNX(**kwargs):
+def export_to_mql5(**kwargs):
     model_seed = kwargs.get('best_model_seed')
-    models = kwargs.get('best_models')
-    model_paths = kwargs.get('best_model_paths')
     best_scores = kwargs.get('best_scores')
-    periods_main = kwargs.get('best_periods_main')
-    periods_meta = kwargs.get('best_periods_meta')
+    model_paths = kwargs.get('best_model_paths')
+    model_cols = kwargs.get('best_model_cols')
     stats_main = kwargs.get('best_stats_main')
     stats_meta = kwargs.get('best_stats_meta')
-
-    # Load models from file paths if provided
-    if model_paths and not models:
-        models = []
-        for p in model_paths:
-            m = CatBoostClassifier()
-            m.load_model(p)
-            models.append(m)
-
-    # Permitir que periods_meta y stats_meta sean opcionales
-    if periods_meta is None:
-        periods_meta = []
-    if stats_meta is None:
-        stats_meta = []
     symbol = kwargs.get('symbol')
     timeframe = kwargs.get('timeframe')
     direction = kwargs.get('direction')
@@ -69,51 +86,22 @@ def export_model_to_ONNX(**kwargs):
     search_type = kwargs.get('search_type')
     search_subtype = kwargs.get('search_subtype')
 
-    # Register the custom converter
-    update_registered_converter(
-        CatBoostClassifier,
-        "CatBoostClassifier",
-        calculate_linear_classifier_output_shapes,
-        skl2onnx_convert_catboost,
-        parser=skl2onnx_parser_catboost_classifier,
-        options={"nocl": [True, False], "zipmap": [True, False]}
-    )
-
     try:
-        # Convierte los pipelines completos
-        model_main_onnx = convert_sklearn(
-            models[0],
-            initial_types=[('input', FloatTensorType([None, len(models[0].feature_names_)]))],
-            target_opset={"": 18, "ai.onnx.ml": 2},
-            options={id(models[0]): {'zipmap': True}}
-        )
-        model_meta_onnx = convert_sklearn(
-            models[1],
-            initial_types=[('input', FloatTensorType([None, len(models[1].feature_names_)]))],
-            target_opset={"": 18, "ai.onnx.ml": 2},
-            options={id(models[1]): {'zipmap': True}}
-    )
+        main_cols, meta_cols = model_cols
+        # Copia los modelos ONNX desde los archivos temporales a la ruta de destino
+        filename_model_main = f"{symbol}_{timeframe}_{direction}_{label_method}_{search_type}_{search_subtype}_{model_seed}_main.onnx"
+        filepath_model_main = os.path.join(models_export_path, filename_model_main)
+        filename_model_meta = f"{symbol}_{timeframe}_{direction}_{label_method}_{search_type}_{search_subtype}_{model_seed}_meta.onnx"
+        filepath_model_meta = os.path.join(models_export_path, filename_model_meta)
 
-        # Eliminar inicializadores no utilizados
-        # for model_onnx in [model_main_onnx, model_meta_onnx]:
-        #     initializers_to_remove = []
-        #     for initializer in model_onnx.graph.initializer:
-        #         if initializer.name == 'classes_ind':
-        #             initializers_to_remove.append(initializer)
-            
-        #     for initializer in initializers_to_remove:
-        #         model_onnx.graph.initializer.remove(initializer)
-
-        # Guarda los modelos ONNX
-        filename_model = f"{symbol}_{timeframe}_{direction}_{label_method}_{search_type}_{search_subtype}_{model_seed}.onnx"
-        filepath_model = os.path.join(models_export_path, filename_model)
-        with open(filepath_model, "wb") as f:
-            f.write(model_main_onnx.SerializeToString())
-
-        filename_model_m = f"{symbol}_{timeframe}_{direction}_{label_method}_{search_type}_{search_subtype}_{model_seed}_m.onnx"
-        filepath_model_m = os.path.join(models_export_path, filename_model_m)
-        with open(filepath_model_m, "wb") as f:
-            f.write(model_meta_onnx.SerializeToString())
+        # model_paths[0] es el modelo main, model_paths[1] es el modelo meta
+        if model_paths and len(model_paths) >= 2:
+            with open(model_paths[0], "rb") as src, open(filepath_model_main, "wb") as dst:
+                dst.write(src.read())
+            with open(model_paths[1], "rb") as src, open(filepath_model_meta, "wb") as dst:
+                dst.write(src.read())
+        else:
+            raise ValueError("No se encontraron suficientes rutas en model_paths para copiar los modelos ONNX.")
 
         # Remove temporary CatBoost model files if provided
         if model_paths:
@@ -405,7 +393,7 @@ def export_model_to_ONNX(**kwargs):
                 }
                 """,
             "maxdd":"""
-                double stat_max_dd(const double &a[])
+                double stat_maxdd(const double &a[])
                 {
                     int n = ArraySize(a);
                     if(n==0) return 0.0;
@@ -469,7 +457,7 @@ def export_model_to_ONNX(**kwargs):
                 }
             """,
             "approxentropy": """
-                double stat_approx_entropy(const double &a[])
+                double stat_approxentropy(const double &a[])
                 {
                     int n = ArraySize(a);
                     int m = 2;
@@ -518,7 +506,7 @@ def export_model_to_ONNX(**kwargs):
                 }
                 """,
             "effratio": """
-                double stat_eff_ratio(const double &a[])
+                double stat_effratio(const double &a[])
                 {
                     int n = ArraySize(a);
                     if(n < 2) return 0.0;
@@ -554,7 +542,7 @@ def export_model_to_ONNX(**kwargs):
             }
             """,
             "corrskew": """
-            double stat_corr_skew(const double &a[])
+            double stat_corrskew(const double &a[])
             {
                 int n = ArraySize(a);
                 int lag = MathMin(5, n/2);
@@ -585,7 +573,7 @@ def export_model_to_ONNX(**kwargs):
             }
             """,
             "jumpvol": """
-                double stat_jump_vol(const double &a[])
+                double stat_jumpvol(const double &a[])
                 {
                     int n = ArraySize(a);
                     if(n < 2) return 0.0;
@@ -618,7 +606,7 @@ def export_model_to_ONNX(**kwargs):
                 }
                 """,
             "volskew": """
-                double stat_vol_skew(const double &a[])
+                double stat_volskew(const double &a[])
                 {
                     int n = ArraySize(a);
                     if(n<2) return 0.0;
@@ -647,30 +635,20 @@ def export_model_to_ONNX(**kwargs):
         }
         code = r"#include <Math\Stat\Math.mqh>"
         code += '\n'
-        code += rf'#resource "\\Files\\{filename_model}" as uchar ExtModel_[]'
+        code += rf'#resource "\\Files\\{filename_model_main}" as uchar ExtModel_[]'
         code += '\n'
-        code += rf'#resource "\\Files\\{filename_model_m}" as uchar ExtModel_m_[]'
+        code += rf'#resource "\\Files\\{filename_model_meta}" as uchar ExtModel_m_[]'
         code += '\n\n'
         code += '//+------------------------------------------------------------------+\n'
         code += f'//| INS SCORE: {best_scores[0]} | OOS SCORE: {best_scores[1]} |\n'
         code += '//+------------------------------------------------------------------+\n'
         code += '\n\n'
-        code += 'int periods_main' + '[' + str(len(periods_main)) + \
-            '] = {' + ','.join(map(str, periods_main)) + '};'
-        code += '\n'
-        if len(periods_meta) > 0:
-            code += 'int periods_meta' + '[' + str(len(periods_meta)) + \
-                '] = {' + ','.join(map(str, periods_meta)) + '};\n\n'
-        else:
-            code += 'int periods_meta[0] = {};\n\n'
-        code += '#define NUM_STATS_MAIN       (ArraySize(stat_main_ptr))\n'
-        code += '#define NUM_STATS_META       (ArraySize(stat_meta_ptr))\n'
-        code += '#define NUM_MAIN_FEATURES    (ArraySize(periods_main))\n'
-        code += '#define NUM_META_FEATURES    (ArraySize(periods_meta))\n'
         code += f'#define SYMBOL               "{str(symbol)}"\n'
         code += f'#define TIMEFRAME            "{str(timeframe)}"\n'
         code += f'#define DIRECTION            "{str(direction)}"\n'
-        code += f'#define MAGIC_NUMBER         {model_seed}\n\n'
+        code += f'#define MAGIC_NUMBER         {model_seed}\n'
+        code += "string MAIN_COLS[] = { " + ",".join('"' + c + '"' for c in main_cols) + " };\n"
+        code += "string META_COLS[] = { " + ",".join('"' + c + '"' for c in meta_cols) + " };\n\n"
         stats_total = set(stats_main + stats_meta)
         if "mean" not in stats_total:
             code += stat_function_templates["mean"] + "\n"
@@ -683,44 +661,47 @@ def export_model_to_ONNX(**kwargs):
         if "corrskew" in stats_total and "corr" not in stats_total:
             code += stat_function_templates["corr"] + "\n"
         for stat in stats_total:
-            code += stat_function_templates[stat] + "\n"
-        code += "\ntypedef double (*StatFunc)(const double &[]);\n"
-        code += "StatFunc stat_main_ptr[] = { " + ", ".join(f"stat_{s}" for s in stats_main) + " };\n\n"
-        if len(stats_meta) > 0:
-            code += "StatFunc stat_meta_ptr[] = { " + ", ".join(f"stat_{s}" for s in stats_meta) + " };\n\n"
-        else:
-            code += "StatFunc stat_meta_ptr[] = {};\n\n"
+            code += stat_function_templates[stat] + "\n\n"
+        # ─────────────────────────  Dispatcher de estadísticos  ────────────
+        code += 'double switch_stat(string stat,const double &data[])\n'
+        code += '  {\n'
+        for st in sorted(stats_total):
+            code += f'   if(stat=="{st}") return stat_{st}(data);\n'
+        code += '   return 0.0;              // estadístico desconocido\n'
+        code += '  }\n\n'
+
+        # ─────────────────────────  MAIN feature builder  ──────────────────
         code += 'void fill_arays_main(double &features[])\n'
         code += '  {\n'
         code += '   double pr[];\n'
-        code += '   double stat_value;\n'
-        code += '   int index = 0;\n'
-        code += '   for(int i=0; i<ArraySize(periods_main); i++)\n'
+        code += '   for(int k=0; k<ArraySize(MAIN_COLS); k++)\n'
         code += '     {\n'
-        code += '      CopyClose(NULL, PERIOD_'+timeframe+ ', 1, periods_main[i], pr);\n'
-        code += '      ArraySetAsSeries(pr, true);\n'
-        code += '      for(int j = 0; j < ArraySize(stat_main_ptr); j++)\n'
-        code += '        {\n'
-        code += '         stat_value = stat_main_ptr[j](pr);\n'
-        code += '         features[index++] = stat_value;\n'
-        code += '        }\n'
+        code += '      // \"24_std_feature\"  →  periodo 24  +  \"std\"\n'
+        code += '      string parts[];\n'
+        code += '      StringSplit(MAIN_COLS[k], \'_\', parts);\n'
+        code += '      if(ArraySize(parts)<2) continue;\n'
+        code += '      int    period = (int)StringToInteger(parts[0]);\n'
+        code += '      string stat   = parts[1];\n\n'
+        code += f'      CopyClose(NULL, PERIOD_{timeframe}, 1, period, pr);\n'
+        code += '      ArraySetAsSeries(pr,true);\n\n'
+        code += '      features[k] = switch_stat(stat, pr);\n'
         code += '     }\n'
         code += '  }\n\n'
 
+        # ─────────────────────────  META feature builder  ──────────────────
         code += 'void fill_arays_meta(double &features[])\n'
         code += '  {\n'
         code += '   double pr[];\n'
-        code += '   double stat_value;\n'
-        code += '   int index = 0;\n'
-        code += '   for(int i=0; i<ArraySize(periods_meta); i++)\n'
+        code += '   for(int k=0; k<ArraySize(META_COLS); k++)\n'
         code += '     {\n'
-        code += '      CopyClose(NULL, PERIOD_'+timeframe+ ', 1, periods_meta[i], pr);\n'
-        code += '      ArraySetAsSeries(pr, true);\n'
-        code += '      for(int j = 0; j < ArraySize(stat_meta_ptr); j++)\n'
-        code += '        {\n'
-        code += '         stat_value = stat_meta_ptr[j](pr);\n'
-        code += '         features[index++] = stat_value;\n'
-        code += '        }\n'
+        code += '      string parts[];\n'
+        code += '      StringSplit(META_COLS[k], \'_\', parts);\n'
+        code += '      if(ArraySize(parts)<2) continue;\n'
+        code += '      int    period = (int)StringToInteger(parts[0]);\n'
+        code += '      string stat   = parts[1];\n\n'
+        code += f'      CopyClose(NULL, PERIOD_{timeframe}, 1, period, pr);\n'
+        code += '      ArraySetAsSeries(pr,true);\n\n'
+        code += '      features[k] = switch_stat(stat, pr);\n'
         code += '     }\n'
         code += '  }\n\n'
 

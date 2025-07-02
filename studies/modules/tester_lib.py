@@ -1,6 +1,6 @@
 import traceback
 from threading import Lock
-from numba import jit, njit, prange
+from numba import njit, prange
 import numpy as np
 import pandas as pd
 from datetime import datetime

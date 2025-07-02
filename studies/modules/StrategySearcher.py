@@ -30,7 +30,7 @@ from modules.labeling_lib import (
     get_labels_trend_one_direction, get_labels_filter_flat,
     sliding_window_clustering, clustering_simple,
     markov_regime_switching_simple, markov_regime_switching_advanced,
-    lgmm_clustering
+    lgmm_clustering, wkmeans_clustering
 )
 from modules.tester_lib import (
     tester,
@@ -125,6 +125,7 @@ class StrategySearcher:
             'lgmm': self.search_lgmm,
             'mapie': self.search_mapie,
             'causal': self.search_causal,
+            'wkmeans' : self.search_wkmeans,
         }
         
         if self.search_type not in search_funcs:
@@ -561,6 +562,48 @@ class StrategySearcher:
             print(f"Error en search_causal: {str(e)}")
             return -1.0, -1.0
 
+    def search_wkmeans(self, trial: optuna.Trial) -> tuple[float, float]:
+        """
+        Implementa la búsqueda de estrategias utilizando WK-means / MMDK-means
+        para detectar y etiquetar regímenes de mercado desde labeling_lib.wkmeans_clustering.
+        Se apoya en evaluate_clusters exactamente igual que el resto de métodos.
+        """
+        try:
+            # 1) Hiper-parámetros sugeridos de forma coherente con el estudio Optuna
+            hp = self.suggest_all_params(trial)
+
+            # 2) Cargar datos de entrenamiento / prueba
+            ds_train, ds_test = self.get_train_test_data(hp)
+            if ds_train is None or ds_test is None:
+                return -1.0, -1.0
+            # 4) Etiquetado de regímenes con WK-means            
+            ds_train = wkmeans_clustering(
+                ds_train,
+                n_clusters=hp["n_clusters"],
+                window=hp["window_size"],
+                metric=self.search_subtype,
+                step=hp["step"],
+                bandwidth=hp["bandwidth"] if self.search_subtype == "mmd" else None,
+                n_proj=hp["n_proj"] if self.search_subtype == "sliced_w" else None,
+                max_iter=hp["max_iter"],
+            )
+
+            # 5) Entrenar modelos y obtener scores (mismo helper que el resto)
+            scores, model_paths, model_cols = self.evaluate_clusters(ds_train, ds_test, hp)
+            if scores is None or model_paths is None or model_cols is None:
+                return -1.0, -1.0
+
+            # 6) Registrar resultados en el trial para Optuna
+            trial.set_user_attr("scores", scores)
+            trial.set_user_attr("model_paths", model_paths)
+            trial.set_user_attr("model_cols", model_cols)
+
+            return trial.user_attrs.get("scores", (-1.0, -1.0))
+
+        except Exception as e:
+            print(f"Error en search_wkmeans: {str(e)}")
+            return -1.0, -1.0
+
     # =========================================================================
     # Métodos auxiliares
     # =========================================================================
@@ -790,7 +833,7 @@ class StrategySearcher:
             stats_main = list(dict.fromkeys(stats_main))
             params['stats_main'] = tuple(stats_main[:params['max_main_stats']])
             # ---------- Hiperparámetros meta solo si no es mapie o causal ----------
-            if self.search_type in ['clusters', 'markov', 'lgmm']:
+            if self.search_type in ['clusters', 'markov', 'lgmm', 'wkmeans']:
                 params['max_meta_periods'] = trial.suggest_int('max_meta_periods', 1, MAX_META_PERIODS, log=True)
                 params['max_meta_stats'] = trial.suggest_int('max_meta_stats', 1, MAX_META_STATS, log=True)
                 periods_meta = [
@@ -826,6 +869,19 @@ class StrategySearcher:
                     'n_components': trial.suggest_int('n_components', 2, 10),
                     'covariance_type': trial.suggest_categorical('covariance_type', ['full', 'diag']),
                     'max_iter': trial.suggest_int('max_iter', 50, 300, step=10),
+                })
+            if self.search_type == "wkmeans":
+                params.update({
+                    "n_clusters" : trial.suggest_int("n_clusters", 2, 12, log=True),
+                    "window_size": trial.suggest_int("window_size", 20, 365, log=True),
+                    "step"       : trial.suggest_int("step", 1, 15),
+                    "max_iter"   : trial.suggest_int("max_iter",50, 300, step=25),
+                    # "metric_type": trial.suggest_categorical(
+                    #                 "metric_type",
+                    #                 ["wasserstein", "sliced_w", "mmd"]
+                    #             ),
+                    "bandwidth" : trial.suggest_float("bandwidth", 0.01, 5.0,  log=True),
+                    "n_proj"    : trial.suggest_int("n_proj", 5, 400, log=True),
                 })
             elif self.search_type == 'mapie':
                 params.update({
@@ -1260,10 +1316,6 @@ class StrategySearcher:
             # 6) Máscaras de train / test
             test_mask  = (full_ds.index >= self.test_start)  & (full_ds.index <= self.test_end)
             train_mask = (full_ds.index >= self.train_start) & (full_ds.index <= self.train_end)
-
-            if self.debug:
-                print(f"🔍 DEBUG: test_mask.sum() = {test_mask.sum()}")
-                print(f"🔍 DEBUG: train_mask.sum() = {train_mask.sum()}")
 
             if not test_mask.any() or not train_mask.any():
                 print("⚠️ ERROR: Períodos sin datos")

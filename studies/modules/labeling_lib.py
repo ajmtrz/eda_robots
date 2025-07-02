@@ -1,9 +1,10 @@
 import os
-import random
 import logging
 import numpy as np
 import pandas as pd
-from numba import njit
+import cupy as cp
+#import ot
+from numba import njit, prange
 from numba.typed import List
 from hdbscan import HDBSCAN
 from sklearn.cluster import KMeans
@@ -12,6 +13,18 @@ from sklearn.covariance import empirical_covariance
 from hmmlearn import hmm, vhmm
 from scipy.optimize import linear_sum_assignment
 from scipy.signal import savgol_filter
+from scipy.stats import wasserstein_distance
+from scipy.spatial.distance import cdist
+from typing import Tuple
+import numpy.random as npr
+from scipy.interpolate import UnivariateSpline
+from scipy.signal import find_peaks
+from sklearn.mixture import GaussianMixture
+import matplotlib.pyplot as plt
+
+# Configuración de logging
+logging.getLogger('hmmlearn').setLevel(logging.ERROR)
+logging.getLogger("tensorflow").setLevel(logging.ERROR)
 
 
 def safe_savgol_filter(x, window_length: int, polyorder: int):
@@ -50,11 +63,6 @@ def safe_savgol_filter(x, window_length: int, polyorder: int):
             return x
 
     return savgol_filter(x, window_length=wl, polyorder=polyorder)
-from scipy.interpolate import UnivariateSpline
-from scipy.signal import find_peaks
-from sklearn.mixture import GaussianMixture
-import matplotlib.pyplot as plt
-logging.getLogger('hmmlearn').setLevel(logging.ERROR)
 
 # Obtener precios
 def get_prices(symbol, timeframe, history_path) -> pd.DataFrame:
@@ -2391,3 +2399,186 @@ def lgmm_clustering(dataset: pd.DataFrame, n_components: int,
 
     return dataset
 
+def _median_heuristic(x: np.ndarray) -> float:
+    """Median heuristic para el bandwidth del kernel RBF."""
+    if x.shape[0] > 1_000:                          # sub-muestra para velocidad
+        x = x[npr.choice(x.shape[0], 1_000, False)]
+    dists = cdist(x, x, metric="euclidean")
+    return np.median(dists[dists != 0])
+
+
+def _sliced_wasserstein(x: np.ndarray, y: np.ndarray, n_proj: int = 50) -> float:
+    """Aprox. Wasserstein multivariante con proyecciones aleatorias."""
+    d = x.shape[1]
+    vecs = npr.normal(size=(n_proj, d))
+    vecs /= np.linalg.norm(vecs, axis=1, keepdims=True)
+    return np.mean([wasserstein_distance(x @ v, y @ v) for v in vecs])
+
+
+def _mmd_rbf(x: np.ndarray, y: np.ndarray, bandwidth: float | None) -> float:
+    """Distancia MMD con kernel Gaussiano (estimador insesgado)."""
+    if bandwidth is None:
+        bandwidth = _median_heuristic(np.vstack([x, y]))
+    gamma = 1.0 / (2.0 * bandwidth ** 2)
+    k_xx = np.exp(-gamma * cdist(x, x, "sqeuclidean"))
+    k_yy = np.exp(-gamma * cdist(y, y, "sqeuclidean"))
+    k_xy = np.exp(-gamma * cdist(x, y, "sqeuclidean"))
+
+    n, m = len(x), len(y)
+    mmd2 = (k_xx.sum() - np.trace(k_xx)) / (n * (n - 1) + 1e-12)
+    mmd2 += (k_yy.sum() - np.trace(k_yy)) / (m * (m - 1) + 1e-12)
+    mmd2 -= 2.0 * k_xy.mean()
+    return np.sqrt(max(mmd2, 0.0))
+
+def _wasserstein2_gpu(x: np.ndarray, y: np.ndarray) -> float:
+    """
+    Wasserstein-2 exacto entre dos muestras empíricas usando POT + CuPy.
+    Regresa W2 (no W2²).
+    """
+    # Pasar a GPU (float64 conserva precisión)
+    X = cp.asarray(x, dtype=cp.float64)
+    Y = cp.asarray(y, dtype=cp.float64)
+
+    nx, ny = X.shape[0], Y.shape[0]
+    a = cp.full(nx, 1.0 / nx, dtype=cp.float64)
+    b = cp.full(ny, 1.0 / ny, dtype=cp.float64)
+
+    # Matriz de costes (distancias euclidianas al cuadrado)
+    M = ot.utils.dist(X, Y, metric="sqeuclidean")
+
+    # Transporte óptimo exacto (linear programming) en GPU
+    # cost = W2²
+    cost = ot.emd2(a, b, M, numItermax=10_000)
+
+    return float(cp.sqrt(cost).get())
+
+def _wasserstein2_cpu(x: np.ndarray, y: np.ndarray) -> float:
+    """
+    Wasserstein-2 exacto en CPU usando POT y NumPy.
+    """
+    nx, ny = x.shape[0], y.shape[0]
+    a = np.full(nx, 1.0 / nx)
+    b = np.full(ny, 1.0 / ny)
+    M = ot.utils.dist(x, y, metric="sqeuclidean")
+    cost = ot.emd2(a, b, M, numItermax=10_000)   # W2²
+    return float(np.sqrt(cost))
+
+
+def _pairwise_distance(
+    x: np.ndarray,
+    y: np.ndarray,
+    metric: str = "wasserstein",
+    bandwidth: float | None = None,
+    n_proj: int = 50,
+) -> float:
+    """Calcula la distancia entre dos medidas empíricas."""
+    if metric == "wasserstein":
+        if x.shape[1] == 1:
+            return float(wasserstein_distance(x[:, 0], y[:, 0]))
+        elif x.shape[1] > 1:
+            if cp is not None and cp.cuda.is_available():
+                return _wasserstein2_gpu(x, y)
+            else:
+                return _wasserstein2_cpu(x, y)
+    if metric == "sliced_w":
+        return _sliced_wasserstein(x, y, n_proj=n_proj)
+    if metric == "mmd":
+        return _mmd_rbf(x, y, bandwidth)
+    raise ValueError(f"Metric '{metric}' not recognised.")
+
+
+def _kmedoids_pam(
+    dist_mat: np.ndarray, k: int, max_iter: int = 100, random_state: int | None = None
+) -> Tuple[np.ndarray, List[int]]:
+    """
+    Implementación minimalista de k-MEDOIDS (PAM) sobre una matriz de distancias
+    pre-calculada. Devuelve (labels 0..k-1, índices de los medoids).
+    """
+    n = dist_mat.shape[0]
+    rng = np.random.default_rng(random_state)
+    medoids = rng.choice(n, k, replace=False)
+    labels = np.empty(n, dtype=int)
+
+    for _ in range(max_iter):
+        # 1) asignación
+        for i in range(n):
+            labels[i] = np.argmin(dist_mat[i, medoids])
+
+        # 2) actualización de medoids
+        new_medoids = medoids.copy()
+        for j in range(k):
+            idx = np.where(labels == j)[0]
+            if idx.size == 0:                      # clúster vacío → re-seed
+                new_medoids[j] = rng.integers(n)
+            else:
+                costs = dist_mat[np.ix_(idx, idx)].sum(axis=1)
+                new_medoids[j] = idx[np.argmin(costs)]
+
+        if np.all(new_medoids == medoids):
+            break
+        medoids = new_medoids
+
+    # asignación final
+    for i in range(n):
+        labels[i] = np.argmin(dist_mat[i, medoids])
+    return labels, medoids.tolist()
+
+def wkmeans_clustering(
+    ds: pd.DataFrame,
+    n_clusters: int = 4,
+    window: int = 60,
+    metric: str = "wasserstein",
+    step: int = 1,
+    bandwidth: float | None = None,
+    n_proj: int = 50,
+    max_iter: int = 100,
+    random_state: int | None = 0,
+) -> pd.DataFrame:
+    """
+    Devuelve `ds` con UNA sola columna nueva: labels_meta
+    (regímenes de mercado detectados por WK-means / MMDK-means)
+    """
+    # 0) early-exit si el DF está vacío --------------------------------------
+    if ds.empty:
+        return ds.copy()
+
+    # 1) matriz de trabajo ---------------------------------------------------
+    if "close" not in ds.columns:
+        raise ValueError("El DataFrame debe contener una columna 'close'.")
+
+    work = pd.DataFrame({"ret": np.log(ds["close"]).diff()}).dropna()
+    X   = work.to_numpy()
+    idx = work.index
+
+    # 2) ventanas ------------------------------------------------------------
+    starts = np.arange(0, X.shape[0] - window + 1, step)
+    ends   = starts + window - 1
+    windows   = [X[s:e + 1] for s, e in zip(starts, ends)]
+    win_times = [idx[e] for e in ends]
+
+    if len(windows) < n_clusters:
+        raise ValueError("No hay suficientes ventanas para el número de clusters.")
+
+    # 3) matriz de distancias ------------------------------------------------
+    n = len(windows)
+    dist_mat = np.zeros((n, n), dtype=float)
+    for i in range(n):
+        for j in range(i + 1, n):
+            dist_mat[i, j] = dist_mat[j, i] = _pairwise_distance(
+                windows[i], windows[j],
+                metric=metric,
+                bandwidth=bandwidth,
+                n_proj=n_proj,
+            )
+
+    # 4) k-medoids -----------------------------------------------------------
+    labels, _ = _kmedoids_pam(dist_mat, n_clusters, max_iter, random_state)
+
+    # 5) ensamblar resultado -------------------------------------------------
+    res = ds.copy()
+    res["labels_meta"] = np.nan
+    for i, t in enumerate(win_times):
+        res.loc[t, "labels_meta"] = labels[i]
+
+    res["labels_meta"] = res["labels_meta"].ffill()
+    return res

@@ -515,6 +515,9 @@ def monte_carlo_full(
         else:
             rpt_original, _ = process_data_one_direction(close_feat, main, meta, direction)
 
+        # Score de la original
+        score_original = evaluate_report(rpt_original)
+
         # ───── 3-D batch build ──────────────────────────────────────────────
         X_main_batch, X_meta_batch, close_batch = [], [], []
 
@@ -549,7 +552,10 @@ def monte_carlo_full(
                                     pred_main,
                                     pred_meta,
                                     block_size,
-                                    0 if direction == "both" else 1)
+                                    direction)
+
+        # Incluir la original al principio del array de scores
+        scores = np.concatenate(([score_original], scores))
 
         valid  = scores[scores > 0.0]
         equity_curves = None      # si quieres conservar plot usa otro buffer

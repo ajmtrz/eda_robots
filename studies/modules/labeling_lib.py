@@ -2,7 +2,10 @@ import os
 import logging
 import numpy as np
 import pandas as pd
-import cupy as cp
+try:
+    import cupy as cp
+except Exception:  # pragma: no cover - optional dependency
+    cp = None
 #import ot
 from numba import njit, prange
 from numba.typed import List
@@ -640,6 +643,7 @@ def get_labels_trend(dataset, rolling=200, polyorder=3, threshold=0.5, vol_windo
     labels = calculate_labels_trend(normalized_trend, threshold)
     dataset = dataset.iloc[:len(labels)].copy()
     dataset['labels_main'] = labels
+    dataset['labels'] = dataset['labels_main']
     dataset = dataset.dropna()  # Remove rows with NaN
     return dataset
 
@@ -773,8 +777,13 @@ def calculate_labels_trend_with_profit(close, atr, normalized_trend, threshold, 
             labels[i] = 2.0  # No signal
     return labels
 
-def get_labels_trend_with_profit(dataset, rolling=200, polyorder=3, threshold=0.5, 
-                    vol_window=50, markup=0.5, min_val=1, max_val=15, atr_period=14) -> pd.DataFrame:
+def get_labels_trend_with_profit(dataset, rolling=200, polyorder=3, threshold=0.5,
+                    vol_window=50, markup=0.5, min_val=1, max_val=15, atr_period=14,
+                    min_l=None, max_l=None) -> pd.DataFrame:
+    if min_l is not None:
+        min_val = min_l
+    if max_l is not None:
+        max_val = max_l
     # Smoothing and trend calculation
     smoothed_prices = safe_savgol_filter(dataset['close'].values, window_length=rolling, polyorder=polyorder)
     trend = np.gradient(smoothed_prices)
@@ -799,6 +808,7 @@ def get_labels_trend_with_profit(dataset, rolling=200, polyorder=3, threshold=0.
     # Trimming the dataset and adding labels
     dataset_clean = dataset_clean.iloc[:len(labels)].copy()
     dataset_clean['labels_main'] = labels[: len(dataset_clean)]
+    dataset_clean['labels'] = dataset_clean['labels_main']
     
     # Filtering the results
     dataset_clean = dataset_clean.dropna()    
@@ -902,8 +912,13 @@ def calculate_labels_trend_multi(close, atr, normalized_trends, threshold, marku
             labels[i] = 2.0  # No signal or conflict
     return labels
 
-def get_labels_trend_with_profit_multi(dataset, method='savgol', rolling_periods=[10, 20, 30], polyorder=3, threshold=0.5, 
-                                       vol_window=50, markup=0.5, min_val=1, max_val=15, atr_period=14) -> pd.DataFrame:
+def get_labels_trend_with_profit_multi(dataset, method='savgol', rolling_periods=[10, 20, 30], polyorder=3, threshold=0.5,
+                                       vol_window=50, markup=0.5, min_val=1, max_val=15, atr_period=14,
+                                       min_l=None, max_l=None) -> pd.DataFrame:
+    if min_l is not None:
+        min_val = min_l
+    if max_l is not None:
+        max_val = max_l
     """
     Generates labels for trading signals (Buy/Sell) based on the normalized trend,
     calculated for multiple smoothing periods.
@@ -969,6 +984,7 @@ def get_labels_trend_with_profit_multi(dataset, method='savgol', rolling_periods
     # Trim data and add labels
     dataset_clean = dataset_clean.iloc[:len(labels)].copy()
     dataset_clean['labels_main'] = labels[: len(dataset_clean)]
+    dataset_clean['labels'] = dataset_clean['labels_main']
 
     # Remove remaining NaN
     dataset_clean = dataset_clean.dropna()
@@ -1009,6 +1025,7 @@ def get_labels_clusters(dataset, markup, num_clusters=20, atr_period=14) -> pd.D
     labels = calculate_labels_clusters(close_data, atr, clusters, markup)
 
     dataset['labels_main'] = labels
+    dataset['labels'] = dataset['labels_main']
     dataset = dataset.drop(columns=['cluster'])
     return dataset
 
@@ -1043,6 +1060,7 @@ def get_labels_multi_window(dataset, window_sizes=[20, 50, 100], threshold_pct=0
     signals = [2.0] * max(window_sizes) + signals
     dataset = dataset.iloc[: len(signals)].copy()
     dataset['labels_main'] = signals[: len(dataset)]
+    dataset['labels'] = dataset['labels_main']
     return dataset
 
 @njit(cache=True, fastmath=True)

@@ -13,8 +13,8 @@ from time import perf_counter
 from typing import Dict, Any
 import optuna
 from optuna.pruners import HyperbandPruner, SuccessiveHalvingPruner
-##from optuna.integration import CatBoostPruningCallback
-from sklearn.model_selection import train_test_split, ParameterSampler
+#from optuna.integration import CatBoostPruningCallback
+from sklearn.model_selection import train_test_split
 from catboost import CatBoostClassifier
 from mapie.classification import CrossConformalClassifier
 from modules.labeling_lib import (
@@ -87,7 +87,6 @@ class StrategySearcher:
         label_method: str = 'atr',
         tag: str = "",
         debug: bool = False,
-        wkmeans_params: dict | None = None,
     ):
         self.symbol = symbol
         self.timeframe = timeframe
@@ -111,8 +110,6 @@ class StrategySearcher:
         self.tag = tag
         self.debug = debug
         self.base_df = get_prices(symbol, timeframe, history_path)
-        self.wkmeans_params = wkmeans_params or {}
-        self._wkmeans_clusters = None
 
         # Configuración de logging para optuna
         optuna.logging.set_verbosity(optuna.logging.WARNING)
@@ -133,38 +130,10 @@ class StrategySearcher:
         
         if self.search_type not in search_funcs:
             raise ValueError(f"Tipo de búsqueda no válido: {self.search_type}")
-
+            
         search_func = search_funcs[self.search_type]
-
+        
         for i in range(self.n_models):
-            if self.search_type == "wkmeans":
-                param_dist = {
-                    "n_clusters": list(range(2, 13)),
-                    "window_size": list(range(20, 366)),
-                    "step": list(range(1, 16)),
-                    "max_iter": list(range(50, 301, 25)),
-                }
-                if self.search_subtype == "mmd":
-                    param_dist["bandwidth"] = list(np.logspace(-2, np.log10(5), 20))
-                if self.search_subtype == "sliced_w":
-                    param_dist["n_proj"] = list(range(5, 401, 5))
-                wk = next(ParameterSampler(param_dist, n_iter=1, random_state=i))
-                ds_full = self.base_df.loc[
-                    min(self.train_start, self.test_start):
-                    max(self.train_end, self.test_end)
-                ]
-                self._wkmeans_clusters = wkmeans_clustering(
-                    ds_full,
-                    n_clusters=wk.get("n_clusters", 4),
-                    window=wk.get("window_size", 60),
-                    metric=self.search_subtype,
-                    step=wk.get("step", 1),
-                    bandwidth=wk.get("bandwidth") if self.search_subtype == "mmd" else None,
-                    n_proj=wk.get("n_proj") if self.search_subtype == "sliced_w" else None,
-                    max_iter=wk.get("max_iter", 100),
-                )[["labels_meta"]]
-                self.wkmeans_params = wk
-
             try:
                 # Generar un seed único para este modelo
                 model_seed = int(time.time() * 1000) + i
@@ -609,23 +578,17 @@ class StrategySearcher:
             ds_train, ds_test = self.get_train_test_data(hp)
             if ds_train is None or ds_test is None:
                 return -1.0, -1.0
-
-            # (b) Lanzar error si no hay clusters precomputados
-            if self._wkmeans_clusters is None:
-                raise RuntimeError("[wkmeans] Error: self._wkmeans_clusters es None. La clusterización debe realizarse una sola vez por modelo antes de los trials de Optuna.")
-
-            # 4) Etiquetado de regímenes con WK-means calculados previamente
-            labels = self._wkmeans_clusters.loc[ds_train.index]
-            ds_train = ds_train.join(labels, how="left")
-
-            # (a) Chequeo de NaNs tras el join
-            if ds_train['labels_meta'].isna().any():
-                n_nans = ds_train['labels_meta'].isna().sum()
-                print(f"⚠️ WARNING: {n_nans} filas con labels_meta NaN tras el join. Se eliminarán del dataset de entrenamiento.")
-                ds_train = ds_train[ds_train['labels_meta'].notna()].copy()
-                if ds_train.empty:
-                    print("⚠️ ERROR: El dataset de entrenamiento quedó vacío tras eliminar NaNs en labels_meta.")
-                    return -1.0, -1.0
+            # 4) Etiquetado de regímenes con WK-means            
+            ds_train = wkmeans_clustering(
+                ds_train,
+                n_clusters=hp["n_clusters"],
+                window=hp["window_size"],
+                metric=self.search_subtype,
+                step=hp["step"],
+                bandwidth=hp["bandwidth"] if self.search_subtype == "mmd" else None,
+                n_proj=hp["n_proj"] if self.search_subtype == "sliced_w" else None,
+                max_iter=hp["max_iter"],
+            )
 
             # 5) Entrenar modelos y obtener scores (mismo helper que el resto)
             scores, model_paths, model_cols = self.evaluate_clusters(ds_train, ds_test, hp)
@@ -655,7 +618,7 @@ class StrategySearcher:
             best_models_cols = (None, None)
             
             cluster_sizes = ds_train['labels_meta'].value_counts()
-            if getattr(self, "debug", False):
+            if self.debug:
                 print(f"🔍 DEBUG: Cluster sizes:\n{cluster_sizes}")
 
             # Verificar que hay clusters
@@ -909,6 +872,19 @@ class StrategySearcher:
                     'covariance_type': trial.suggest_categorical('covariance_type', ['full', 'diag']),
                     'max_iter': trial.suggest_int('max_iter', 50, 300, step=10),
                 })
+            if self.search_type == "wkmeans":
+                params.update({
+                    "n_clusters" : trial.suggest_int("n_clusters", 2, 12, log=True),
+                    "window_size": trial.suggest_int("window_size", 20, 365, log=True),
+                    "step"       : trial.suggest_int("step", 1, 15),
+                    "max_iter"   : trial.suggest_int("max_iter",50, 300, step=25),
+                    # "metric_type": trial.suggest_categorical(
+                    #                 "metric_type",
+                    #                 ["wasserstein", "sliced_w", "mmd"]
+                    #             ),
+                    "bandwidth" : trial.suggest_float("bandwidth", 0.01, 5.0,  log=True),
+                    "n_proj"    : trial.suggest_int("n_proj", 5, 400, log=True),
+                })
             elif self.search_type == 'mapie':
                 params.update({
                     'mapie_confidence_level': trial.suggest_float('mapie_confidence_level', 0.7, 0.99),
@@ -944,7 +920,7 @@ class StrategySearcher:
 
             # Get feature columns
             main_feature_cols = [col for col in model_main_data.columns if col != 'labels_main']
-            if getattr(self, "debug", False):
+            if self.debug:
                 print(f"🔍 DEBUG: Main model data shape: {model_main_data.shape}")
                 print(f"🔍 DEBUG: Main feature columns: {main_feature_cols}")
             X_main = model_main_data[main_feature_cols]
@@ -963,7 +939,7 @@ class StrategySearcher:
 
             # ---------- 2) MODEL META ----------
             meta_feature_cols = [col for col in model_meta_data.columns if col != 'labels_meta']
-            if getattr(self, "debug", False):
+            if self.debug:
                 print(f"🔍 DEBUG: Meta model data shape: {model_meta_data.shape}")
                 print(f"🔍 DEBUG: Meta feature columns: {meta_feature_cols}")
             X_meta = model_meta_data[meta_feature_cols]
@@ -1002,7 +978,7 @@ class StrategySearcher:
                            verbose=False
             )
             t_train_main_end = time.time()
-            if getattr(self, "debug", False):
+            if self.debug:
                 print(f"🔍 DEBUG: Tiempo de entrenamiento modelo main: {t_train_main_end - t_train_main_start:.2f} segundos")
 
             # Meta-modelo
@@ -1027,7 +1003,7 @@ class StrategySearcher:
                            verbose=False
             )
             t_train_meta_end = time.time()
-            if getattr(self, "debug", False):
+            if self.debug:
                 print(f"🔍 DEBUG: Tiempo de entrenamiento modelo meta: {t_train_meta_end - t_train_meta_start:.2f} segundos")
 
             # ── EVALUACIÓN ───────────────────────────────────────────────
@@ -1061,7 +1037,7 @@ class StrategySearcher:
                 prd='insample',
             )
             test_train_time_end = time.time()
-            if getattr(self, "debug", False):
+            if self.debug:
                 print(f"🔍 DEBUG: Tiempo de test in-sample: {test_train_time_end - test_train_time_start:.2f} segundos")
 
             test_test_time_start = time.time()
@@ -1078,7 +1054,7 @@ class StrategySearcher:
                 plot=False,
             )
             test_test_time_end = time.time()
-            if getattr(self, "debug", False):
+            if self.debug:
                 print(f"🔍 DEBUG: Tiempo de test out-of-sample: {test_test_time_end - test_test_time_start:.2f} segundos")
 
             # Manejar valores inválidos
@@ -1086,7 +1062,7 @@ class StrategySearcher:
                 score_ins = -1.0
                 score_oos = -1.0
 
-            if getattr(self, "debug", False):
+            if self.debug:
                 print(f"🔍 DEBUG: Modelos guardados en {model_main_path} y {model_meta_path}")
 
             return (score_ins, score_oos), (model_main_path, model_meta_path), (main_feature_cols, meta_feature_cols)
@@ -1206,7 +1182,7 @@ class StrategySearcher:
             if hp is None:
                 return None, None
 
-            if getattr(self, "debug", False):
+            if self.debug:
                 print(f"🔍 DEBUG: base_df.shape = {self.base_df.shape}")
                 print(f"🔍 DEBUG: train_start = {self.train_start}, train_end = {self.train_end}")
                 print(f"🔍 DEBUG: test_start = {self.test_start}, test_end = {self.test_end}")
@@ -1215,7 +1191,7 @@ class StrategySearcher:
             # 1) Calcular el colchón de barras necesario
             pad = max(hp.get('periods_main', ()) + hp.get('periods_meta', ()), default=0)
             pad = int(pad)
-            if getattr(self, "debug", False):
+            if self.debug:
                 print(f"🔍 DEBUG: pad = {pad}")
 
             # ──────────────────────────────────────────────────────────────
@@ -1225,7 +1201,7 @@ class StrategySearcher:
                 bar_delta = pd.Timedelta(0)
             else:
                 bar_delta = idx.to_series().diff().dropna().median()
-            if getattr(self, "debug", False):
+            if self.debug:
                 print(f"🔍 DEBUG: bar_delta = {bar_delta}")
 
             # ──────────────────────────────────────────────────────────────
@@ -1235,23 +1211,23 @@ class StrategySearcher:
                 start_ext = idx[0]
 
             end_ext = max(self.train_end, self.test_end)
-            if getattr(self, "debug", False):
+            if self.debug:
                 print(f"🔍 DEBUG: start_ext = {start_ext}, end_ext = {end_ext}")
 
             # ──────────────────────────────────────────────────────────────
             # 4) Obtener features de todo el rango extendido
             hp_tuple = tuple(sorted(hp.items()))
             ds_slice = self.base_df.loc[start_ext:end_ext].copy()
-            if getattr(self, "debug", False):
+            if self.debug:
                 print(f"🔍 DEBUG: ds_slice.shape = {ds_slice.shape}")
             
             full_ds = get_features(ds_slice, dict(hp_tuple))
             
-            if getattr(self, "debug", False):
+            if self.debug:
                 print(f"🔍 DEBUG: full_ds.shape después de get_features = {full_ds.shape}")
 
             full_ds = self.apply_labeling(full_ds, hp)
-            if getattr(self, "debug", False):
+            if self.debug:
                 print(f"🔍 DEBUG: full_ds.shape después de apply_labeling = {full_ds.shape}")
 
             # y recortar exactamente al rango que interesa
@@ -1259,7 +1235,7 @@ class StrategySearcher:
                 min(self.train_start, self.test_start):
                 max(self.train_end,   self.test_end)
             ]
-            if getattr(self, "debug", False):
+            if self.debug:
                 print(f"🔍 DEBUG: full_ds.shape después de recorte = {full_ds.shape}")
 
             if full_ds.empty:
@@ -1273,7 +1249,7 @@ class StrategySearcher:
 
             problematic = self.check_constant_features(full_ds, list(feature_cols))
             if problematic:
-                if getattr(self, "debug", False):
+                if self.debug:
                     print(f"🔍 DEBUG: Columnas problemáticas eliminadas: {len(problematic)}")
                 full_ds.drop(columns=problematic, inplace=True)
                 feature_cols = [c for c in feature_cols if c not in problematic]
@@ -1342,7 +1318,7 @@ class StrategySearcher:
             # Evitar solapamiento
             if self.test_start <= self.train_end and self.test_end >= self.train_start:
                 train_mask &= ~test_mask
-                if getattr(self, "debug", False):
+                if self.debug:
                     print(f"🔍 DEBUG: train_mask.sum() después de evitar solapamiento = {train_mask.sum()}")
 
             # ──────────────────────────────────────────────────────────────
@@ -1350,7 +1326,7 @@ class StrategySearcher:
             train_data = full_ds[train_mask].sort_index().copy()
             test_data  = full_ds[test_mask].sort_index().copy()
 
-            if getattr(self, "debug", False):
+            if self.debug:
                 print(f"🔍 DEBUG: train_data.shape final = {train_data.shape}")
                 print(f"🔍 DEBUG: test_data.shape final = {test_data.shape}")
 

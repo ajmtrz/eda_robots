@@ -1,7 +1,7 @@
-*.db
 *.xlsx
 *.png
 [0-9]*
 !*[.]*
 __pycache__
 catboost_info/
+optuna_dbs/

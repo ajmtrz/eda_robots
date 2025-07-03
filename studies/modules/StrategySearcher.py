@@ -145,7 +145,7 @@ class StrategySearcher:
                 }
                 study = optuna.create_study(
                     directions=['maximize', 'maximize'],
-                    storage=f"sqlite:///optuna_{self.tag}.db",
+                    storage=f"sqlite:///optuna_dbs/optuna_{self.tag}.db",
                     load_if_exists=True,
                     pruner=pruners[self.pruner_type],
                     sampler=optuna.samplers.TPESampler(
@@ -1021,14 +1021,6 @@ class StrategySearcher:
             ds_train_eval_meta = ds_train[meta_feature_cols].to_numpy()
             ds_test = ds_test[["open", "high", "low", "close", "volume"]]
             close_train_eval = ds_train['close'].to_numpy()
-
-            # Verificar correspondencia de tamaños de los precios con respecto a los datos de entrenamiento
-            if len(ds_train_eval_main) != len(close_train_eval):
-                print("⚠️ ERROR: Tamaños de precios no coinciden con los datos de entrenamiento")
-                return None, None, None
-            
-            if self.debug:
-                print(f"🔍 DEBUG: Test train: {len(ds_train_eval_main)}, Test eval: {len(ds_test)}")
             
             # Evaluación in-sample y out-of-sample
             model_main_path, model_meta_path = export_models_to_ONNX(models=(model_main, model_meta))

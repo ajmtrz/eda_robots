@@ -88,9 +88,9 @@ def export_to_mql5(**kwargs):
     try:
         main_cols, meta_cols = model_cols
         # Copia los modelos ONNX desde los archivos temporales a la ruta de destino
-        filename_model_main = f"{symbol}_{timeframe}_{direction}_{label_method}_{search_type}_{search_subtype}_{model_seed}_main.onnx"
+        filename_model_main = f"{symbol}_{timeframe}_{direction}_{model_seed}_main.onnx"
         filepath_model_main = os.path.join(models_export_path, filename_model_main)
-        filename_model_meta = f"{symbol}_{timeframe}_{direction}_{label_method}_{search_type}_{search_subtype}_{model_seed}_meta.onnx"
+        filename_model_meta = f"{symbol}_{timeframe}_{direction}_{model_seed}_meta.onnx"
         filepath_model_meta = os.path.join(models_export_path, filename_model_meta)
 
         # model_paths[0] es el modelo main, model_paths[1] es el modelo meta
@@ -708,7 +708,6 @@ def export_to_mql5(**kwargs):
         with open(file_name, "w") as file:
             file.write(code)
 
-        print(f"EXPORTACIÓN {symbol}_{timeframe}_{direction}_{label_method}_{search_type}_{search_subtype}_{model_seed} ONNX CORRECTA")
     except Exception as e:
         print(f"ERROR EN EXPORTACIÓN: {e}")
         raise

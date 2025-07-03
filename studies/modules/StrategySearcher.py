@@ -205,10 +205,6 @@ class StrategySearcher:
                                         "best_stats_meta": study.user_attrs["best_stats_meta"],
                                     }
                                     export_to_mql5(**export_params)
-                                    # Verificar y exportar el mejor modelo
-                                    best_model_paths = study.user_attrs.get("best_model_paths", None)
-                                    if best_model_paths is None or not best_model_paths:
-                                        print(f"⚠️ ERROR: best_model_paths VACÍO")
 
                                     # Eliminar archivos temporales del mejor modelo
                                     for p in study.user_attrs.get("best_model_paths", []):
@@ -216,12 +212,10 @@ class StrategySearcher:
                                             os.remove(p)
 
                             # Liberar memoria eliminando datos pesados del trial
-                            if 'model_paths' in trial.user_attrs:
-                                if trial.user_attrs['model_paths'] != study.user_attrs.get('best_model_paths'):
-                                    for p in trial.user_attrs['model_paths']:
-                                        if p and os.path.exists(p):
-                                            os.remove(p)
-                                trial.set_user_attr("model_paths", None)
+                            if 'model_paths' in trial.user_attrs and trial.user_attrs['model_paths']:
+                                for p in trial.user_attrs['model_paths']:
+                                    if p and os.path.exists(p):
+                                        os.remove(p)
 
                         # Log
                         if study.best_trials:

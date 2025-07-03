@@ -185,6 +185,36 @@ class StrategySearcher:
                                     # Cambia acceso directo por .get para evitar error si no existe
                                     study.set_user_attr("best_periods_meta", trial.user_attrs.get('periods_meta'))
                                     study.set_user_attr("best_stats_meta", trial.user_attrs.get('stats_meta'))
+                                    # Exportar modelo
+                                    export_params = {
+                                        "symbol": self.symbol,
+                                        "timeframe": self.timeframe,
+                                        "direction": self.direction,
+                                        "label_method": self.label_method,
+                                        "models_export_path": self.models_export_path,
+                                        "include_export_path": self.include_export_path,
+                                        "search_type": self.search_type,
+                                        "search_subtype": self.search_subtype,
+                                        "best_model_seed": model_seed,
+                                        "best_scores": study.user_attrs["best_scores"],
+                                        "best_model_paths": study.user_attrs["best_model_paths"],
+                                        "best_model_cols": study.user_attrs["best_model_cols"],
+                                        "best_periods_main": study.user_attrs["best_periods_main"],
+                                        "best_periods_meta": study.user_attrs["best_periods_meta"],
+                                        "best_stats_main": study.user_attrs["best_stats_main"],
+                                        "best_stats_meta": study.user_attrs["best_stats_meta"],
+                                    }
+                                    export_to_mql5(**export_params)
+                                    # Verificar y exportar el mejor modelo
+                                    best_model_paths = study.user_attrs.get("best_model_paths", None)
+                                    if best_model_paths is None or not best_model_paths:
+                                        print(f"⚠️ ERROR: best_model_paths VACÍO")
+
+                                    # Eliminar archivos temporales del mejor modelo
+                                    for p in study.user_attrs.get("best_model_paths", []):
+                                        if p and os.path.exists(p):
+                                            os.remove(p)
+
                             # Liberar memoria eliminando datos pesados del trial
                             if 'model_paths' in trial.user_attrs:
                                 if trial.user_attrs['model_paths'] != study.user_attrs.get('best_model_paths'):
@@ -228,38 +258,6 @@ class StrategySearcher:
                     callbacks=[log_trial],
                     n_jobs=self.n_jobs,
                 )
-
-                # Verificar y exportar el mejor modelo
-                best_model_paths = study.user_attrs.get("best_model_paths", None)
-                if best_model_paths is None or not best_model_paths:
-                    print(f"⚠️ ERROR: best_model_paths VACÍO")
-                    continue
-                
-                export_params = {
-                    "symbol": self.symbol,
-                    "timeframe": self.timeframe,
-                    "direction": self.direction,
-                    "label_method": self.label_method,
-                    "models_export_path": self.models_export_path,
-                    "include_export_path": self.include_export_path,
-                    "search_type": self.search_type,
-                    "search_subtype": self.search_subtype,
-                    "best_model_seed": model_seed,
-                    "best_scores": study.user_attrs["best_scores"],
-                    "best_model_paths": study.user_attrs["best_model_paths"],
-                    "best_model_cols": study.user_attrs["best_model_cols"],
-                    "best_periods_main": study.user_attrs["best_periods_main"],
-                    "best_periods_meta": study.user_attrs["best_periods_meta"],
-                    "best_stats_main": study.user_attrs["best_stats_main"],
-                    "best_stats_meta": study.user_attrs["best_stats_meta"],
-                }
-                
-                export_to_mql5(**export_params)
-
-                # Eliminar archivos temporales del mejor modelo
-                for p in study.user_attrs.get("best_model_paths", []):
-                    if p and os.path.exists(p):
-                        os.remove(p)
                 
             except Exception as e:
                 print(f"\nError procesando modelo {i}:")
@@ -267,9 +265,6 @@ class StrategySearcher:
                 print("Traceback:")
                 print(traceback.format_exc())
                 continue
-            finally:
-                # Liberar memoria
-                gc.collect()
 
     # =========================================================================
     # Métodos de búsqueda específicos

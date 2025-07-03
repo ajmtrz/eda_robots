@@ -2400,37 +2400,6 @@ def lgmm_clustering(dataset: pd.DataFrame, n_components: int,
 
     return dataset
 
-def _median_heuristic(x: np.ndarray) -> float:
-    """Median heuristic para el bandwidth del kernel RBF."""
-    if x.shape[0] > 1_000:                          # sub-muestra para velocidad
-        x = x[npr.choice(x.shape[0], 1_000, False)]
-    dists = cdist(x, x, metric="euclidean")
-    return np.median(dists[dists != 0])
-
-
-def _sliced_wasserstein(x: np.ndarray, y: np.ndarray, n_proj: int = 50) -> float:
-    """Aprox. Wasserstein multivariante con proyecciones aleatorias."""
-    d = x.shape[1]
-    vecs = npr.normal(size=(n_proj, d))
-    vecs /= np.linalg.norm(vecs, axis=1, keepdims=True)
-    return np.mean([wasserstein_distance(x @ v, y @ v) for v in vecs])
-
-
-def _mmd_rbf(x: np.ndarray, y: np.ndarray, bandwidth: float | None) -> float:
-    """Distancia MMD con kernel Gaussiano (estimador insesgado)."""
-    if bandwidth is None:
-        bandwidth = _median_heuristic(np.vstack([x, y]))
-    gamma = 1.0 / (2.0 * bandwidth ** 2)
-    k_xx = np.exp(-gamma * cdist(x, x, "sqeuclidean"))
-    k_yy = np.exp(-gamma * cdist(y, y, "sqeuclidean"))
-    k_xy = np.exp(-gamma * cdist(x, y, "sqeuclidean"))
-
-    n, m = len(x), len(y)
-    mmd2 = (k_xx.sum() - np.trace(k_xx)) / (n * (n - 1) + 1e-12)
-    mmd2 += (k_yy.sum() - np.trace(k_yy)) / (m * (m - 1) + 1e-12)
-    mmd2 -= 2.0 * k_xy.mean()
-    return np.sqrt(max(mmd2, 0.0))
-
 def _wasserstein2_gpu(x: np.ndarray, y: np.ndarray) -> float:
     """
     Wasserstein-2 exacto entre dos muestras empíricas usando POT + CuPy.
@@ -2463,29 +2432,6 @@ def _wasserstein2_cpu(x: np.ndarray, y: np.ndarray) -> float:
     M = ot.utils.dist(x, y, metric="sqeuclidean")
     cost = ot.emd2(a, b, M, numItermax=10_000)   # W2²
     return float(np.sqrt(cost))
-
-
-def _pairwise_distance(
-    x: np.ndarray,
-    y: np.ndarray,
-    metric: str = "wasserstein",
-    bandwidth: float | None = None,
-    n_proj: int = 50,
-) -> float:
-    """Calcula la distancia entre dos medidas empíricas."""
-    if metric == "wasserstein":
-        if x.shape[1] == 1:
-            return float(wasserstein_distance(x[:, 0], y[:, 0]))
-        elif x.shape[1] > 1:
-            if cp is not None and cp.cuda.is_available():
-                return _wasserstein2_gpu(x, y)
-            else:
-                return _wasserstein2_cpu(x, y)
-    if metric == "sliced_w":
-        return _sliced_wasserstein(x, y, n_proj=n_proj)
-    if metric == "mmd":
-        return _mmd_rbf(x, y, bandwidth)
-    raise ValueError(f"Metric '{metric}' not recognised.")
 
 @njit(cache=True, fastmath=True)
 def _kmedoids_pam(
@@ -2598,11 +2544,21 @@ def _sliced_wasserstein_numba(windows, n_proj=50):
     n = windows.shape[0]
     d = windows.shape[2] if windows.ndim == 3 else 1
     dist_mat = np.zeros((n, n), dtype=np.float64)
-    rng = np.random.RandomState(42)
-    vecs = rng.normal(size=(n_proj, d))
+    # Numba does not support np.random.normal with 'size' argument in nopython mode.
+    # Instead, generate the random vectors manually using Box-Muller.
+    vecs = np.empty((n_proj, d), dtype=np.float64)
+    for k in range(n_proj):
+        for dd in range(d):
+            # Box-Muller transform for standard normal
+            u1 = np.random.random()
+            u2 = np.random.random()
+            z = np.sqrt(-2.0 * np.log(u1 + 1e-12)) * np.cos(2.0 * np.pi * u2)
+            vecs[k, dd] = z
     for k in range(n_proj):
         v = vecs[k]
-        v = v / np.sqrt((v ** 2).sum())
+        norm = np.sqrt((v ** 2).sum())
+        if norm > 0:
+            v = v / norm
         for i in prange(n):
             for j in range(i + 1, n):
                 if d == 1:
@@ -2667,9 +2623,11 @@ def _distance_matrix(key: tuple,
     if n <= 1:
         return np.zeros((n, n), dtype=float)
     arr = np.array(windows)
+    dist_mat = None  # Inicializa dist_mat para evitar UnboundLocalError
+
     if metric == 'euclidean':
         dist_mat = _euclidean_matrix_numba(arr)
-    if metric == 'wasserstein':
+    elif metric == 'wasserstein':
         # Si es 1D (shape: n_windows, window, 1), usar la versión 1D optimizada
         if arr.ndim == 3 and arr.shape[2] == 1:
             arr1d = arr.reshape(arr.shape[0], arr.shape[1])
@@ -2687,9 +2645,11 @@ def _distance_matrix(key: tuple,
                     else:
                         d = _wasserstein2_cpu(x, y)
                     dist_mat[i, j] = dist_mat[j, i] = d
-    if metric == 'sliced_w':
+        else:
+            raise ValueError("Forma de ventana no soportada para 'wasserstein'")
+    elif metric == 'sliced_w':
         dist_mat = _sliced_wasserstein_numba(arr, n_proj)
-    if metric == 'mmd':
+    elif metric == 'mmd':
         if bandwidth is None:
             centers = np.array([w.mean(axis=0) for w in arr])
             dists = np.zeros((n, n))
@@ -2702,6 +2662,11 @@ def _distance_matrix(key: tuple,
             med = np.median(dists[dists > 0])
             bandwidth = med if med > 0 else 1.0
         dist_mat = _mmd_matrix_numba(arr, bandwidth)
+    else:
+        raise ValueError(f"Métrica desconocida: {metric}")
+
+    if dist_mat is None:
+        raise RuntimeError("No se pudo calcular la matriz de distancias: 'dist_mat' no fue asignada.")
 
     return dist_mat
     

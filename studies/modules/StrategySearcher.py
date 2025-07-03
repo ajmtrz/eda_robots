@@ -145,6 +145,8 @@ class StrategySearcher:
                 }
                 study = optuna.create_study(
                     directions=['maximize', 'maximize'],
+                    storage=f"sqlite:///optuna_{self.tag}.db",
+                    load_if_exists=True,
                     pruner=pruners[self.pruner_type],
                     sampler=optuna.samplers.TPESampler(
                         n_startup_trials=int(np.sqrt(self.n_trials)),

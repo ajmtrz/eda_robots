@@ -4,7 +4,8 @@ import numpy as np
 import pandas as pd
 import cupy as cp
 #import ot
-from numba import njit, prange
+from functools import lru_cache
+from numba import njit
 from numba.typed import List
 from hdbscan import HDBSCAN
 from sklearn.cluster import KMeans
@@ -2523,6 +2524,25 @@ def _kmedoids_pam(
         labels[i] = np.argmin(dist_mat[i, medoids])
     return labels, medoids.tolist()
 
+@lru_cache(maxsize=16)
+def _distance_matrix(key: tuple,
+                     windows: tuple,
+                     metric: str,
+                     bandwidth: float | None,
+                     n_proj: int) -> np.ndarray:
+    """Devuelve la matriz de distancias d_ij; se reutiliza si la clave coincide."""
+    n = len(windows)
+    dist_mat = np.zeros((n, n), dtype=float)
+    for i in range(n):
+        for j in range(i + 1, n):
+            dist_mat[i, j] = dist_mat[j, i] = _pairwise_distance(
+                windows[i], windows[j],
+                metric=metric,
+                bandwidth=bandwidth,
+                n_proj=n_proj,
+            )
+    return dist_mat
+
 def wkmeans_clustering(
     ds: pd.DataFrame,
     n_clusters: int = 4,
@@ -2559,17 +2579,15 @@ def wkmeans_clustering(
     if len(windows) < n_clusters:
         raise ValueError("No hay suficientes ventanas para el número de clusters.")
 
-    # 3) matriz de distancias ------------------------------------------------
-    n = len(windows)
-    dist_mat = np.zeros((n, n), dtype=float)
-    for i in range(n):
-        for j in range(i + 1, n):
-            dist_mat[i, j] = dist_mat[j, i] = _pairwise_distance(
-                windows[i], windows[j],
-                metric=metric,
-                bandwidth=bandwidth,
-                n_proj=n_proj,
-            )
+    # 3) matriz de distancias (con caché LRU) -------------------------------
+    dm_key = (window, step, metric, bandwidth, n_proj, len(windows))
+    dist_mat = _distance_matrix(
+        dm_key,
+        tuple(map(tuple, windows)),
+        metric=metric,
+        bandwidth=bandwidth,
+        n_proj=n_proj,
+    )
 
     # 4) k-medoids -----------------------------------------------------------
     labels, _ = _kmedoids_pam(dist_mat, n_clusters, max_iter, random_state)

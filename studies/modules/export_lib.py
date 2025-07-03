@@ -67,7 +67,6 @@ def export_models_to_ONNX(models):
         tmp.write(onnx_model.SerializeToString())
         tmp.close()
         onnx_models.append(tmp.name)
-        del model
     return onnx_models
 
 def export_to_mql5(**kwargs):

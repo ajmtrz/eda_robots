@@ -1,5 +1,4 @@
 import traceback
-from threading import Lock
 from numba import njit, prange
 import numpy as np
 import pandas as pd
@@ -7,14 +6,6 @@ from datetime import datetime
 import matplotlib.pyplot as plt
 import onnxruntime as rt
 from functools import lru_cache
-from catboost import CatBoostClassifier
-from skl2onnx import convert_sklearn, update_registered_converter
-from skl2onnx.common.data_types import FloatTensorType
-from skl2onnx.common.shape_calculator import calculate_linear_classifier_output_shapes
-from modules.export_lib import (
-    skl2onnx_parser_catboost_classifier,
-    skl2onnx_convert_catboost,
-)
 from modules.labeling_lib import get_features
 rt.set_default_logger_severity(4)
 
@@ -423,19 +414,7 @@ def _make_noisy_close(close: np.ndarray) -> np.ndarray:
     noise = np.random.laplace(0.0, price_noise, size=n)
     return close * (1.0 + noise)
 
-# -----------------------------------------------------------------------------
-#  ONNX-accelerated batch prediction
-# -----------------------------------------------------------------------------
-update_registered_converter(
-    CatBoostClassifier,
-    "CatBoostClassifier",
-    calculate_linear_classifier_output_shapes,
-    skl2onnx_convert_catboost,
-    parser=skl2onnx_parser_catboost_classifier,
-    options={"nocl": [True, False], "zipmap": [True, False]}
-)
-
-@lru_cache(maxsize=16)
+@lru_cache(maxsize=2)
 def _ort_session(model_path:str):
     sess  = rt.InferenceSession(model_path,
                                 providers=['CPUExecutionProvider'])

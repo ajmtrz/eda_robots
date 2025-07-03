@@ -4,8 +4,7 @@ import numpy as np
 import pandas as pd
 import cupy as cp
 #import ot
-from functools import lru_cache
-from numba import njit
+from numba import njit, prange
 from numba.typed import List
 from hdbscan import HDBSCAN
 from sklearn.cluster import KMeans
@@ -22,6 +21,8 @@ from scipy.interpolate import UnivariateSpline
 from scipy.signal import find_peaks
 from sklearn.mixture import GaussianMixture
 import matplotlib.pyplot as plt
+from joblib import Parallel, delayed
+from concurrent.futures import ProcessPoolExecutor, as_completed
 
 # Configuración de logging
 logging.getLogger('hmmlearn').setLevel(logging.ERROR)
@@ -2390,8 +2391,7 @@ def lgmm_clustering(dataset: pd.DataFrame, n_components: int,
         gm = GaussianMixture(
             n_components=n_components,
             covariance_type=covariance_type,
-            max_iter=max_iter,
-            random_state=0,
+            max_iter=max_iter
         )
         labels = gm.fit_predict(meta_X.to_numpy(np.float32))
         dataset["labels_meta"] = labels.astype(int)
@@ -2487,62 +2487,224 @@ def _pairwise_distance(
         return _mmd_rbf(x, y, bandwidth)
     raise ValueError(f"Metric '{metric}' not recognised.")
 
-
+@njit(cache=True, fastmath=True)
 def _kmedoids_pam(
-    dist_mat: np.ndarray, k: int, max_iter: int = 100, random_state: int | None = None
-) -> Tuple[np.ndarray, List[int]]:
+    dist_mat: np.ndarray, k: int, max_iter: int = 100
+) -> tuple:
     """
     Implementación minimalista de k-MEDOIDS (PAM) sobre una matriz de distancias
     pre-calculada. Devuelve (labels 0..k-1, índices de los medoids).
     """
     n = dist_mat.shape[0]
-    rng = np.random.default_rng(random_state)
-    medoids = rng.choice(n, k, replace=False)
-    labels = np.empty(n, dtype=int)
+
+    medoids = np.random.choice(n, k, replace=False)
+    labels = np.empty(n, dtype=np.int64)
 
     for _ in range(max_iter):
         # 1) asignación
-        for i in range(n):
-            labels[i] = np.argmin(dist_mat[i, medoids])
+        for i in prange(n):
+            min_dist = 1e20
+            min_j = 0
+            for j in range(k):
+                d = dist_mat[i, medoids[j]]
+                if d < min_dist:
+                    min_dist = d
+                    min_j = j
+            labels[i] = min_j
 
         # 2) actualización de medoids
         new_medoids = medoids.copy()
         for j in range(k):
-            idx = np.where(labels == j)[0]
-            if idx.size == 0:                      # clúster vacío → re-seed
-                new_medoids[j] = rng.integers(n)
+            # idx = np.where(labels == j)[0]
+            count = 0
+            for ii in range(n):
+                if labels[ii] == j:
+                    count += 1
+            idx = np.empty(count, dtype=np.int64)
+            c = 0
+            for ii in range(n):
+                if labels[ii] == j:
+                    idx[c] = ii
+                    c += 1
+            if count == 0:  # clúster vacío → re-seed
+                new_medoids[j] = np.random.randint(n)
             else:
-                costs = dist_mat[np.ix_(idx, idx)].sum(axis=1)
-                new_medoids[j] = idx[np.argmin(costs)]
+                # costs = dist_mat[np.ix_(idx, idx)].sum(axis=1)
+                min_cost = 1e20
+                min_idx = idx[0]
+                for m in range(count):
+                    cost = 0.0
+                    for l in range(count):
+                        cost += dist_mat[idx[m], idx[l]]
+                    if cost < min_cost:
+                        min_cost = cost
+                        min_idx = idx[m]
+                new_medoids[j] = min_idx
 
-        if np.all(new_medoids == medoids):
+        # check convergence
+        converged = True
+        for j in range(k):
+            if new_medoids[j] != medoids[j]:
+                converged = False
+                break
+        if converged:
             break
         medoids = new_medoids
 
     # asignación final
-    for i in range(n):
-        labels[i] = np.argmin(dist_mat[i, medoids])
-    return labels, medoids.tolist()
+    for i in prange(n):
+        min_dist = 1e20
+        min_j = 0
+        for j in range(k):
+            d = dist_mat[i, medoids[j]]
+            if d < min_dist:
+                min_dist = d
+                min_j = j
+        labels[i] = min_j
 
-@lru_cache(maxsize=16)
-def _distance_matrix(key: tuple,
-                     windows: tuple,
-                     metric: str,
-                     bandwidth: float | None,
-                     n_proj: int) -> np.ndarray:
-    """Devuelve la matriz de distancias d_ij; se reutiliza si la clave coincide."""
+    return labels, medoids
+
+@njit(parallel=True, fastmath=True)
+def _euclidean_matrix_numba(windows):
     n = len(windows)
-    dist_mat = np.zeros((n, n), dtype=float)
-    for i in range(n):
+    dist_mat = np.zeros((n, n), dtype=np.float64)
+    for i in prange(n):
         for j in range(i + 1, n):
-            dist_mat[i, j] = dist_mat[j, i] = _pairwise_distance(
-                windows[i], windows[j],
-                metric=metric,
-                bandwidth=bandwidth,
-                n_proj=n_proj,
-            )
+            d = np.linalg.norm(windows[i] - windows[j])
+            dist_mat[i, j] = dist_mat[j, i] = d
     return dist_mat
 
+@njit(fastmath=True)
+def _wasserstein1d_numba(x, y):
+    x = np.sort(x)
+    y = np.sort(y)
+    return np.mean(np.abs(x - y))
+
+@njit(parallel=True, fastmath=True)
+def _wasserstein1d_matrix(windows):
+    n = len(windows)
+    dist_mat = np.zeros((n, n), dtype=np.float64)
+    for i in prange(n):
+        for j in range(i + 1, n):
+            # Wasserstein 1D: ordenar y sumar diferencias absolutas
+            x = np.sort(windows[i].ravel())
+            y = np.sort(windows[j].ravel())
+            d = np.mean(np.abs(x - y))
+            dist_mat[i, j] = dist_mat[j, i] = d
+    return dist_mat
+
+@njit(parallel=True, fastmath=True)
+def _sliced_wasserstein_numba(windows, n_proj=50):
+    n = windows.shape[0]
+    d = windows.shape[2] if windows.ndim == 3 else 1
+    dist_mat = np.zeros((n, n), dtype=np.float64)
+    rng = np.random.RandomState(42)
+    vecs = rng.normal(size=(n_proj, d))
+    for k in range(n_proj):
+        v = vecs[k]
+        v = v / np.sqrt((v ** 2).sum())
+        for i in prange(n):
+            for j in range(i + 1, n):
+                if d == 1:
+                    x_proj = windows[i].ravel()
+                    y_proj = windows[j].ravel()
+                else:
+                    x_proj = windows[i] @ v
+                    y_proj = windows[j] @ v
+                d_w = _wasserstein1d_numba(x_proj, y_proj)
+                dist_mat[i, j] += d_w
+                dist_mat[j, i] += d_w
+    dist_mat /= n_proj
+    return dist_mat
+
+@njit(fastmath=True)
+def _mmd_rbf_numba(x, y, gamma):
+    n = x.shape[0]
+    m = y.shape[0]
+    k_xx = 0.0
+    for i in range(n):
+        for j in range(n):
+            if i != j:
+                d2 = 0.0
+                for d in range(x.shape[1]):
+                    d2 += (x[i, d] - x[j, d]) ** 2
+                k_xx += np.exp(-gamma * d2)
+    k_yy = 0.0
+    for i in range(m):
+        for j in range(m):
+            if i != j:
+                d2 = 0.0
+                for d in range(y.shape[1]):
+                    d2 += (y[i, d] - y[j, d]) ** 2
+                k_yy += np.exp(-gamma * d2)
+    k_xy = 0.0
+    for i in range(n):
+        for j in range(m):
+            d2 = 0.0
+            for d in range(x.shape[1]):
+                d2 += (x[i, d] - y[j, d]) ** 2
+            k_xy += np.exp(-gamma * d2)
+    mmd2 = (k_xx / (n * (n - 1) + 1e-12)) + (k_yy / (m * (m - 1) + 1e-12)) - 2.0 * (k_xy / (n * m))
+    return np.sqrt(max(mmd2, 0.0))
+
+@njit(parallel=True, fastmath=True)
+def _mmd_matrix_numba(windows, bandwidth):
+    n = windows.shape[0]
+    dist_mat = np.zeros((n, n), dtype=np.float64)
+    gamma = 1.0 / (2.0 * bandwidth ** 2)
+    for i in prange(n):
+        for j in range(i + 1, n):
+            d = _mmd_rbf_numba(windows[i], windows[j], gamma)
+            dist_mat[i, j] = dist_mat[j, i] = d
+    return dist_mat
+
+def _distance_matrix(key: tuple,
+                     metric: str,
+                     bandwidth: float | None,
+                     n_proj: int,
+                     windows: tuple) -> np.ndarray:
+    n = len(windows)
+    if n <= 1:
+        return np.zeros((n, n), dtype=float)
+    arr = np.array(windows)
+    if metric == 'euclidean':
+        dist_mat = _euclidean_matrix_numba(arr)
+    if metric == 'wasserstein':
+        # Si es 1D (shape: n_windows, window, 1), usar la versión 1D optimizada
+        if arr.ndim == 3 and arr.shape[2] == 1:
+            arr1d = arr.reshape(arr.shape[0], arr.shape[1])
+            dist_mat = _wasserstein1d_matrix(arr1d)
+        # Si es multidimensional (shape: n_windows, window, d)
+        elif arr.ndim == 3 and arr.shape[2] > 1:
+            n = arr.shape[0]
+            dist_mat = np.zeros((n, n), dtype=float)
+            for i in range(n):
+                for j in range(i + 1, n):
+                    x = arr[i]
+                    y = arr[j]
+                    if cp is not None and cp.cuda.is_available():
+                        d = _wasserstein2_gpu(x, y)
+                    else:
+                        d = _wasserstein2_cpu(x, y)
+                    dist_mat[i, j] = dist_mat[j, i] = d
+    if metric == 'sliced_w':
+        dist_mat = _sliced_wasserstein_numba(arr, n_proj)
+    if metric == 'mmd':
+        if bandwidth is None:
+            centers = np.array([w.mean(axis=0) for w in arr])
+            dists = np.zeros((n, n))
+            for i in range(n):
+                for j in range(i + 1, n):
+                    d2 = 0.0
+                    for d in range(centers.shape[1]):
+                        d2 += (centers[i, d] - centers[j, d]) ** 2
+                    dists[i, j] = dists[j, i] = np.sqrt(d2)
+            med = np.median(dists[dists > 0])
+            bandwidth = med if med > 0 else 1.0
+        dist_mat = _mmd_matrix_numba(arr, bandwidth)
+
+    return dist_mat
+    
 def wkmeans_clustering(
     ds: pd.DataFrame,
     n_clusters: int = 4,
@@ -2552,7 +2714,6 @@ def wkmeans_clustering(
     bandwidth: float | None = None,
     n_proj: int = 50,
     max_iter: int = 100,
-    random_state: int | None = 0,
 ) -> pd.DataFrame:
     """
     Devuelve `ds` con UNA sola columna nueva: labels_meta
@@ -2579,18 +2740,18 @@ def wkmeans_clustering(
     if len(windows) < n_clusters:
         raise ValueError("No hay suficientes ventanas para el número de clusters.")
 
-    # 3) matriz de distancias (con caché LRU) -------------------------------
+    # 3) matriz de distancias -------------------------------------------------
     dm_key = (window, step, metric, bandwidth, n_proj, len(windows))
     dist_mat = _distance_matrix(
         dm_key,
-        tuple(map(tuple, windows)),
         metric=metric,
         bandwidth=bandwidth,
         n_proj=n_proj,
+        windows=tuple(windows),
     )
 
     # 4) k-medoids -----------------------------------------------------------
-    labels, _ = _kmedoids_pam(dist_mat, n_clusters, max_iter, random_state)
+    labels, _ = _kmedoids_pam(dist_mat, n_clusters, max_iter)
 
     # 5) ensamblar resultado -------------------------------------------------
     res = ds.copy()

@@ -609,21 +609,23 @@ class StrategySearcher:
             ds_train, ds_test = self.get_train_test_data(hp)
             if ds_train is None or ds_test is None:
                 return -1.0, -1.0
+
+            # (b) Lanzar error si no hay clusters precomputados
+            if self._wkmeans_clusters is None:
+                raise RuntimeError("[wkmeans] Error: self._wkmeans_clusters es None. La clusterización debe realizarse una sola vez por modelo antes de los trials de Optuna.")
+
             # 4) Etiquetado de regímenes con WK-means calculados previamente
-            if self._wkmeans_clusters is not None:
-                labels = self._wkmeans_clusters.loc[ds_train.index]
-                ds_train = ds_train.join(labels, how="left")
-            else:
-                ds_train = wkmeans_clustering(
-                    ds_train,
-                    n_clusters=hp["n_clusters"],
-                    window=hp["window_size"],
-                    metric=self.search_subtype,
-                    step=hp["step"],
-                    bandwidth=hp.get("bandwidth") if self.search_subtype == "mmd" else None,
-                    n_proj=hp.get("n_proj") if self.search_subtype == "sliced_w" else None,
-                    max_iter=hp["max_iter"],
-                )
+            labels = self._wkmeans_clusters.loc[ds_train.index]
+            ds_train = ds_train.join(labels, how="left")
+
+            # (a) Chequeo de NaNs tras el join
+            if ds_train['labels_meta'].isna().any():
+                n_nans = ds_train['labels_meta'].isna().sum()
+                print(f"⚠️ WARNING: {n_nans} filas con labels_meta NaN tras el join. Se eliminarán del dataset de entrenamiento.")
+                ds_train = ds_train[ds_train['labels_meta'].notna()].copy()
+                if ds_train.empty:
+                    print("⚠️ ERROR: El dataset de entrenamiento quedó vacío tras eliminar NaNs en labels_meta.")
+                    return -1.0, -1.0
 
             # 5) Entrenar modelos y obtener scores (mismo helper que el resto)
             scores, model_paths, model_cols = self.evaluate_clusters(ds_train, ds_test, hp)

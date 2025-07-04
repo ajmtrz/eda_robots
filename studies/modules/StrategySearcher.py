@@ -145,8 +145,9 @@ class StrategySearcher:
                     'halving': SuccessiveHalvingPruner(min_resource='auto')
                 }
                 study = optuna.create_study(
+                    study_name=self.tag,
                     directions=['maximize', 'maximize'],
-                    storage=f"sqlite:///optuna_dbs/optuna_{self.tag}.db",
+                    storage=f"sqlite:///optuna_dbs/{self.tag}.db",
                     load_if_exists=True,
                     pruner=pruners[self.pruner_type],
                     sampler=optuna.samplers.TPESampler(

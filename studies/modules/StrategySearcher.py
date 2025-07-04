@@ -33,6 +33,7 @@ from modules.labeling_lib import (
     lgmm_clustering, wkmeans_clustering
 )
 from modules.tester_lib import (
+    robust_oos_score,
     tester,
     walk_forward_robust_score,
 )
@@ -1006,21 +1007,18 @@ class StrategySearcher:
                 return None, None, None
             
             # Extraer datos para evaluación
-            ds_train_eval_main = ds_train[main_feature_cols].to_numpy()
-            ds_train_eval_meta = ds_train[meta_feature_cols].to_numpy()
-            ds_test = ds_test[["open", "high", "low", "close", "volume"]]
-            close_train_eval = ds_train['close'].to_numpy()
+            #ds_test = ds_test[["open", "high", "low", "close", "volume"]]
             
             # Evaluación in-sample y out-of-sample
             model_main_path, model_meta_path = export_models_to_ONNX(models=(model_main, model_meta))
 
             test_train_time_start = time.time()
             score_ins = tester(
-                ds_main=ds_train_eval_main,
-                ds_meta=ds_train_eval_meta,
-                close=close_train_eval,
+                dataset=ds_train,
                 model_main=model_main_path,
                 model_meta=model_meta_path,
+                model_main_cols=main_feature_cols,
+                model_meta_cols=meta_feature_cols,
                 direction=self.direction,
                 plot=False,
                 prd='insample',
@@ -1030,17 +1028,16 @@ class StrategySearcher:
                 print(f"🔍 DEBUG: Tiempo de test in-sample: {test_train_time_end - test_train_time_start:.2f} segundos")
 
             test_test_time_start = time.time()
-            score_oos = walk_forward_robust_score(
-                ds_test=ds_test,
+            score_oos = robust_oos_score(
+                dataset=ds_test,
                 model_main=model_main_path,
                 model_meta=model_meta_path,
                 model_main_cols=main_feature_cols,
                 model_meta_cols=meta_feature_cols,
                 hp=hp,
                 direction=self.direction,
-                n_splits=3,
-                agg='min',
-                plot=False,
+                plot=True,
+                prd='out-of-sample',
             )
             test_test_time_end = time.time()
             if self.debug:

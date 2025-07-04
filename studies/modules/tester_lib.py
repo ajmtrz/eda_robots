@@ -91,11 +91,11 @@ def process_data_one_direction(close, main_labels, meta_labels, direction):
 # 2)  Wrappers del tester
 # ───────────────────────────────────────────────────────────────────
 def tester(
-        ds_main: np.ndarray,
-        ds_meta: np.ndarray,
-        close: np.ndarray,
+        dataset: pd.DataFrame,
         model_main: object,
         model_meta: object,
+        model_main_cols: list[str],
+        model_meta_cols: list[str],
         direction: str = 'both',
         plot: bool = False,
         prd: str = '') -> float:
@@ -104,12 +104,12 @@ def tester(
 
     Parameters
     ----------
-    ds_main : np.ndarray
-        Conjunto de características para el modelo principal.
-    ds_meta : np.ndarray
-        Conjunto de características para el meta-modelo.
-    close : np.ndarray
-        Serie de precios de cierre.
+    dataset : pd.DataFrame
+        DataFrame con las columnas de cierre y etiquetas.
+    model_main_cols : list[str]
+        Lista de nombres de columnas para el modelo principal.
+    model_meta_cols : list[str]
+        Lista de nombres de columnas para el meta-modelo.
     model_main : object
         Modelo principal entrenado con ``predict_proba``.
     model_meta : object
@@ -126,6 +126,10 @@ def tester(
     float
         Puntuación de la estrategia según :func:`evaluate_report`.
     """
+    # Preparación de datos
+    ds_main = dataset[model_main_cols].to_numpy()
+    ds_meta = dataset[model_meta_cols].to_numpy()
+    close = dataset['close'].to_numpy()
 
     # Calcular probabilidades usando ambos modelos (sin binarizar)
     main = _predict_one(model_main, ds_main)
@@ -481,7 +485,7 @@ def _score_batch(close_all, l_all, m_all, block_size, direction):
     return scores
 
 def monte_carlo_full(
-    ds_test: pd.DataFrame,
+    dataset: pd.DataFrame,
     model_main: object,
     model_meta: object,
     model_main_cols: list[str],
@@ -496,10 +500,10 @@ def monte_carlo_full(
     """Lanza Monte Carlo alterando solo el cierre y recalculando las features."""
 
     # extraer serie de cierre original
-    close = np.ascontiguousarray(ds_test["close"].to_numpy())
+    close = np.ascontiguousarray(dataset["close"].to_numpy())
 
     try:
-        base_df = ds_test.copy()
+        base_df = dataset.copy()
         feats = get_features(base_df, dict(hp))
         if feats.empty:
             return {"scores": np.array([-1.0]), "p_positive": 0.0, "quantiles": np.array([-1.0, -1.0, -1.0])}
@@ -523,7 +527,7 @@ def monte_carlo_full(
 
         for _ in range(n_sim):
             noisy_close = _make_noisy_close(close)
-            df_sim      = ds_test.copy()
+            df_sim      = dataset.copy()
             df_sim["close"] = noisy_close
 
             feats_sim = get_features(df_sim, dict(hp))
@@ -623,7 +627,7 @@ def monte_carlo_full(
 
 
 def robust_oos_score(
-        ds_test: pd.DataFrame,
+        dataset: pd.DataFrame,
         model_main: object,
         model_meta: object,
         model_main_cols: list[str],
@@ -640,7 +644,7 @@ def robust_oos_score(
 
     try:
         mc = monte_carlo_full(
-            ds_test=ds_test,
+            dataset=dataset,
             model_main=model_main,
             model_meta=model_meta,
             model_main_cols=model_main_cols,
@@ -667,7 +671,7 @@ def robust_oos_score(
         return -1.0
 
 def walk_forward_robust_score(
-    ds_test: pd.DataFrame,
+    dataset: pd.DataFrame,
     model_main: object,
     model_meta: object,
     model_main_cols: list[str],
@@ -681,10 +685,10 @@ def walk_forward_robust_score(
     """Calcula un score OOS mediante validación walk-forward."""
 
     try:
-        n = len(ds_test)
+        n = len(dataset)
         if n_splits <= 1 or n <= 1:
             return robust_oos_score(
-                ds_test=ds_test,
+                dataset=dataset,
                 model_main=model_main,
                 model_meta=model_meta,
                 model_main_cols=model_main_cols,
@@ -703,7 +707,7 @@ def walk_forward_robust_score(
             if end - start < 2:
                 continue
             s = robust_oos_score(
-                ds_test=ds_test.iloc[start:end],
+                dataset=dataset.iloc[start:end],
                 model_main=model_main,
                 model_meta=model_meta,
                 model_main_cols=model_main_cols,

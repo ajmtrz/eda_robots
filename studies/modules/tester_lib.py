@@ -464,9 +464,11 @@ def _score_batch(close_all, l_all, m_all, block_size, direction):
     """
     Calcula el score para cada simulación *tal cual*, sin volver a alterar
     precios ni señales (ya vienen ruidosos).
+    Ahora también devuelve las curvas de equity de cada simulación.
     """
     n_sim, n = l_all.shape
     scores = np.full(n_sim, -1.0)
+    equity_curves = [np.zeros(n+1) for _ in range(n_sim)]  # <-- NUEVO
     for i in prange(n_sim):
         if direction == "both":
             rpt, _ = process_data(close_all[i], l_all[i], m_all[i])
@@ -482,7 +484,8 @@ def _score_batch(close_all, l_all, m_all, block_size, direction):
             continue
         eq = _equity_from_returns(_bootstrap_returns(ret, block_size))
         scores[i] = evaluate_report(eq)
-    return scores
+        equity_curves[i] = eq  # <-- GUARDA LA CURVA DE EQUITY
+    return scores, equity_curves
 
 def monte_carlo_full(
     dataset: pd.DataFrame,
@@ -552,7 +555,7 @@ def monte_carlo_full(
         pred_meta = _predict_onnx(model_meta, X_meta_arr)
 
         # ───── score vectorizado (Numba) ────────────────────────────────────
-        scores = _score_batch(close_arr,
+        scores, equity_curves = _score_batch(close_arr,
                                     pred_main,
                                     pred_meta,
                                     block_size,
@@ -560,59 +563,58 @@ def monte_carlo_full(
 
         # Incluir la original al principio del array de scores
         scores = np.concatenate(([score_original], scores))
+        equity_curves = [rpt_original] + equity_curves  # Incluye la original al principio
 
         valid  = scores[scores > 0.0]
-        equity_curves = None      # si quieres conservar plot usa otro buffer
 
         if plot:
-            try:
-                import matplotlib.pyplot as plt
+            if valid.size == 0:
+                # No hay datos válidos, no graficar nada
+                pass
+            else:
+                try:
+                    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 8), height_ratios=[3, 1])
+                    # Solo graficar las curvas correspondientes a scores válidos
+                    valid_indices = np.where(scores > 0.0)[0]
+                    for idx in valid_indices:
+                        ax1.plot(equity_curves[idx], color='gray', alpha=0.1)
+                    ax1.plot(equity_curves[0], color='blue', linewidth=2, label='Original')
 
-                fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 8), height_ratios=[3, 1])
-
-                if valid.size > 0 and equity_curves:
-                    for eq in equity_curves:
-                        ax1.plot(eq, color='gray', alpha=0.1)
-                    ax1.plot(rpt_original, color='blue', linewidth=2, label='Original')
-
-                    min_len = min(len(curve) for curve in equity_curves)
-                    curves_array = np.array([curve[:min_len] for curve in equity_curves])
-                    p05 = np.percentile(curves_array, 5, axis=0)
-                    p95 = np.percentile(curves_array, 95, axis=0)
-                    median = np.median(curves_array, axis=0)
-                    ax1.plot(p05, 'r--', alpha=0.5, label='5%')
-                    ax1.plot(p95, 'r--', alpha=0.5, label='95%')
-                    ax1.plot(median, 'g-', alpha=0.5, label='Mediana')
+                    min_len = min(len(equity_curves[idx]) for idx in valid_indices) if len(valid_indices) > 0 else 0
+                    if min_len > 0:
+                        curves_array = np.array([equity_curves[idx][:min_len] for idx in valid_indices])
+                        p05 = np.percentile(curves_array, 5, axis=0)
+                        p95 = np.percentile(curves_array, 95, axis=0)
+                        median = np.median(curves_array, axis=0)
+                        ax1.plot(p05, 'r--', alpha=0.5, label='5%')
+                        ax1.plot(p95, 'r--', alpha=0.5, label='95%')
+                        ax1.plot(median, 'g-', alpha=0.5, label='Mediana')
 
                     if prd:
                         ax1.set_title(f'Simulaciones Monte Carlo - {prd}\n(n={valid.size}, {direction})')
                     else:
                         ax1.set_title(f'Simulaciones Monte Carlo\n(n={valid.size}, {direction})')
-                else:
-                    ax1.text(0.5, 0.5, 'No hay simulaciones válidas', ha='center', va='center')
 
-                ax1.set_xlabel('Operaciones')
-                ax1.set_ylabel('Beneficio Acumulado')
-                ax1.legend()
-                ax1.grid(True, alpha=0.3)
+                    ax1.set_xlabel('Operaciones')
+                    ax1.set_ylabel('Beneficio Acumulado')
+                    ax1.legend()
+                    ax1.grid(True, alpha=0.3)
 
-                if valid.size > 0:
                     ax2.hist(valid, bins=30, density=True, alpha=0.6, color='skyblue')
                     ax2.axvline(np.median(valid), color='red', linestyle='--', label=f'Mediana: {np.median(valid):.2f}')
                     q05, q50, q95 = np.quantile(valid, [0.05, 0.5, 0.95])
                     ax2.axvline(q05, color='orange', linestyle=':', label=f'Q05: {q05:.2f}')
                     ax2.axvline(q95, color='green', linestyle=':', label=f'Q95: {q95:.2f}')
 
-                ax2.set_xlabel('Score')
-                ax2.set_ylabel('Densidad')
-                ax2.legend()
-                ax2.grid(True, alpha=0.3)
+                    ax2.set_xlabel('Score')
+                    ax2.set_ylabel('Densidad')
+                    ax2.legend()
+                    ax2.grid(True, alpha=0.3)
 
-                plt.tight_layout()
-                plt.show()
-
-            except Exception as viz_error:
-                print(f"Error en visualización: {viz_error}")
+                    plt.tight_layout()
+                    plt.show()
+                except Exception as viz_error:
+                    print(f"Error en visualización: {viz_error}")
 
         return {
             "scores": scores,

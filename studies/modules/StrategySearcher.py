@@ -13,8 +13,7 @@ from time import perf_counter
 from typing import Dict, Any
 import optuna
 from optuna.pruners import HyperbandPruner, SuccessiveHalvingPruner
-#from optuna.integration import CatBoostPruningCallback
-from sklearn.model_selection import train_test_split
+from optuna.integration import CatBoostPruningCallback
 from catboost import CatBoostClassifier
 from mapie.classification import CrossConformalClassifier
 from modules.labeling_lib import (
@@ -139,14 +138,14 @@ class StrategySearcher:
                 # Generar un seed único para este modelo
                 model_seed = int(time.time() * 1000) + i
 
-                # Inicializar estudio de Optuna con objetivos múltiples
+                # Inicializar estudio de Optuna con objetivo único
                 pruners = {
                     'hyperband': HyperbandPruner(max_resource='auto'),
                     'halving': SuccessiveHalvingPruner(min_resource='auto')
                 }
                 study = optuna.create_study(
                     study_name=self.tag,
-                    directions=['maximize', 'maximize'],
+                    direction='maximize',
                     storage=f"sqlite:///optuna_dbs/{self.tag}.db",
                     load_if_exists=True,
                     pruner=pruners[self.pruner_type],
@@ -165,11 +164,9 @@ class StrategySearcher:
                         except Exception:
                             pass
                     try:
-                        # Obtener el mejor trial según criterio maximin
-                        if study.best_trials:
-                            best_trial = max(study.best_trials, 
-                                          key=lambda t: min(t.values[0], t.values[1]))
-                            
+                        # Obtener el mejor trial
+                        if study.best_trial:
+                            best_trial = study.best_trial
                             # Si este trial es el mejor, guardar sus modelos
                             if trial.number == best_trial.number:
                                 if trial.user_attrs.get('model_paths') is not None:
@@ -220,11 +217,11 @@ class StrategySearcher:
                                         os.remove(p)
 
                         # Log
-                        if study.best_trials:
-                            best_trial = max(study.best_trials, key=lambda t: min(*t.values))
-                            best_str = f"ins={best_trial.values[0]:.6f} oos={best_trial.values[1]:.6f}"
+                        if study.best_trial:
+                            best_trial = study.best_trial
+                            best_str = f"score={best_trial.value:.6f}"
                         else:
-                            best_str = "ins=--- oos=---"
+                            best_str = "score=---"
                         elapsed = perf_counter() - t0
                         n_done = trial.number + 1
                         avg_time = elapsed / n_done
@@ -266,18 +263,13 @@ class StrategySearcher:
     # Métodos de búsqueda específicos
     # =========================================================================
 
-    def search_markov(self, trial: optuna.Trial) -> tuple[float, float]:
+    def search_markov(self, trial: optuna.Trial) -> float:
         """Implementa la búsqueda de estrategias usando modelos markovianos."""
         try:
-            # Obtener todos los parámetros de una vez
             hp = self.suggest_all_params(trial)
-
-            # Obtener datos de entrenamiento y prueba
             full_ds = self.get_labeled_full_data(hp)
             if full_ds is None:
-                return -1.0, -1.0
-            
-            # Markov
+                return -1.0
             if self.search_subtype == 'simple':
                 full_ds = markov_regime_switching_simple(
                     full_ds,
@@ -294,33 +286,24 @@ class StrategySearcher:
                     n_iter=hp['n_iter'],
                     n_mix=hp['n_mix'] if hp['model_type'] == 'VARHMM' else 3
                 )
-
-            scores, model_paths, models_cols = self.evaluate_clusters(full_ds, hp)
-            if scores is None or model_paths is None or models_cols is None:
-                return -1.0, -1.0
-
-            trial.set_user_attr('scores', scores)
+            score, model_paths, models_cols = self.evaluate_clusters(trial, full_ds, hp)
+            if score is None or model_paths is None or models_cols is None:
+                return -1.0
+            trial.set_user_attr('scores', score)
             trial.set_user_attr('model_paths', model_paths)
             trial.set_user_attr('model_cols', models_cols)
-
-            return trial.user_attrs.get('scores', (-1.0, -1.0))
-            
+            return trial.user_attrs.get('scores', -1.0)
         except Exception as e:
             print(f"Error en search_markov: {str(e)}")
-            return -1.0, -1.0
+            return -1.0
 
-    def search_clusters(self, trial: optuna.Trial) -> tuple[float, float]:
+    def search_clusters(self, trial: optuna.Trial) -> float:
         """Implementa la búsqueda de estrategias usando clustering."""
         try:
-            # Obtener todos los parámetros de una vez
             hp = self.suggest_all_params(trial)
-
-            # Obtener datos de entrenamiento y prueba
             full_ds = self.get_labeled_full_data(hp)
             if full_ds is None:
-                return -1.0, -1.0
-            
-            # Clustering
+                return -1.0
             if self.search_subtype == 'simple':
                 full_ds = clustering_simple(
                     full_ds,
@@ -333,64 +316,51 @@ class StrategySearcher:
                     window_size=hp['window_size'],
                     step=hp.get('step', None),
                 )
-            scores, model_paths, models_cols = self.evaluate_clusters(full_ds, hp)
-            if scores is None or model_paths is None or models_cols is None:
-                return -1.0, -1.0
-
-            trial.set_user_attr('scores', scores)
+            score, model_paths, models_cols = self.evaluate_clusters(trial, full_ds, hp)
+            if score is None or model_paths is None or models_cols is None:
+                return -1.0
+            trial.set_user_attr('scores', score)
             trial.set_user_attr('model_paths', model_paths)
             trial.set_user_attr('model_cols', models_cols)
-
-            return trial.user_attrs.get('scores', (-1.0, -1.0))
-        
+            return trial.user_attrs.get('scores', -1.0)
         except Exception as e:
             print(f"Error en search_clusters: {str(e)}")
-            return -1.0, -1.0
+            return -1.0
 
-    def search_lgmm(self, trial: optuna.Trial) -> tuple[float, float]:
+    def search_lgmm(self, trial: optuna.Trial) -> float:
         """Búsqueda basada en GaussianMixture para etiquetar clusters."""
         try:
             hp = self.suggest_all_params(trial)
-
             full_ds = self.get_labeled_full_data(hp)
             if full_ds is None:
-                return -1.0, -1.0
-
+                return -1.0
             full_ds = lgmm_clustering(
                 full_ds,
                 n_components=hp['n_components'],
                 covariance_type=hp['covariance_type'],
                 max_iter=hp['max_iter'],
             )
-
-            scores, model_paths, models_cols = self.evaluate_clusters(full_ds, hp)
-            if scores is None or model_paths is None or models_cols is None:
-                return -1.0, -1.0
-
-            trial.set_user_attr('scores', scores)
+            score, model_paths, models_cols = self.evaluate_clusters(trial, full_ds, hp)
+            if score is None or model_paths is None or models_cols is None:
+                return -1.0
+            trial.set_user_attr('scores', score)
             trial.set_user_attr('model_paths', model_paths)
             trial.set_user_attr('model_cols', models_cols)
-
-            return trial.user_attrs.get('scores', (-1.0, -1.0))
-
+            return trial.user_attrs.get('scores', -1.0)
         except Exception as e:
             print(f"Error en search_lgmm: {str(e)}")
-            return -1.0, -1.0
+            return -1.0
 
-    def search_mapie(self, trial) -> tuple[float, float]:
+    def search_mapie(self, trial) -> float:
         """Implementa la búsqueda de estrategias usando conformal prediction (MAPIE) con CatBoost, usando el mismo conjunto de features para ambos modelos."""
         try:
             hp = self.suggest_all_params(trial)
             full_ds = self.get_labeled_full_data(hp)
             if full_ds is None:
-                return -1.0, -1.0
-            
-            # Selección de features: todas las columnas *_feature
+                return -1.0
             feature_cols = [col for col in full_ds.columns if col.endswith('_feature')]
             X = full_ds[feature_cols]
             y = full_ds['labels_main'] if 'labels_main' in full_ds.columns else full_ds['labels']
-
-            # CatBoost como estimador base para MAPIE
             catboost_params = dict(
                 iterations=hp['cat_main_iterations'],
                 depth=hp['cat_main_depth'],
@@ -404,7 +374,6 @@ class StrategySearcher:
                 verbose=False,
             )
             base_estimator = CatBoostClassifier(**catboost_params)
-
             mapie = CrossConformalClassifier(
                 estimator=base_estimator,
                 confidence_level=hp.get('mapie_confidence_level', 0.9),
@@ -418,46 +387,36 @@ class StrategySearcher:
             full_ds.loc[set_sizes == 1, 'conformal_labels'] = 1.0
             full_ds['meta_labels'] = 0.0
             full_ds.loc[predicted == y, 'meta_labels'] = 1.0
-
-            # Ambos modelos usan el mismo conjunto de features
-            # Main: solo donde meta_labels==1
             model_main_train_data = full_ds[full_ds['meta_labels'] == 1][feature_cols + ['labels_main']].copy()
-            # Meta: todas las filas, target = conformal_labels
             model_meta_train_data = full_ds[feature_cols].copy()
             model_meta_train_data['labels_meta'] = full_ds['conformal_labels']
-
-            # Llamar a fit_final_models
-            scores, model_paths, models_cols = self.fit_final_models(
+            score, model_paths, models_cols = self.fit_final_models(
+                trial=trial,
                 full_ds=full_ds,
                 model_main_train_data=model_main_train_data,
                 model_meta_train_data=model_meta_train_data,
                 hp=hp.copy()
             )
-            if scores is None or model_paths is None or models_cols is None:
-                return -1.0, -1.0
-
-            trial.set_user_attr('scores', scores)
+            if score is None or model_paths is None or models_cols is None:
+                return -1.0
+            trial.set_user_attr('scores', score)
             trial.set_user_attr('model_paths', model_paths)
             trial.set_user_attr('model_cols', models_cols)
-
-            return trial.user_attrs.get('scores', (-1.0, -1.0))
+            return trial.user_attrs.get('scores', -1.0)
         except Exception as e:
             print(f"Error en search_mapie: {str(e)}")
-            return -1.0, -1.0
+            return -1.0
 
-    def search_causal(self, trial: optuna.Trial) -> tuple[float, float]:
+    def search_causal(self, trial: optuna.Trial) -> float:
         """Búsqueda basada en detección causal de muestras malas."""
         try:
             hp = self.suggest_all_params(trial)
-
             full_ds = self.get_labeled_full_data(hp)
             if full_ds is None:
-                return -1.0, -1.0
-
+                return -1.0
             feature_cols = [c for c in full_ds.columns if c.endswith('_feature')]
             X = full_ds[feature_cols]
             y = full_ds['labels_main']
-
             def _bootstrap_oob_identification(X: pd.DataFrame, y: pd.Series, n_models: int = 25):
                 oob_counts = pd.Series(0, index=X.index)
                 error_counts_0 = pd.Series(0, index=X.index)
@@ -492,7 +451,6 @@ class StrategySearcher:
                     error_counts_0.loc[diff0] += 1
                     error_counts_1.loc[diff1] += 1
                 return error_counts_0, error_counts_1, oob_counts
-
             def _optimize_bad_samples_threshold(err0, err1, oob, fracs=[0.5, 0.6, 0.7, 0.8]):
                 to_mark_0 = (err0 / oob.replace(0, 1)).fillna(0)
                 to_mark_1 = (err1 / oob.replace(0, 1)).fillna(0)
@@ -516,7 +474,6 @@ class StrategySearcher:
                         best_s = mean_err
                         best_f = frac
                 return best_f
-
             err0, err1, oob = _bootstrap_oob_identification(X, y, n_models=hp.get('n_meta_learners', 5))
             best_frac = _optimize_bad_samples_threshold(err0, err1, oob)
             to_mark_0 = (err0 / oob.replace(0, 1)).fillna(0)
@@ -528,45 +485,37 @@ class StrategySearcher:
             all_bad = pd.Index(marked0).union(marked1)
             full_ds['meta_labels'] = 1.0
             full_ds.loc[full_ds.index.isin(all_bad), 'meta_labels'] = 0.0
-
             model_main_train_data = full_ds[full_ds['meta_labels'] == 1.0][feature_cols + ['labels_main']].copy()
             model_meta_train_data = full_ds[feature_cols].copy()
             model_meta_train_data['labels_meta'] = full_ds['meta_labels']
-
-            # Llamar a fit_final_models
-            scores, model_paths, models_cols = self.fit_final_models(
+            score, model_paths, models_cols = self.fit_final_models(
+                trial=trial,
                 full_ds=full_ds,
                 model_main_train_data=model_main_train_data,
                 model_meta_train_data=model_meta_train_data,
                 hp=hp.copy()
             )
-            if scores is None or model_paths is None or models_cols is None:
-                return -1.0, -1.0
-
-            trial.set_user_attr('scores', scores)
+            if score is None or model_paths is None or models_cols is None:
+                return -1.0
+            trial.set_user_attr('scores', score)
             trial.set_user_attr('model_paths', model_paths)
             trial.set_user_attr('model_cols', models_cols)
-
-            return trial.user_attrs.get('scores', (-1.0, -1.0))
-
+            return trial.user_attrs.get('scores', -1.0)
         except Exception as e:
             print(f"Error en search_causal: {str(e)}")
-            return -1.0, -1.0
+            return -1.0
 
-    def search_wkmeans(self, trial: optuna.Trial) -> tuple[float, float]:
+    def search_wkmeans(self, trial: optuna.Trial) -> float:
         """
         Implementa la búsqueda de estrategias utilizando WK-means / MMDK-means
         para detectar y etiquetar regímenes de mercado desde labeling_lib.wkmeans_clustering.
         Se apoya en evaluate_clusters exactamente igual que el resto de métodos.
         """
         try:
-            # 1) Hiper-parámetros sugeridos de forma coherente con el estudio Optuna
             hp = self.suggest_all_params(trial)
-            # 2) Cargar datos de entrenamiento / prueba
             full_ds = self.get_labeled_full_data(hp)
             if full_ds is None:
-                return -1.0, -1.0
-            # 4) Etiquetado de regímenes con WK-means
+                return -1.0
             full_ds = wkmeans_clustering(
                 full_ds,
                 n_clusters=hp["n_clusters"],
@@ -577,114 +526,77 @@ class StrategySearcher:
                 n_proj=hp["n_proj"] if self.search_subtype == "sliced_w" else None,
                 max_iter=hp["max_iter"],
             )
-
-            # 5) Entrenar modelos y obtener scores (mismo helper que el resto)
-            scores, model_paths, model_cols = self.evaluate_clusters(full_ds, hp)
-            if scores is None or model_paths is None or model_cols is None:
-                return -1.0, -1.0
-
-            # 6) Registrar resultados en el trial para Optuna
-            trial.set_user_attr("scores", scores)
+            score, model_paths, model_cols = self.evaluate_clusters(trial, full_ds, hp)
+            if score is None or model_paths is None or model_cols is None:
+                return -1.0
+            trial.set_user_attr("scores", score)
             trial.set_user_attr("model_paths", model_paths)
             trial.set_user_attr("model_cols", model_cols)
-
-            return trial.user_attrs.get("scores", (-1.0, -1.0))
-
+            return trial.user_attrs.get("scores", -1.0)
         except Exception as e:
             print(f"Error en search_wkmeans: {str(e)}")
-            return -1.0, -1.0
+            return -1.0
 
     # =========================================================================
     # Métodos auxiliares
     # =========================================================================
     
-    def evaluate_clusters(self, full_ds: pd.DataFrame, hp: Dict[str, Any]) -> tuple[float, float]:
+    def evaluate_clusters(self, trial: optuna.trial, full_ds: pd.DataFrame, hp: Dict[str, Any]) -> tuple[float, tuple, tuple]:
         """Función helper para evaluar clusters y entrenar modelos."""
         try:
-            best_scores = (-math.inf, -math.inf)
+            best_score = -math.inf
             best_model_paths = (None, None)
             best_models_cols = (None, None)
-            
             cluster_sizes = full_ds['labels_meta'].value_counts()
             if self.debug:
                 print(f"🔍 DEBUG: Cluster sizes:\n{cluster_sizes}")
-
-            # Verificar que hay clusters
             if cluster_sizes.empty:
                 print("⚠️ ERROR: No hay clusters")
                 return None, None, None
-
-            # Filtrar el cluster -1 (inválido) si existe
             if -1 in cluster_sizes.index:
                 cluster_sizes = cluster_sizes.drop(-1)
                 if cluster_sizes.empty:
                     return None, None, None
-
-            # Evaluar cada cluster
             for clust in cluster_sizes.index:
-                
-                # Main data
-
-                # Filtrar datos
                 model_main_train_data = full_ds.loc[full_ds["labels_meta"] == clust].copy()
-
-                # Preparar features
                 main_feature_cols = full_ds.columns[full_ds.columns.str.contains('_feature') & \
                                                        ~full_ds.columns.str.contains('_meta_feature')]
                 model_main_train_data = model_main_train_data[main_feature_cols.tolist() + ['labels_main']]
-
-                # Verificar
                 if 'label_max' in hp and len(model_main_train_data) <= hp["label_max"]:
                     continue
                 if model_main_train_data is None or model_main_train_data.empty:
                     continue
                 if (model_main_train_data['labels_main'].value_counts() < 2).any():
                     continue
-
-                # Meta data
-
-                # Preparar features
                 meta_feature_cols = full_ds.columns[full_ds.columns.str.contains('_meta_feature')]
                 model_meta_train_data = full_ds.loc[:, meta_feature_cols].copy()
                 model_meta_train_data['labels_meta'] = (full_ds['labels_meta'] == clust).astype('int8')
-
-                # Verificar
                 if (model_meta_train_data['labels_meta'].value_counts() < 2).any():
                     continue
-
-                # ── Evaluación en ambos períodos ──────────────────────────────
-                # Llamar a fit_final_models
-                scores, model_paths, models_cols = self.fit_final_models(
+                score, model_paths, models_cols = self.fit_final_models(
+                    trial=trial,
                     full_ds=full_ds,
                     model_main_train_data=model_main_train_data,
                     model_meta_train_data=model_meta_train_data,
                     hp=hp.copy()
                 )
-                if scores is None or model_paths is None or models_cols is None:
+                if score is None or model_paths is None or models_cols is None:
                     return None, None, None
-
-                # ── Actualizar mejores modelos y scores usando maximin ─────────────────────
-                if min(scores) > min(best_scores):
-                    # Remove previous best temporary files
+                if score > best_score:
                     if best_model_paths != (None, None):
                         for p in best_model_paths:
                             if p and os.path.exists(p):
                                 os.remove(p)
-                    best_scores = scores
+                    best_score = score
                     best_model_paths = model_paths
                     best_models_cols = models_cols
                 else:
-                    # Remove non-best temporary files
                     for p in model_paths:
                         if p and os.path.exists(p):
                             os.remove(p)
-
-            # Verificar que encontramos algún cluster válido
-            if best_scores == (-math.inf, -math.inf) or best_model_paths == (None, None):
+            if best_score == -math.inf or best_model_paths == (None, None):
                 return None, None, None
-
-            return best_scores, best_model_paths, best_models_cols
-
+            return best_score, best_model_paths, best_models_cols
         except Exception as e:
             print(f"⚠️ ERROR en evaluación de clusters: {str(e)}")
             return None, None, None
@@ -825,6 +737,10 @@ class StrategySearcher:
                             for i in range(MAX_META_STATS)]
                 stats_meta = list(dict.fromkeys(stats_meta))
                 params['stats_meta'] = tuple(stats_meta[:params['max_meta_stats']])
+            else:
+                # Para mapie y causal, usar listas vacías para evitar múltiples firmas
+                params['periods_meta'] = tuple()
+                params['stats_meta'] = tuple()
             # ---------- Otros hiperparámetros específicos ----------
             if self.search_type == 'markov':
                 params.update({
@@ -883,26 +799,21 @@ class StrategySearcher:
             print(f"⚠️ ERROR en suggest_all_params: {str(e)}")
             return None
 
-    def fit_final_models(self, full_ds: pd.DataFrame,
+    def fit_final_models(self, trial: optuna.trial,
+                         full_ds: pd.DataFrame,
                          model_main_train_data: pd.DataFrame,
                          model_meta_train_data: pd.DataFrame,
-                         hp: Dict[str, Any]) -> tuple[tuple[float, float], tuple[str, str], tuple[str, str]]:
+                         hp: Dict[str, Any]) -> tuple[float, tuple, tuple]:
         """Ajusta los modelos finales y devuelve rutas a archivos temporales."""
         try:
-            # ---------- 1) MODEL MAIN ----------
-
-            # Remove neutral labels before training
             if 'labels_main' in model_main_train_data.columns:
                 model_main_train_data = model_main_train_data[model_main_train_data['labels_main'].isin([0.0, 1.0])]
             if model_main_train_data.empty:
                 return None, None, None
-
-            # Get feature columns
             main_feature_cols = [col for col in model_main_train_data.columns if col != 'labels_main']
             if self.debug:
                 print(f"🔍 DEBUG: Main model data shape: {model_main_train_data.shape}")
                 print(f"🔍 DEBUG: Main feature columns: {main_feature_cols}")
-            # División de datos para el modelo principal según fechas
             model_main_train_data, model_main_eval_data = self.get_train_test_data(dataset=model_main_train_data)
             X_train_main = model_main_train_data[main_feature_cols]
             y_train_main = model_main_train_data['labels_main'].astype('int8')
@@ -911,16 +822,12 @@ class StrategySearcher:
             if self.debug:
                 print(f"🔍 DEBUG: X_train_main shape: {X_train_main.shape}, y_train_main shape: {y_train_main.shape}")
                 print(f"🔍 DEBUG: X_val_main shape: {X_val_main.shape}, y_val_main shape: {y_val_main.shape}")
-            # ── descartar clusters problemáticos ────────────────────────────
             if len(y_train_main.value_counts()) < 2 or len(y_val_main.value_counts()) < 2:
                 return None, None, None
-
-            # ---------- 2) MODEL META ----------
             meta_feature_cols = [col for col in model_meta_train_data.columns if col != 'labels_meta']
             if self.debug:
                 print(f"🔍 DEBUG: Meta model data shape: {model_meta_train_data.shape}")
                 print(f"🔍 DEBUG: Meta feature columns: {meta_feature_cols}")
-            # División de datos para el modelo principal según fechas
             model_meta_train_data, model_meta_eval_data = self.get_train_test_data(dataset=model_meta_train_data)
             X_train_meta = model_meta_train_data[meta_feature_cols]
             y_train_meta = model_meta_train_data['labels_meta'].astype('int8')
@@ -929,11 +836,8 @@ class StrategySearcher:
             if self.debug:
                 print(f"🔍 DEBUG: X_train_meta shape: {X_train_meta.shape}, y_train_meta shape: {y_train_meta.shape}")
                 print(f"🔍 DEBUG: X_val_meta shape: {X_val_meta.shape}, y_val_meta shape: {y_val_meta.shape}")
-            # ── descartar clusters problemáticos ────────────────────────────
             if len(y_train_meta.value_counts()) < 2 or len(y_val_meta.value_counts()) < 2:
                 return None, None, None
-
-            # Main model
             cat_main_params = dict(
                 iterations=hp['cat_main_iterations'],
                 depth=hp['cat_main_depth'],
@@ -951,14 +855,13 @@ class StrategySearcher:
             model_main.fit(X_train_main, y_train_main, 
                            eval_set=[(X_val_main, y_val_main)],
                            early_stopping_rounds=hp['cat_main_early_stopping'],
+                           callbacks=[CatBoostPruningCallback(trial=trial, metric='Logloss')],
                            use_best_model=True,
                            verbose=False
             )
             t_train_main_end = time.time()
             if self.debug:
                 print(f"🔍 DEBUG: Tiempo de entrenamiento modelo main: {t_train_main_end - t_train_main_start:.2f} segundos")
-
-            # Meta-modelo
             cat_meta_params = dict(
                 iterations=hp['cat_meta_iterations'],
                 depth=hp['cat_meta_depth'],
@@ -976,71 +879,35 @@ class StrategySearcher:
             model_meta.fit(X_train_meta, y_train_meta, 
                            eval_set=[(X_val_meta, y_val_meta)], 
                            early_stopping_rounds=hp['cat_meta_early_stopping'],
+                           callbacks=[CatBoostPruningCallback(trial=trial, metric='Logloss')],
                            use_best_model=True,
                            verbose=False
             )
             t_train_meta_end = time.time()
             if self.debug:
                 print(f"🔍 DEBUG: Tiempo de entrenamiento modelo meta: {t_train_meta_end - t_train_meta_start:.2f} segundos")
-
-            # ── EVALUACIÓN ───────────────────────────────────────────────
-            full_ds_train, full_ds_test = self.get_train_test_data(dataset=full_ds)
-            if self.debug:
-                print(f"🔍 DEBUG: full_ds_train shape: {full_ds_train.shape}, full_ds_test shape: {full_ds_test.shape}")
-            # Verificar orden exacto
-            if not (full_ds_test[main_feature_cols].columns == main_feature_cols).all():
-                print("⚠️ ERROR: El orden de las columnas main no coincide en test")
-                return None, None, None
-            if not (full_ds_test[meta_feature_cols].columns == meta_feature_cols).all():
-                print("⚠️ ERROR: El orden de las columnas meta no coincide en test")
-                return None, None, None
-            
-            # Evaluación in-sample y out-of-sample
             model_main_path, model_meta_path = export_models_to_ONNX(models=(model_main, model_meta))
-
             test_train_time_start = time.time()
             score_ins = tester(
-                dataset=full_ds_train,
+                dataset=full_ds,
                 model_main=model_main_path,
                 model_meta=model_meta_path,
                 model_main_cols=main_feature_cols,
                 model_meta_cols=meta_feature_cols,
                 direction=self.direction,
                 plot=False,
-                prd='insample',
+                prd='full',
             )
             test_train_time_end = time.time()
             if self.debug:
                 print(f"🔍 DEBUG: Tiempo de test in-sample: {test_train_time_end - test_train_time_start:.2f} segundos")
-
-            test_test_time_start = time.time()
-            score_oos = tester(
-                dataset=full_ds_test,
-                model_main=model_main_path,
-                model_meta=model_meta_path,
-                model_main_cols=main_feature_cols,
-                model_meta_cols=meta_feature_cols,
-                direction=self.direction,
-                plot=False,
-                prd='outsample',
-            )
-            test_test_time_end = time.time()
             if self.debug:
-                print(f"🔍 DEBUG: Tiempo de test out-of-sample: {test_test_time_end - test_test_time_start:.2f} segundos")
-
-            if self.debug:
-                print(f"🔍 DEBUG: Score in-sample: {score_ins}, Score out-of-sample: {score_oos}")
-
-            # Manejar valores inválidos
-            if not np.isfinite(score_ins) or not np.isfinite(score_oos):
+                print(f"🔍 DEBUG: Score in-sample: {score_ins}")
+            if not np.isfinite(score_ins):
                 score_ins = -1.0
-                score_oos = -1.0
-
             if self.debug:
                 print(f"🔍 DEBUG: Modelos guardados en {model_main_path} y {model_meta_path}")
-
-            return (score_ins, score_oos), (model_main_path, model_meta_path), (main_feature_cols, meta_feature_cols)
-
+            return score_ins, (model_main_path, model_meta_path), (main_feature_cols, meta_feature_cols)
         except Exception as e:
             print(f"Error en función de entrenamiento y test: {str(e)}")
             return None, None, None
@@ -1271,9 +1138,8 @@ class StrategySearcher:
             hp['periods_meta'] = tuple(meta_periods_ordered)
             hp['stats_meta']   = tuple(meta_stats_ordered)
 
-            if (hp.get('periods_main') and not hp['stats_main']) or (hp.get('stats_main') and not hp['periods_main']):
-                return None
-            if (hp.get('periods_meta') and not hp['stats_meta']) or (hp.get('stats_meta') and not hp['periods_meta']):
+            # Verificar que tenemos al menos períodos y stats main
+            if not hp['periods_main'] or not hp['stats_main']:
                 return None
 
             return full_ds

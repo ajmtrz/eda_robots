@@ -373,7 +373,7 @@ def compute_features(close, periods_main, periods_meta, stats_main, stats_meta):
     n = len(close)
     # Calcular total de features considerando si hay meta o no
     total_features = len(periods_main) * len(stats_main)
-    if periods_meta is not None and stats_meta is not None:
+    if len(periods_meta) > 0 and len(stats_meta) > 0:
         total_features += len(periods_meta) * len(stats_meta)
     features = np.full((n, total_features), np.nan)
 
@@ -443,7 +443,7 @@ def compute_features(close, periods_main, periods_meta, stats_main, stats_meta):
             col += 1
 
     # Procesar períodos meta solo si existen
-    if periods_meta is not None and stats_meta is not None:
+    if len(periods_meta) > 0 and len(stats_meta) > 0:
         for win in periods_meta:
             for s in stats_meta:
                 for i in range(win, n):
@@ -515,9 +515,9 @@ def get_features(data: pd.DataFrame, hp):
     periods_main = hp["periods_main"]
     stats_main = hp["stats_main"]
     
-    # Obtener períodos y estadísticas meta solo si existen
-    periods_meta = hp.get("periods_meta")
-    stats_meta = hp.get("stats_meta")
+    # Obtener períodos y estadísticas meta, siempre como listas (vacías si no existen)
+    periods_meta = hp.get("periods_meta", [])
+    stats_meta = hp.get("stats_meta", [])
     
     if len(stats_main) == 0:
         raise ValueError("La lista de estadísticas MAIN está vacía.")
@@ -528,8 +528,8 @@ def get_features(data: pd.DataFrame, hp):
     # Convert lists/tuples to Numba typed.List to avoid repeated JIT compilation
     periods_main_t = List(periods_main)
     stats_main_t = List(stats_main)
-    periods_meta_t = List(periods_meta) if periods_meta is not None else None
-    stats_meta_t = List(stats_meta) if stats_meta is not None else None
+    periods_meta_t = List(periods_meta)
+    stats_meta_t = List(stats_meta)
 
     feats = compute_features(close, periods_main_t, periods_meta_t, stats_main_t, stats_meta_t)
     if np.isnan(feats).all():
@@ -542,7 +542,7 @@ def get_features(data: pd.DataFrame, hp):
             colnames.extend([f"{p}_{s}_feature"])
     
     # Agregar nombres de columnas meta solo si existen
-    if periods_meta is not None and stats_meta is not None:
+    if len(periods_meta) > 0 and len(stats_meta) > 0:
         for p in periods_meta:
             for s in stats_meta:
                 colnames.extend([f"{p}_{s}_meta_feature"])
@@ -2495,7 +2495,7 @@ def _kmedoids_pam(
 
 @njit(parallel=True, fastmath=True)
 def _euclidean_matrix_numba(window_sizes):
-    n = len(window_sizes)
+    n = window_sizes.shape[0]
     dist_mat = np.zeros((n, n), dtype=np.float64)
     for i in prange(n):
         for j in range(i + 1, n):
@@ -2511,7 +2511,7 @@ def _wasserstein1d_numba(x, y):
 
 @njit(parallel=True, fastmath=True)
 def _wasserstein1d_matrix(window_sizes):
-    n = len(window_sizes)
+    n = window_sizes.shape[0]
     dist_mat = np.zeros((n, n), dtype=np.float64)
     for i in prange(n):
         for j in range(i + 1, n):
@@ -2601,28 +2601,27 @@ def _distance_matrix(key: tuple,
                      metric: str,
                      bandwidth: float | None,
                      n_proj: int,
-                     window_sizes: tuple) -> np.ndarray:
-    n = len(window_sizes)
+                     window_sizes: np.ndarray) -> np.ndarray:
+    n = window_sizes.shape[0]
     if n <= 1:
         return np.zeros((n, n), dtype=float)
-    arr = np.array(window_sizes)
     dist_mat = None  # Inicializa dist_mat para evitar UnboundLocalError
 
     if metric == 'euclidean':
-        dist_mat = _euclidean_matrix_numba(arr)
+        dist_mat = _euclidean_matrix_numba(window_sizes)
     elif metric == 'wasserstein':
         # Si es 1D (shape: n_windows, window, 1), usar la versión 1D optimizada
-        if arr.ndim == 3 and arr.shape[2] == 1:
-            arr1d = arr.reshape(arr.shape[0], arr.shape[1])
+        if window_sizes.ndim == 3 and window_sizes.shape[2] == 1:
+            arr1d = window_sizes.reshape(window_sizes.shape[0], window_sizes.shape[1])
             dist_mat = _wasserstein1d_matrix(arr1d)
         # Si es multidimensional (shape: n_windows, window, d)
-        elif arr.ndim == 3 and arr.shape[2] > 1:
-            n = arr.shape[0]
+        elif window_sizes.ndim == 3 and window_sizes.shape[2] > 1:
+            n = window_sizes.shape[0]
             dist_mat = np.zeros((n, n), dtype=float)
             for i in range(n):
                 for j in range(i + 1, n):
-                    x = arr[i]
-                    y = arr[j]
+                    x = window_sizes[i]
+                    y = window_sizes[j]
                     if cp is not None and cp.cuda.is_available():
                         d = _wasserstein2_gpu(x, y)
                     else:
@@ -2631,10 +2630,10 @@ def _distance_matrix(key: tuple,
         else:
             raise ValueError("Forma de ventana no soportada para 'wasserstein'")
     elif metric == 'sliced_w':
-        dist_mat = _sliced_wasserstein_numba(arr, n_proj)
+        dist_mat = _sliced_wasserstein_numba(window_sizes, n_proj)
     elif metric == 'mmd':
         if bandwidth is None:
-            centers = np.array([w.mean(axis=0) for w in arr])
+            centers = np.array([w.mean(axis=0) for w in window_sizes])
             dists = np.zeros((n, n))
             for i in range(n):
                 for j in range(i + 1, n):
@@ -2644,7 +2643,7 @@ def _distance_matrix(key: tuple,
                     dists[i, j] = dists[j, i] = np.sqrt(d2)
             med = np.median(dists[dists > 0])
             bandwidth = med if med > 0 else 1.0
-        dist_mat = _mmd_matrix_numba(arr, bandwidth)
+        dist_mat = _mmd_matrix_numba(window_sizes, bandwidth)
     else:
         raise ValueError(f"Métrica desconocida: {metric}")
 
@@ -2689,13 +2688,15 @@ def wkmeans_clustering(
         raise ValueError("No hay suficientes ventanas para el número de clusters.")
 
     # 3) matriz de distancias -------------------------------------------------
+    # Convertir a array 3-D para evitar múltiples firmas
+    window_sizes_array = np.stack(window_sizes)
     dm_key = (window_size, step, metric, bandwidth, n_proj, len(window_sizes))
     dist_mat = _distance_matrix(
         dm_key,
         metric=metric,
         bandwidth=bandwidth,
         n_proj=n_proj,
-        window_sizes=tuple(window_sizes),
+        window_sizes=window_sizes_array,
     )
 
     # 4) k-medoids -----------------------------------------------------------

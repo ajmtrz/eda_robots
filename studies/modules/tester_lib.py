@@ -275,21 +275,21 @@ def evaluate_report(report: np.ndarray) -> float:
     return score
 
 def tester_one_direction(
-        ds_main: np.ndarray,
-        ds_meta: np.ndarray,
-        close: np.ndarray,
+        dataset: pd.DataFrame,
         model_main: object,
         model_meta: object,
+        model_main_cols: list[str],
+        model_meta_cols: list[str],
         direction: str = 'buy',
         plot: bool = False,
         prd: str = '') -> float:
     """Mantiene compatibilidad con la API anterior."""
     return tester(
-        ds_main=ds_main,
-        ds_meta=ds_meta,
-        close=close,
+        dataset=dataset,
         model_main=model_main,
         model_meta=model_meta,
+        model_main_cols=model_main_cols,
+        model_meta_cols=model_meta_cols,
         direction=direction,
         plot=plot,
         prd=prd,
@@ -507,7 +507,9 @@ def _score_batch(close_all, l_all, m_all, block_size, direction):
     """
     n_sim, n = l_all.shape
     scores = np.full(n_sim, -1.0)
-    equity_curves = [np.zeros(n+1) for _ in range(n_sim)]  # <-- NUEVO
+    # Usar array 2-D en lugar de lista de arrays para evitar múltiples firmas
+    equity_curves = np.zeros((n_sim, n+1), dtype=np.float64)
+    
     for i in prange(n_sim):
         if direction == "both":
             rpt, _ = process_data(close_all[i], l_all[i], m_all[i])
@@ -523,7 +525,10 @@ def _score_batch(close_all, l_all, m_all, block_size, direction):
             continue
         eq = _equity_from_returns(_bootstrap_returns(ret, block_size))
         scores[i] = evaluate_report(eq)
-        equity_curves[i] = eq  # <-- GUARDA LA CURVA DE EQUITY
+        # Copiar la curva de equity al array 2-D
+        eq_len = min(len(eq), n+1)
+        equity_curves[i, :eq_len] = eq[:eq_len]
+    
     return scores, equity_curves
 
 def monte_carlo_full(
@@ -602,7 +607,8 @@ def monte_carlo_full(
 
         # Incluir la original al principio del array de scores
         scores = np.concatenate(([score_original], scores))
-        equity_curves = [rpt_original] + equity_curves  # Incluye la original al principio
+        # Convertir el array 2-D de equity_curves a lista para mantener compatibilidad
+        equity_curves_list = [rpt_original] + [equity_curves[i] for i in range(equity_curves.shape[0])]
 
         valid  = scores[scores > 0.0]
 
@@ -616,12 +622,12 @@ def monte_carlo_full(
                     # Solo graficar las curvas correspondientes a scores válidos
                     valid_indices = np.where(scores > 0.0)[0]
                     for idx in valid_indices:
-                        ax1.plot(equity_curves[idx], color='gray', alpha=0.1)
-                    ax1.plot(equity_curves[0], color='blue', linewidth=2, label='Original')
+                        ax1.plot(equity_curves_list[idx], color='gray', alpha=0.1)
+                    ax1.plot(equity_curves_list[0], color='blue', linewidth=2, label='Original')
 
-                    min_len = min(len(equity_curves[idx]) for idx in valid_indices) if len(valid_indices) > 0 else 0
+                    min_len = min(len(equity_curves_list[idx]) for idx in valid_indices) if len(valid_indices) > 0 else 0
                     if min_len > 0:
-                        curves_array = np.array([equity_curves[idx][:min_len] for idx in valid_indices])
+                        curves_array = np.array([equity_curves_list[idx][:min_len] for idx in valid_indices])
                         p05 = np.percentile(curves_array, 5, axis=0)
                         p95 = np.percentile(curves_array, 95, axis=0)
                         median = np.median(curves_array, axis=0)

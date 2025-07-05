@@ -177,7 +177,7 @@ class StrategySearcher:
                                                 os.remove(p)
                                     # Guardar nuevas rutas de modelos
                                     study.set_user_attr("best_model_paths", trial.user_attrs['model_paths'])
-                                    study.set_user_attr("best_scores", trial.user_attrs['scores'])
+                                    study.set_user_attr("best_score", trial.user_attrs['score'])
                                     study.set_user_attr("best_periods_main", trial.user_attrs['periods_main'])
                                     study.set_user_attr("best_stats_main", trial.user_attrs['stats_main'])
                                     study.set_user_attr("best_model_cols", trial.user_attrs['model_cols'])
@@ -195,7 +195,7 @@ class StrategySearcher:
                                         "search_type": self.search_type,
                                         "search_subtype": self.search_subtype,
                                         "best_model_seed": model_seed,
-                                        "best_scores": study.user_attrs["best_scores"],
+                                        "best_score": study.user_attrs["best_score"],
                                         "best_model_paths": study.user_attrs["best_model_paths"],
                                         "best_model_cols": study.user_attrs["best_model_cols"],
                                         "best_periods_main": study.user_attrs["best_periods_main"],
@@ -289,10 +289,10 @@ class StrategySearcher:
             score, model_paths, models_cols = self.evaluate_clusters(trial, full_ds, hp)
             if score is None or model_paths is None or models_cols is None:
                 return -1.0
-            trial.set_user_attr('scores', score)
+            trial.set_user_attr('score', score)
             trial.set_user_attr('model_paths', model_paths)
             trial.set_user_attr('model_cols', models_cols)
-            return trial.user_attrs.get('scores', -1.0)
+            return trial.user_attrs.get('score', -1.0)
         except Exception as e:
             print(f"Error en search_markov: {str(e)}")
             return -1.0
@@ -319,10 +319,10 @@ class StrategySearcher:
             score, model_paths, models_cols = self.evaluate_clusters(trial, full_ds, hp)
             if score is None or model_paths is None or models_cols is None:
                 return -1.0
-            trial.set_user_attr('scores', score)
+            trial.set_user_attr('score', score)
             trial.set_user_attr('model_paths', model_paths)
             trial.set_user_attr('model_cols', models_cols)
-            return trial.user_attrs.get('scores', -1.0)
+            return trial.user_attrs.get('score', -1.0)
         except Exception as e:
             print(f"Error en search_clusters: {str(e)}")
             return -1.0
@@ -343,10 +343,10 @@ class StrategySearcher:
             score, model_paths, models_cols = self.evaluate_clusters(trial, full_ds, hp)
             if score is None or model_paths is None or models_cols is None:
                 return -1.0
-            trial.set_user_attr('scores', score)
+            trial.set_user_attr('score', score)
             trial.set_user_attr('model_paths', model_paths)
             trial.set_user_attr('model_cols', models_cols)
-            return trial.user_attrs.get('scores', -1.0)
+            return trial.user_attrs.get('score', -1.0)
         except Exception as e:
             print(f"Error en search_lgmm: {str(e)}")
             return -1.0
@@ -399,10 +399,10 @@ class StrategySearcher:
             )
             if score is None or model_paths is None or models_cols is None:
                 return -1.0
-            trial.set_user_attr('scores', score)
+            trial.set_user_attr('score', score)
             trial.set_user_attr('model_paths', model_paths)
             trial.set_user_attr('model_cols', models_cols)
-            return trial.user_attrs.get('scores', -1.0)
+            return trial.user_attrs.get('score', -1.0)
         except Exception as e:
             print(f"Error en search_mapie: {str(e)}")
             return -1.0
@@ -497,10 +497,10 @@ class StrategySearcher:
             )
             if score is None or model_paths is None or models_cols is None:
                 return -1.0
-            trial.set_user_attr('scores', score)
+            trial.set_user_attr('score', score)
             trial.set_user_attr('model_paths', model_paths)
             trial.set_user_attr('model_cols', models_cols)
-            return trial.user_attrs.get('scores', -1.0)
+            return trial.user_attrs.get('score', -1.0)
         except Exception as e:
             print(f"Error en search_causal: {str(e)}")
             return -1.0
@@ -529,10 +529,10 @@ class StrategySearcher:
             score, model_paths, model_cols = self.evaluate_clusters(trial, full_ds, hp)
             if score is None or model_paths is None or model_cols is None:
                 return -1.0
-            trial.set_user_attr("scores", score)
+            trial.set_user_attr("score", score)
             trial.set_user_attr("model_paths", model_paths)
             trial.set_user_attr("model_cols", model_cols)
-            return trial.user_attrs.get("scores", -1.0)
+            return trial.user_attrs.get("score", -1.0)
         except Exception as e:
             print(f"Error en search_wkmeans: {str(e)}")
             return -1.0
@@ -888,12 +888,13 @@ class StrategySearcher:
                 print(f"🔍 DEBUG: Tiempo de entrenamiento modelo meta: {t_train_meta_end - t_train_meta_start:.2f} segundos")
             model_main_path, model_meta_path = export_models_to_ONNX(models=(model_main, model_meta))
             test_train_time_start = time.time()
-            score_ins = tester(
+            score_ins = robust_oos_score(
                 dataset=full_ds,
                 model_main=model_main_path,
                 model_meta=model_meta_path,
                 model_main_cols=main_feature_cols,
                 model_meta_cols=meta_feature_cols,
+                hp=hp,
                 direction=self.direction,
                 plot=False,
                 prd='full',

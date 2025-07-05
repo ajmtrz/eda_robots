@@ -70,7 +70,7 @@ def export_models_to_ONNX(models):
     return onnx_models
 
 def export_to_mql5(**kwargs):
-    best_scores = kwargs.get('best_scores')
+    best_score = kwargs.get('best_score')
     model_paths = kwargs.get('best_model_paths')
     model_cols = kwargs.get('best_model_cols')
     stats_main = kwargs.get('best_stats_main')
@@ -639,7 +639,7 @@ def export_to_mql5(**kwargs):
         code += rf'#resource "\\Files\\{filename_model_meta}" as uchar ExtModel_m_[]'
         code += '\n\n'
         code += '//+------------------------------------------------------------------+\n'
-        code += f'//| INS SCORE: {best_scores[0]} | OOS SCORE: {best_scores[1]}    |\n'
+        code += f'//| SCORE: {best_score}                       |\n'
         code += '//+------------------------------------------------------------------+\n'
         code += '\n\n'
         code += f'#define SYMBOL               "{str(symbol)}"\n'

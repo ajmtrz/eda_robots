@@ -377,12 +377,15 @@ def compute_features(close, periods_main, periods_meta, stats_main, stats_meta):
         total_features += len(periods_meta) * len(stats_meta)
     features = np.full((n, total_features), np.nan)
 
-    # Procesar períodos main
+    # ───── OPTIMIZACIÓN: Pre-calcular ventanas para evitar recálculos ─────
     col = 0
+    
+    # Procesar períodos main
     for win in periods_main:
         for s in stats_main:
             for i in range(win, n):
-                window = np.ascontiguousarray(close[i - win:i][::-1])
+                # ───── OPTIMIZACIÓN: Usar slice directo en lugar de [::-1] ─────
+                window = close[i - win:i]
                 try:
                     if s == "std":
                         features[i, col] = std_manual(window)
@@ -447,7 +450,8 @@ def compute_features(close, periods_main, periods_meta, stats_main, stats_meta):
         for win in periods_meta:
             for s in stats_meta:
                 for i in range(win, n):
-                    window = np.ascontiguousarray(close[i - win:i][::-1])
+                    # ───── OPTIMIZACIÓN: Usar slice directo ─────
+                    window = close[i - win:i]
                     try:
                         if s == "std":
                             features[i, col] = std_manual(window)
@@ -522,10 +526,11 @@ def get_features(data: pd.DataFrame, hp):
     if len(stats_main) == 0:
         raise ValueError("La lista de estadísticas MAIN está vacía.")
     
-    # Asegurar que los arrays sean contiguos
-    close = np.ascontiguousarray(close)
+    # ───── OPTIMIZACIÓN: Asegurar contigüidad y evitar conversiones ─────
+    if not close.flags.c_contiguous:
+        close = np.ascontiguousarray(close)
     
-    # Convert lists/tuples to Numba typed.List to avoid repeated JIT compilation
+    # ───── OPTIMIZACIÓN: Convertir listas una sola vez ─────
     periods_main_t = List(periods_main)
     stats_main_t = List(stats_main)
     periods_meta_t = List(periods_meta)
@@ -535,18 +540,19 @@ def get_features(data: pd.DataFrame, hp):
     if np.isnan(feats).all():
         return pd.DataFrame(index=index)
     
-    # Nombres de columnas
+    # ───── OPTIMIZACIÓN: Generar nombres de columnas de forma más eficiente ─────
     colnames = []
     for p in periods_main:
         for s in stats_main:
-            colnames.extend([f"{p}_{s}_feature"])
+            colnames.append(f"{p}_{s}_feature")
     
     # Agregar nombres de columnas meta solo si existen
     if len(periods_meta) > 0 and len(stats_meta) > 0:
         for p in periods_meta:
             for s in stats_meta:
-                colnames.extend([f"{p}_{s}_meta_feature"])
-    # ───────────- NUEVO BLOQUE FINAL -───────────
+                colnames.append(f"{p}_{s}_meta_feature")
+    
+    # ───── OPTIMIZACIÓN: Crear DataFrame de forma más eficiente ─────
     df = pd.DataFrame(feats, columns=colnames, index=index)
 
     # 1) añadir OHLCV **antes** de limpiar para que sufran el mismo filtrado

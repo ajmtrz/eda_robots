@@ -625,8 +625,8 @@ class StrategySearcher:
                 'cat_meta_learning_rate': trial.suggest_float('cat_meta_learning_rate', 0.01, 0.3, log=True),
                 'cat_meta_l2_leaf_reg': trial.suggest_float('cat_meta_l2_leaf_reg', 0.1, 10.0, log=True),
                 'cat_meta_early_stopping': trial.suggest_int('cat_meta_early_stopping', 20, 200),
-                'max_main_periods': trial.suggest_int('max_main_periods', 3, MAX_MAIN_PERIODS, log=True),
-                'max_main_stats': trial.suggest_int('max_main_stats', 1, MAX_MAIN_STATS, log=True),
+                'max_main_periods': trial.suggest_int('max_main_periods', 5, MAX_MAIN_PERIODS, log=True),
+                'max_main_stats': trial.suggest_int('max_main_stats', 3, MAX_MAIN_STATS, log=True),
             }
             # ---------- Parámetros de etiquetado dinámicos ----------
             label_func = self.LABEL_FUNCS.get(self.label_method, get_labels_one_direction)
@@ -709,7 +709,7 @@ class StrategySearcher:
                 params['quantiles'] = [q_low, q_high]
             # ---------- PERÍODOS MAIN ----------
             periods_main = [
-                trial.suggest_int(f'period_main_{i}', 3, 200, log=True)
+                trial.suggest_int(f'period_main_{i}', 5, 200, log=True)
                 for i in range(MAX_MAIN_PERIODS)
             ]
             periods_main = list(dict.fromkeys(periods_main))
@@ -765,16 +765,12 @@ class StrategySearcher:
                 })
             if self.search_type == "wkmeans":
                 params.update({
-                    "n_clusters" : trial.suggest_int("n_clusters", 2, 20, log=True),
-                    "window_size": trial.suggest_int("window_size", 20, 365, log=True),
-                    "step"       : trial.suggest_int("step", 1, 15),
-                    "max_iter"   : trial.suggest_int("max_iter", 50, 500, step=25),
-                    # "metric_type": trial.suggest_categorical(
-                    #                 "metric_type",
-                    #                 ["wasserstein", "sliced_w", "mmd"]
-                    #             ),
-                    "bandwidth" : trial.suggest_float("bandwidth", 0.01, 5.0,  log=True),
-                    "n_proj"    : trial.suggest_int("n_proj", 5, 400, log=True),
+                    "n_clusters" : trial.suggest_int("n_clusters", 4, 25, log=True),
+                    "window_size": trial.suggest_int("window_size", 30, 365, log=True),
+                    "step"       : trial.suggest_int("step", 1, 20),
+                    "max_iter"   : trial.suggest_int("max_iter", 100, 500, step=25),
+                    "bandwidth" : trial.suggest_float("bandwidth", 0.01, 10.0, log=True),
+                    "n_proj"    : trial.suggest_int("n_proj", 10, 500, log=True),
                 })
             elif self.search_type == 'mapie':
                 params.update({

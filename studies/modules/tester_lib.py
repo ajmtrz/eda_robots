@@ -601,7 +601,8 @@ def monte_carlo_full(
             
             # Ejecutar simulaciones en paralelo
             valid_simulations = []
-            with ProcessPoolExecutor(max_workers=max_workers) as executor:
+            with ProcessPoolExecutor(max_workers=max_workers,
+                                     mp_context=mp.get_context("spawn")) as executor:
                 # Enviar todas las tareas
                 future_to_sim = {executor.submit(parallel_simulation_worker, args): args 
                                for args in simulation_args}

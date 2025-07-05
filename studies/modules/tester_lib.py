@@ -9,6 +9,44 @@ from functools import lru_cache
 from modules.labeling_lib import get_features
 rt.set_default_logger_severity(4)
 
+def audit_index(
+        idx: pd.DatetimeIndex,
+        name: str = "train",
+        show_examples: int = 5,
+    ) -> None:
+        """
+        Comprueba orden, duplicados y huecos de un DatetimeIndex.
+        Imprime detalle de los gaps distintos al paso modal.
+        """
+        assert idx.is_monotonic_increasing,  f"{name}: índice no ordenado"
+        assert idx.is_unique,               f"{name}: índices duplicados"
+
+        # diferencias entre ticks contiguos
+        deltas = idx.to_series().diff().dropna()
+
+        # paso modal → el considerado "normal"
+        mode_delta = deltas.mode().iloc[0]
+
+        # máscara de huecos
+        gap_mask = deltas != mode_delta
+
+        if not gap_mask.any():
+            print(f"✅ {name}: sin huecos – paso constante = {mode_delta}")
+        else:
+            gap_counts = deltas[gap_mask].value_counts().sort_index()
+            print(f"⚠️ {name}: {gap_counts.size} tipo(s) de gap encontrados "
+                f"(paso normal = {mode_delta})")
+
+            for gap_delta, count in gap_counts.items():
+                print(f"   • gap {gap_delta}  →  {count} veces")
+                # mostrar algunos ejemplos
+                examples = deltas[deltas == gap_delta].head(show_examples)
+                for ts, gap in examples.items():
+                    prev = ts - gap
+                    print(f"        {prev}  →  {ts}")
+
+        print(f"{name}: {len(idx):,} filas  ({idx[0]}  →  {idx[-1]})\n")
+
 @njit(cache=True, fastmath=True)
 def process_data(close, labels, metalabels, meta_thr=0.5):
     last_deal  = 2
@@ -406,6 +444,7 @@ def _equity_from_returns(resampled_returns: np.ndarray) -> np.ndarray:
         equity[i + 1] = cumsum
     return equity
 
+@njit(cache=True, fastmath=True)
 def _make_noisy_close(close: np.ndarray) -> np.ndarray:
     """Devuelve una serie de precios alterada con ruido laplaciano."""
     n = close.size
@@ -496,7 +535,7 @@ def monte_carlo_full(
     hp: dict,
     direction: str = "both",
     n_sim: int = 100,
-    block_size: int = 20,
+    block_size: int = 1,
     plot: bool = False,
     prd: str = "",
 ) -> dict:
@@ -637,7 +676,7 @@ def robust_oos_score(
         hp: dict,
         direction: str = "both",
         n_sim: int = 100,
-        block_size: int = 20,
+        block_size: int = 1,
         agg: str = "q05",
         plot: bool = False,
         prd: str = "") -> float:

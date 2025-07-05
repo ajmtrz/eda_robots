@@ -59,8 +59,8 @@ class StrategySearcher:
         "trend_one": get_labels_trend_one_direction,
         "filter_flat": get_labels_filter_flat,
     }
-    # Allowed smoothing methods for label functions that support a 'method' kwarg
-    ALLOWED_METHODS = {
+    # Allowed smoothing methods for label functions that support a 'filter' kwarg
+    ALLOWED_FILTERS = {
         "trend_profit": {"savgol", "spline", "sma", "ema"},
         "trend_multi": {"savgol", "spline", "sma", "ema"},
         "mean_rev": {"mean", "spline", "savgol"},
@@ -421,15 +421,15 @@ class StrategySearcher:
 
             # Ambos modelos usan el mismo conjunto de features
             # Main: solo donde meta_labels==1
-            model_main_data = ds_train[ds_train['meta_labels'] == 1][feature_cols + ['labels_main']].copy()
+            model_main_train_data = ds_train[ds_train['meta_labels'] == 1][feature_cols + ['labels_main']].copy()
             # Meta: todas las filas, target = conformal_labels
-            model_meta_data = ds_train[feature_cols].copy()
-            model_meta_data['labels_meta'] = ds_train['conformal_labels']
+            model_meta_train_data = ds_train[feature_cols].copy()
+            model_meta_train_data['labels_meta'] = ds_train['conformal_labels']
 
             # Llamar a fit_final_models
             scores, model_paths, models_cols = self.fit_final_models(
-                model_main_data=model_main_data,
-                model_meta_data=model_meta_data,
+                model_main_train_data=model_main_train_data,
+                model_meta_train_data=model_meta_train_data,
                 ds_train=ds_train,
                 ds_test=ds_test,
                 hp=hp.copy()
@@ -530,14 +530,14 @@ class StrategySearcher:
             ds_train['meta_labels'] = 1.0
             ds_train.loc[ds_train.index.isin(all_bad), 'meta_labels'] = 0.0
 
-            model_main_data = ds_train[ds_train['meta_labels'] == 1.0][feature_cols + ['labels_main']].copy()
-            model_meta_data = ds_train[feature_cols].copy()
-            model_meta_data['labels_meta'] = ds_train['meta_labels']
+            model_main_train_data = ds_train[ds_train['meta_labels'] == 1.0][feature_cols + ['labels_main']].copy()
+            model_meta_train_data = ds_train[feature_cols].copy()
+            model_meta_train_data['labels_meta'] = ds_train['meta_labels']
 
             # Llamar a fit_final_models
             scores, model_paths, models_cols = self.fit_final_models(
-                model_main_data=model_main_data,
-                model_meta_data=model_meta_data,
+                model_main_train_data=model_main_train_data,
+                model_meta_train_data=model_meta_train_data,
                 ds_train=ds_train,
                 ds_test=ds_test,
                 hp=hp.copy()
@@ -564,16 +564,15 @@ class StrategySearcher:
         try:
             # 1) Hiper-parámetros sugeridos de forma coherente con el estudio Optuna
             hp = self.suggest_all_params(trial)
-
             # 2) Cargar datos de entrenamiento / prueba
             ds_train, ds_test = self.get_train_test_data(hp)
             if ds_train is None or ds_test is None:
                 return -1.0, -1.0
-            # 4) Etiquetado de regímenes con WK-means            
+            # 4) Etiquetado de regímenes con WK-means
             ds_train = wkmeans_clustering(
                 ds_train,
                 n_clusters=hp["n_clusters"],
-                window=hp["window_size"],
+                window_size=hp["window_size"],
                 metric=self.search_subtype,
                 step=hp["step"],
                 bandwidth=hp["bandwidth"] if self.search_subtype == "mmd" else None,
@@ -629,37 +628,37 @@ class StrategySearcher:
                 # Main data
 
                 # Filtrar datos
-                model_main_data = ds_train.loc[ds_train["labels_meta"] == clust].copy()
+                model_main_train_data = ds_train.loc[ds_train["labels_meta"] == clust].copy()
 
                 # Preparar features
                 main_feature_cols = ds_train.columns[ds_train.columns.str.contains('_feature') & \
                                                        ~ds_train.columns.str.contains('_meta_feature')]
-                model_main_data = model_main_data[main_feature_cols.tolist() + ['labels_main']]
+                model_main_train_data = model_main_train_data[main_feature_cols.tolist() + ['labels_main']]
 
                 # Verificar
-                if 'label_max' in hp and len(model_main_data) <= hp["label_max"]:
+                if 'label_max' in hp and len(model_main_train_data) <= hp["label_max"]:
                     continue
-                if model_main_data is None or model_main_data.empty:
+                if model_main_train_data is None or model_main_train_data.empty:
                     continue
-                if (model_main_data['labels_main'].value_counts() < 2).any():
+                if (model_main_train_data['labels_main'].value_counts() < 2).any():
                     continue
 
                 # Meta data
 
                 # Preparar features
                 meta_feature_cols = ds_train.columns[ds_train.columns.str.contains('_meta_feature')]
-                model_meta_data = ds_train.loc[:, meta_feature_cols].copy()
-                model_meta_data['labels_meta'] = (ds_train['labels_meta'] == clust).astype('int8')
+                model_meta_train_data = ds_train.loc[:, meta_feature_cols].copy()
+                model_meta_train_data['labels_meta'] = (ds_train['labels_meta'] == clust).astype('int8')
 
                 # Verificar
-                if (model_meta_data['labels_meta'].value_counts() < 2).any():
+                if (model_meta_train_data['labels_meta'].value_counts() < 2).any():
                     continue
 
                 # ── Evaluación en ambos períodos ──────────────────────────────
                 # Llamar a fit_final_models
                 scores, model_paths, models_cols = self.fit_final_models(
-                    model_main_data=model_main_data,
-                    model_meta_data=model_meta_data,
+                    model_main_train_data=model_main_train_data,
+                    model_meta_train_data=model_meta_train_data,
                     ds_train=ds_train,
                     ds_test=ds_test,
                     hp=hp.copy()
@@ -667,7 +666,7 @@ class StrategySearcher:
                 if scores is None or model_paths is None or models_cols is None:
                     return None, None, None
 
-                # ── Actualizar mejores modelos y scores usando maximin method ─────────────────────
+                # ── Actualizar mejores modelos y scores usando maximin ─────────────────────
                 if min(scores) > min(best_scores):
                     # Remove previous best temporary files
                     if best_model_paths != (None, None):
@@ -726,10 +725,13 @@ class StrategySearcher:
 
             # Si el método de etiquetado es 'random', permitir elegir el método determinista
             if 'method' in label_params:
-                params['method'] = trial.suggest_categorical('random_method', ['first', 'last', 'mean', 'max', 'min'])
+                params['method'] = trial.suggest_categorical('method', ['first', 'last', 'mean', 'max', 'min', 'random'])
+
+            if 'filter' in label_params:
+                params['filter'] = trial.suggest_categorical('filter', ['savgol', 'spline', 'sma', 'ema', 'mean'])
 
             if 'markup' in label_params:
-                params['markup'] = trial.suggest_float('markup', 0.2, 2.0, log=True)
+                params['markup'] = trial.suggest_float('markup', 0.1, 3.0, log=True)
 
             if 'min_val' in label_params: 
                 params['min_val'] = trial.suggest_int('min_val', 1, 5)
@@ -752,14 +754,19 @@ class StrategySearcher:
             if 'threshold' in label_params:
                 params['threshold'] = trial.suggest_float('threshold', 0.1, 1.0)
 
-            if 'vol_window' in label_params:
-                params['vol_window'] = trial.suggest_int('vol_window', 20, 100, log=True)
-
-            if 'num_clusters' in label_params:
-                params['num_clusters'] = trial.suggest_int('num_clusters', 5, 50)
+            if 'n_clusters' in label_params:
+                params['n_clusters'] = trial.suggest_int('n_clusters', 5, 50)
 
             if 'window_size' in label_params:
                 params['window_size'] = trial.suggest_int('window_size', 10, 100)
+
+            if 'vol_window' in label_params:
+                params['vol_window'] = trial.suggest_int('vol_window', 20, 100, log=True)
+
+            if 'window_sizes' in label_params:
+                ws = [trial.suggest_int(f'window_size_{i}', 10, 100, step=10) for i in range(3)]
+                ws = list(dict.fromkeys(ws))
+                params['window_sizes'] = tuple(ws)
 
             if 'threshold_pct' in label_params:
                 params['threshold_pct'] = trial.suggest_float('threshold_pct', 0.005, 0.05)
@@ -776,36 +783,16 @@ class StrategySearcher:
             if 'shift' in label_params:
                 params['shift'] = trial.suggest_int('shift', -5, 5)
 
-            if 'volatility_window' in label_params:
-                params['volatility_window'] = trial.suggest_int('volatility_window', 10, 50)
-
             if 'rolling1' in label_params:
                 params['rolling1'] = trial.suggest_int('rolling1', 20, 400, log=True)
 
             if 'rolling2' in label_params:
                 params['rolling2'] = trial.suggest_int('rolling2', 20, 400, log=True)
 
-            if 'method' in label_params:
-                params['method'] = trial.suggest_categorical('method', ['savgol', 'spline', 'sma', 'ema', 'mean'])
-
             if 'rolling_periods' in label_params:
                 rps = [trial.suggest_int(f'rolling_period_{i}', 20, 400, log=True) for i in range(3)]
                 rps = list(dict.fromkeys(rps))
                 params['rolling_periods'] = tuple(rps)
-
-            if 'window_sizes' in label_params:
-                ws = [trial.suggest_int(f'window_size_{i}', 10, 100, step=10) for i in range(3)]
-                ws = list(dict.fromkeys(ws))
-                params['window_sizes'] = tuple(ws)
-
-            if 'window' in label_params:
-                max_possible = min(400, max(len(self.base_df) - 1, 20))
-                params['window'] = trial.suggest_int('window', 20, max_possible)
-
-            if 'windows' in label_params:
-                wnds = [trial.suggest_float(f'window_{i}', 0.1, 1.0) for i in range(3)]
-                wnds = list(dict.fromkeys(wnds))
-                params['windows'] = tuple(wnds)
 
             if 'quantiles' in label_params:
                 q_low = trial.suggest_float('q_low', 0.3, 0.49)
@@ -894,8 +881,8 @@ class StrategySearcher:
             print(f"⚠️ ERROR en suggest_all_params: {str(e)}")
             return None
 
-    def fit_final_models(self, model_main_data: pd.DataFrame,
-                        model_meta_data: pd.DataFrame,
+    def fit_final_models(self, model_main_train_data: pd.DataFrame,
+                        model_meta_train_data: pd.DataFrame,
                         ds_train: pd.DataFrame,
                         ds_test: pd.DataFrame,
                         hp: Dict[str, Any]) -> tuple[tuple[float, float], tuple[str, str], tuple[str, str]]:
@@ -904,18 +891,18 @@ class StrategySearcher:
             # ---------- 1) MODEL MAIN ----------
 
             # Remove neutral labels before training
-            if 'labels_main' in model_main_data.columns:
-                model_main_data = model_main_data[model_main_data['labels_main'].isin([0.0, 1.0])]
-            if model_main_data.empty:
+            if 'labels_main' in model_main_train_data.columns:
+                model_main_train_data = model_main_train_data[model_main_train_data['labels_main'].isin([0.0, 1.0])]
+            if model_main_train_data.empty:
                 return None, None, None
 
             # Get feature columns
-            main_feature_cols = [col for col in model_main_data.columns if col != 'labels_main']
+            main_feature_cols = [col for col in model_main_train_data.columns if col != 'labels_main']
             if self.debug:
-                print(f"🔍 DEBUG: Main model data shape: {model_main_data.shape}")
+                print(f"🔍 DEBUG: Main model data shape: {model_main_train_data.shape}")
                 print(f"🔍 DEBUG: Main feature columns: {main_feature_cols}")
-            X_main = model_main_data[main_feature_cols]
-            y_main = model_main_data['labels_main'].astype('int8')
+            X_main = model_main_train_data[main_feature_cols]
+            y_main = model_main_train_data['labels_main'].astype('int8')
             
             # División de datos para el modelo principal según fechas
             X_train_main, X_val_main, y_train_main, y_val_main = train_test_split(
@@ -929,13 +916,13 @@ class StrategySearcher:
                 return None, None, None
 
             # ---------- 2) MODEL META ----------
-            meta_feature_cols = [col for col in model_meta_data.columns if col != 'labels_meta']
+            meta_feature_cols = [col for col in model_meta_train_data.columns if col != 'labels_meta']
             if self.debug:
-                print(f"🔍 DEBUG: Meta model data shape: {model_meta_data.shape}")
+                print(f"🔍 DEBUG: Meta model data shape: {model_meta_train_data.shape}")
                 print(f"🔍 DEBUG: Meta feature columns: {meta_feature_cols}")
-            X_meta = model_meta_data[meta_feature_cols]
-            y_meta = model_meta_data['labels_meta'].astype('int8')
-
+            X_meta = model_meta_train_data[meta_feature_cols]
+            y_meta = model_meta_train_data['labels_meta'].astype('int8')
+            
             # División de datos para el modelo principal según fechas
             X_train_meta, X_val_meta, y_train_meta, y_val_meta = train_test_split(
                 X_meta, y_meta,
@@ -1029,16 +1016,15 @@ class StrategySearcher:
                 print(f"🔍 DEBUG: Tiempo de test in-sample: {test_train_time_end - test_train_time_start:.2f} segundos")
 
             test_test_time_start = time.time()
-            score_oos = robust_oos_score(
+            score_oos = tester(
                 dataset=ds_test,
                 model_main=model_main_path,
                 model_meta=model_meta_path,
                 model_main_cols=main_feature_cols,
                 model_meta_cols=meta_feature_cols,
-                hp=hp,
                 direction=self.direction,
-                plot=True,
-                prd='out-of-sample',
+                plot=False,
+                prd='outsample',
             )
             test_test_time_end = time.time()
             if self.debug:
@@ -1087,11 +1073,11 @@ class StrategySearcher:
                 return pd.DataFrame()
 
             # Ajuste automático para savgol_filter y similares
-            method = kwargs.get('method')
-            allowed = self.ALLOWED_METHODS.get(self.label_method)
+            filter = kwargs.get('filter')
+            allowed = self.ALLOWED_FILTERS.get(self.label_method)
             # Detectar parámetros de ventana relevantes
             window_keys = [k for k in kwargs if any(x in k for x in ('rolling', 'window', 'window_size'))]
-            if method == 'savgol' and window_keys:
+            if filter == 'savgol' and window_keys:
                 for k in window_keys:
                     v = kwargs[k]
                     if isinstance(v, list) or isinstance(v, tuple):
@@ -1145,9 +1131,9 @@ class StrategySearcher:
             if 'max_val' in hp and len(dataset) <= hp['max_val']:
                 return pd.DataFrame()
 
-            method = kwargs.get('method')
-            allowed = self.ALLOWED_METHODS.get(self.label_method)
-            if method and allowed and method not in allowed:
+            filter = kwargs.get('filter')
+            allowed = self.ALLOWED_FILTERS.get(self.label_method)
+            if filter and allowed and filter not in allowed:
                 return pd.DataFrame()
 
             df = label_func(dataset, **kwargs)
@@ -1176,8 +1162,7 @@ class StrategySearcher:
 
             # ──────────────────────────────────────────────────────────────
             # 1) Calcular el colchón de barras necesario
-            pad = max(hp.get('periods_main', ()) + hp.get('periods_meta', ()), default=0)
-            pad = int(pad)
+            pad = int(max(hp['periods_main']) + max(hp.get('periods_meta', [0])))
             if self.debug:
                 print(f"🔍 DEBUG: pad = {pad}")
 
@@ -1204,12 +1189,11 @@ class StrategySearcher:
             # ──────────────────────────────────────────────────────────────
             # 4) Obtener features de todo el rango extendido
             hp_tuple = tuple(sorted(hp.items()))
-            ds_slice = self.base_df.loc[start_ext:end_ext].copy()
+            full_ds = self.base_df.loc[start_ext:end_ext].copy()
             if self.debug:
-                print(f"🔍 DEBUG: ds_slice.shape = {ds_slice.shape}")
+                print(f"🔍 DEBUG: ds_slice.shape = {full_ds.shape}")
             
-            full_ds = get_features(ds_slice, dict(hp_tuple))
-            
+            full_ds = get_features(full_ds, dict(hp_tuple))
             if self.debug:
                 print(f"🔍 DEBUG: full_ds.shape después de get_features = {full_ds.shape}")
 

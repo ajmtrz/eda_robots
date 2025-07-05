@@ -70,7 +70,6 @@ def export_models_to_ONNX(models):
     return onnx_models
 
 def export_to_mql5(**kwargs):
-    model_seed = kwargs.get('best_model_seed')
     best_scores = kwargs.get('best_scores')
     model_paths = kwargs.get('best_model_paths')
     model_cols = kwargs.get('best_model_cols')
@@ -79,6 +78,7 @@ def export_to_mql5(**kwargs):
     symbol = kwargs.get('symbol')
     timeframe = kwargs.get('timeframe')
     direction = kwargs.get('direction')
+    model_seed = kwargs.get('best_model_seed')
     label_method = kwargs.get('label_method')
     models_export_path = kwargs.get('models_export_path')
     include_export_path = kwargs.get('include_export_path')
@@ -88,9 +88,9 @@ def export_to_mql5(**kwargs):
     try:
         main_cols, meta_cols = model_cols
         # Copia los modelos ONNX desde los archivos temporales a la ruta de destino
-        filename_model_main = f"{symbol}_{timeframe}_{direction}_{model_seed}_main.onnx"
+        filename_model_main = f"{symbol}_{timeframe}_{direction}_{label_method}_{search_type}_{search_subtype}_main.onnx"
         filepath_model_main = os.path.join(models_export_path, filename_model_main)
-        filename_model_meta = f"{symbol}_{timeframe}_{direction}_{model_seed}_meta.onnx"
+        filename_model_meta = f"{symbol}_{timeframe}_{direction}_{label_method}_{search_type}_{search_subtype}_meta.onnx"
         filepath_model_meta = os.path.join(models_export_path, filename_model_meta)
 
         # model_paths[0] es el modelo main, model_paths[1] es el modelo meta
@@ -639,13 +639,13 @@ def export_to_mql5(**kwargs):
         code += rf'#resource "\\Files\\{filename_model_meta}" as uchar ExtModel_m_[]'
         code += '\n\n'
         code += '//+------------------------------------------------------------------+\n'
-        code += f'//| INS SCORE: {best_scores[0]} | OOS SCORE: {best_scores[1]} |\n'
+        code += f'//| INS SCORE: {best_scores[0]} | OOS SCORE: {best_scores[1]}    |\n'
         code += '//+------------------------------------------------------------------+\n'
         code += '\n\n'
         code += f'#define SYMBOL               "{str(symbol)}"\n'
         code += f'#define TIMEFRAME            "{str(timeframe)}"\n'
         code += f'#define DIRECTION            "{str(direction)}"\n'
-        code += f'#define MAGIC_NUMBER         {model_seed}\n'
+        code += f'#define MAGIC_NUMBER         {str(model_seed)}\n'
         code += "string MAIN_COLS[] = { " + ",".join('"' + c + '"' for c in main_cols) + " };\n"
         code += "string META_COLS[] = { " + ",".join('"' + c + '"' for c in meta_cols) + " };\n\n"
         stats_total = set(stats_main + stats_meta)
@@ -704,7 +704,7 @@ def export_to_mql5(**kwargs):
         code += '     }\n'
         code += '  }\n\n'
 
-        file_name = os.path.join(include_export_path, f"{symbol}_{timeframe}_{direction}_{label_method}_{search_type}_{search_subtype}_{model_seed}.mqh")
+        file_name = os.path.join(include_export_path, f"{symbol}_{timeframe}_{direction}_{label_method}_{search_type}_{search_subtype}.mqh")
         with open(file_name, "w") as file:
             file.write(code)
 

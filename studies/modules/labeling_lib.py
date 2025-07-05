@@ -567,14 +567,14 @@ def get_features(data: pd.DataFrame, hp):
 
 
 @njit(cache=True, fastmath=True)
-def safe_savgol_filter(x, window_size: int, polyorder: int):
+def safe_savgol_filter(x, l_window_size: int, polyorder: int):
     """Apply Savitzky-Golay filter safely.
 
     Parameters
     ----------
     x : array-like
         Input array.
-    window_size : int
+    l_window_size : int
         Desired window size.
     polyorder : int
         Polynomial order.
@@ -591,7 +591,7 @@ def safe_savgol_filter(x, window_size: int, polyorder: int):
     if n <= polyorder:
         return x
 
-    wl = int(window_size)
+    wl = int(l_window_size)
     if wl % 2 == 0:
         wl += 1
     max_wl = n if n % 2 == 1 else n - 1
@@ -980,8 +980,8 @@ def calculate_labels_clusters(close_data, atr, clusters, markup):
         labels.append(2.0)
     return labels
 
-def get_labels_clusters(dataset, markup, n_clusters=20, atr_period=14) -> pd.DataFrame:
-    kmeans = KMeans(n_clusters=n_clusters, n_init='auto')
+def get_labels_clusters(dataset, markup, l_n_clusters=20, atr_period=14) -> pd.DataFrame:
+    kmeans = KMeans(n_clusters=l_n_clusters, n_init='auto')
     dataset['cluster'] = kmeans.fit_predict(dataset[['close']])
 
     close_data = dataset['close'].values
@@ -1003,8 +1003,8 @@ def calculate_signals(prices, window_sizes, threshold_pct):
     for i in range(max_window, len(prices)):
         long_signals = 0
         short_signals = 0
-        for window_size in window_sizes:
-            window = prices[i-window_size:i]
+        for l_window_size in window_sizes:
+            window = prices[i-l_window_size:i]
             resistance = max(window)
             support = min(window)
             current_price = prices[i]
@@ -1030,12 +1030,12 @@ def get_labels_multi_window(dataset, window_sizes=[20, 50, 100], threshold_pct=0
     return dataset
 
 @njit(cache=True, fastmath=True)
-def calculate_labels_validated_levels(prices, window_size, threshold_pct, min_touches):
+def calculate_labels_validated_levels(prices, l_window_size, threshold_pct, min_touches):
     resistance_touches = {}
     support_touches = {}
     labels = []
-    for i in range(window_size, len(prices)):
-        window = prices[i-window_size:i]
+    for i in range(l_window_size, len(prices)):
+        window = prices[i-l_window_size:i]
         current_price = prices[i]
 
         potential_resistance = np.max(window)
@@ -1066,12 +1066,12 @@ def calculate_labels_validated_levels(prices, window_size, threshold_pct, min_to
 
     return labels
 
-def get_labels_validated_levels(dataset, window_size=20, threshold_pct=0.02, min_touches=2) -> pd.DataFrame:
+def get_labels_validated_levels(dataset, l_window_size=20, threshold_pct=0.02, min_touches=2) -> pd.DataFrame:
     prices = dataset['close'].values
     
-    labels = calculate_labels_validated_levels(prices, window_size, threshold_pct, min_touches)
+    labels = calculate_labels_validated_levels(prices, l_window_size, threshold_pct, min_touches)
     
-    labels = [2.0] * window_size + labels
+    labels = [2.0] * l_window_size + labels
     dataset['labels_main'] = labels
     return dataset
 
@@ -1536,7 +1536,7 @@ def calc_labels_multiple_filters(close, lvls, qs):
             
     return labels
 
-def get_labels_multiple_filters(dataset, rolling_periods=[200, 400, 600], quantiles=[.45, .55], window_size=100, polyorder=3) -> pd.DataFrame:
+def get_labels_multiple_filters(dataset, rolling_periods=[200, 400, 600], quantiles=[.45, .55], l_window_size=100, polyorder=3) -> pd.DataFrame:
     """
     Generates trading signals (buy/sell) based on price deviation from multiple 
     smoothed price trends calculated using a Savitzky-Golay filter with different
@@ -1550,10 +1550,10 @@ def get_labels_multiple_filters(dataset, rolling_periods=[200, 400, 600], quanti
 
     Args:
         dataset (pd.DataFrame): DataFrame containing financial data with a 'close' column.
-        rolling_periods (list, optional): List of rolling window_size sizes for the Savitzky-Golay filter. 
+        rolling_periods (list, optional): List of rolling l_window_size sizes for the Savitzky-Golay filter. 
                                            Defaults to [200, 400, 600].
         quantiles (list, optional): Quantiles to define the "reversion zone". Defaults to [.45, .55].
-        window_size (int, optional): Window size for calculating rolling quantiles. Defaults to 100.
+        l_window_size (int, optional): Window size for calculating rolling quantiles. Defaults to 100.
         polyorder (int, optional): Polynomial order for the Savitzky-Golay filter. Defaults to 3.
 
     Returns:
@@ -1584,8 +1584,8 @@ def get_labels_multiple_filters(dataset, rolling_periods=[200, 400, 600], quanti
         temp_df = pd.DataFrame({'diff': diff})
         
         # Calculate rolling quantiles for the price deviation
-        q_low = temp_df['diff'].rolling(window=window_size).quantile(quantiles[0])
-        q_high = temp_df['diff'].rolling(window=window_size).quantile(quantiles[1])
+        q_low = temp_df['diff'].rolling(window=l_window_size).quantile(quantiles[0])
+        q_high = temp_df['diff'].rolling(window=l_window_size).quantile(quantiles[1])
         
         # Store the price deviation and quantiles for the current rolling period
         all_levels.append(diff)

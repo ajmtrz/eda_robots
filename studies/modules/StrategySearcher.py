@@ -273,29 +273,29 @@ class StrategySearcher:
             hp = self.suggest_all_params(trial)
 
             # Obtener datos de entrenamiento y prueba
-            ds_train, ds_test = self.get_train_test_data(hp)
-            if ds_train is None or ds_test is None:
+            full_ds = self.get_labeled_full_data(hp)
+            if full_ds is None:
                 return -1.0, -1.0
             
             # Markov
             if self.search_subtype == 'simple':
-                ds_train = markov_regime_switching_simple(
-                    ds_train,
+                full_ds = markov_regime_switching_simple(
+                    full_ds,
                     model_type=hp['model_type'],
                     n_regimes=hp['n_regimes'],
                     n_iter=hp['n_iter'],
                     n_mix=hp['n_mix'] if hp['model_type'] == 'VARHMM' else 3
                 )
             elif self.search_subtype == 'advanced':
-                ds_train = markov_regime_switching_advanced(
-                    ds_train,
+                full_ds = markov_regime_switching_advanced(
+                    full_ds,
                     model_type=hp['model_type'],
                     n_regimes=hp['n_regimes'],
                     n_iter=hp['n_iter'],
                     n_mix=hp['n_mix'] if hp['model_type'] == 'VARHMM' else 3
                 )
 
-            scores, model_paths, models_cols = self.evaluate_clusters(ds_train, ds_test, hp)
+            scores, model_paths, models_cols = self.evaluate_clusters(full_ds, hp)
             if scores is None or model_paths is None or models_cols is None:
                 return -1.0, -1.0
 
@@ -316,24 +316,24 @@ class StrategySearcher:
             hp = self.suggest_all_params(trial)
 
             # Obtener datos de entrenamiento y prueba
-            ds_train, ds_test = self.get_train_test_data(hp)
-            if ds_train is None or ds_test is None:
+            full_ds = self.get_labeled_full_data(hp)
+            if full_ds is None:
                 return -1.0, -1.0
             
             # Clustering
             if self.search_subtype == 'simple':
-                ds_train = clustering_simple(
-                    ds_train,
+                full_ds = clustering_simple(
+                    full_ds,
                     min_cluster_size=hp['n_clusters']
                 )
             elif self.search_subtype == 'advanced':
-                ds_train = sliding_window_clustering(
-                    ds_train,
+                full_ds = sliding_window_clustering(
+                    full_ds,
                     n_clusters=hp['n_clusters'],
                     window_size=hp['window_size'],
                     step=hp.get('step', None),
                 )
-            scores, model_paths, models_cols = self.evaluate_clusters(ds_train, ds_test, hp)
+            scores, model_paths, models_cols = self.evaluate_clusters(full_ds, hp)
             if scores is None or model_paths is None or models_cols is None:
                 return -1.0, -1.0
 
@@ -352,18 +352,18 @@ class StrategySearcher:
         try:
             hp = self.suggest_all_params(trial)
 
-            ds_train, ds_test = self.get_train_test_data(hp)
-            if ds_train is None or ds_test is None:
+            full_ds = self.get_labeled_full_data(hp)
+            if full_ds is None:
                 return -1.0, -1.0
 
-            ds_train = lgmm_clustering(
-                ds_train,
+            full_ds = lgmm_clustering(
+                full_ds,
                 n_components=hp['n_components'],
                 covariance_type=hp['covariance_type'],
                 max_iter=hp['max_iter'],
             )
 
-            scores, model_paths, models_cols = self.evaluate_clusters(ds_train, ds_test, hp)
+            scores, model_paths, models_cols = self.evaluate_clusters(full_ds, hp)
             if scores is None or model_paths is None or models_cols is None:
                 return -1.0, -1.0
 
@@ -381,14 +381,14 @@ class StrategySearcher:
         """Implementa la búsqueda de estrategias usando conformal prediction (MAPIE) con CatBoost, usando el mismo conjunto de features para ambos modelos."""
         try:
             hp = self.suggest_all_params(trial)
-            ds_train, ds_test = self.get_train_test_data(hp)
-            if ds_train is None or ds_test is None:
+            full_ds = self.get_labeled_full_data(hp)
+            if full_ds is None:
                 return -1.0, -1.0
             
             # Selección de features: todas las columnas *_feature
-            feature_cols = [col for col in ds_train.columns if col.endswith('_feature')]
-            X = ds_train[feature_cols]
-            y = ds_train['labels_main'] if 'labels_main' in ds_train.columns else ds_train['labels']
+            feature_cols = [col for col in full_ds.columns if col.endswith('_feature')]
+            X = full_ds[feature_cols]
+            y = full_ds['labels_main'] if 'labels_main' in full_ds.columns else full_ds['labels']
 
             # CatBoost como estimador base para MAPIE
             catboost_params = dict(
@@ -414,24 +414,23 @@ class StrategySearcher:
             predicted, y_prediction_sets = mapie.predict_set(X)
             y_prediction_sets = np.squeeze(y_prediction_sets, axis=-1)
             set_sizes = np.sum(y_prediction_sets, axis=1)
-            ds_train['conformal_labels'] = 0.0
-            ds_train.loc[set_sizes == 1, 'conformal_labels'] = 1.0
-            ds_train['meta_labels'] = 0.0
-            ds_train.loc[predicted == y, 'meta_labels'] = 1.0
+            full_ds['conformal_labels'] = 0.0
+            full_ds.loc[set_sizes == 1, 'conformal_labels'] = 1.0
+            full_ds['meta_labels'] = 0.0
+            full_ds.loc[predicted == y, 'meta_labels'] = 1.0
 
             # Ambos modelos usan el mismo conjunto de features
             # Main: solo donde meta_labels==1
-            model_main_train_data = ds_train[ds_train['meta_labels'] == 1][feature_cols + ['labels_main']].copy()
+            model_main_train_data = full_ds[full_ds['meta_labels'] == 1][feature_cols + ['labels_main']].copy()
             # Meta: todas las filas, target = conformal_labels
-            model_meta_train_data = ds_train[feature_cols].copy()
-            model_meta_train_data['labels_meta'] = ds_train['conformal_labels']
+            model_meta_train_data = full_ds[feature_cols].copy()
+            model_meta_train_data['labels_meta'] = full_ds['conformal_labels']
 
             # Llamar a fit_final_models
             scores, model_paths, models_cols = self.fit_final_models(
+                full_ds=full_ds,
                 model_main_train_data=model_main_train_data,
                 model_meta_train_data=model_meta_train_data,
-                ds_train=ds_train,
-                ds_test=ds_test,
                 hp=hp.copy()
             )
             if scores is None or model_paths is None or models_cols is None:
@@ -451,13 +450,13 @@ class StrategySearcher:
         try:
             hp = self.suggest_all_params(trial)
 
-            ds_train, ds_test = self.get_train_test_data(hp)
-            if ds_train is None or ds_test is None:
+            full_ds = self.get_labeled_full_data(hp)
+            if full_ds is None:
                 return -1.0, -1.0
 
-            feature_cols = [c for c in ds_train.columns if c.endswith('_feature')]
-            X = ds_train[feature_cols]
-            y = ds_train['labels_main']
+            feature_cols = [c for c in full_ds.columns if c.endswith('_feature')]
+            X = full_ds[feature_cols]
+            y = full_ds['labels_main']
 
             def _bootstrap_oob_identification(X: pd.DataFrame, y: pd.Series, n_models: int = 25):
                 oob_counts = pd.Series(0, index=X.index)
@@ -527,19 +526,18 @@ class StrategySearcher:
             marked0 = to_mark_0[to_mark_0 > thr0].index
             marked1 = to_mark_1[to_mark_1 > thr1].index
             all_bad = pd.Index(marked0).union(marked1)
-            ds_train['meta_labels'] = 1.0
-            ds_train.loc[ds_train.index.isin(all_bad), 'meta_labels'] = 0.0
+            full_ds['meta_labels'] = 1.0
+            full_ds.loc[full_ds.index.isin(all_bad), 'meta_labels'] = 0.0
 
-            model_main_train_data = ds_train[ds_train['meta_labels'] == 1.0][feature_cols + ['labels_main']].copy()
-            model_meta_train_data = ds_train[feature_cols].copy()
-            model_meta_train_data['labels_meta'] = ds_train['meta_labels']
+            model_main_train_data = full_ds[full_ds['meta_labels'] == 1.0][feature_cols + ['labels_main']].copy()
+            model_meta_train_data = full_ds[feature_cols].copy()
+            model_meta_train_data['labels_meta'] = full_ds['meta_labels']
 
             # Llamar a fit_final_models
             scores, model_paths, models_cols = self.fit_final_models(
+                full_ds=full_ds,
                 model_main_train_data=model_main_train_data,
                 model_meta_train_data=model_meta_train_data,
-                ds_train=ds_train,
-                ds_test=ds_test,
                 hp=hp.copy()
             )
             if scores is None or model_paths is None or models_cols is None:
@@ -565,12 +563,12 @@ class StrategySearcher:
             # 1) Hiper-parámetros sugeridos de forma coherente con el estudio Optuna
             hp = self.suggest_all_params(trial)
             # 2) Cargar datos de entrenamiento / prueba
-            ds_train, ds_test = self.get_train_test_data(hp)
-            if ds_train is None or ds_test is None:
+            full_ds = self.get_labeled_full_data(hp)
+            if full_ds is None:
                 return -1.0, -1.0
             # 4) Etiquetado de regímenes con WK-means
-            ds_train = wkmeans_clustering(
-                ds_train,
+            full_ds = wkmeans_clustering(
+                full_ds,
                 n_clusters=hp["n_clusters"],
                 window_size=hp["window_size"],
                 metric=self.search_subtype,
@@ -581,7 +579,7 @@ class StrategySearcher:
             )
 
             # 5) Entrenar modelos y obtener scores (mismo helper que el resto)
-            scores, model_paths, model_cols = self.evaluate_clusters(ds_train, ds_test, hp)
+            scores, model_paths, model_cols = self.evaluate_clusters(full_ds, hp)
             if scores is None or model_paths is None or model_cols is None:
                 return -1.0, -1.0
 
@@ -600,14 +598,14 @@ class StrategySearcher:
     # Métodos auxiliares
     # =========================================================================
     
-    def evaluate_clusters(self, ds_train: pd.DataFrame, ds_test: pd.DataFrame, hp: Dict[str, Any]) -> tuple[float, float]:
+    def evaluate_clusters(self, full_ds: pd.DataFrame, hp: Dict[str, Any]) -> tuple[float, float]:
         """Función helper para evaluar clusters y entrenar modelos."""
         try:
             best_scores = (-math.inf, -math.inf)
             best_model_paths = (None, None)
             best_models_cols = (None, None)
             
-            cluster_sizes = ds_train['labels_meta'].value_counts()
+            cluster_sizes = full_ds['labels_meta'].value_counts()
             if self.debug:
                 print(f"🔍 DEBUG: Cluster sizes:\n{cluster_sizes}")
 
@@ -628,11 +626,11 @@ class StrategySearcher:
                 # Main data
 
                 # Filtrar datos
-                model_main_train_data = ds_train.loc[ds_train["labels_meta"] == clust].copy()
+                model_main_train_data = full_ds.loc[full_ds["labels_meta"] == clust].copy()
 
                 # Preparar features
-                main_feature_cols = ds_train.columns[ds_train.columns.str.contains('_feature') & \
-                                                       ~ds_train.columns.str.contains('_meta_feature')]
+                main_feature_cols = full_ds.columns[full_ds.columns.str.contains('_feature') & \
+                                                       ~full_ds.columns.str.contains('_meta_feature')]
                 model_main_train_data = model_main_train_data[main_feature_cols.tolist() + ['labels_main']]
 
                 # Verificar
@@ -646,9 +644,9 @@ class StrategySearcher:
                 # Meta data
 
                 # Preparar features
-                meta_feature_cols = ds_train.columns[ds_train.columns.str.contains('_meta_feature')]
-                model_meta_train_data = ds_train.loc[:, meta_feature_cols].copy()
-                model_meta_train_data['labels_meta'] = (ds_train['labels_meta'] == clust).astype('int8')
+                meta_feature_cols = full_ds.columns[full_ds.columns.str.contains('_meta_feature')]
+                model_meta_train_data = full_ds.loc[:, meta_feature_cols].copy()
+                model_meta_train_data['labels_meta'] = (full_ds['labels_meta'] == clust).astype('int8')
 
                 # Verificar
                 if (model_meta_train_data['labels_meta'].value_counts() < 2).any():
@@ -657,10 +655,9 @@ class StrategySearcher:
                 # ── Evaluación en ambos períodos ──────────────────────────────
                 # Llamar a fit_final_models
                 scores, model_paths, models_cols = self.fit_final_models(
+                    full_ds=full_ds,
                     model_main_train_data=model_main_train_data,
                     model_meta_train_data=model_meta_train_data,
-                    ds_train=ds_train,
-                    ds_test=ds_test,
                     hp=hp.copy()
                 )
                 if scores is None or model_paths is None or models_cols is None:
@@ -754,11 +751,11 @@ class StrategySearcher:
             if 'threshold' in label_params:
                 params['threshold'] = trial.suggest_float('threshold', 0.1, 1.0)
 
-            if 'n_clusters' in label_params:
-                params['n_clusters'] = trial.suggest_int('n_clusters', 5, 50)
+            if 'l_n_clusters' in label_params:
+                params['l_n_clusters'] = trial.suggest_int('l_n_clusters', 5, 50)
 
-            if 'window_size' in label_params:
-                params['window_size'] = trial.suggest_int('window_size', 10, 100)
+            if 'l_window_size' in label_params:
+                params['l_window_size'] = trial.suggest_int('l_window_size', 10, 100)
 
             if 'vol_window' in label_params:
                 params['vol_window'] = trial.suggest_int('vol_window', 20, 100, log=True)
@@ -806,7 +803,7 @@ class StrategySearcher:
             periods_main = list(dict.fromkeys(periods_main))
             if len(periods_main) > params['max_main_periods']:
                 periods_main = random.sample(periods_main, params['max_main_periods'])
-            params['periods_main'] = tuple(periods_main[:params['max_main_periods']])
+            params['periods_main'] = tuple(sorted(periods_main[:params['max_main_periods']]))
             # ---------- STATS MAIN ----------
             stats_main = [trial.suggest_categorical(f'stat_main_{i}', all_stats)
                         for i in range(MAX_MAIN_STATS)]
@@ -823,7 +820,7 @@ class StrategySearcher:
                 periods_meta = list(dict.fromkeys(periods_meta))
                 if len(periods_meta) > params['max_meta_periods']:
                     periods_meta = random.sample(periods_meta, params['max_meta_periods'])
-                params['periods_meta'] = tuple(periods_meta[:params['max_meta_periods']])
+                params['periods_meta'] = tuple(sorted(periods_meta[:params['max_meta_periods']]))
                 stats_meta = [trial.suggest_categorical(f'stat_meta_{i}', all_stats)
                             for i in range(MAX_META_STATS)]
                 stats_meta = list(dict.fromkeys(stats_meta))
@@ -838,24 +835,24 @@ class StrategySearcher:
                 })
             elif self.search_type == 'clusters':
                 params.update({
-                    'n_clusters': trial.suggest_int('n_clusters', 5, 50, step=5)
+                    'n_clusters': trial.suggest_int('n_clusters', 3, 50, step=5)
                 })
                 if self.search_subtype == 'advanced':
                     params.update({
-                        'window_size': trial.suggest_int('window_size', 100, 500, step=50)
+                        'window_size': trial.suggest_int('window_size', 20, 365, step=50)
                     })
             elif self.search_type == 'lgmm':
                 params.update({
-                    'n_components': trial.suggest_int('n_components', 2, 10),
+                    'n_components': trial.suggest_int('n_components', 2, 20),
                     'covariance_type': trial.suggest_categorical('covariance_type', ['full', 'diag']),
                     'max_iter': trial.suggest_int('max_iter', 50, 300, step=10),
                 })
             if self.search_type == "wkmeans":
                 params.update({
-                    "n_clusters" : trial.suggest_int("n_clusters", 2, 12, log=True),
+                    "n_clusters" : trial.suggest_int("n_clusters", 2, 20, log=True),
                     "window_size": trial.suggest_int("window_size", 20, 365, log=True),
                     "step"       : trial.suggest_int("step", 1, 15),
-                    "max_iter"   : trial.suggest_int("max_iter",50, 300, step=25),
+                    "max_iter"   : trial.suggest_int("max_iter", 50, 500, step=25),
                     # "metric_type": trial.suggest_categorical(
                     #                 "metric_type",
                     #                 ["wasserstein", "sliced_w", "mmd"]
@@ -876,16 +873,20 @@ class StrategySearcher:
             for key, value in params.items():
                 trial.set_user_attr(key, value)
 
+            if self.debug:
+                print("🔍 DEBUG: Parámetros sugeridos:")
+                for key, value in params.items():
+                    print(f"  {key}: {value}")
+
             return params
         except Exception as e:
             print(f"⚠️ ERROR en suggest_all_params: {str(e)}")
             return None
 
-    def fit_final_models(self, model_main_train_data: pd.DataFrame,
-                        model_meta_train_data: pd.DataFrame,
-                        ds_train: pd.DataFrame,
-                        ds_test: pd.DataFrame,
-                        hp: Dict[str, Any]) -> tuple[tuple[float, float], tuple[str, str], tuple[str, str]]:
+    def fit_final_models(self, full_ds: pd.DataFrame,
+                         model_main_train_data: pd.DataFrame,
+                         model_meta_train_data: pd.DataFrame,
+                         hp: Dict[str, Any]) -> tuple[tuple[float, float], tuple[str, str], tuple[str, str]]:
         """Ajusta los modelos finales y devuelve rutas a archivos temporales."""
         try:
             # ---------- 1) MODEL MAIN ----------
@@ -901,16 +902,15 @@ class StrategySearcher:
             if self.debug:
                 print(f"🔍 DEBUG: Main model data shape: {model_main_train_data.shape}")
                 print(f"🔍 DEBUG: Main feature columns: {main_feature_cols}")
-            X_main = model_main_train_data[main_feature_cols]
-            y_main = model_main_train_data['labels_main'].astype('int8')
-            
             # División de datos para el modelo principal según fechas
-            X_train_main, X_val_main, y_train_main, y_val_main = train_test_split(
-                X_main, y_main,
-                test_size=0.2,
-                shuffle=True
-            )
-            
+            model_main_train_data, model_main_eval_data = self.get_train_test_data(dataset=model_main_train_data)
+            X_train_main = model_main_train_data[main_feature_cols]
+            y_train_main = model_main_train_data['labels_main'].astype('int8')
+            X_val_main = model_main_eval_data[main_feature_cols]
+            y_val_main = model_main_eval_data['labels_main'].astype('int8')
+            if self.debug:
+                print(f"🔍 DEBUG: X_train_main shape: {X_train_main.shape}, y_train_main shape: {y_train_main.shape}")
+                print(f"🔍 DEBUG: X_val_main shape: {X_val_main.shape}, y_val_main shape: {y_val_main.shape}")
             # ── descartar clusters problemáticos ────────────────────────────
             if len(y_train_main.value_counts()) < 2 or len(y_val_main.value_counts()) < 2:
                 return None, None, None
@@ -920,16 +920,15 @@ class StrategySearcher:
             if self.debug:
                 print(f"🔍 DEBUG: Meta model data shape: {model_meta_train_data.shape}")
                 print(f"🔍 DEBUG: Meta feature columns: {meta_feature_cols}")
-            X_meta = model_meta_train_data[meta_feature_cols]
-            y_meta = model_meta_train_data['labels_meta'].astype('int8')
-            
             # División de datos para el modelo principal según fechas
-            X_train_meta, X_val_meta, y_train_meta, y_val_meta = train_test_split(
-                X_meta, y_meta,
-                test_size=0.2,
-                shuffle=True
-            )
-            
+            model_meta_train_data, model_meta_eval_data = self.get_train_test_data(dataset=model_meta_train_data)
+            X_train_meta = model_meta_train_data[meta_feature_cols]
+            y_train_meta = model_meta_train_data['labels_meta'].astype('int8')
+            X_val_meta = model_meta_eval_data[meta_feature_cols]
+            y_val_meta = model_meta_eval_data['labels_meta'].astype('int8')
+            if self.debug:
+                print(f"🔍 DEBUG: X_train_meta shape: {X_train_meta.shape}, y_train_meta shape: {y_train_meta.shape}")
+                print(f"🔍 DEBUG: X_val_meta shape: {X_val_meta.shape}, y_val_meta shape: {y_val_meta.shape}")
             # ── descartar clusters problemáticos ────────────────────────────
             if len(y_train_meta.value_counts()) < 2 or len(y_val_meta.value_counts()) < 2:
                 return None, None, None
@@ -985,24 +984,23 @@ class StrategySearcher:
                 print(f"🔍 DEBUG: Tiempo de entrenamiento modelo meta: {t_train_meta_end - t_train_meta_start:.2f} segundos")
 
             # ── EVALUACIÓN ───────────────────────────────────────────────
-
+            full_ds_train, full_ds_test = self.get_train_test_data(dataset=full_ds)
+            if self.debug:
+                print(f"🔍 DEBUG: full_ds_train shape: {full_ds_train.shape}, full_ds_test shape: {full_ds_test.shape}")
             # Verificar orden exacto
-            if not (ds_test[main_feature_cols].columns == main_feature_cols).all():
+            if not (full_ds_test[main_feature_cols].columns == main_feature_cols).all():
                 print("⚠️ ERROR: El orden de las columnas main no coincide en test")
                 return None, None, None
-            if not (ds_test[meta_feature_cols].columns == meta_feature_cols).all():
+            if not (full_ds_test[meta_feature_cols].columns == meta_feature_cols).all():
                 print("⚠️ ERROR: El orden de las columnas meta no coincide en test")
                 return None, None, None
-            
-            # Extraer datos para evaluación
-            #ds_test = ds_test[["open", "high", "low", "close", "volume"]]
             
             # Evaluación in-sample y out-of-sample
             model_main_path, model_meta_path = export_models_to_ONNX(models=(model_main, model_meta))
 
             test_train_time_start = time.time()
             score_ins = tester(
-                dataset=ds_train,
+                dataset=full_ds_train,
                 model_main=model_main_path,
                 model_meta=model_meta_path,
                 model_main_cols=main_feature_cols,
@@ -1017,7 +1015,7 @@ class StrategySearcher:
 
             test_test_time_start = time.time()
             score_oos = tester(
-                dataset=ds_test,
+                dataset=full_ds_test,
                 model_main=model_main_path,
                 model_meta=model_meta_path,
                 model_main_cols=main_feature_cols,
@@ -1029,6 +1027,9 @@ class StrategySearcher:
             test_test_time_end = time.time()
             if self.debug:
                 print(f"🔍 DEBUG: Tiempo de test out-of-sample: {test_test_time_end - test_test_time_start:.2f} segundos")
+
+            if self.debug:
+                print(f"🔍 DEBUG: Score in-sample: {score_ins}, Score out-of-sample: {score_oos}")
 
             # Manejar valores inválidos
             if not np.isfinite(score_ins) or not np.isfinite(score_oos):
@@ -1150,10 +1151,10 @@ class StrategySearcher:
             print(f"⚠️ ERROR en apply_labeling: {e}")
             return pd.DataFrame()
 
-    def get_train_test_data(self, hp):
+    def get_labeled_full_data(self, hp):
         try:
             if hp is None:
-                return None, None
+                return None
 
             if self.debug:
                 print(f"🔍 DEBUG: base_df.shape = {self.base_df.shape}")
@@ -1169,10 +1170,8 @@ class StrategySearcher:
             # ──────────────────────────────────────────────────────────────
             # 2) Paso típico de la serie (mediana -> inmune a huecos)
             idx = self.base_df.index.sort_values()
-            if pad == 0 or len(idx) < 2:
-                bar_delta = pd.Timedelta(0)
-            else:
-                bar_delta = idx.to_series().diff().dropna().median()
+            bar_delta = idx.to_series().diff().dropna().mode().iloc[0] \
+                if pad and len(idx) > 1 else pd.Timedelta(0)
             if self.debug:
                 print(f"🔍 DEBUG: bar_delta = {bar_delta}")
 
@@ -1210,13 +1209,13 @@ class StrategySearcher:
                 print(f"🔍 DEBUG: full_ds.shape después de recorte = {full_ds.shape}")
 
             if full_ds.empty:
-                return None, None
+                return None
 
             # ──────────────────────────────────────────────────────────────
             # 5) Comprobaciones de calidad de features
             feature_cols = full_ds.columns[full_ds.columns.str.contains('feature')]
             if feature_cols.empty:
-                return None, None
+                return None
 
             problematic = self.check_constant_features(full_ds, list(feature_cols))
             if problematic:
@@ -1225,7 +1224,7 @@ class StrategySearcher:
                 full_ds.drop(columns=problematic, inplace=True)
                 feature_cols = [c for c in feature_cols if c not in problematic]
                 if not feature_cols:
-                    return None, None
+                    return None
             # --- 5b) Reconstruir hp manteniendo el orden original ---------
             main_periods_ordered = []
             main_stats_ordered   = []
@@ -1273,43 +1272,45 @@ class StrategySearcher:
             hp['stats_meta']   = tuple(meta_stats_ordered)
 
             if (hp.get('periods_main') and not hp['stats_main']) or (hp.get('stats_main') and not hp['periods_main']):
-                return None, None
+                return None
             if (hp.get('periods_meta') and not hp['stats_meta']) or (hp.get('stats_meta') and not hp['periods_meta']):
-                return None, None
+                return None
 
-            # ──────────────────────────────────────────────────────────────
-            # 6) Máscaras de train / test
-            test_mask  = (full_ds.index >= self.test_start)  & (full_ds.index <= self.test_end)
-            train_mask = (full_ds.index >= self.train_start) & (full_ds.index <= self.train_end)
-
-            if not test_mask.any() or not train_mask.any():
-                print("⚠️ ERROR: Períodos sin datos")
-                return None, None
-
-            # Evitar solapamiento
-            if self.test_start <= self.train_end and self.test_end >= self.train_start:
-                train_mask &= ~test_mask
-                if self.debug:
-                    print(f"🔍 DEBUG: train_mask.sum() después de evitar solapamiento = {train_mask.sum()}")
-
-            # ──────────────────────────────────────────────────────────────
-            # 7) DataFrames finales, ordenados cronológicamente
-            train_data = full_ds[train_mask].sort_index().copy()
-            test_data  = full_ds[test_mask].sort_index().copy()
-
-            if self.debug:
-                print(f"🔍 DEBUG: train_data.shape final = {train_data.shape}")
-                print(f"🔍 DEBUG: test_data.shape final = {test_data.shape}")
-
-            if len(train_data) < 100 or len(test_data) < 50:
-                print("⚠️ ERROR: Datasets demasiado pequeños")
-                return None, None
-
-            return train_data, test_data
+            return full_ds
 
         except Exception as e:
-            print(f"⚠️ ERROR en get_train_test_data: {str(e)}")
+            print(f"⚠️ ERROR en get_labeled_full_data: {str(e)}")
+            return None
+
+    def get_train_test_data(self, dataset) -> tuple[pd.DataFrame, pd.DataFrame]:
+        """Genera los DataFrames de entrenamiento y prueba a partir del DataFrame completo."""
+        if dataset is None or dataset.empty:
+            print("⚠️ ERROR: dataset es None o está vacío")
             return None, None
+        
+        # Máscaras de train / test
+        test_mask  = (dataset.index >= self.test_start)  & (dataset.index <= self.test_end)
+        train_mask = (dataset.index >= self.train_start) & (dataset.index <= self.train_end)
+
+        if not test_mask.any() or not train_mask.any():
+            print("⚠️ ERROR: Períodos sin datos")
+            return None, None
+
+        # Evitar solapamiento
+        if self.test_start <= self.train_end and self.test_end >= self.train_start:
+            train_mask &= ~test_mask
+            if self.debug:
+                print(f"🔍 DEBUG: train_mask.sum() después de evitar solapamiento = {train_mask.sum()}")
+
+        # DataFrames finales, ordenados cronológicamente
+        train_data = dataset[train_mask].sort_index().copy()
+        test_data  = dataset[test_mask].sort_index().copy()
+
+        if self.debug:
+            print(f"🔍 DEBUG: train_data.shape final = {train_data.shape}")
+            print(f"🔍 DEBUG: test_data.shape final = {test_data.shape}")
+        
+        return train_data, test_data
 
     def check_constant_features(self, X: pd.DataFrame, feature_cols: list, std_epsilon: float = 1e-6) -> list:
         """Return the list of columns that may cause numerical instability.

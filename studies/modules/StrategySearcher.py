@@ -944,9 +944,6 @@ class StrategySearcher:
 
             if self.debug:
                 print(f"🔍 DEBUG: Modelos guardados en {model_main_path} y {model_meta_path}")
-            
-            # Guardar los mejores scores en los atributos del trial
-            trial.set_user_attr("scores", (simple_score, mc_score))
 
             # Retornar el score simple como principal (para Optuna)
             return simple_score, (model_main_path, model_meta_path), (main_feature_cols, meta_feature_cols)

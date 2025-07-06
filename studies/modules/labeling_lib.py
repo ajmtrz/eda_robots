@@ -1691,109 +1691,63 @@ def get_labels_filter_bidirectional(dataset, rolling1=200, rolling2=200, quantil
     return dataset.drop(columns=['lvl1', 'lvl2']) 
 
 @njit(cache=True, fastmath=True)
-def calculate_labels_filter_one_direction(close, lvl, q, direction):
+def calculate_labels_filter_one_direction(close, lvl, q, direction_int):
     labels = np.empty(len(close), dtype=np.float64)
     for i in range(len(close)):
         curr_lvl = lvl[i]
-
-        if direction == "sell":
-          if curr_lvl > q[1]:
-              labels[i] = 1.0
-          else:
-              labels[i] = 0.0
-        if direction == "buy":
-          if curr_lvl < q[0]:
-              labels[i] = 1.0
-          else:
-              labels[i] = 0.0
+        if direction_int == 1:  # sell
+            if curr_lvl > q[1]:
+                labels[i] = 1.0
+            else:
+                labels[i] = 0.0
+        if direction_int == 0:  # buy
+            if curr_lvl < q[0]:
+                labels[i] = 1.0
+            else:
+                labels[i] = 0.0
     return labels
 
 def get_labels_filter_one_direction(dataset, rolling=200, quantiles=[.45, .55], polyorder=3, direction='buy') -> pd.DataFrame:
-    """
-    Generates labels for a financial dataset based on price deviation from a Savitzky-Golay filter.
-
-    This function applies a Savitzky-Golay filter to the closing prices to generate a smoothed
-    price trend. It then calculates trading signals (buy/sell) based on the deviation of the 
-    actual price from this smoothed trend. Buy signals are generated when the price is 
-    significantly below the smoothed trend, anticipating a potential price reversal. 
-
-    Args:
-        dataset (pd.DataFrame): DataFrame containing financial data with a 'close' column.
-        rolling (int, optional): Window size for the Savitzky-Golay filter. Defaults to 200.
-        quantiles (list, optional): Quantiles to define the "reversion zone". Defaults to [.45, .55].
-        polyorder (int, optional): Polynomial order for the Savitzky-Golay filter. Defaults to 3.
-        direction (str, optional):
-            Direction to generate signals for. ``'buy'`` or ``'sell'`` will
-            return labels for that specific side. ``'both'`` combines the two
-            and returns ``0`` for buy, ``1`` for sell and drops neutral periods.
-
-    Returns:
-        pd.DataFrame: The original DataFrame with a new ``labels_main`` column
-        and filtered rows:
-            - ``labels_main`` column:
-                - ``0``: No trade
-                - ``1``: Trade (buy or sell depending on ``direction``)
-            - Rows with missing values (``NaN``) are removed.
-            - The temporary ``lvl`` column is removed.
-    """
-
-    # Calculate smoothed prices using the Savitzky-Golay filter
     smoothed_prices = safe_savgol_filter(dataset['close'].values, window_length=rolling, polyorder=polyorder)
-    
-    # Calculate the difference between the actual closing prices and the smoothed prices
     diff = dataset['close'] - smoothed_prices
-    
-    # Add the difference as a new column 'lvl' to the DataFrame
     dataset['lvl'] = diff
-    
-    # Remove any rows with NaN values 
     dataset = dataset.dropna()
-    
-    # Calculate the quantiles of the 'lvl' column (price deviation)
     q = tuple(dataset['lvl'].quantile(quantiles).to_list())
-
-    # Extract the closing prices and the calculated 'lvl' values as NumPy arrays
     close = dataset['close'].values
     lvl = dataset['lvl'].values
-    
+    direction_map = {'buy': 0, 'sell': 1}
     if direction in {'buy', 'sell'}:
-        labels = calculate_labels_filter_one_direction(close, lvl, q, direction)
-
+        direction_int = direction_map.get(direction, 0)
+        labels = calculate_labels_filter_one_direction(close, lvl, q, direction_int)
         dataset = dataset.iloc[:len(labels)].copy()
         dataset['labels_main'] = labels
         dataset = dataset.dropna()
         return dataset.drop(columns=['lvl'])
-
     if direction == 'both':
-        labels_buy = calculate_labels_filter_one_direction(close, lvl, q, 'buy')
-        labels_sell = calculate_labels_filter_one_direction(close, lvl, q, 'sell')
-
+        labels_buy = calculate_labels_filter_one_direction(close, lvl, q, 0)
+        labels_sell = calculate_labels_filter_one_direction(close, lvl, q, 1)
         n = min(len(labels_buy), len(labels_sell))
         labels = np.full(n, 2.0, dtype=np.float64)
-
         buy_sig = labels_buy[:n] == 1.0
         sell_sig = labels_sell[:n] == 1.0
-
         labels[buy_sig & ~sell_sig] = 0.0
         labels[sell_sig & ~buy_sig] = 1.0
-
         dataset = dataset.iloc[:n].copy()
         dataset['labels_main'] = labels
         dataset = dataset.dropna()
         return dataset.drop(columns=['lvl'])
-
     raise ValueError("direction must be 'buy', 'sell', or 'both'")
 
 @njit(cache=True, fastmath=True)
-def calculate_labels_trend_one_direction(normalized_trend, threshold, direction):
+def calculate_labels_trend_one_direction(normalized_trend, threshold, direction_int):
     labels = np.empty(len(normalized_trend), dtype=np.float64)
     for i in range(len(normalized_trend)):
-        if direction == 'buy':
+        if direction_int == 0:  # buy
             if normalized_trend[i] > threshold:
                 labels[i] = 1.0  # Buy (Up trend)
             else:
                 labels[i] = 0.0
-        if direction == 'sell':
+        if direction_int == 1:  # sell
             if normalized_trend[i] < -threshold:
                 labels[i] = 1.0  # Sell (Down trend)
             else:
@@ -1801,48 +1755,31 @@ def calculate_labels_trend_one_direction(normalized_trend, threshold, direction)
     return labels
 
 def get_labels_trend_one_direction(dataset, rolling=50, polyorder=3, threshold=0.001, vol_window=50, direction='buy') -> pd.DataFrame:
-    """Label trends for a single or both directions.
-
-    Parameters
-    ----------
-    dataset : pd.DataFrame
-        Input price data with a ``close`` column.
-    direction : {'buy', 'sell', 'both'}, optional
-        When ``'both'`` the returned ``labels_main`` column contains ``0`` for
-        buy trades and ``1`` for sell trades. Neutral periods are dropped.
-    """
-
     smoothed_prices = safe_savgol_filter(dataset['close'].values, window_length=rolling, polyorder=polyorder)
     trend = np.gradient(smoothed_prices)
     vol = dataset['close'].rolling(vol_window).std().values
     normalized_trend = np.where(vol != 0, trend / vol, np.nan)
-
+    direction_map = {'buy': 0, 'sell': 1}
     if direction in {'buy', 'sell'}:
-        labels = calculate_labels_trend_one_direction(normalized_trend, threshold, direction)
-
+        direction_int = direction_map.get(direction, 0)
+        labels = calculate_labels_trend_one_direction(normalized_trend, threshold, direction_int)
         dataset = dataset.iloc[:len(labels)].copy()
         dataset['labels_main'] = labels
         dataset = dataset.dropna()
         return dataset
-
     if direction == 'both':
-        labels_buy = calculate_labels_trend_one_direction(normalized_trend, threshold, 'buy')
-        labels_sell = calculate_labels_trend_one_direction(normalized_trend, threshold, 'sell')
-
+        labels_buy = calculate_labels_trend_one_direction(normalized_trend, threshold, 0)
+        labels_sell = calculate_labels_trend_one_direction(normalized_trend, threshold, 1)
         n = min(len(labels_buy), len(labels_sell))
         labels = np.full(n, 2.0, dtype=np.float64)
-
         buy_sig = labels_buy[:n] == 1.0
         sell_sig = labels_sell[:n] == 1.0
-
         labels[buy_sig & ~sell_sig] = 0.0
         labels[sell_sig & ~buy_sig] = 1.0
-
         dataset = dataset.iloc[:n].copy()
         dataset['labels_main'] = labels
         dataset = dataset.dropna()
         return dataset
-
     raise ValueError("direction must be 'buy', 'sell', or 'both'")
 
 @njit(cache=True, fastmath=True)
@@ -1951,90 +1888,79 @@ def calculate_atr_simple(high, low, close, period=14):
 
 # ONE DIRECTION LABELING
 @njit(cache=True, fastmath=True)
-def calculate_labels_one_direction(high, low, close, markup, min_val, max_val, direction, atr_period=14, method='mean'):
+def calculate_labels_one_direction(high, low, close, markup, min_val, max_val, direction_int, atr_period=14, method_int=2):
     n = len(close)
     if n <= max_val:
         return np.zeros(0, dtype=np.float64)
-
     atr = calculate_atr_simple(high, low, close, period=atr_period)
     result = np.zeros(n - max_val, dtype=np.float64)
-
     for i in range(n - max_val):
         window = close[i + min_val : i + max_val + 1]
         if window.size == 0:
             continue
-        if method == 'first':
+        if method_int == 0:  # first
             future_price = close[i + min_val]
-        elif method == 'last':
+        elif method_int == 1:  # last
             future_price = close[i + max_val]
-        elif method == 'mean':
+        elif method_int == 2:  # mean
             future_price = np.mean(window)
-        elif method == 'max':
+        elif method_int == 3:  # max
             future_price = np.max(window)
-        elif method == 'min':
+        elif method_int == 4:  # min
             future_price = np.min(window)
-        else:
+        else:  # random/otro
             rand = np.random.randint(min_val, max_val + 1)
             future_price = close[i + rand]
         dyn_mk = markup * atr[i]
-
-        if direction == "buy":
+        if direction_int == 0:  # buy
             if future_price > close[i] + dyn_mk:
                 result[i] = 1.0
-        else:  # sell
+        elif direction_int == 1:  # sell
             if future_price < close[i] - dyn_mk:
                 result[i] = 1.0
-
     return result
-
 
 def get_labels_one_direction(dataset, markup=0.5, min_val=1, max_val=5,
                              direction='buy', atr_period=14, method='mean') -> pd.DataFrame:
-    """Label trades for a single or both directions using ATR based distance.
-
-    El parámetro 'method' controla cómo se selecciona el precio de lookahead en la ventana:
-    'first', 'last', 'mean', 'max', 'min'.
-    """
     close_data = np.ascontiguousarray(dataset['close'].values)
     high_data = np.ascontiguousarray(dataset['high'].values)
     low_data = np.ascontiguousarray(dataset['low'].values)
-
+    direction_map = {'buy': 0, 'sell': 1}
+    method_map = {'first': 0, 'last': 1, 'mean': 2, 'max': 3, 'min': 4}
     if direction in {'buy', 'sell'}:
+        direction_int = direction_map.get(direction, 0)
+        method_int = method_map.get(method, 5)
         labels = calculate_labels_one_direction(
             high_data, low_data, close_data,
-            markup, min_val, max_val, direction,
-            atr_period, method
+            markup, min_val, max_val, direction_int,
+            atr_period, method_int
         )
         dataset = dataset.iloc[:len(labels)].copy()
         dataset['labels_main'] = labels
         dataset = dataset.dropna()
         return dataset
-
     if direction == 'both':
+        method_int = method_map.get(method, 5)
         labels_buy = calculate_labels_one_direction(
             high_data, low_data, close_data,
-            markup, min_val, max_val, 'buy',
-            atr_period, method
+            markup, min_val, max_val, 0,
+            atr_period, method_int
         )
         labels_sell = calculate_labels_one_direction(
             high_data, low_data, close_data,
-            markup, min_val, max_val, 'sell',
-            atr_period, method
+            markup, min_val, max_val, 1,
+            atr_period, method_int
         )
-
         n = min(len(labels_buy), len(labels_sell))
         labels = np.full(n, 2.0, dtype=np.float64)
-
         buy_sig = labels_buy[:n] == 1.0
         sell_sig = labels_sell[:n] == 1.0
         labels[buy_sig & ~sell_sig] = 0.0
         labels[sell_sig & ~buy_sig] = 1.0
-
         dataset = dataset.iloc[:n].copy()
         dataset['labels_main'] = labels
         dataset = dataset.dropna()
         return dataset
-
     raise ValueError("direction must be 'buy', 'sell', or 'both'")
 
 def sliding_window_clustering(

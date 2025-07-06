@@ -92,12 +92,12 @@ def process_data(close, labels, metalabels, meta_thr=0.5):
     return np.array(report), np.array(chart)
 
 @njit(cache=True, fastmath=True)
-def process_data_one_direction(close, main_labels, meta_labels, direction):
+def process_data_one_direction(close, main_labels, meta_labels, direction_int):
     last_deal  = 2            # 2 = flat, 1 = position open
     last_price = 0.0
     report = [0.0]
     chart  = [0.0]
-    long_side = (direction == 'buy')
+    long_side = (direction_int == 0)  # 0=buy, 1=sell
     min_prob  = 0.5
 
     for i in range(close.size):
@@ -183,7 +183,9 @@ def tester(
     if direction == 'both':
         rpt, _ = process_data(close, main, meta)
     else:
-        rpt, _ = process_data_one_direction(close, main, meta, direction)
+        direction_map = {'buy': 0, 'sell': 1}
+        direction_int = direction_map.get(direction, 0)
+        rpt, _ = process_data_one_direction(close, main, meta, direction_int)
 
     if rpt.size < 2:
         return -1.0
@@ -222,59 +224,106 @@ def max_gap_between_highs(equity: np.ndarray) -> int:
         max_gap = gap
     return max_gap
 
+from numba import njit, float64, int64
+import numpy as np
+
 @njit(cache=True, fastmath=True)
-def evaluate_report(report: np.ndarray) -> float:
-    if report.size < 3:
-        return -1.0
+def _signed_r2(y):
+    n = y.size
+    t = np.arange(n, dtype=np.float64)
+    t_mean = t.mean()
+    y_mean = y.mean()
+    cov = np.sum((t - t_mean) * (y - y_mean))
+    var_t = np.sum((t - t_mean)**2)
+    var_y = np.sum((y - y_mean)**2)
+    if var_t == 0 or var_y == 0:
+        return 0.0
+    slope = cov / var_t
+    r2 = (cov**2) / (var_t * var_y)
+    return np.sign(slope) * r2
 
-    ret = np.diff(report)
-    n   = ret.size
-    if n < 5:
-        return -1.0                     # curva demasiado corta
-
-    # 1) slope * signed-R²
-    sr2 = _signed_r2(report)           # ∈ [-1,1]
-    if sr2 <= 0.0:                     # exigimos pendiente positiva
-        return -1.0
-    sr2_norm = 0.5 * (sr2 + 1.0)       # → [0,1]
-
-    # 2) profit factor y return/DD
-    gains  = ret[ret > 0.0].sum()
-    losses = -ret[ret < 0.0].sum()
-    if losses == 0.0:
-        losses = 1e-9
-    pf  = gains / losses
-    pf_norm  = 1.0 - np.exp(-pf / 2.0)
-
-    peak = report[0]
-    max_dd = 0.0
-    for x in report:
+@njit(cache=True, fastmath=True)
+def _max_dd_curve(eq):
+    peak = eq[0]
+    mdd  = 0.0
+    for x in eq:
         if x > peak:
             peak = x
         dd = peak - x
-        if dd > max_dd:
-            max_dd = dd
-    rdd = (report[-1] - report[0]) / (max_dd + 1e-9)
-    rdd_norm = 1.0 - np.exp(-rdd / 4.0)
+        if dd > mdd:
+            mdd = dd
+    return mdd
 
-    # 3) expected payoff por trade
-    exp_payoff = ret.mean()
-    payoff_norm = (np.tanh(exp_payoff * 100.0) + 1.0) / 2.0
+@njit(cache=True, fastmath=True)
+def _bars_since_last_high(eq):
+    last_high = eq[0]
+    gap = 0
+    max_gap = 0
+    for x in eq:
+        if x >= last_high:
+            last_high = x
+            max_gap = max(max_gap, gap)
+            gap = 0
+        else:
+            gap += 1
+    return gap          # barras desde el último máximo
 
-    # 4) estancamiento
-    stagn = max_gap_between_highs(report)
-    stagn_pen = 1.0 / (1.0 + stagn / 1000.0)
+@njit(cache=True, fastmath=True)
+def evaluate_report(eq: np.ndarray) -> float:
+    """
+    Puntúa una curva de equity de forma relativa (0–1).
+    Favorece:
+      • pendiente positiva y estable,
+      • buena relación beneficio/riesgo,
+      • muchos trades,
+      • superar máximos pronto.
+    """
+    if not np.isfinite(eq).all():
+        return -1.0
 
-    # 5) bonus de trades (logística)
-    TRG   = 300.0        # n trades donde bonus = 0.5
-    SCALE = 100.0        # controla la pendiente
-    bonus = 1.0 / (1.0 + np.exp(-(n - TRG) / SCALE))
+    ret = np.diff(eq)
+    n   = ret.size
+    if n < 10:
+        return -1.0
 
-    # 6) score agregado (ponderaciones iguales)
-    core  = (pf_norm + rdd_norm + sr2_norm + payoff_norm) / 4.0
-    score = core * bonus * stagn_pen
+    # ---------- 1) Tendencia --------------------------------------------
+    slope = (eq[-1] - eq[0]) / n
+    sigma = ret.std() + 1e-12
+    sr2   = _signed_r2(eq)              # [-1,1]
+    if sr2 <= 0.0:
+        return -1.0                     # pendiente negativa
+    trend = 0.5 * (1.0 + sr2)           # R² firmado → [0,1]
+    trend *= 1.0 / (1.0 + np.exp(-slope / sigma))
 
+    # ---------- 2) Eficiencia -------------------------------------------
+    gains  = ret[ret > 0.0].sum()
+    losses = -ret[ret < 0.0].sum() + 1e-12
+    pf   = gains / losses               # profit factor
+    pf_n = 1.0 - np.exp(-pf / 3.0)
+
+    dd   = _max_dd_curve(eq) + 1e-12
+    rdd  = (eq[-1] - eq[0]) / dd
+    rdd_n = 1.0 - np.exp(-rdd / 6.0)
+
+    effic = pf_n * rdd_n                # ∈ (0,1)
+
+    # ---------- 3) Agilidad ---------------------------------------------
+    gap  = _bars_since_last_high(eq)
+    g    = 250.0                        # barras para penalizar al 50 %
+    agil = 1.0 / (1.0 + gap / g)        # ↓ al crecer gap
+
+    # ---------- 4) Cobertura --------------------------------------------
+    N0   = 300.0                        # media altura de la sigmoide
+    s    = 80.0                         # pendiente
+    cover = 1.0 / (1.0 + np.exp(-(n - N0) / s))
+
+    # ---------- Score ----------------------------------------------------
+    wT = 0.6                            # peso tendencia
+    wE = 0.4
+    core = wT * trend + wE * effic
+    score = core * agil * cover
     return score
+
 
 def tester_one_direction(
         dataset: pd.DataFrame,
@@ -378,29 +427,6 @@ def test_model(dataset: pd.DataFrame,
 # Monte-Carlo robustness utilities
 # ───────────────────────────────────────────────────────────────────
 
-# ---------- helpers ------------------------------------------------
-
-@njit(cache=True, fastmath=True)
-def _signed_r2(equity: np.ndarray) -> float:
-    n = equity.size
-    x_mean = (n - 1) * 0.5
-    y_mean = equity.mean()
-    cov = varx = 0.0
-    for i in range(n):
-        dx = i - x_mean
-        cov += dx * (equity[i] - y_mean)
-        varx += dx * dx
-    slope = cov / varx if varx else 0.0
-    sse = sst = 0.0
-    for i in range(n):
-        pred = y_mean + slope * (i - x_mean)
-        diff = equity[i] - pred
-        sse += diff * diff
-        diff2 = equity[i] - y_mean
-        sst += diff2 * diff2
-    r2 = 1.0 - sse / sst if sst else 0.0
-    return r2 if slope >= 0 else -r2
-
 @njit(cache=True, fastmath=True)
 def _bootstrap_returns(returns: np.ndarray,
                        block_size: int) -> np.ndarray:
@@ -501,7 +527,7 @@ def _predict_one(model_any, X_2d: np.ndarray) -> np.ndarray:
         return _predict_onnx(model_any, X_2d[None, :, :])[0]
 
 @njit(cache=True, fastmath=True, parallel=True)
-def _score_batch(close_all, l_all, m_all, block_size, direction):
+def _score_batch(close_all, l_all, m_all, block_size, direction_int):
     """
     Calcula el score para cada simulación *tal cual*, sin volver a alterar
     precios ni señales (ya vienen ruidosos).
@@ -509,17 +535,13 @@ def _score_batch(close_all, l_all, m_all, block_size, direction):
     """
     n_sim, n = l_all.shape
     scores = np.full(n_sim, -1.0)
-    # Usar array 2-D en lugar de lista de arrays para evitar múltiples firmas
     equity_curves = np.zeros((n_sim, n+1), dtype=np.float64)
     
     for i in prange(n_sim):
-        if direction == "both":
+        if direction_int == 2:  # both
             rpt, _ = process_data(close_all[i], l_all[i], m_all[i])
         else:
-            rpt, _ = process_data_one_direction(close_all[i],
-                                                l_all[i],
-                                                m_all[i],
-                                                direction)
+            rpt, _ = process_data_one_direction(close_all[i], l_all[i], m_all[i], direction_int)
         if rpt.size < 2:
             continue
         ret = np.diff(rpt)
@@ -527,7 +549,6 @@ def _score_batch(close_all, l_all, m_all, block_size, direction):
             continue
         eq = _equity_from_returns(_bootstrap_returns(ret, block_size))
         scores[i] = evaluate_report(eq)
-        # Copiar la curva de equity al array 2-D
         eq_len = min(len(eq), n+1)
         equity_curves[i, :eq_len] = eq[:eq_len]
     
@@ -573,8 +594,11 @@ def monte_carlo_full(
         meta = _predict_one(model_meta, X_meta)
         if direction == "both":
             rpt_original, _ = process_data(close_feat, main, meta)
+            direction_int = 2
         else:
-            rpt_original, _ = process_data_one_direction(close_feat, main, meta, direction)
+            direction_map = {'buy': 0, 'sell': 1}
+            direction_int = direction_map.get(direction, 0)
+            rpt_original, _ = process_data_one_direction(close_feat, main, meta, direction_int)
 
         # Score de la original
         score_original = evaluate_report(rpt_original)
@@ -596,7 +620,7 @@ def monte_carlo_full(
             simulation_args = []
             for sim_idx in range(n_sim):
                 args = (dataset_dict, model_main, model_meta, model_main_cols, 
-                       model_meta_cols, hp, direction, sim_idx)
+                       model_meta_cols, hp, direction_int, sim_idx)
                 simulation_args.append(args)
             
             # Ejecutar simulaciones en paralelo
@@ -680,7 +704,7 @@ def monte_carlo_full(
                                         pred_main,
                                         pred_meta,
                                         block_size,
-                                        direction)
+                                        direction_int)
             
             # Convertir a formato compatible
             scores = scores.tolist()
@@ -888,7 +912,7 @@ def parallel_simulation_worker(args):
     """
     try:
         (dataset_dict, model_main, model_meta, model_main_cols, 
-         model_meta_cols, hp, direction, sim_idx) = args
+         model_meta_cols, hp, direction_int, sim_idx) = args
         
         # Reconstruir DataFrame desde dict
         dataset = pd.DataFrame(dataset_dict['data'], 
@@ -917,10 +941,10 @@ def parallel_simulation_worker(args):
         meta_pred = _predict_one(model_meta, X_meta_sim)
         
         # Calcular score
-        if direction == "both":
+        if direction_int == 2:  # both
             rpt, _ = process_data(close_sim, main_pred, meta_pred)
         else:
-            rpt, _ = process_data_one_direction(close_sim, main_pred, meta_pred, direction)
+            rpt, _ = process_data_one_direction(close_sim, main_pred, meta_pred, direction_int)
             
         if rpt.size < 2:
             return None

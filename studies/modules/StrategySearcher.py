@@ -31,11 +31,7 @@ from modules.labeling_lib import (
     markov_regime_switching_simple, markov_regime_switching_advanced,
     lgmm_clustering, wkmeans_clustering
 )
-from modules.tester_lib import (
-    robust_oos_score,
-    tester,
-    walk_forward_robust_score,
-)
+from modules.tester_lib import tester
 from modules.export_lib import export_models_to_ONNX, export_to_mql5
 
 class StrategySearcher:
@@ -136,12 +132,12 @@ class StrategySearcher:
         for i in range(self.n_models):
             try:
                 # Generar un seed único para este modelo
-                model_seed = int(time.time() * 1000) + i
+                model_seed = int(time.time() * 1000) + np.random.randint(10, 100)
 
                 # Inicializar estudio de Optuna con objetivo único
                 pruners = {
                     'hyperband': HyperbandPruner(max_resource='auto'),
-                    'halving': SuccessiveHalvingPruner(min_resource='auto')
+                    'sucessive': SuccessiveHalvingPruner(min_resource='auto')
                 }
                 study = optuna.create_study(
                     study_name=self.tag,
@@ -154,73 +150,95 @@ class StrategySearcher:
                         multivariate=True
                     )
                 )
-                # Configurar atributos del estudio
-                # inmediatamente después de crear el study
-                if "best_scores" not in study.user_attrs:
-                    study.set_user_attr("best_scores", (-math.inf, -math.inf))
-                    study.set_user_attr("best_model_paths", None)
-                    study.set_user_attr("best_model_cols",  None)
-                    study.set_user_attr("best_periods_main", None)
-                    study.set_user_attr("best_periods_meta", None)
-                    study.set_user_attr("best_stats_main",   None)
-                    study.set_user_attr("best_stats_meta",   None)
-                    study.set_user_attr("exported_trial",    None)
+
                 t0 = perf_counter()
                 def log_trial(study, trial):
-                    def _mem():
-                        return psutil.Process(os.getpid()).memory_info().rss / 2**20
-                    def print_log(best_score, n_trial, mem):
+                    def _log_memory() -> float:
+                        try:
+                            mem = psutil.Process(os.getpid()).memory_info().rss / (1024 ** 2)
+                            return mem
+                        except Exception:
+                            pass
+                    try:
+                        # Obtener el mejor trial
+                        if study.best_trial:
+                            best_trial = study.best_trial
+                            # Si este trial es el mejor, guardar sus modelos
+                            if trial.number == best_trial.number:
+                                if trial.user_attrs.get('model_paths') is not None:
+                                    # Eliminar modelos anteriores
+                                    if study.user_attrs.get("best_model_paths"):
+                                        for p in study.user_attrs["best_model_paths"]:
+                                            if p and os.path.exists(p):
+                                                os.remove(p)
+                                    # Guardar nuevas rutas de modelos
+                                    study.set_user_attr("best_model_paths", trial.user_attrs['model_paths'])
+                                    study.set_user_attr("best_score", trial.user_attrs['score'])
+                                    study.set_user_attr("best_periods_main", trial.user_attrs['periods_main'])
+                                    study.set_user_attr("best_stats_main", trial.user_attrs['stats_main'])
+                                    study.set_user_attr("best_model_cols", trial.user_attrs['model_cols'])
+                                    # Cambia acceso directo por .get para evitar error si no existe
+                                    study.set_user_attr("best_periods_meta", trial.user_attrs.get('periods_meta'))
+                                    study.set_user_attr("best_stats_meta", trial.user_attrs.get('stats_meta'))
+                                    # Exportar modelo
+                                    export_params = {
+                                        "tag": self.tag,
+                                        "symbol": self.symbol,
+                                        "timeframe": self.timeframe,
+                                        "direction": self.direction,
+                                        "label_method": self.label_method,
+                                        "models_export_path": self.models_export_path,
+                                        "include_export_path": self.include_export_path,
+                                        "search_type": self.search_type,
+                                        "search_subtype": self.search_subtype,
+                                        "best_model_seed": model_seed,
+                                        "best_score": study.user_attrs["best_score"],
+                                        "best_model_paths": study.user_attrs["best_model_paths"],
+                                        "best_model_cols": study.user_attrs["best_model_cols"],
+                                        "best_periods_main": study.user_attrs["best_periods_main"],
+                                        "best_periods_meta": study.user_attrs["best_periods_meta"],
+                                        "best_stats_main": study.user_attrs["best_stats_main"],
+                                        "best_stats_meta": study.user_attrs["best_stats_meta"],
+                                    }
+                                    export_to_mql5(**export_params)
+
+                                    # Eliminar archivos temporales del mejor modelo
+                                    for p in study.user_attrs.get("best_model_paths", []):
+                                        if p and os.path.exists(p):
+                                            os.remove(p)
+
+                            # Liberar memoria eliminando datos pesados del trial
+                            if 'model_paths' in trial.user_attrs and trial.user_attrs['model_paths']:
+                                for p in trial.user_attrs['model_paths']:
+                                    if p and os.path.exists(p):
+                                        os.remove(p)
+
+                        # Log
+                        if study.best_trial:
+                            best_trial = study.best_trial
+                            best_str = f"score={best_trial.value:.6f}"
+                        else:
+                            best_str = "score=---"
                         elapsed = perf_counter() - t0
-                        avg = elapsed / (n_trial + 1)
-                        print(f"[{self.tag}] modelo {i}  trial {n_trial+1}/{self.n_trials}  "
-                            f"score={best_score:.6f}  avg={avg:.2f}s  mem={mem:.0f}MB",
-                            flush=True)
-                    # ── hay al menos un trial terminado ────────────────────────────────
-                    if study.best_trial is None:
-                        return
+                        n_done = trial.number + 1
+                        avg_time = elapsed / n_done
+                        mem_details = ""
+                        if hasattr(self, "_trial_memory"):
+                            mem_details = " ".join(
+                                f"{name}:{mem:.2f}MB" for name, mem in self._trial_memory
+                            )
+                        print(
+                            f"[{self.tag}] modelo {i}",
+                            f"trial {n_done}/{self.n_trials}",
+                            f"{best_str}",
+                            f"avg={avg_time:.2f}s",
+                            f"mem={_log_memory():.2f}MB",
+                            mem_details,
+                            flush=True,
+                        )
 
-                    best = study.best_trial
-
-                    # ¿es la primera vez que tratamos con este mejor trial?
-                    already_exported = study.user_attrs.get("exported_trial")
-                    if best.number == already_exported:
-                        # solo imprimir log
-                        print_log(best.value, trial.number, _mem())
-                        return
-                    if (study.user_attrs.get("best_model_paths") is None):
-                        print_log(study.best_value, trial.number, _mem())
-                        return
-                    # ── exportar ────────────────────────────────────────────────────────
-                    export_to_mql5(
-                        symbol             = self.symbol,
-                        timeframe          = self.timeframe,
-                        direction          = self.direction,
-                        label_method       = self.label_method,
-                        models_export_path = self.models_export_path,
-                        include_export_path= self.include_export_path,
-                        search_type        = self.search_type,
-                        search_subtype     = self.search_subtype,
-                        best_model_seed    = model_seed,
-                        best_score         = best.value,
-                        best_model_paths   = study.user_attrs["best_model_paths"],
-                        best_model_cols    = study.user_attrs["best_model_cols"],
-                        best_periods_main  = study.user_attrs["best_periods_main"],
-                        best_periods_meta  = study.user_attrs["best_periods_meta"],
-                        best_stats_main    = study.user_attrs["best_stats_main"],
-                        best_stats_meta    = study.user_attrs["best_stats_meta"],
-                        tag                = self.tag,
-                    )
-
-                    # borrar .onnx temporales
-                    for p in study.user_attrs["best_model_paths"]:
-                        if p and os.path.exists(p):
-                            os.remove(p)
-
-                    # marcar que ya se exportó
-                    study.set_user_attr("exported_trial", best.number)
-
-                    # registrar memoria / tiempo
-                    print_log(best.value, trial.number, _mem())
+                    except Exception as e:
+                        print(f"⚠️ ERROR en log_trial: {str(e)}")
 
                 study.optimize(
                     search_func,
@@ -241,35 +259,6 @@ class StrategySearcher:
     # =========================================================================
     # Métodos de búsqueda específicos
     # =========================================================================
-
-    def search_clusters(self, trial: optuna.Trial) -> float:
-        """Implementa la búsqueda de estrategias usando clustering."""
-        try:
-            hp = self.suggest_all_params(trial)
-            full_ds = self.get_labeled_full_data(hp)
-            if full_ds is None:
-                return -1.0
-            if self.search_subtype == 'simple':
-                full_ds = clustering_simple(
-                    full_ds,
-                    min_cluster_size=hp['n_clusters']
-                )
-            elif self.search_subtype == 'advanced':
-                full_ds = sliding_window_clustering(
-                    full_ds,
-                    n_clusters=hp['n_clusters'],
-                    window_size=hp['window_size'],
-                    step=hp.get('step', None),
-                )
-            score, model_paths, models_cols = self.evaluate_clusters(trial, full_ds, hp)
-            if score is None or model_paths is None or models_cols is None:
-                return -1.0
-            trial.set_user_attr('model_paths', model_paths)
-            trial.set_user_attr('model_cols', models_cols)
-            return score
-        except Exception as e:
-            print(f"Error en search_clusters: {str(e)}")
-            return -1.0
 
     def search_markov(self, trial: optuna.Trial) -> float:
         """Implementa la búsqueda de estrategias usando modelos markovianos."""
@@ -297,11 +286,42 @@ class StrategySearcher:
             score, model_paths, models_cols = self.evaluate_clusters(trial, full_ds, hp)
             if score is None or model_paths is None or models_cols is None:
                 return -1.0
+            trial.set_user_attr('score', score)
             trial.set_user_attr('model_paths', model_paths)
             trial.set_user_attr('model_cols', models_cols)
-            return score
+            return trial.user_attrs.get('score', -1.0)
         except Exception as e:
             print(f"Error en search_markov: {str(e)}")
+            return -1.0
+
+    def search_clusters(self, trial: optuna.Trial) -> float:
+        """Implementa la búsqueda de estrategias usando clustering."""
+        try:
+            hp = self.suggest_all_params(trial)
+            full_ds = self.get_labeled_full_data(hp)
+            if full_ds is None:
+                return -1.0
+            if self.search_subtype == 'simple':
+                full_ds = clustering_simple(
+                    full_ds,
+                    min_cluster_size=hp['n_clusters']
+                )
+            elif self.search_subtype == 'advanced':
+                full_ds = sliding_window_clustering(
+                    full_ds,
+                    n_clusters=hp['n_clusters'],
+                    window_size=hp['window_size'],
+                    step=hp.get('step', None),
+                )
+            score, model_paths, models_cols = self.evaluate_clusters(trial, full_ds, hp)
+            if score is None or model_paths is None or models_cols is None:
+                return -1.0
+            trial.set_user_attr('score', score)
+            trial.set_user_attr('model_paths', model_paths)
+            trial.set_user_attr('model_cols', models_cols)
+            return trial.user_attrs.get('score', -1.0)
+        except Exception as e:
+            print(f"Error en search_clusters: {str(e)}")
             return -1.0
 
     def search_lgmm(self, trial: optuna.Trial) -> float:
@@ -320,42 +340,12 @@ class StrategySearcher:
             score, model_paths, models_cols = self.evaluate_clusters(trial, full_ds, hp)
             if score is None or model_paths is None or models_cols is None:
                 return -1.0
+            trial.set_user_attr('score', score)
             trial.set_user_attr('model_paths', model_paths)
             trial.set_user_attr('model_cols', models_cols)
-            return score
+            return trial.user_attrs.get('score', -1.0)
         except Exception as e:
             print(f"Error en search_lgmm: {str(e)}")
-            return -1.0
-        
-    def search_wkmeans(self, trial: optuna.Trial) -> float:
-        """
-        Implementa la búsqueda de estrategias utilizando WK-means / MMDK-means
-        para detectar y etiquetar regímenes de mercado desde labeling_lib.wkmeans_clustering.
-        Se apoya en evaluate_clusters exactamente igual que el resto de métodos.
-        """
-        try:
-            hp = self.suggest_all_params(trial)
-            full_ds = self.get_labeled_full_data(hp)
-            if full_ds is None:
-                return -1.0
-            full_ds = wkmeans_clustering(
-                full_ds,
-                n_clusters=hp["n_clusters"],
-                window_size=hp["window_size"],
-                metric=self.search_subtype,
-                step=hp["step"],
-                bandwidth=hp["bandwidth"] if self.search_subtype == "mmd" else None,
-                n_proj=hp["n_proj"] if self.search_subtype == "sliced_w" else None,
-                max_iter=hp["max_iter"],
-            )
-            score, model_paths, models_cols = self.evaluate_clusters(trial, full_ds, hp)
-            if score is None or model_paths is None or models_cols is None:
-                return -1.0
-            trial.set_user_attr('model_paths', model_paths)
-            trial.set_user_attr('model_cols', models_cols)
-            return score
-        except Exception as e:
-            print(f"Error en search_wkmeans: {str(e)}")
             return -1.0
 
     def search_mapie(self, trial) -> float:
@@ -406,9 +396,10 @@ class StrategySearcher:
             )
             if score is None or model_paths is None or models_cols is None:
                 return -1.0
+            trial.set_user_attr('score', score)
             trial.set_user_attr('model_paths', model_paths)
             trial.set_user_attr('model_cols', models_cols)
-            return score
+            return trial.user_attrs.get('score', -1.0)
         except Exception as e:
             print(f"Error en search_mapie: {str(e)}")
             return -1.0
@@ -503,11 +494,44 @@ class StrategySearcher:
             )
             if score is None or model_paths is None or models_cols is None:
                 return -1.0
+            trial.set_user_attr('score', score)
             trial.set_user_attr('model_paths', model_paths)
             trial.set_user_attr('model_cols', models_cols)
-            return score
+            return trial.user_attrs.get('score', -1.0)
         except Exception as e:
             print(f"Error en search_causal: {str(e)}")
+            return -1.0
+
+    def search_wkmeans(self, trial: optuna.Trial) -> float:
+        """
+        Implementa la búsqueda de estrategias utilizando WK-means / MMDK-means
+        para detectar y etiquetar regímenes de mercado desde labeling_lib.wkmeans_clustering.
+        Se apoya en evaluate_clusters exactamente igual que el resto de métodos.
+        """
+        try:
+            hp = self.suggest_all_params(trial)
+            full_ds = self.get_labeled_full_data(hp)
+            if full_ds is None:
+                return -1.0
+            full_ds = wkmeans_clustering(
+                full_ds,
+                n_clusters=hp["n_clusters"],
+                window_size=hp["window_size"],
+                metric=self.search_subtype,
+                step=hp["step"],
+                bandwidth=hp["bandwidth"] if self.search_subtype == "mmd" else None,
+                n_proj=hp["n_proj"] if self.search_subtype == "sliced_w" else None,
+                max_iter=hp["max_iter"],
+            )
+            score, model_paths, model_cols = self.evaluate_clusters(trial, full_ds, hp)
+            if score is None or model_paths is None or model_cols is None:
+                return -1.0
+            trial.set_user_attr("score", score)
+            trial.set_user_attr("model_paths", model_paths)
+            trial.set_user_attr("model_cols", model_cols)
+            return trial.user_attrs.get("score", -1.0)
+        except Exception as e:
+            print(f"Error en search_wkmeans: {str(e)}")
             return -1.0
 
     # =========================================================================
@@ -860,10 +884,8 @@ class StrategySearcher:
             if self.debug:
                 print(f"🔍 DEBUG: Tiempo de entrenamiento modelo meta: {t_train_meta_end - t_train_meta_start:.2f} segundos")
             model_main_path, model_meta_path = export_models_to_ONNX(models=(model_main, model_meta))
-            
-            # ───── TESTER NORMAL (Score principal) ─────
             test_train_time_start = time.time()
-            simple_score = tester(
+            score_ins = tester(
                 dataset=full_ds,
                 model_main=model_main_path,
                 model_meta=model_meta_path,
@@ -871,83 +893,18 @@ class StrategySearcher:
                 model_meta_cols=meta_feature_cols,
                 direction=self.direction,
                 plot=False,
-                prd='simple',
+                prd='full',
             )
             test_train_time_end = time.time()
-            
             if self.debug:
                 print(f"🔍 DEBUG: Tiempo de test in-sample: {test_train_time_end - test_train_time_start:.2f} segundos")
-                print(f"🔍 DEBUG: Score in-sample: {simple_score}")
-            
-            if not np.isfinite(simple_score):
-                simple_score = -1.0
-            
-            # ───── VERIFICAR SI ES MEJOR QUE EL ANTERIOR ─────
-            study = trial.study
-            best_simple_score, best_mc_score = study.user_attrs.get("best_scores", (-math.inf, -math.inf))
-
-            # Solo ejecutar Monte Carlo si el score simple es mejor
-            mc_score = -1.0
-            if simple_score > best_simple_score:
-                if self.debug:
-                    print(f"🔍 DEBUG: Score simple ({simple_score:.6f}) > best_simple ({best_simple_score:.6f}), ejecutando Monte Carlo...")
-                
-                # ───── MONTE CARLO (Solo si simple_score es mejor) ─────
-                mc_test_time_start = time.time()
-                mc_score = robust_oos_score(
-                    dataset=full_ds,
-                    model_main=model_main_path,
-                    model_meta=model_meta_path,
-                    model_main_cols=main_feature_cols,
-                    model_meta_cols=meta_feature_cols,
-                    hp=hp,
-                    direction=self.direction,
-                    plot=False,
-                    prd='montecarlo',
-                )
-                mc_test_time_end = time.time()
-                
-                if self.debug:
-                    print(f"🔍 DEBUG: Tiempo de Monte Carlo: {mc_test_time_end - mc_test_time_start:.2f} segundos")
-                    print(f"🔍 DEBUG: Score Monte Carlo: {mc_score}")
-                
-                if not np.isfinite(mc_score):
-                    mc_score = -1.0
-            else:
-                if self.debug:
-                    print(f"🔍 DEBUG: Score simple ({simple_score:.6f}) <= best_simple ({best_simple_score:.6f}), saltando Monte Carlo")
-            
-            # ───── DECIDIR SI ES EL MEJOR TRIAL ─────
-
-            is_new_record = (simple_score > best_simple_score) and (mc_score > best_mc_score)
-            if is_new_record:
-                # Es un nuevo mejor trial
-                if self.debug:
-                    print(f"🔍 DEBUG: ¡Nuevo mejor trial! "
-                        f"simple: {simple_score:.6f} > {best_simple_score:.6f}, "
-                        f"mc: {mc_score:.6f} > {best_mc_score:.6f}")
-
-                # ▶ ACTUALIZA EL ESTUDIO AQUÍ ◀
-                study.set_user_attr("best_scores",        (simple_score, mc_score))
-                study.set_user_attr("best_model_paths",   (model_main_path, model_meta_path))
-                study.set_user_attr("best_model_cols",    (main_feature_cols, meta_feature_cols))
-                study.set_user_attr("best_periods_main",  hp["periods_main"])
-                study.set_user_attr("best_stats_main",    hp["stats_main"])
-                study.set_user_attr("best_periods_meta",  hp.get("periods_meta", ()))
-                study.set_user_attr("best_stats_meta",    hp.get("stats_meta", ()))
-            else:
-                # no mejora → invalida resultados de este cluster/trial
-                simple_score, mc_score = -1.0, -1.0
-                if self.debug:
-                    print(f"🔍 DEBUG: No es mejor trial. "
-                        f"simple: {simple_score:.6f} vs {best_simple_score:.6f}, "
-                        f"mc: {mc_score:.6f} vs {best_mc_score:.6f}")
-
+            if self.debug:
+                print(f"🔍 DEBUG: Score in-sample: {score_ins}")
+            if not np.isfinite(score_ins):
+                score_ins = -1.0
             if self.debug:
                 print(f"🔍 DEBUG: Modelos guardados en {model_main_path} y {model_meta_path}")
-
-            # Retornar el score simple como principal (para Optuna)
-            return simple_score, (model_main_path, model_meta_path), (main_feature_cols, meta_feature_cols)
+            return score_ins, (model_main_path, model_meta_path), (main_feature_cols, meta_feature_cols)
         except Exception as e:
             print(f"Error en función de entrenamiento y test: {str(e)}")
             return None, None, None
@@ -1191,6 +1148,7 @@ class StrategySearcher:
     def get_train_test_data(self, dataset) -> tuple[pd.DataFrame, pd.DataFrame]:
         """Genera los DataFrames de entrenamiento y prueba a partir del DataFrame completo."""
         if dataset is None or dataset.empty:
+            print("⚠️ ERROR: dataset es None o está vacío")
             return None, None
         
         # Máscaras de train / test
@@ -1198,6 +1156,7 @@ class StrategySearcher:
         train_mask = (dataset.index >= self.train_start) & (dataset.index <= self.train_end)
 
         if not test_mask.any() or not train_mask.any():
+            print("⚠️ ERROR: Períodos sin datos")
             return None, None
 
         # Evitar solapamiento

@@ -1,14 +1,10 @@
-import traceback
-from numba import njit, prange
+from numba import njit, float64, int64
 import numpy as np
 import pandas as pd
 from datetime import datetime
 import matplotlib.pyplot as plt
 import onnxruntime as rt
 from functools import lru_cache
-from modules.labeling_lib import get_features
-from concurrent.futures import ProcessPoolExecutor, as_completed
-import multiprocessing as mp
 rt.set_default_logger_severity(4)
 
 def audit_index(
@@ -208,26 +204,6 @@ def tester(
     return score
 
 @njit(cache=True, fastmath=True)
-def max_gap_between_highs(equity: np.ndarray) -> int:
-    last_high = equity[0]
-    gap = 0
-    max_gap = 0
-    for x in equity:
-        if x > last_high:
-            last_high = x
-            if gap > max_gap:
-                max_gap = gap
-            gap = 0
-        else:
-            gap += 1
-    if gap > max_gap:
-        max_gap = gap
-    return max_gap
-
-from numba import njit, float64, int64
-import numpy as np
-
-@njit(cache=True, fastmath=True)
 def _signed_r2(y):
     n = y.size
     t = np.arange(n, dtype=np.float64)
@@ -240,7 +216,7 @@ def _signed_r2(y):
         return 0.0
     slope = cov / var_t
     r2 = (cov**2) / (var_t * var_y)
-    return np.sign(slope) * r2
+    return np.sign(slope) * r2          #  ∈ [-1,1]
 
 @njit(cache=True, fastmath=True)
 def _max_dd_curve(eq):
@@ -278,7 +254,7 @@ def evaluate_report(eq: np.ndarray) -> float:
       • muchos trades,
       • superar máximos pronto.
     """
-    if not np.isfinite(eq).all():
+    if eq.size < 15 or not np.isfinite(eq).all():
         return -1.0
 
     ret = np.diff(eq)
@@ -287,29 +263,13 @@ def evaluate_report(eq: np.ndarray) -> float:
         return -1.0
 
     # ---------- 1) Tendencia --------------------------------------------
-    # Queremos promover: pendiente positiva, linealidad (rectilínea), y estabilidad.
     slope = (eq[-1] - eq[0]) / n
     sigma = ret.std() + 1e-12
-
-    # R² firmado: mide cuán bien se ajusta a una línea recta y su dirección
-    sr2 = _signed_r2(eq)  # [-1,1]
+    sr2   = _signed_r2(eq)              # [-1,1]
     if sr2 <= 0.0:
-        return -1.0  # penaliza pendiente negativa o sin tendencia
-
-    # Normaliza R² firmado a [0,1]
-    trend = 0.5 * (1.0 + sr2)
-
-    # Penaliza pendientes pequeñas (o negativas) suavemente con una sigmoide
-    # Si slope es grande y positivo, este factor ≈1; si es pequeño o negativo, ≈0
-    slope_factor = 1.0 / (1.0 + np.exp(-slope / sigma))
-    trend *= slope_factor
-
-    # Penaliza la curvatura: si la curva es muy "ondulada", baja el score
-    curvature = np.diff(ret)
-    smoothness = 1.0 / (1.0 + np.mean(np.abs(curvature)))
-
-    # Combina tendencia (rectitud y pendiente) y suavidad
-    trend = trend * 0.7 + smoothness * 0.3
+        return -1.0                     # pendiente negativa
+    trend = 0.5 * (1.0 + sr2)           # R² firmado → [0,1]
+    trend *= 1.0 / (1.0 + np.exp(-slope / sigma))
 
     # ---------- 2) Eficiencia -------------------------------------------
     gains  = ret[ret > 0.0].sum()
@@ -339,7 +299,6 @@ def evaluate_report(eq: np.ndarray) -> float:
     core = wT * trend + wE * effic
     score = core * agil * cover
     return score
-
 
 def tester_one_direction(
         dataset: pd.DataFrame,
@@ -439,68 +398,6 @@ def test_model(dataset: pd.DataFrame,
         plot=plt,
     )
 
-# ───────────────────────────────────────────────────────────────────
-# Monte-Carlo robustness utilities
-# ───────────────────────────────────────────────────────────────────
-
-@njit(cache=True, fastmath=True)
-def _bootstrap_returns(returns: np.ndarray,
-                       block_size: int) -> np.ndarray:
-    """
-    Resamplea los *returns* preservando (opcionalmente) dependencia local
-    mediante bootstrapping por bloques.
-    """
-    n = returns.shape[0]
-    resampled = np.empty_like(returns)
-    
-    if block_size <= 1 or block_size > n:
-        # Bootstrap simple
-        for i in range(n):
-            resampled[i] = returns[np.random.randint(0, n)]
-        return resampled
-    
-    # Llenar el array resampled bloque por bloque
-    pos = 0
-    while pos < n:
-        # Seleccionar inicio del bloque
-        start = np.random.randint(0, n - block_size + 1)
-        
-        # Calcular cuántos elementos podemos copiar
-        remaining = n - pos
-        to_copy = min(block_size, remaining)
-        
-        # Copiar el bloque
-        resampled[pos:pos + to_copy] = returns[start:start + to_copy]
-        pos += to_copy
-    
-    return resampled
-
-
-@njit(cache=True, fastmath=True)
-def _equity_from_returns(resampled_returns: np.ndarray) -> np.ndarray:
-    """Crea curva de equity partiendo de 0."""
-    n = resampled_returns.size
-    equity = np.empty(n + 1, dtype=np.float64)
-    equity[0] = 0.0
-    cumsum = 0.0
-    for i in range(n):
-        cumsum += resampled_returns[i]
-        equity[i + 1] = cumsum
-    return equity
-
-@njit(cache=True, fastmath=True)
-def _make_noisy_close(close: np.ndarray) -> np.ndarray:
-    """Devuelve una serie de precios alterada con ruido laplaciano."""
-    n = close.size
-    if n < 2:
-        return close.copy()
-    volatility = np.std(np.diff(close) / close[:-1])
-    price_noise = np.random.uniform(volatility * 0.5, volatility * 2.0)
-    if price_noise <= 0:
-        return close.copy()
-    noise = np.random.laplace(0.0, price_noise, size=n)
-    return close * (1.0 + noise)
-
 @lru_cache(maxsize=2)
 def _ort_session(model_path:str):
     sess  = rt.InferenceSession(model_path,
@@ -541,327 +438,3 @@ def _predict_one(model_any, X_2d: np.ndarray) -> np.ndarray:
     else:
         # _predict_onnx espera tensor 3-D: (n_sim, n_rows, n_feat)
         return _predict_onnx(model_any, X_2d[None, :, :])[0]
-
-@njit(cache=True, fastmath=True, parallel=True)
-def _score_batch(close_all, l_all, m_all, block_size, direction_int):
-    """
-    Calcula el score para cada simulación *tal cual*, sin volver a alterar
-    precios ni señales (ya vienen ruidosos).
-    Ahora también devuelve las curvas de equity de cada simulación.
-    """
-    n_sim, n = l_all.shape
-    scores = np.full(n_sim, -1.0)
-    equity_curves = np.zeros((n_sim, n+1), dtype=np.float64)
-    
-    for i in prange(n_sim):
-        if direction_int == 2:  # both
-            rpt, _ = process_data(close_all[i], l_all[i], m_all[i])
-        else:
-            rpt, _ = process_data_one_direction(close_all[i], l_all[i], m_all[i], direction_int)
-        if rpt.size < 2:
-            continue
-        ret = np.diff(rpt)
-        if ret.size == 0:
-            continue
-        eq = _equity_from_returns(_bootstrap_returns(ret, block_size))
-        scores[i] = evaluate_report(eq)
-        eq_len = min(len(eq), n+1)
-        equity_curves[i, :eq_len] = eq[:eq_len]
-    
-    return scores, equity_curves
-
-def parallel_simulation_worker(args):
-    """
-    Worker para procesar una simulación individual en paralelo.
-    Esta función debe ser serializable para multiprocessing.
-    """
-    try:
-        (base_df_dict, full_ds_index, model_main, model_meta, model_main_cols, 
-         model_meta_cols, hp, direction_int, sim_idx) = args
-        # Reconstruir DataFrame base
-        base_df = pd.DataFrame(base_df_dict['data'], 
-                               index=base_df_dict['index'], 
-                               columns=base_df_dict['columns'])
-        # Generar ruido en el cierre
-        noisy_close = _make_noisy_close(base_df["close"].to_numpy())
-        base_df["close"] = noisy_close
-        # Calcular features
-        feats_sim = get_features(base_df, dict(hp))
-        if feats_sim.empty:
-            return None
-        # Recortar exactamente al índice de full_ds
-        feats_sim = feats_sim.reindex(full_ds_index)
-        # Extraer datos
-        X_main_sim = feats_sim[model_main_cols].to_numpy()
-        X_meta_sim = feats_sim[model_meta_cols].to_numpy()
-        close_sim = feats_sim["close"].to_numpy()
-        # Predicciones
-        main_pred = _predict_one(model_main, X_main_sim)
-        meta_pred = _predict_one(model_meta, X_meta_sim)
-        # Calcular score
-        if direction_int == 2:  # both
-            rpt, _ = process_data(close_sim, main_pred, meta_pred)
-        else:
-            rpt, _ = process_data_one_direction(close_sim, main_pred, meta_pred, direction_int)
-        if rpt.size < 2:
-            return None
-        score = evaluate_report(rpt)
-        return {
-            'sim_idx': sim_idx,
-            'score': score,
-            'X_main': X_main_sim,
-            'X_meta': X_meta_sim,
-            'close': close_sim,
-            'equity_curve': rpt
-        }
-    except Exception as e:
-        return None
-
-def monte_carlo_full(
-    base_df: pd.DataFrame,
-    full_ds: pd.DataFrame,
-    model_main: object,
-    model_meta: object,
-    model_main_cols: list[str],
-    model_meta_cols: list[str],
-    hp: dict,
-    direction: str = "both",
-    n_sim: int = 100,
-    block_size: int = 1,
-    plot: bool = False,
-    prd: str = "",
-    use_parallel: bool = True,
-    max_workers: int = None,
-) -> dict:
-    """Lanza Monte Carlo alterando solo el cierre y recalculando las features."""
-    if n_sim > 200:
-        n_sim = 200
-        print(f"⚠️ Reduciendo n_sim a {n_sim} para optimizar tiempo de ejecución")
-    close = np.ascontiguousarray(full_ds["close"].to_numpy())
-    try:
-        feats = get_features(base_df.copy(), dict(hp))
-        if feats.empty:
-            return {"scores": np.array([-1.0]), "p_positive": 0.0, "quantiles": np.array([-1.0, -1.0, -1.0])}
-        feats = feats.reindex(full_ds.index)
-        X_main = feats[model_main_cols].to_numpy()
-        X_meta = feats[model_meta_cols].to_numpy()
-        close_feat = feats["close"].to_numpy()
-        main = _predict_one(model_main, X_main)
-        meta = _predict_one(model_meta, X_meta)
-        if direction == "both":
-            rpt_original, _ = process_data(close_feat, main, meta)
-            direction_int = 2
-        else:
-            direction_map = {'buy': 0, 'sell': 1}
-            direction_int = direction_map.get(direction, 0)
-            rpt_original, _ = process_data_one_direction(close_feat, main, meta, direction_int)
-        score_original = evaluate_report(rpt_original)
-        # ───── SOLO PARALELIZADO ─────
-        if max_workers is None:
-            max_workers = get_optimal_workers()
-        base_df_dict = {
-            'data': base_df.values,
-            'index': base_df.index,
-            'columns': base_df.columns
-        }
-        simulation_args = []
-        for sim_idx in range(n_sim):
-            args = (base_df_dict, full_ds.index, model_main, model_meta, model_main_cols, 
-                    model_meta_cols, hp, direction_int, sim_idx)
-            simulation_args.append(args)
-        valid_simulations = []
-        with ProcessPoolExecutor(max_workers=max_workers, mp_context=mp.get_context("spawn")) as executor:
-            future_to_sim = {executor.submit(parallel_simulation_worker, args): args for args in simulation_args}
-            for future in as_completed(future_to_sim):
-                result = future.result()
-                if result is not None:
-                    valid_simulations.append(result)
-        if not valid_simulations:
-            return {"scores": np.array([-1.0]), "p_positive": 0.0, "quantiles": np.array([-1.0, -1.0, -1.0])}
-        scores = [result['score'] for result in valid_simulations]
-        equity_curves = [result['equity_curve'] for result in valid_simulations]
-        # Incluir la original al principio del array de scores
-        scores = np.concatenate(([score_original], scores))
-        equity_curves_list = [rpt_original] + equity_curves
-        valid = scores[scores > 0.0]
-        if plot:
-            if valid.size == 0:
-                pass
-            else:
-                try:
-                    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 8), height_ratios=[3, 1])
-                    valid_indices = np.where(scores > 0.0)[0]
-                    for idx in valid_indices:
-                        ax1.plot(equity_curves_list[idx], color='gray', alpha=0.1)
-                    ax1.plot(equity_curves_list[0], color='blue', linewidth=2, label='Original')
-                    min_len = min(len(equity_curves_list[idx]) for idx in valid_indices) if len(valid_indices) > 0 else 0
-                    if min_len > 0:
-                        curves_array = np.array([equity_curves_list[idx][:min_len] for idx in valid_indices])
-                        p05 = np.percentile(curves_array, 5, axis=0)
-                        p95 = np.percentile(curves_array, 95, axis=0)
-                        median = np.median(curves_array, axis=0)
-                        ax1.plot(p05, 'r--', alpha=0.5, label='5%')
-                        ax1.plot(p95, 'r--', alpha=0.5, label='95%')
-                        ax1.plot(median, 'g-', alpha=0.5, label='Mediana')
-                    if prd:
-                        ax1.set_title(f'Simulaciones Monte Carlo - {prd}\n(n={valid.size}, {direction})')
-                    else:
-                        ax1.set_title(f'Simulaciones Monte Carlo\n(n={valid.size}, {direction})')
-                    ax1.set_xlabel('Operaciones')
-                    ax1.set_ylabel('Beneficio Acumulado')
-                    ax1.legend()
-                    ax1.grid(True, alpha=0.3)
-                    ax2.hist(valid, bins=30, density=True, alpha=0.6, color='skyblue')
-                    ax2.axvline(np.median(valid), color='red', linestyle='--', label=f'Mediana: {np.median(valid):.2f}')
-                    q05, q50, q95 = np.quantile(valid, [0.05, 0.5, 0.95])
-                    ax2.axvline(q05, color='orange', linestyle=':', label=f'Q05: {q05:.2f}')
-                    ax2.axvline(q95, color='green', linestyle=':', label=f'Q95: {q95:.2f}')
-                    ax2.set_xlabel('Score')
-                    ax2.set_ylabel('Densidad')
-                    ax2.legend()
-                    ax2.grid(True, alpha=0.3)
-                    plt.tight_layout()
-                    plt.show()
-                except Exception as viz_error:
-                    print(f"Error en visualización: {viz_error}")
-        return {
-            "scores": scores,
-            "p_positive": np.mean(scores > 0),
-            "quantiles": np.quantile(valid, [0.05, 0.5, 0.95]) if valid.size else [-1, -1, -1],
-        }
-    except Exception as e:
-        print(f"\nError en monte_carlo_full:")
-        print(f"Error: {str(e)}")
-        print("Traceback:")
-        print(traceback.format_exc())
-
-
-def robust_oos_score(
-        base_df: pd.DataFrame,
-        full_ds: pd.DataFrame,
-        model_main: object,
-        model_meta: object,
-        model_main_cols: list[str],
-        model_meta_cols: list[str],
-        hp: dict,
-        direction: str = "both",
-        n_sim: int = 100,
-        block_size: int = 1,
-        agg: str = "q05",
-        plot: bool = False,
-        prd: str = "",
-        use_parallel: bool = True,
-        max_workers: int = None) -> float:
-
-    """Calcula un score robusto en out-of-sample mediante Monte Carlo."""
-
-    try:
-        mc = monte_carlo_full(
-            base_df=base_df,
-            full_ds=full_ds,
-            model_main=model_main,
-            model_meta=model_meta,
-            model_main_cols=model_main_cols,
-            model_meta_cols=model_meta_cols,
-            hp=hp,
-            direction=direction,
-            n_sim=n_sim,
-            block_size=block_size,
-            plot=plot,
-            prd=prd,
-            use_parallel=use_parallel,
-            max_workers=max_workers,
-        )
-
-        if agg == "q05":
-            return float(mc["quantiles"][0])
-        elif agg == "q50":
-            return float(mc["quantiles"][1])
-        elif agg == "q95":
-            return float(mc["quantiles"][2])
-        else:
-            raise ValueError("agg must be 'q05', 'q50' or 'q95'")
-
-    except Exception as e:
-        print(f"\nError en robust_oos_score: {e}")
-        return -1.0
-
-def walk_forward_robust_score(
-    dataset: pd.DataFrame,
-    model_main: object,
-    model_meta: object,
-    model_main_cols: list[str],
-    model_meta_cols: list[str],
-    hp: dict,
-    direction: str = "both",
-    n_splits: int = 3,
-    agg: str = "min",
-    plot: bool = False,
-    use_parallel: bool = True,
-    max_workers: int = None,
-) -> float:
-    """Calcula un score OOS mediante validación walk-forward."""
-
-    try:
-        n = len(dataset)
-        if n_splits <= 1 or n <= 1:
-            return robust_oos_score(
-                dataset=dataset,
-                model_main=model_main,
-                model_meta=model_meta,
-                model_main_cols=model_main_cols,
-                model_meta_cols=model_meta_cols,
-                hp=hp,
-                direction=direction,
-                plot=plot,
-                prd="oos",
-                use_parallel=use_parallel,
-                max_workers=max_workers,
-            )
-
-        split_idx = np.linspace(0, n, n_splits + 1, dtype=int)
-        scores = []
-        for i in range(n_splits):
-            start = split_idx[i]
-            end = split_idx[i + 1]
-            if end - start < 2:
-                continue
-            s = robust_oos_score(
-                dataset=dataset.iloc[start:end],
-                model_main=model_main,
-                model_meta=model_meta,
-                model_main_cols=model_main_cols,
-                model_meta_cols=model_meta_cols,
-                hp=hp,
-                direction=direction,
-                plot=plot,
-                prd=f"oos_{i+1}",
-                use_parallel=use_parallel,
-                max_workers=max_workers,
-            )
-            if np.isfinite(s):
-                scores.append(s)
-
-        if not scores:
-            return -1.0
-
-        if agg == "min":
-            return float(np.min(scores))
-        elif agg == "median":
-            return float(np.median(scores))
-        else:
-            raise ValueError("agg must be 'min' or 'median'")
-
-    except Exception as e:
-        print(f"\nError en walk_forward_robust_score: {e}")
-        return -1.0
-
-# ───────────────────────────────────────────────────────────────────
-# Configuración de paralelización
-# ───────────────────────────────────────────────────────────────────
-def get_optimal_workers():
-    """Determina el número óptimo de workers para paralelización."""
-    cpu_count = mp.cpu_count()
-    # Usar 75% de los cores disponibles para evitar saturación
-    optimal_workers = max(1, int(cpu_count * 0.75))
-    return optimal_workers

@@ -1,4 +1,4 @@
-from numba import njit, float64, int64
+from numba import njit, prange, float64, int64
 import numpy as np
 import pandas as pd
 from datetime import datetime
@@ -244,6 +244,36 @@ def _bars_since_last_high(eq):
             gap += 1
     return gap          # barras desde el último máximo
 
+@njit(cache=True, fastmath=True, parallel=True)
+def uniform_filter1d(x: np.ndarray,
+                                    size: int) -> np.ndarray:
+    if size < 1:
+        raise ValueError("`size` debe ser >= 1")
+
+    n = x.size
+    out = np.empty_like(x)
+
+    left  = size // 2
+    right = size - left          # incluye posición i
+
+    # ---------- bucle paralelo ----------
+    for i in prange(n):
+        acc = 0.0
+        for k in range(-left, right):
+            idx = i + k
+
+            # modo reflect
+            if idx < 0:
+                idx = -idx - 1
+            elif idx >= n:
+                idx = (2 * n - 1) - idx
+
+            acc += x[idx]
+
+        out[i] = acc / size
+
+    return out
+
 @njit(cache=True, fastmath=True)
 def evaluate_report(eq: np.ndarray) -> float:
     """
@@ -261,15 +291,23 @@ def evaluate_report(eq: np.ndarray) -> float:
     n   = ret.size
     if n < 10:
         return -1.0
-
+    mean_ret = ret.mean()
+    std_ret  = ret.std() + 1e-12
+    skew = np.mean(((ret - mean_ret) / std_ret) ** 3)
+    kurt = np.mean(((ret - mean_ret) / std_ret) ** 4)
+    skew_penalty = 1.0 / (1.0 + np.exp(-skew))           # favorece skew > 0
+    kurt_penalty = 1.0 / (1.0 + 0.25 * (kurt - 3.0)**2)  # penaliza kurtosis ≠ 3
+    shape_penalty = skew_penalty * kurt_penalty
     # ---------- 1) Tendencia --------------------------------------------
     slope = (eq[-1] - eq[0]) / n
     sigma = ret.std() + 1e-12
-    sr2   = _signed_r2(eq)              # [-1,1]
+    eq_smooth = uniform_filter1d(eq, size=10)
+    sr2 = _signed_r2(eq_smooth)
     if sr2 <= 0.0:
-        return -1.0                     # pendiente negativa
-    trend = 0.5 * (1.0 + sr2)           # R² firmado → [0,1]
-    trend *= 1.0 / (1.0 + np.exp(-slope / sigma))
+        return -1.0
+    ratio = min(5.0, max(-5.0, slope / sigma))
+    trend = 0.5 * (1.0 + sr2)
+    trend *= 1.0 / (1.0 + np.exp(-ratio))
 
     # ---------- 2) Eficiencia -------------------------------------------
     gains  = ret[ret > 0.0].sum()
@@ -278,26 +316,29 @@ def evaluate_report(eq: np.ndarray) -> float:
     pf_n = 1.0 - np.exp(-pf / 3.0)
 
     dd   = _max_dd_curve(eq) + 1e-12
-    rdd  = (eq[-1] - eq[0]) / dd
+    rdd = min(10.0, max(0.0, (eq[-1] - eq[0]) / dd))
     rdd_n = 1.0 - np.exp(-rdd / 6.0)
 
     effic = pf_n * rdd_n                # ∈ (0,1)
+    stability = 1.0 / (1.0 + ret.std() / (np.abs(ret.mean()) + 1e-12))
 
     # ---------- 3) Agilidad ---------------------------------------------
     gap  = _bars_since_last_high(eq)
     g    = 250.0                        # barras para penalizar al 50 %
     agil = 1.0 / (1.0 + gap / g)        # ↓ al crecer gap
 
-    # ---------- 4) Cobertura --------------------------------------------
-    N0   = 300.0                        # media altura de la sigmoide
-    s    = 80.0                         # pendiente
-    cover = 1.0 / (1.0 + np.exp(-(n - N0) / s))
+    # ---------- 4) Madurez real por número de operaciones ----------------
+    ops = np.count_nonzero(ret)
+    N0  = 150.0                        # operaciones para madurez media
+    s   = 40.0                         # pendiente
+    maturity = 1.0 / (1.0 + np.exp(-(ops - N0) / s))
 
     # ---------- Score ----------------------------------------------------
     wT = 0.6                            # peso tendencia
     wE = 0.4
     core = wT * trend + wE * effic
-    score = core * agil * cover
+    core *= stability
+    score = core * agil * maturity * shape_penalty
     return score
 
 def tester_one_direction(

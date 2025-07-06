@@ -172,8 +172,8 @@ class StrategySearcher:
                                             if p and os.path.exists(p):
                                                 os.remove(p)
                                     # Guardar nuevas rutas de modelos
-                                    study.set_user_attr("best_model_paths", trial.user_attrs['model_paths'])
                                     study.set_user_attr("best_score", trial.user_attrs['score'])
+                                    study.set_user_attr("best_model_paths", trial.user_attrs['model_paths'])
                                     study.set_user_attr("best_periods_main", trial.user_attrs['periods_main'])
                                     study.set_user_attr("best_stats_main", trial.user_attrs['stats_main'])
                                     study.set_user_attr("best_model_cols", trial.user_attrs['model_cols'])
@@ -559,9 +559,9 @@ class StrategySearcher:
                 main_feature_cols = full_ds.columns[full_ds.columns.str.contains('_feature') & \
                                                        ~full_ds.columns.str.contains('_meta_feature')]
                 model_main_train_data = model_main_train_data[main_feature_cols.tolist() + ['labels_main']]
-                if 'label_max' in hp and len(model_main_train_data) <= hp["label_max"]:
-                    continue
                 if model_main_train_data is None or model_main_train_data.empty:
+                    continue
+                if 'label_max' in hp and len(model_main_train_data) <= hp["label_max"]:
                     continue
                 if (model_main_train_data['labels_main'].value_counts() < 2).any():
                     continue
@@ -578,7 +578,7 @@ class StrategySearcher:
                     hp=hp.copy()
                 )
                 if score is None or model_paths is None or models_cols is None:
-                    return None, None, None
+                    continue
                 if score > best_score:
                     if best_model_paths != (None, None):
                         for p in best_model_paths:
@@ -1032,7 +1032,7 @@ class StrategySearcher:
                 print(f"🔍 DEBUG: pad = {pad}")
 
             # ──────────────────────────────────────────────────────────────
-            # 2) Paso típico de la serie (mediana -> inmune a huecos)
+            # 2) Paso típico de la serie (modal -> inmune a huecos)
             idx = self.base_df.index.sort_values()
             bar_delta = idx.to_series().diff().dropna().mode().iloc[0] \
                 if pad and len(idx) > 1 else pd.Timedelta(0)
@@ -1042,7 +1042,7 @@ class StrategySearcher:
             # ──────────────────────────────────────────────────────────────
             # 3) Rango extendido para calcular features "con contexto"
             start_ext = min(self.train_start, self.test_start) - pad * bar_delta
-            if start_ext < idx[0]:                      # evita pedir antes de que existan datos
+            if start_ext < idx[0]:
                 start_ext = idx[0]
 
             end_ext = max(self.train_end, self.test_end)
@@ -1054,7 +1054,7 @@ class StrategySearcher:
             hp_tuple = tuple(sorted(hp.items()))
             full_ds = self.base_df.loc[start_ext:end_ext].copy()
             if self.debug:
-                print(f"🔍 DEBUG: ds_slice.shape = {full_ds.shape}")
+                print(f"🔍 DEBUG: full_ds.shape = {full_ds.shape}")
             
             full_ds = get_features(full_ds, dict(hp_tuple))
             if self.debug:
@@ -1148,7 +1148,6 @@ class StrategySearcher:
     def get_train_test_data(self, dataset) -> tuple[pd.DataFrame, pd.DataFrame]:
         """Genera los DataFrames de entrenamiento y prueba a partir del DataFrame completo."""
         if dataset is None or dataset.empty:
-            print("⚠️ ERROR: dataset es None o está vacío")
             return None, None
         
         # Máscaras de train / test
@@ -1156,7 +1155,6 @@ class StrategySearcher:
         train_mask = (dataset.index >= self.train_start) & (dataset.index <= self.train_end)
 
         if not test_mask.any() or not train_mask.any():
-            print("⚠️ ERROR: Períodos sin datos")
             return None, None
 
         # Evitar solapamiento

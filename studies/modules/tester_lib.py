@@ -287,20 +287,31 @@ def evaluate_report(eq: np.ndarray) -> float:
         return -1.0
 
     # ---------- 1) Tendencia --------------------------------------------
+    # Queremos promover: pendiente positiva, linealidad (rectilínea), y estabilidad.
     slope = (eq[-1] - eq[0]) / n
     sigma = ret.std() + 1e-12
-    sr2   = _signed_r2(eq)              # [-1,1]
+
+    # R² firmado: mide cuán bien se ajusta a una línea recta y su dirección
+    sr2 = _signed_r2(eq)  # [-1,1]
     if sr2 <= 0.0:
-        return -1.0                     # pendiente negativa
-    trend = 0.5 * (1.0 + sr2)           # R² firmado → [0,1]
-    trend *= 1.0 / (1.0 + np.exp(-slope / sigma))
+        return -1.0  # penaliza pendiente negativa o sin tendencia
 
-    # ---------- 2) Suavidad local --------------------------------------
-    # Penaliza curvas con muchos altibajos (segunda derivada grande)
+    # Normaliza R² firmado a [0,1]
+    trend = 0.5 * (1.0 + sr2)
+
+    # Penaliza pendientes pequeñas (o negativas) suavemente con una sigmoide
+    # Si slope es grande y positivo, este factor ≈1; si es pequeño o negativo, ≈0
+    slope_factor = 1.0 / (1.0 + np.exp(-slope / sigma))
+    trend *= slope_factor
+
+    # Penaliza la curvatura: si la curva es muy "ondulada", baja el score
     curvature = np.diff(ret)
-    smoothness = 1.0 / (1.0 + np.mean(np.abs(curvature)))  # [0,1], 1=recta perfecta
+    smoothness = 1.0 / (1.0 + np.mean(np.abs(curvature)))
 
-    # ---------- 3) Eficiencia -------------------------------------------
+    # Combina tendencia (rectitud y pendiente) y suavidad
+    trend = trend * 0.7 + smoothness * 0.3
+
+    # ---------- 2) Eficiencia -------------------------------------------
     gains  = ret[ret > 0.0].sum()
     losses = -ret[ret < 0.0].sum() + 1e-12
     pf   = gains / losses               # profit factor
@@ -312,19 +323,20 @@ def evaluate_report(eq: np.ndarray) -> float:
 
     effic = pf_n * rdd_n                # ∈ (0,1)
 
-    # ---------- 4) Agilidad y cobertura igual ---------------------------
+    # ---------- 3) Agilidad ---------------------------------------------
     gap  = _bars_since_last_high(eq)
-    g    = 250.0
-    agil = 1.0 / (1.0 + gap / g)
-    N0   = 300.0
-    s    = 80.0
+    g    = 250.0                        # barras para penalizar al 50 %
+    agil = 1.0 / (1.0 + gap / g)        # ↓ al crecer gap
+
+    # ---------- 4) Cobertura --------------------------------------------
+    N0   = 300.0                        # media altura de la sigmoide
+    s    = 80.0                         # pendiente
     cover = 1.0 / (1.0 + np.exp(-(n - N0) / s))
 
     # ---------- Score ----------------------------------------------------
-    wT = 0.5    # peso tendencia
-    wS = 0.3    # peso suavidad
-    wE = 0.2    # peso eficiencia
-    core = wT * trend + wS * smoothness + wE * effic
+    wT = 0.6                            # peso tendencia
+    wE = 0.4
+    core = wT * trend + wE * effic
     score = core * agil * cover
     return score
 
@@ -558,8 +570,56 @@ def _score_batch(close_all, l_all, m_all, block_size, direction_int):
     
     return scores, equity_curves
 
+def parallel_simulation_worker(args):
+    """
+    Worker para procesar una simulación individual en paralelo.
+    Esta función debe ser serializable para multiprocessing.
+    """
+    try:
+        (base_df_dict, full_ds_index, model_main, model_meta, model_main_cols, 
+         model_meta_cols, hp, direction_int, sim_idx) = args
+        # Reconstruir DataFrame base
+        base_df = pd.DataFrame(base_df_dict['data'], 
+                               index=base_df_dict['index'], 
+                               columns=base_df_dict['columns'])
+        # Generar ruido en el cierre
+        noisy_close = _make_noisy_close(base_df["close"].to_numpy())
+        base_df["close"] = noisy_close
+        # Calcular features
+        feats_sim = get_features(base_df, dict(hp))
+        if feats_sim.empty:
+            return None
+        # Recortar exactamente al índice de full_ds
+        feats_sim = feats_sim.reindex(full_ds_index)
+        # Extraer datos
+        X_main_sim = feats_sim[model_main_cols].to_numpy()
+        X_meta_sim = feats_sim[model_meta_cols].to_numpy()
+        close_sim = feats_sim["close"].to_numpy()
+        # Predicciones
+        main_pred = _predict_one(model_main, X_main_sim)
+        meta_pred = _predict_one(model_meta, X_meta_sim)
+        # Calcular score
+        if direction_int == 2:  # both
+            rpt, _ = process_data(close_sim, main_pred, meta_pred)
+        else:
+            rpt, _ = process_data_one_direction(close_sim, main_pred, meta_pred, direction_int)
+        if rpt.size < 2:
+            return None
+        score = evaluate_report(rpt)
+        return {
+            'sim_idx': sim_idx,
+            'score': score,
+            'X_main': X_main_sim,
+            'X_meta': X_meta_sim,
+            'close': close_sim,
+            'equity_curve': rpt
+        }
+    except Exception as e:
+        return None
+
 def monte_carlo_full(
-    dataset: pd.DataFrame,
+    base_df: pd.DataFrame,
+    full_ds: pd.DataFrame,
     model_main: object,
     model_meta: object,
     model_main_cols: list[str],
@@ -574,26 +634,18 @@ def monte_carlo_full(
     max_workers: int = None,
 ) -> dict:
     """Lanza Monte Carlo alterando solo el cierre y recalculando las features."""
-
-    # ───── OPTIMIZACIÓN: Reducir n_sim si es muy alto para evitar tiempos excesivos ─────
     if n_sim > 200:
         n_sim = 200
         print(f"⚠️ Reduciendo n_sim a {n_sim} para optimizar tiempo de ejecución")
-
-    # extraer serie de cierre original
-    close = np.ascontiguousarray(dataset["close"].to_numpy())
-
+    close = np.ascontiguousarray(full_ds["close"].to_numpy())
     try:
-        # ───── OPTIMIZACIÓN 1: Pre-calcular features base una sola vez ─────
-        base_df = dataset.copy()
-        feats = get_features(base_df, dict(hp))
+        feats = get_features(base_df.copy(), dict(hp))
         if feats.empty:
             return {"scores": np.array([-1.0]), "p_positive": 0.0, "quantiles": np.array([-1.0, -1.0, -1.0])}
-
+        feats = feats.reindex(full_ds.index)
         X_main = feats[model_main_cols].to_numpy()
         X_meta = feats[model_meta_cols].to_numpy()
         close_feat = feats["close"].to_numpy()
-
         main = _predict_one(model_main, X_main)
         meta = _predict_one(model_meta, X_meta)
         if direction == "both":
@@ -603,136 +655,45 @@ def monte_carlo_full(
             direction_map = {'buy': 0, 'sell': 1}
             direction_int = direction_map.get(direction, 0)
             rpt_original, _ = process_data_one_direction(close_feat, main, meta, direction_int)
-
-        # Score de la original
         score_original = evaluate_report(rpt_original)
-
-        # ───── PARALELIZACIÓN: Procesar simulaciones en paralelo ─────
-        if use_parallel and n_sim > 10:  # Solo paralelizar si hay suficientes simulaciones
-            # Determinar número de workers
-            if max_workers is None:
-                max_workers = get_optimal_workers()
-            
-            # Preparar datos para paralelización
-            dataset_dict = {
-                'data': dataset.values,
-                'index': dataset.index,
-                'columns': dataset.columns
-            }
-            
-            # Crear argumentos para cada simulación
-            simulation_args = []
-            for sim_idx in range(n_sim):
-                args = (dataset_dict, model_main, model_meta, model_main_cols, 
-                       model_meta_cols, hp, direction_int, sim_idx)
-                simulation_args.append(args)
-            
-            # Ejecutar simulaciones en paralelo
-            valid_simulations = []
-            with ProcessPoolExecutor(max_workers=max_workers,
-                                     mp_context=mp.get_context("spawn")) as executor:
-                # Enviar todas las tareas
-                future_to_sim = {executor.submit(parallel_simulation_worker, args): args 
-                               for args in simulation_args}
-                
-                # Procesar resultados conforme se completan
-                for future in as_completed(future_to_sim):
-                    result = future.result()
-                    if result is not None:
-                        valid_simulations.append(result)
-            
-            if not valid_simulations:
-                return {"scores": np.array([-1.0]), "p_positive": 0.0,
-                        "quantiles": np.array([-1.0, -1.0, -1.0])}
-            
-            # Extraer resultados
-            scores = [result['score'] for result in valid_simulations]
-            equity_curves = [result['equity_curve'] for result in valid_simulations]
-            
-        else:
-            # ───── MODO SECUENCIAL (original) ─────
-            n_rows = len(dataset)
-            X_main_batch = np.zeros((n_sim, n_rows, len(model_main_cols)), dtype=np.float32)
-            X_meta_batch = np.zeros((n_sim, n_rows, len(model_meta_cols)), dtype=np.float32)
-            close_batch = np.zeros((n_sim, n_rows), dtype=np.float64)
-            
-            # ───── OPTIMIZACIÓN 3: Reutilizar DataFrame base ─────
-            df_sim = dataset.copy()
-            valid_simulations = 0
-
-            for sim_idx in range(n_sim):
-                try:
-                    # Generar ruido en el cierre
-                    noisy_close = _make_noisy_close(close)
-                    
-                    # Actualizar solo la columna close sin copiar todo el DataFrame
-                    df_sim["close"] = noisy_close
-
-                    # Calcular features
-                    feats_sim = get_features(df_sim, dict(hp))
-                    if feats_sim.empty:
-                        continue
-
-                    # Extraer datos directamente a los arrays pre-allocados
-                    X_main_sim = feats_sim[model_main_cols].to_numpy()
-                    X_meta_sim = feats_sim[model_meta_cols].to_numpy()
-                    close_sim = feats_sim["close"].to_numpy()
-                    
-                    # Copiar a los arrays batch
-                    sim_len = len(X_main_sim)
-                    X_main_batch[valid_simulations, :sim_len, :] = X_main_sim
-                    X_meta_batch[valid_simulations, :sim_len, :] = X_meta_sim
-                    close_batch[valid_simulations, :sim_len] = close_sim
-                    
-                    valid_simulations += 1
-                    
-                except Exception as e:
-                    # ───── OPTIMIZACIÓN: Manejar errores sin interrumpir ─────
-                    continue
-
-            if valid_simulations == 0:
-                return {"scores": np.array([-1.0]), "p_positive": 0.0,
-                        "quantiles": np.array([-1.0, -1.0, -1.0])}
-
-            # ───── OPTIMIZACIÓN 4: Usar solo las simulaciones válidas ─────
-            X_main_arr = X_main_batch[:valid_simulations]
-            X_meta_arr = X_meta_batch[:valid_simulations]
-            close_arr = close_batch[:valid_simulations]
-
-            # ───── inferencia ONNX en bloque ────────────────────────────────────
-            pred_main = _predict_onnx(model_main, X_main_arr)
-            pred_meta = _predict_onnx(model_meta, X_meta_arr)
-
-            # ───── score vectorizado (Numba) ────────────────────────────────────
-            scores, equity_curves = _score_batch(close_arr,
-                                        pred_main,
-                                        pred_meta,
-                                        block_size,
-                                        direction_int)
-            
-            # Convertir a formato compatible
-            scores = scores.tolist()
-            equity_curves = [equity_curves[i] for i in range(equity_curves.shape[0])]
-
+        # ───── SOLO PARALELIZADO ─────
+        if max_workers is None:
+            max_workers = get_optimal_workers()
+        base_df_dict = {
+            'data': base_df.values,
+            'index': base_df.index,
+            'columns': base_df.columns
+        }
+        simulation_args = []
+        for sim_idx in range(n_sim):
+            args = (base_df_dict, full_ds.index, model_main, model_meta, model_main_cols, 
+                    model_meta_cols, hp, direction_int, sim_idx)
+            simulation_args.append(args)
+        valid_simulations = []
+        with ProcessPoolExecutor(max_workers=max_workers, mp_context=mp.get_context("spawn")) as executor:
+            future_to_sim = {executor.submit(parallel_simulation_worker, args): args for args in simulation_args}
+            for future in as_completed(future_to_sim):
+                result = future.result()
+                if result is not None:
+                    valid_simulations.append(result)
+        if not valid_simulations:
+            return {"scores": np.array([-1.0]), "p_positive": 0.0, "quantiles": np.array([-1.0, -1.0, -1.0])}
+        scores = [result['score'] for result in valid_simulations]
+        equity_curves = [result['equity_curve'] for result in valid_simulations]
         # Incluir la original al principio del array de scores
         scores = np.concatenate(([score_original], scores))
         equity_curves_list = [rpt_original] + equity_curves
-
         valid = scores[scores > 0.0]
-
         if plot:
             if valid.size == 0:
-                # No hay datos válidos, no graficar nada
                 pass
             else:
                 try:
                     fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 8), height_ratios=[3, 1])
-                    # Solo graficar las curvas correspondientes a scores válidos
                     valid_indices = np.where(scores > 0.0)[0]
                     for idx in valid_indices:
                         ax1.plot(equity_curves_list[idx], color='gray', alpha=0.1)
                     ax1.plot(equity_curves_list[0], color='blue', linewidth=2, label='Original')
-
                     min_len = min(len(equity_curves_list[idx]) for idx in valid_indices) if len(valid_indices) > 0 else 0
                     if min_len > 0:
                         curves_array = np.array([equity_curves_list[idx][:min_len] for idx in valid_indices])
@@ -742,33 +703,27 @@ def monte_carlo_full(
                         ax1.plot(p05, 'r--', alpha=0.5, label='5%')
                         ax1.plot(p95, 'r--', alpha=0.5, label='95%')
                         ax1.plot(median, 'g-', alpha=0.5, label='Mediana')
-
                     if prd:
                         ax1.set_title(f'Simulaciones Monte Carlo - {prd}\n(n={valid.size}, {direction})')
                     else:
                         ax1.set_title(f'Simulaciones Monte Carlo\n(n={valid.size}, {direction})')
-
                     ax1.set_xlabel('Operaciones')
                     ax1.set_ylabel('Beneficio Acumulado')
                     ax1.legend()
                     ax1.grid(True, alpha=0.3)
-
                     ax2.hist(valid, bins=30, density=True, alpha=0.6, color='skyblue')
                     ax2.axvline(np.median(valid), color='red', linestyle='--', label=f'Mediana: {np.median(valid):.2f}')
                     q05, q50, q95 = np.quantile(valid, [0.05, 0.5, 0.95])
                     ax2.axvline(q05, color='orange', linestyle=':', label=f'Q05: {q05:.2f}')
                     ax2.axvline(q95, color='green', linestyle=':', label=f'Q95: {q95:.2f}')
-
                     ax2.set_xlabel('Score')
                     ax2.set_ylabel('Densidad')
                     ax2.legend()
                     ax2.grid(True, alpha=0.3)
-
                     plt.tight_layout()
                     plt.show()
                 except Exception as viz_error:
                     print(f"Error en visualización: {viz_error}")
-
         return {
             "scores": scores,
             "p_positive": np.mean(scores > 0),
@@ -782,7 +737,8 @@ def monte_carlo_full(
 
 
 def robust_oos_score(
-        dataset: pd.DataFrame,
+        base_df: pd.DataFrame,
+        full_ds: pd.DataFrame,
         model_main: object,
         model_meta: object,
         model_main_cols: list[str],
@@ -801,7 +757,8 @@ def robust_oos_score(
 
     try:
         mc = monte_carlo_full(
-            dataset=dataset,
+            base_df=base_df,
+            full_ds=full_ds,
             model_main=model_main,
             model_meta=model_meta,
             model_main_cols=model_main_cols,
@@ -908,61 +865,3 @@ def get_optimal_workers():
     # Usar 75% de los cores disponibles para evitar saturación
     optimal_workers = max(1, int(cpu_count * 0.75))
     return optimal_workers
-
-def parallel_simulation_worker(args):
-    """
-    Worker para procesar una simulación individual en paralelo.
-    Esta función debe ser serializable para multiprocessing.
-    """
-    try:
-        (dataset_dict, model_main, model_meta, model_main_cols, 
-         model_meta_cols, hp, direction_int, sim_idx) = args
-        
-        # Reconstruir DataFrame desde dict
-        dataset = pd.DataFrame(dataset_dict['data'], 
-                             index=dataset_dict['index'], 
-                             columns=dataset_dict['columns'])
-        
-        # Generar ruido en el cierre
-        close = np.ascontiguousarray(dataset["close"].to_numpy())
-        noisy_close = _make_noisy_close(close)
-        
-        # Actualizar solo la columna close
-        dataset["close"] = noisy_close
-        
-        # Calcular features
-        feats_sim = get_features(dataset, dict(hp))
-        if feats_sim.empty:
-            return None
-            
-        # Extraer datos
-        X_main_sim = feats_sim[model_main_cols].to_numpy()
-        X_meta_sim = feats_sim[model_meta_cols].to_numpy()
-        close_sim = feats_sim["close"].to_numpy()
-        
-        # Predicciones
-        main_pred = _predict_one(model_main, X_main_sim)
-        meta_pred = _predict_one(model_meta, X_meta_sim)
-        
-        # Calcular score
-        if direction_int == 2:  # both
-            rpt, _ = process_data(close_sim, main_pred, meta_pred)
-        else:
-            rpt, _ = process_data_one_direction(close_sim, main_pred, meta_pred, direction_int)
-            
-        if rpt.size < 2:
-            return None
-            
-        score = evaluate_report(rpt)
-        
-        return {
-            'sim_idx': sim_idx,
-            'score': score,
-            'X_main': X_main_sim,
-            'X_meta': X_meta_sim,
-            'close': close_sim,
-            'equity_curve': rpt
-        }
-        
-    except Exception as e:
-        return None

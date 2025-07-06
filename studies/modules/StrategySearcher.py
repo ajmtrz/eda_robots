@@ -208,6 +208,7 @@ class StrategySearcher:
                         best_periods_meta  = study.user_attrs["best_periods_meta"],
                         best_stats_main    = study.user_attrs["best_stats_main"],
                         best_stats_meta    = study.user_attrs["best_stats_meta"],
+                        tag                = self.tag,
                     )
 
                     # borrar .onnx temporales

@@ -295,7 +295,12 @@ def evaluate_report(eq: np.ndarray) -> float:
     trend = 0.5 * (1.0 + sr2)           # R² firmado → [0,1]
     trend *= 1.0 / (1.0 + np.exp(-slope / sigma))
 
-    # ---------- 2) Eficiencia -------------------------------------------
+    # ---------- 2) Suavidad local --------------------------------------
+    # Penaliza curvas con muchos altibajos (segunda derivada grande)
+    curvature = np.diff(ret)
+    smoothness = 1.0 / (1.0 + np.mean(np.abs(curvature)))  # [0,1], 1=recta perfecta
+
+    # ---------- 3) Eficiencia -------------------------------------------
     gains  = ret[ret > 0.0].sum()
     losses = -ret[ret < 0.0].sum() + 1e-12
     pf   = gains / losses               # profit factor
@@ -307,20 +312,19 @@ def evaluate_report(eq: np.ndarray) -> float:
 
     effic = pf_n * rdd_n                # ∈ (0,1)
 
-    # ---------- 3) Agilidad ---------------------------------------------
+    # ---------- 4) Agilidad y cobertura igual ---------------------------
     gap  = _bars_since_last_high(eq)
-    g    = 250.0                        # barras para penalizar al 50 %
-    agil = 1.0 / (1.0 + gap / g)        # ↓ al crecer gap
-
-    # ---------- 4) Cobertura --------------------------------------------
-    N0   = 300.0                        # media altura de la sigmoide
-    s    = 80.0                         # pendiente
+    g    = 250.0
+    agil = 1.0 / (1.0 + gap / g)
+    N0   = 300.0
+    s    = 80.0
     cover = 1.0 / (1.0 + np.exp(-(n - N0) / s))
 
     # ---------- Score ----------------------------------------------------
-    wT = 0.6                            # peso tendencia
-    wE = 0.4
-    core = wT * trend + wE * effic
+    wT = 0.5    # peso tendencia
+    wS = 0.3    # peso suavidad
+    wE = 0.2    # peso eficiencia
+    core = wT * trend + wS * smoothness + wE * effic
     score = core * agil * cover
     return score
 

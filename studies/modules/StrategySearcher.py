@@ -161,7 +161,7 @@ class StrategySearcher:
                             pass
                     try:
                         # Obtener el mejor trial
-                        if study.best_trial:
+                        if study.best_trial and study.best_trial.value > -1.0:
                             best_trial = study.best_trial
                             # Si este trial es el mejor, guardar sus modelos
                             if trial.number == best_trial.number:
@@ -183,15 +183,10 @@ class StrategySearcher:
                                     # Exportar modelo
                                     export_params = {
                                         "tag": self.tag,
-                                        "symbol": self.symbol,
-                                        "timeframe": self.timeframe,
                                         "direction": self.direction,
-                                        "label_method": self.label_method,
+                                        "best_model_seed": model_seed,
                                         "models_export_path": self.models_export_path,
                                         "include_export_path": self.include_export_path,
-                                        "search_type": self.search_type,
-                                        "search_subtype": self.search_subtype,
-                                        "best_model_seed": model_seed,
                                         "best_score": study.user_attrs["best_score"],
                                         "best_model_paths": study.user_attrs["best_model_paths"],
                                         "best_model_cols": study.user_attrs["best_model_cols"],
@@ -206,6 +201,9 @@ class StrategySearcher:
                                     for p in study.user_attrs.get("best_model_paths", []):
                                         if p and os.path.exists(p):
                                             os.remove(p)
+                                    # Parar el algoritmo
+                                    if self.debug:
+                                        study.stop()
 
                             # Liberar memoria eliminando datos pesados del trial
                             if 'model_paths' in trial.user_attrs and trial.user_attrs['model_paths']:
@@ -1138,6 +1136,15 @@ class StrategySearcher:
             # Verificar que tenemos al menos períodos y stats main
             if not hp['periods_main'] or not hp['stats_main']:
                 return None
+            # Guardar dataset completo a disco
+            if self.debug:
+                if self.tag:
+                    data_dir = "./data"
+                    os.makedirs(data_dir, exist_ok=True)
+                    dataset_filename = f"{self.tag}.csv"
+                    dataset_path = os.path.join(data_dir, dataset_filename)
+                    full_ds.to_csv(dataset_path, index=True, float_format='%.4f')
+                    print(f"🔍 DEBUG: Dataset guardado en {dataset_path}")
 
             return full_ds
 

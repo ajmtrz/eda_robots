@@ -76,27 +76,32 @@ def export_to_mql5(**kwargs):
     model_cols = kwargs.get('best_model_cols')
     stats_main = kwargs.get('best_stats_main')
     stats_meta = kwargs.get('best_stats_meta')
-    symbol = kwargs.get('symbol')
-    timeframe = kwargs.get('timeframe')
     direction = kwargs.get('direction')
     model_seed = kwargs.get('best_model_seed')
-    label_method = kwargs.get('label_method')
     models_export_path = kwargs.get('models_export_path')
     include_export_path = kwargs.get('include_export_path')
-    search_type = kwargs.get('search_type')
-    search_subtype = kwargs.get('search_subtype')
 
+    def _build_periods_funcs(cols: list[str]) -> tuple[list[str], list[str]]:
+        """Devuelve dos listas: [periodos]   y   [punteros a stat_X]."""
+        periods, funcs = [], []
+        for c in cols:
+            if c.endswith("_meta_feature"):
+                base = c[:-13]
+            elif c.endswith("_feature"):
+                base = c[:-8]
+            p_str, stat = base.split('_', 1)
+            periods.append(int(p_str))
+            funcs  .append(f"stat_{stat}")
+        return periods, funcs
+    
     try:
         main_cols, meta_cols = model_cols
-        # Usar tag si está presente para el nombre base
-        if tag:
-            base_name = tag
-        else:
-            base_name = f"{symbol}_{timeframe}_{direction}_{label_method}_{search_type}_{search_subtype}".rstrip('_')
+        main_periods, main_funcs = _build_periods_funcs(main_cols)
+        meta_periods, meta_funcs = _build_periods_funcs(meta_cols)
         # Copia los modelos ONNX desde los archivos temporales a la ruta de destino
-        filename_model_main = f"{base_name}_main.onnx"
+        filename_model_main = f"{tag}_main.onnx"
         filepath_model_main = os.path.join(models_export_path, filename_model_main)
-        filename_model_meta = f"{base_name}_meta.onnx"
+        filename_model_meta = f"{tag}_meta.onnx"
         filepath_model_meta = os.path.join(models_export_path, filename_model_meta)
 
         # model_paths[0] es el modelo main, model_paths[1] es el modelo meta
@@ -648,12 +653,8 @@ def export_to_mql5(**kwargs):
         code += f'//| SCORE: {best_score}                       |\n'
         code += '//+------------------------------------------------------------------+\n'
         code += '\n\n'
-        code += f'#define SYMBOL               "{str(symbol)}"\n'
-        code += f'#define TIMEFRAME            "{str(timeframe)}"\n'
         code += f'#define DIRECTION            "{str(direction)}"\n'
         code += f'#define MAGIC_NUMBER         {str(model_seed)}\n'
-        code += "string MAIN_COLS[] = { " + ",".join('"' + c + '"' for c in main_cols) + " };\n"
-        code += "string META_COLS[] = { " + ",".join('"' + c + '"' for c in meta_cols) + " };\n\n"
         stats_total = set(stats_main + stats_meta)
         if "mean" not in stats_total:
             code += stat_function_templates["mean"] + "\n"
@@ -667,50 +668,46 @@ def export_to_mql5(**kwargs):
             code += stat_function_templates["corr"] + "\n"
         for stat in stats_total:
             code += stat_function_templates[stat] + "\n\n"
-        # ─────────────────────────  Dispatcher de estadísticos  ────────────
-        code += 'double switch_stat(string stat,const double &data[])\n'
-        code += '  {\n'
-        for st in sorted(stats_total):
-            code += f'   if(stat=="{st}") return stat_{st}(data);\n'
-        code += '   return 0.0;              // estadístico desconocido\n'
-        code += '  }\n\n'
+        code += "\n//--- descriptors generados automáticamente ---\n"
+        code += "typedef double (*StatFunc)(const double &[]);\n"
 
-        # ─────────────────────────  MAIN feature builder  ──────────────────
-        code += 'void fill_arays_main(double &features[])\n'
-        code += '  {\n'
-        code += '   double pr[];\n'
-        code += '   for(int k=0; k<ArraySize(MAIN_COLS); k++)\n'
-        code += '     {\n'
-        code += '      // \"24_std_feature\"  →  periodo 24  +  \"std\"\n'
-        code += '      string parts[];\n'
-        code += '      StringSplit(MAIN_COLS[k], \'_\', parts);\n'
-        code += '      if(ArraySize(parts)<2) continue;\n'
-        code += '      int    period = (int)StringToInteger(parts[0]);\n'
-        code += '      string stat   = parts[1];\n\n'
-        code += f'      CopyClose(NULL, PERIOD_{timeframe}, 1, period, pr);\n'
-        code += '      ArraySetAsSeries(pr,true);\n\n'
-        code += '      features[k] = switch_stat(stat, pr);\n'
-        code += '     }\n'
-        code += '  }\n\n'
+        code += "const int      PERIODS_MAIN[] = { " + ", ".join(map(str, main_periods)) + " };\n"
+        code += "const StatFunc FUNCS_MAIN  [] = { " + ", ".join(main_funcs) + " };\n\n"
 
-        # ─────────────────────────  META feature builder  ──────────────────
-        code += 'void fill_arays_meta(double &features[])\n'
-        code += '  {\n'
-        code += '   double pr[];\n'
-        code += '   for(int k=0; k<ArraySize(META_COLS); k++)\n'
-        code += '     {\n'
-        code += '      string parts[];\n'
-        code += '      StringSplit(META_COLS[k], \'_\', parts);\n'
-        code += '      if(ArraySize(parts)<2) continue;\n'
-        code += '      int    period = (int)StringToInteger(parts[0]);\n'
-        code += '      string stat   = parts[1];\n\n'
-        code += f'      CopyClose(NULL, PERIOD_{timeframe}, 1, period, pr);\n'
-        code += '      ArraySetAsSeries(pr,true);\n\n'
-        code += '      features[k] = switch_stat(stat, pr);\n'
-        code += '     }\n'
-        code += '  }\n\n'
+        if meta_periods:      # sólo si hay features meta
+            code += "const int      PERIODS_META[] = { " + ", ".join(map(str, meta_periods)) + " };\n"
+            code += "const StatFunc FUNCS_META  [] = { " + ", ".join(meta_funcs) + " };\n\n"
 
-        file_name = os.path.join(include_export_path, f"{base_name}.mqh")
+        # ──────────────────────────────────────────────────────────────────
+        # 2)  Rutinas compactas de cálculo (una pasada, sin StringSplit)
+        # ──────────────────────────────────────────────────────────────────
+        code += R"""
+        void fill_arays_main(double &dst[])
+        {
+        double pr[];
+        for(int k=0; k<ArraySize(PERIODS_MAIN); ++k)
+            {
+            int per = PERIODS_MAIN[k];
+            CopyClose(_Symbol, _Period, 1, per, pr);
+            ArraySetAsSeries(pr, false);
+            dst[k] = FUNCS_MAIN[k](pr);
+            }
+        }
+
+        void fill_arays_meta(double &dst[])
+        {
+        double pr[];
+        for(int k=0; k<ArraySize(PERIODS_META); ++k)
+            {
+            int per = PERIODS_META[k];
+            CopyClose(_Symbol, _Period, 1, per, pr);
+            ArraySetAsSeries(pr, false);
+            dst[k] = FUNCS_META[k](pr);
+            }
+        }
+        """
+
+        file_name = os.path.join(include_export_path, f"{tag}.mqh")
         with open(file_name, "w") as file:
             file.write(code)
 

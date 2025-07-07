@@ -571,7 +571,6 @@ def get_features(data: pd.DataFrame, hp):
 
     return df
 
-
 @njit(cache=True, fastmath=True)
 def safe_savgol_filter(x, l_window_size: int, polyorder: int):
     """Apply Savitzky-Golay filter safely.

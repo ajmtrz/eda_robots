@@ -882,28 +882,39 @@ class StrategySearcher:
             if self.debug:
                 print(f"🔍 DEBUG: Tiempo de entrenamiento modelo meta: {t_train_meta_end - t_train_meta_start:.2f} segundos")
             model_main_path, model_meta_path = export_models_to_ONNX(models=(model_main, model_meta))
+            
+            # Inicializar score con valor por defecto
+            score = -1.0
+            
             test_train_time_start = time.time()
-            score_ins = tester(
-                dataset=full_ds,
-                model_main=model_main_path,
-                model_meta=model_meta_path,
-                model_main_cols=main_feature_cols,
-                model_meta_cols=meta_feature_cols,
-                direction=self.direction,
-                plot=True if self.debug else False,
-                prd='full',
-                timeframe=self.timeframe,
-            )
+            try:
+                score = tester(
+                    dataset=full_ds,
+                    model_main=model_main_path,
+                    model_meta=model_meta_path,
+                    model_main_cols=main_feature_cols,
+                    model_meta_cols=meta_feature_cols,
+                    direction=self.direction,
+                    plot=True if self.debug else False,
+                    prd='full',
+                    timeframe=self.timeframe,
+                )
+            except Exception as tester_error:
+                if self.debug:
+                    print(f"🔍 DEBUG: Error en tester: {tester_error}")
+                score = -1.0
+                
             test_train_time_end = time.time()
             if self.debug:
                 print(f"🔍 DEBUG: Tiempo de test in-sample: {test_train_time_end - test_train_time_start:.2f} segundos")
-            if self.debug:
-                print(f"🔍 DEBUG: Score in-sample: {score_ins}")
-            if not np.isfinite(score_ins):
-                score_ins = -1.0
+                print(f"🔍 DEBUG: Score in-sample: {score}")
+            
+            if not np.isfinite(score):
+                score = -1.0
+                
             if self.debug:
                 print(f"🔍 DEBUG: Modelos guardados en {model_main_path} y {model_meta_path}")
-            return score_ins, (model_main_path, model_meta_path), (main_feature_cols, meta_feature_cols)
+            return score, (model_main_path, model_meta_path), (main_feature_cols, meta_feature_cols)
         except Exception as e:
             print(f"Error en función de entrenamiento y test: {str(e)}")
             return None, None, None

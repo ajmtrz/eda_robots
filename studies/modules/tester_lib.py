@@ -228,16 +228,17 @@ def tester(
     if rpt.size < 2:
         return -1.0
 
+    
     if print_metrics:
+        # Recalcular con métricas completas para debugging
         score, metrics_tuple = evaluate_report(rpt, periods_per_year)
         metrics_dict = metrics_tuple_to_dict(score, metrics_tuple, periods_per_year)
         title = f"Tester {direction.upper()}"
         if prd:
             title += f" {prd}"
-            print_detailed_metrics(metrics_dict, title)
-        else:
-            # Solo calcular score
-            score = evaluate_report(rpt, periods_per_year)[0]
+        print_detailed_metrics(metrics_dict, title)
+    else:
+        score = evaluate_report(rpt, periods_per_year)[0]
 
     if plot:
         title = f"Period: {prd}" if prd else "Strategy Performance"
@@ -388,16 +389,18 @@ def evaluate_report(eq: np.ndarray, ppy: float = 6240.0):
     activ   = 1.0/(1.0+np.exp(-(n_trades-300.0)/30.0))
     agil_n  = gap_n
 
-    # 3) Score final: priorizar riesgo-retorno sobre consistencia lineal
-    
+    # 3) Score final: priorizar riesgo-retorno pero premiar curvas lineales
+
     # Componentes principales con pesos más realistas
     risk_adj = (sr_n * sortino_n * calmar_n) ** (1.0/3.0)  # Riesgo-retorno (peso dominante)
     quality  = (mdd_n ** 2.0 * gap_n * vol_penalty) ** (1.0/4.0)  # Control de riesgo MÁS estricto en DD
-    trend    = r2_n ** 0.1                                  # Consistencia (peso mínimo)
-    
-    # Score: riesgo-retorno domina, drawdown penaliza fuertemente
-    # Fórmula: risk^3 * quality^2 * trend^0.5 * activity
-    core_score = (risk_adj ** 3.0 * quality ** 2.0 * trend ** 0.5 * activ) ** (1.0/6.5)
+
+    # Tendencia: solo se premia si la pendiente es positiva
+    trend_lin = max(0.0, r2)             # [-1,1] -> [0,1] (negativa = 0)
+
+    # Score: riesgo-retorno domina, drawdown penaliza fuertemente,
+    # y se incentiva la linealidad creciente de la curva
+    core_score = (risk_adj ** 3.0 * quality ** 2.0 * trend_lin * activ) ** (1.0/6.0)
     
     # Media geométrica final para suavizar
     score = core_score ** 0.6  # Permitir más diferenciación

@@ -93,16 +93,28 @@ def quick_analysis():
     
     print("\n📊 RESULTADOS DEL SCORING:")
     print("-" * 80)
-    key_cols = ['curve_name', 'score', 'r2', 'sharpe_ratio', 'max_drawdown_relative', 'total_return']
-    print(df[key_cols].round(4).to_string(index=False))
+    # Verificar qué columnas están disponibles
+    available_cols = ['curve_name', 'score']
+    for col in ['r2', 'sharpe_ratio', 'max_drawdown', 'max_drawdown_relative', 'total_return']:
+        if col in df.columns:
+            available_cols.append(col)
+    
+    print(f"Columnas disponibles: {list(df.columns)}")
+    print(df[available_cols].round(4).to_string(index=False))
     
     # Análisis de correlaciones
     print("\n🔗 CORRELACIONES CON EL SCORE:")
-    metrics_cols = ['r2', 'sharpe_ratio', 'sortino_ratio', 'max_drawdown_relative', 'total_return']
-    correlations = df[metrics_cols + ['score']].corr()['score'].drop('score')
-    correlations = correlations.sort_values(ascending=False)
-    for metric, corr in correlations.items():
-        print(f"  {metric}: {corr:.4f}")
+    # Usar solo columnas que existen
+    possible_metrics = ['r2', 'sharpe_ratio', 'sortino_ratio', 'max_drawdown', 'max_drawdown_relative', 'total_return']
+    metrics_cols = [col for col in possible_metrics if col in df.columns]
+    
+    if metrics_cols:
+        correlations = df[metrics_cols + ['score']].corr()['score'].drop('score')
+        correlations = correlations.sort_values(ascending=False)
+        for metric, corr in correlations.items():
+            print(f"  {metric}: {corr:.4f}")
+    else:
+        print("  No hay métricas disponibles para correlaciones")
     
     # Crear visualización
     create_quick_visualization(curves, df)

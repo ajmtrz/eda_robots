@@ -1887,7 +1887,7 @@ def calculate_atr_simple(high, low, close, period=14):
 
 # ONE DIRECTION LABELING
 @njit(cache=True, fastmath=True)
-def calculate_labels_one_direction(high, low, close, markup, min_val, max_val, direction_int, atr_period=14, method_int=2):
+def calculate_labels_one_direction(high, low, close, markup, min_val, max_val, direction_int, atr_period=14, method_int=5):
     n = len(close)
     if n <= max_val:
         return np.zeros(0, dtype=np.float64)
@@ -1920,12 +1920,12 @@ def calculate_labels_one_direction(high, low, close, markup, min_val, max_val, d
     return result
 
 def get_labels_one_direction(dataset, markup=0.5, min_val=1, max_val=5,
-                             direction='buy', atr_period=14, method='mean') -> pd.DataFrame:
+                             direction='buy', atr_period=14, method='random') -> pd.DataFrame:
     close_data = np.ascontiguousarray(dataset['close'].values)
     high_data = np.ascontiguousarray(dataset['high'].values)
     low_data = np.ascontiguousarray(dataset['low'].values)
     direction_map = {'buy': 0, 'sell': 1}
-    method_map = {'first': 0, 'last': 1, 'mean': 2, 'max': 3, 'min': 4}
+    method_map = {'first': 0, 'last': 1, 'mean': 2, 'max': 3, 'min': 4, 'random': 5}
     if direction in {'buy', 'sell'}:
         direction_int = direction_map.get(direction, 0)
         method_int = method_map.get(method, 5)

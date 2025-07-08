@@ -1,3 +1,4 @@
+import threading
 from numba import njit, prange, float64, int64
 import numpy as np
 import pandas as pd
@@ -5,45 +6,49 @@ from datetime import datetime
 import matplotlib.pyplot as plt
 import onnxruntime as rt
 from functools import lru_cache
-rt.set_default_logger_severity(4)
 
-def audit_index(
-        idx: pd.DatetimeIndex,
-        name: str = "train",
-        show_examples: int = 5,
-    ) -> None:
-        """
-        Comprueba orden, duplicados y huecos de un DatetimeIndex.
-        Imprime detalle de los gaps distintos al paso modal.
-        """
-        assert idx.is_monotonic_increasing,  f"{name}: índice no ordenado"
-        assert idx.is_unique,               f"{name}: índices duplicados"
+# Configuración thread-safe de ONNX Runtime
+_onnx_configured = False
+_onnx_lock = threading.RLock()
 
-        # diferencias entre ticks contiguos
-        deltas = idx.to_series().diff().dropna()
+def _configure_onnx_runtime():
+    """Configuración thread-safe de ONNX Runtime"""
+    global _onnx_configured
+    with _onnx_lock:
+        if not _onnx_configured:
+            rt.set_default_logger_severity(4)
+            _onnx_configured = True
 
-        # paso modal → el considerado "normal"
-        mode_delta = deltas.mode().iloc[0]
+def clear_onnx_cache():
+    """Limpia la caché de sesiones ONNX (útil para gestión de memoria)"""
+    with _session_lock:
+        _session_cache.clear()
 
-        # máscara de huecos
-        gap_mask = deltas != mode_delta
+# Thread-safe session cache
+_session_cache = {}
+_session_lock = threading.RLock()
 
-        if not gap_mask.any():
-            print(f"✅ {name}: sin huecos – paso constante = {mode_delta}")
+# Thread-safe plotting
+_plot_lock = threading.RLock()
+
+# Constantes financieras corregidas
+RISK_FREE_RATE = 0.02    # Tasa libre de riesgo anual (2%)
+
+def _safe_plot(equity_curve, title="Strategy Performance", score=None):
+    """Thread-safe plotting function"""
+    with _plot_lock:
+        plt.figure(figsize=(10, 6))
+        plt.plot(equity_curve, label='Equity Curve', linewidth=1.5)
+        if score is not None:
+            plt.title(f"{title} - Score: {score:.3f}")
         else:
-            gap_counts = deltas[gap_mask].value_counts().sort_index()
-            print(f"⚠️ {name}: {gap_counts.size} tipo(s) de gap encontrados "
-                f"(paso normal = {mode_delta})")
-
-            for gap_delta, count in gap_counts.items():
-                print(f"   • gap {gap_delta}  →  {count} veces")
-                # mostrar algunos ejemplos
-                examples = deltas[deltas == gap_delta].head(show_examples)
-                for ts, gap in examples.items():
-                    prev = ts - gap
-                    print(f"        {prev}  →  {ts}")
-
-        print(f"{name}: {len(idx):,} filas  ({idx[0]}  →  {idx[-1]})\n")
+            plt.title(title)
+        plt.xlabel("Time")
+        plt.ylabel("Cumulative P&L")
+        plt.legend()
+        plt.grid(alpha=0.3)
+        plt.show()
+        plt.close()
 
 @njit(cache=True, fastmath=True)
 def process_data(close, labels, metalabels, meta_thr=0.5):
@@ -126,6 +131,34 @@ def process_data_one_direction(close, main_labels, meta_labels, direction_int):
 # ───────────────────────────────────────────────────────────────────
 # 2)  Wrappers del tester
 # ───────────────────────────────────────────────────────────────────
+
+def get_periods_per_year(timeframe: str) -> float:
+    """
+    Calcula períodos por año basado en el timeframe.
+    Asume mercado XAUUSD: ~120 horas de trading por semana, 52 semanas/año.
+    
+    Args:
+        timeframe: 'M5', 'M15', 'M30', 'H1', 'H4', 'D1'
+    
+    Returns:
+        float: Número de períodos por año para ese timeframe
+    """
+    # Mapeo de timeframes a períodos por año (ajustado para XAUUSD)
+    if timeframe == 'M5':
+        return 74880.0    # 120h/sem * 60min/h / 5min * 52sem = 74,880
+    elif timeframe == 'M15':
+        return 24960.0    # 120h/sem * 60min/h / 15min * 52sem = 24,960
+    elif timeframe == 'M30':
+        return 12480.0    # 120h/sem * 60min/h / 30min * 52sem = 12,480
+    elif timeframe == 'H1':
+        return 6240.0     # 120h/sem * 52sem = 6,240
+    elif timeframe == 'H4':
+        return 1560.0     # 30 períodos/sem * 52sem = 1,560
+    elif timeframe == 'D1':
+        return 260.0      # 5 días/sem * 52sem = 260
+    else:
+        return 6240.0     # Default a H1 si timeframe no reconocido
+
 def tester(
         dataset: pd.DataFrame,
         model_main: object,
@@ -134,7 +167,9 @@ def tester(
         model_meta_cols: list[str],
         direction: str = 'both',
         plot: bool = False,
-        prd: str = '') -> float:
+        prd: str = '',
+        timeframe: str = 'H1',
+        print_metrics: bool = False) -> float:
 
     """Evalúa una estrategia para una o ambas direcciones.
 
@@ -156,12 +191,19 @@ def tester(
         Si ``True`` muestra la curva de equity.  Por defecto ``False``.
     prd : str, optional
         Etiqueta del periodo a mostrar en el gráfico.
+    timeframe : str, optional
+        Timeframe de los datos para cálculos de anualización. Por defecto ``'H1'``.
+    print_metrics : bool, optional
+        Si ``True`` imprime métricas detalladas para debugging. Por defecto ``False``.
 
     Returns
     -------
     float
         Puntuación de la estrategia según :func:`evaluate_report`.
     """
+    # Convertir timeframe a períodos por año fuera de funciones jiteadas
+    periods_per_year = get_periods_per_year(timeframe)
+    
     # Preparación de datos
     ds_main = dataset[model_main_cols].to_numpy()
     ds_meta = dataset[model_meta_cols].to_numpy()
@@ -186,247 +228,298 @@ def tester(
     if rpt.size < 2:
         return -1.0
 
-    score = evaluate_report(rpt)
+    if print_metrics:
+        score, metrics_tuple = evaluate_report(rpt, periods_per_year)
+        metrics_dict = metrics_tuple_to_dict(score, metrics_tuple, periods_per_year)
+        title = f"Tester {direction.upper()}"
+        if prd:
+            title += f" {prd}"
+            print_detailed_metrics(metrics_dict, title)
+        else:
+            # Solo calcular score
+            score = evaluate_report(rpt, periods_per_year)[0]
 
     if plot:
-        plt.figure(figsize=(8, 4))
-        plt.plot(rpt, label='Equity Curve')
-        plt.xlabel("Operations")
-        plt.ylabel("Cumulative Profit")
-        if prd:
-            plt.title(f"Period: {prd} | Score: {score:.2f}")
-        else:
-            plt.title(f"Score: {score:.2f}")
-        plt.legend()
-        plt.grid(alpha=0.3)
-        plt.show()
+        title = f"Period: {prd}" if prd else "Strategy Performance"
+        _safe_plot(rpt, title=title, score=score)
 
     return score
 
+# ────────── helpers ──────────────────────────────────────────────────────────
 @njit(cache=True, fastmath=True)
-def _signed_r2(y):
-    n = y.size
-    t = np.arange(n, dtype=np.float64)
-    t_mean = t.mean()
-    y_mean = y.mean()
-    cov = np.sum((t - t_mean) * (y - y_mean))
-    var_t = np.sum((t - t_mean)**2)
-    var_y = np.sum((y - y_mean)**2)
-    if var_t == 0 or var_y == 0:
+def _signed_r2(eq):
+    n  = eq.size
+    t  = np.arange(n, dtype=np.float64)
+    xm = t.mean(); ym = eq.mean()
+    cov   = ((t-xm)*(eq-ym)).sum()
+    var_t = ((t-xm)**2).sum()
+    var_y = ((eq-ym)**2).sum()
+    if var_t == 0.0 or var_y == 0.0:
         return 0.0
     slope = cov / var_t
-    r2 = (cov**2) / (var_t * var_y)
-    return np.sign(slope) * r2
+    r2    = (cov*cov)/(var_t*var_y)
+    return np.sign(slope) * r2        # ∈[-1,1]
 
 @njit(cache=True, fastmath=True)
-def _max_dd_curve(eq):
+def _max_dd_and_gap(eq):
     peak = eq[0]
     mdd  = 0.0
+    gap  = 0
+    last_gap = 0
     for x in eq:
-        if x > peak:
+        if x >= peak:
             peak = x
-        dd = peak - x
-        if dd > mdd:
-            mdd = dd
-    return mdd
-
-@njit(cache=True, fastmath=True)
-def _bars_since_last_high(eq):
-    last_high = eq[0]
-    gap = 0
-    for x in eq:
-        if x >= last_high:
-            last_high = x
-            gap = 0
+            gap  = 0
         else:
+            d = peak - x
+            if d > mdd:
+                mdd = d
             gap += 1
-    return gap
+            last_gap = gap
+    return mdd, last_gap
 
 @njit(cache=True, fastmath=True)
-def uniform_filter1d(x: np.ndarray, size: int) -> np.ndarray:
-    if size < 1:
-        raise ValueError("`size` debe ser >= 1")
-
-    n = x.size
-    out = np.empty_like(x)
-
-    left  = size // 2
-    right = size - left  # incluye posición i
-
-    for i in range(n):
-        acc = 0.0
-        for k in range(-left, right):
-            idx = i + k
-
-            if idx < 0:
-                idx = -idx - 1
-            elif idx >= n:
-                idx = (2 * n - 1) - idx
-
-            acc += x[idx]
-
-        out[i] = acc / size
-
-    return out
+def _sharpe(ret, ppy=6240.0, rf=0.0):
+    if ret.size < 2:
+        return 0.0
+    ex = ret.mean() - rf/ppy
+    sd = ret.std() + 1e-12
+    return np.sqrt(ppy) * ex / sd
 
 @njit(cache=True, fastmath=True)
-def evaluate_report(eq: np.ndarray) -> float:
-    if eq.size < 15 or not np.isfinite(eq).all():
-        return -1.0
+def _sortino(ret, ppy=6240.0, rf=0.0):
+    target = rf/ppy
+    ex     = ret.mean() - target
+    if ex <= 0.0:
+        return 0.0
+    downside = ret[ret < target]
+    if downside.size == 0:
+        return 10.0
+    dd_std = downside.std() + 1e-12
+    return np.sqrt(ppy) * ex / dd_std
 
-    ret = np.diff(eq)
-    n   = ret.size
-    if n < 10:
-        return -1.0
-    mean_ret = ret.mean()
-    std_ret  = ret.std() + 1e-12
-    skew = np.mean(((ret - mean_ret) / std_ret) ** 3)
-    kurt = np.mean(((ret - mean_ret) / std_ret) ** 4)
-    skew_penalty = 1.0 / (1.0 + np.exp(-skew))
-    kurt_penalty = 1.0 / (1.0 + 0.25 * (kurt - 3.0)**2)
-    shape_penalty = skew_penalty * kurt_penalty
+@njit(cache=True, fastmath=True)
+def _calmar(total_ret, max_dd, years):
+    if abs(max_dd) < 1e-12 or years <= 1e-12:
+        return 0.0
+    if abs(1.0 + total_ret) < 1e-12:
+        return 0.0
+    ann_ret = (1.0 + total_ret) ** (1.0/years) - 1.0
+    return ann_ret / abs(max_dd)
 
-    slope = (eq[-1] - eq[0]) / n
-    sigma = std_ret
-    eq_smooth = uniform_filter1d(eq, 10)
-    sr2 = _signed_r2(eq_smooth)
-    if sr2 <= 0.0:
-        return -1.0
-    ratio = min(5.0, max(-5.0, slope / sigma))
-    trend = 0.5 * (1.0 + sr2)
-    trend *= 1.0 / (1.0 + np.exp(-ratio))
+@njit(cache=True, fastmath=True)
+def _deflated_sharpe(sr, skew, kurt, n_obs):
+    if n_obs < 2:
+        return 0.0
+    var_sr = (1.0 + sr*sr/2.0) / (n_obs-1.0)
+    var_sr = max(var_sr, 1e-12)
+    z      = 1.645                      # ≈ 95 %
+    return sr * (1.0 - z*np.sqrt(var_sr))
 
-    gains  = ret[ret > 0.0].sum()
-    losses = -ret[ret < 0.0].sum() + 1e-12
-    pf   = gains / losses
-    pf_n = 1.0 - np.exp(-pf / 3.0)
+# ────────── evaluación ───────────────────────────────────────────────────────
+@njit(cache=True, fastmath=True)
+def evaluate_report(eq: np.ndarray, ppy: float = 6240.0):
+    """Devuelve (score, metrics_tuple) - Sistema de scoring más realista."""
+    # 0) sanidad mínima
+    if eq.size < 300 or not np.isfinite(eq).all():
+        return (-1.0, (0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 
+                      0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0))
 
-    dd   = _max_dd_curve(eq) + 1e-12
-    rdd = min(10.0, max(0.0, (eq[-1] - eq[0]) / dd))
-    rdd_n = 1.0 - np.exp(-rdd / 6.0)
+    # Protección adicional para curvas con valores muy pequeños o negativos
+    eq_min = np.min(eq)
+    if eq_min <= 0.0:
+        # Desplazar la curva para que todos los valores sean positivos
+        eq = eq - eq_min + 1.0
+    
+    # Cálculo de retornos con protección mejorada
+    eq_prev = eq[:-1]
+    eq_prev_safe = np.maximum(np.abs(eq_prev), 1e-6)  # Protección más fuerte
+    ret = np.diff(eq) / eq_prev_safe
+    
+    n_trades = np.count_nonzero(ret)
+    if n_trades < 250:
+        return (-1.0, (0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 
+                      0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0))
 
-    effic = pf_n * rdd_n
-    stability = 1.0 / (1.0 + std_ret / (np.abs(mean_ret) + 1e-12))
+    # 1) métricas básicas
+    sr      = _sharpe(ret, ppy)
+    sortino = _sortino(ret, ppy)
+    r2      = _signed_r2(eq)
+    mdd, gap = _max_dd_and_gap(eq)
 
-    gap  = _bars_since_last_high(eq)
-    g    = 250.0
-    agil = 1.0 / (1.0 + gap / g)
+    # retornos totales
+    eq_range   = max(abs(eq[-1]), abs(eq[0]), 1.0)
+    total_ret  = (eq[-1]-eq[0]) / eq_range
+    years      = eq.size / ppy
+    calmar     = _calmar(total_ret, mdd/eq_range, years)
 
-    ops = np.count_nonzero(ret)
-    N0  = 150.0
-    s   = 40.0
-    maturity = 1.0 / (1.0 + np.exp(-(ops - N0) / s))
+    # distribución
+    m  = ret.mean()
+    s  = ret.std() + 1e-12
+    skew = np.mean(((ret-m)/s)**3)
+    kurt = np.mean(((ret-m)/s)**4)
+    
+    # Volatilidad anualizada para penalización extra
+    vol_annual = s * np.sqrt(ppy)
 
-    wT = 0.6
-    wE = 0.4
-    core = wT * trend + wE * effic
-    core *= stability
-    score = core * agil * maturity * shape_penalty
-    return score
+    # 2) normalizaciones [0,1] - CORREGIDAS Y MÁS ESTRICTAS
+    r2_n    = max(0.0, min(1.0, (r2 + 1.0) / 2.0))  # R² normalizado [-1,1] -> [0,1]
+    
+    # Sharpe y Sortino: más estrictos y realistas
+    sr_n    = 1.0 / (1.0 + np.exp(-max(sr, -10.0)/1.0))      # Más estricto
+    sortino_n = 1.0 / (1.0 + np.exp(-max(sortino, -10.0)/1.0))  # Más estricto
+    
+    # Drawdown: MUCHO más estricto
+    mdd_rel = mdd/eq_range
+    mdd_n   = np.exp(-15.0 * mdd_rel)  # Penalización exponencial severa
+    
+    # Gap/stagnation: más estricto
+    gap_n   = np.exp(-gap/50.0)       # Penalizar estancamiento duramente
+    
+    # Calmar: corregido
+    calmar_n = 1.0 / (1.0 + np.exp(-max(calmar, -10.0)))
+    
+    # Volatilidad: penalización directa por alta volatilidad
+    vol_penalty = 1.0 / (1.0 + vol_annual/0.3)  # Penalizar vol > 30% anual
+    
+    # Distribución
+    skew_n  = 1.0/(1.0+np.exp(-skew))
+    kurt_n  = 1.0/(1.0+0.25*(kurt-3.0)**2)
+    activ   = 1.0/(1.0+np.exp(-(n_trades-300.0)/30.0))
+    agil_n  = gap_n
 
-def tester_one_direction(
-        dataset: pd.DataFrame,
-        model_main: object,
-        model_meta: object,
-        model_main_cols: list[str],
-        model_meta_cols: list[str],
-        direction: str = 'buy',
-        plot: bool = False,
-        prd: str = '') -> float:
-    """Mantiene compatibilidad con la API anterior."""
-    return tester(
-        dataset=dataset,
-        model_main=model_main,
-        model_meta=model_meta,
-        model_main_cols=model_main_cols,
-        model_meta_cols=model_meta_cols,
-        direction=direction,
-        plot=plot,
-        prd=prd,
+    # 3) Score final: priorizar riesgo-retorno sobre consistencia lineal
+    
+    # Componentes principales con pesos más realistas
+    risk_adj = (sr_n * sortino_n * calmar_n) ** (1.0/3.0)  # Riesgo-retorno (peso dominante)
+    quality  = (mdd_n ** 2.0 * gap_n * vol_penalty) ** (1.0/4.0)  # Control de riesgo MÁS estricto en DD
+    trend    = r2_n ** 0.1                                  # Consistencia (peso mínimo)
+    
+    # Score: riesgo-retorno domina, drawdown penaliza fuertemente
+    # Fórmula: risk^3 * quality^2 * trend^0.5 * activity
+    core_score = (risk_adj ** 3.0 * quality ** 2.0 * trend ** 0.5 * activ) ** (1.0/6.5)
+    
+    # Media geométrica final para suavizar
+    score = core_score ** 0.6  # Permitir más diferenciación
+    
+    # Penalización inteligente por retornos negativos
+    if total_ret <= 0.0:
+        # Si tiene buen Sharpe/Sortino, ser menos severo
+        risk_quality = (sr_n * sortino_n) ** 0.5
+        base_penalty = 0.3 + 0.4 * risk_quality  # [0.3, 0.7] basado en calidad
+        ret_penalty = 1.0 / (1.0 + abs(total_ret) * 1.5)  # Gradual por retorno
+        penalty = base_penalty * ret_penalty
+        score *= penalty
+
+    # 4) métricas extra para debug/registro
+    defl_sr = _deflated_sharpe(sr, skew, kurt, n_trades)
+    shape_score = 0.5*(skew_n + kurt_n)
+
+    metrics_tuple = (
+        r2, activ,
+        mdd, mdd_rel, mdd_n,
+        sr, sr_n,
+        sortino, sortino_n,
+        calmar, calmar_n,
+        skew, skew_n,
+        kurt, kurt_n,
+        agil_n, defl_sr,
+        core_score, shape_score,
+        total_ret, n_trades, gap
     )
 
-# ─────────────────────────────────────────────
-# tester_slow  (mantenerlo o borrarlo)
-# ─────────────────────────────────────────────
-def tester_slow(dataset, markup, plot=False):
-    last_deal = 2
-    last_price = 0.0
-    report, chart = [0.0], [0.0]
+    return score, metrics_tuple
 
-    close = dataset['close'].to_numpy()
-    main = dataset['labels_main'].to_numpy()
-    metalabels = dataset['labels_meta'].to_numpy()
+# ────────── conversor ────────────────────────────────────────────────────────
+def metrics_tuple_to_dict(
+        score: float,
+        metrics_tuple: tuple,
+        periods_per_year: float
+    ) -> dict:
+    """Convierte la tupla devuelta por evaluate_report en un dict legible."""
+    # Orden y nombres según la tupla metrics_tuple:
+    # (r2, activ, mdd, mdd_rel, mdd_n, sr, sr_n, sortino, sortino_n, calmar, calmar_n,
+    #  skew, skew_n, kurt, kurt_n, agil_n, defl_sr, core_score, shape_score, total_ret, n_trades, gap)
+    return {
+        # ✅ óptimo global
+        'score':                    score,
+        # ── métricas de tendencia/actividad
+        'r2':                       metrics_tuple[0],
+        'activity':                 metrics_tuple[1],
+        # ── drawdown
+        'max_drawdown':             metrics_tuple[2],
+        'max_drawdown_relative':    metrics_tuple[3],
+        'max_drawdown_normalized':  metrics_tuple[4],
+        # ── riesgo-retorno
+        'sharpe_ratio':             metrics_tuple[5],
+        'sharpe_normalized':        metrics_tuple[6],
+        'sortino_ratio':            metrics_tuple[7],
+        'sortino_normalized':       metrics_tuple[8],
+        'calmar_ratio':             metrics_tuple[9],
+        'calmar_normalized':        metrics_tuple[10],
+        # ── forma de la distribución
+        'skewness':                 metrics_tuple[11],
+        'skewness_normalized':      metrics_tuple[12],
+        'kurtosis':                 metrics_tuple[13],
+        'kurtosis_normalized':      metrics_tuple[14],
+        # ── agilidad / stagnation
+        'agility_normalized':       metrics_tuple[15],
+        # ── control de sobre-optimización
+        'deflated_sharpe':          metrics_tuple[16],
+        # ── componentes internos del score
+        'core_score':               metrics_tuple[17],
+        'shape_score':              metrics_tuple[18],
+        # ── rentabilidad global
+        'total_return':             metrics_tuple[19],
+        # ── operativa
+        'n_trades':                 metrics_tuple[20],
+        'last_high_gap':            metrics_tuple[21],
+        # ── contexto
+        'periods_per_year':         periods_per_year
+    }
 
-    for i in range(dataset.shape[0]):
-        pred, pr, pred_meta = main[i], close[i], metalabels[i]
+# ────────── impresor de métricas ─────────────────────────────────────────────
+def print_detailed_metrics(metrics: dict, title: str = "Strategy Metrics"):
+    """
+    Imprime las métricas detalladas en formato de depuración.
+    
+    Args:
+        metrics: Diccionario devuelto por metrics_tuple_to_dict
+        title:   Encabezado para el bloque de debug
+    """
+    # Correspondencia exacta con el diccionario y la tupla
+    print(f"🔍 DEBUG: {title} - Score: {metrics['score']:.4f}\n"
+          f"  • R²={metrics['r2']:.4f} | Activity={metrics['activity']:.4f}\n"
+          f"  • Sharpe={metrics['sharpe_ratio']:.4f} | Sharpe_N={metrics['sharpe_normalized']:.4f}\n"
+          f"  • Sortino={metrics['sortino_ratio']:.4f} | Sortino_N={metrics['sortino_normalized']:.4f}\n"
+          f"  • Calmar={metrics['calmar_ratio']:.4f} | Calmar_N={metrics['calmar_normalized']:.4f}\n"
+          f"  • Max DD={metrics['max_drawdown']:.4f} | Max DD Rel={metrics['max_drawdown_relative']:.4f} | Max DD N={metrics['max_drawdown_normalized']:.4f}\n"
+          f"  • Total Ret={metrics['total_return']:.4f} | Trades={metrics['n_trades']}\n"
+          f"  • Skew={metrics['skewness']:.4f} | Skew_N={metrics['skewness_normalized']:.4f}\n"
+          f"  • Kurt={metrics['kurtosis']:.4f} | Kurt_N={metrics['kurtosis_normalized']:.4f}\n"
+          f"  • Agility_N={metrics['agility_normalized']:.4f} | Gap={metrics['last_high_gap']}\n"
+          f"  • Core={metrics['core_score']:.4f} | Shape={metrics['shape_score']:.4f} | DSR={metrics['deflated_sharpe']:.4f}\n"
+          f"  • Periods/Year={metrics['periods_per_year']:.2f}")
 
-        if last_deal == 2 and pred_meta == 1:
-            last_price = pr
-            last_deal  = 0 if pred < 0.5 else 1
-            continue
-
-        if last_deal == 0 and pred > 0.5:
-            last_deal = 2
-            profit = -markup + (pr - last_price)
-            report.append(report[-1] + profit)
-            chart.append(chart[-1] + profit)
-            continue
-
-        if last_deal == 1 and pred < 0.5:
-            last_deal = 2
-            profit = -markup + (last_price - pr)
-            report.append(report[-1] + profit)
-            chart.append(chart[-1] + (pr - last_price))
-            continue
-
-    y = np.array(report).reshape(-1, 1)
-    X = np.arange(len(report)).reshape(-1, 1)
-    lr = _signed_r2(report)
-
-    l = 1 if lr >= 0 else -1
-
-    if plot:
-        plt.plot(report)
-        plt.plot(chart)
-        plt.plot(lr.predict(X))
-        plt.title("Strategy performance R^2 " + str(format(lr.score(X, y) * l, ".2f")))
-        plt.xlabel("the number of trades")
-        plt.ylabel("cumulative profit in pips")
-        plt.show()
-
-    return lr.score(X, y) * l
-
-# ─────────────────────────────────────────────
-# Wrappers
-# ─────────────────────────────────────────────
-def test_model(dataset: pd.DataFrame,
-               result: list,
-               backward: datetime,
-               forward: datetime,
-               plt: bool = False) -> float:
-
-    ext_dataset = dataset.copy()
-    mask = (ext_dataset.index > backward) & (ext_dataset.index < forward)
-    ext_dataset = ext_dataset[mask].reset_index(drop=True)
-
-    X = ext_dataset.iloc[:, 1:].to_numpy()
-    close = ext_dataset['close'].to_numpy()
-
-    return tester(
-        ds_main=X,
-        ds_meta=X,
-        close=close,
-        model_main=result[0],
-        model_meta=result[1],
-        direction='both',
-        plot=plt,
-    )
-
-@lru_cache(maxsize=2)
-def _ort_session(model_path:str):
-    sess  = rt.InferenceSession(model_path,
-                                providers=['CPUExecutionProvider'])
-    iname = sess.get_inputs()[0].name
+def _ort_session(model_path: str):
+    """Thread-safe ONNX session cache"""
+    _configure_onnx_runtime()
+    
+    with _session_lock:
+        if model_path in _session_cache:
+            return _session_cache[model_path]
+        
+        # Crear nueva sesión
+        sess = rt.InferenceSession(model_path, providers=['CPUExecutionProvider'])
+        iname = sess.get_inputs()[0].name
+        
+        # Limitar el tamaño de la caché (máximo 10 sessions)
+        if len(_session_cache) >= 10:
+            # Eliminar la primera entrada (FIFO)
+            oldest_key = next(iter(_session_cache))
+            del _session_cache[oldest_key]
+        
+        _session_cache[model_path] = (sess, iname)
     return sess, iname
 
 def _predict_onnx(model_path:str, X_3d:np.ndarray) -> np.ndarray:

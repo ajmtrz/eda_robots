@@ -31,7 +31,7 @@ from modules.labeling_lib import (
     markov_regime_switching_simple, markov_regime_switching_advanced,
     lgmm_clustering, wkmeans_clustering
 )
-from modules.tester_lib import tester
+from modules.tester_lib import tester, clear_onnx_cache
 from modules.export_lib import export_models_to_ONNX, export_to_mql5
 
 class StrategySearcher:
@@ -890,8 +890,9 @@ class StrategySearcher:
                 model_main_cols=main_feature_cols,
                 model_meta_cols=meta_feature_cols,
                 direction=self.direction,
-                plot=False,
+                plot=True if self.debug else False,
                 prd='full',
+                timeframe=self.timeframe,
             )
             test_train_time_end = time.time()
             if self.debug:
@@ -906,6 +907,8 @@ class StrategySearcher:
         except Exception as e:
             print(f"Error en función de entrenamiento y test: {str(e)}")
             return None, None, None
+        finally:
+            clear_onnx_cache()
         
     def apply_labeling(self, dataset: pd.DataFrame, hp: dict) -> pd.DataFrame:
         """Apply the selected labeling function dynamically.
@@ -1132,6 +1135,8 @@ class StrategySearcher:
             hp['stats_main']   = tuple(main_stats_ordered)
             hp['periods_meta'] = tuple(meta_periods_ordered)
             hp['stats_meta']   = tuple(meta_stats_ordered)
+            if self.debug:
+                print(f"🔍 DEBUG: hp = {hp}")
 
             # Verificar que tenemos al menos períodos y stats main
             if not hp['periods_main'] or not hp['stats_main']:

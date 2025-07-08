@@ -247,238 +247,243 @@ def tester(
     return score
 
 # ────────── helpers ──────────────────────────────────────────────────────────
+# Constantes financieras
+RISK_FREE_RATE = 0.02    # Tasa libre de riesgo anual (2%)
+
+
 @njit(cache=True, fastmath=True)
 def _signed_r2(eq):
-    n  = eq.size
-    t  = np.arange(n, dtype=np.float64)
-    xm = t.mean(); ym = eq.mean()
-    cov   = ((t-xm)*(eq-ym)).sum()
+    """R² con signo - versión optimizada que favorece pendientes positivas"""
+    n = eq.size
+    t = np.arange(n, dtype=np.float64)
+    xm = t.mean()
+    ym = eq.mean()
+    cov = ((t-xm)*(eq-ym)).sum()
     var_t = ((t-xm)**2).sum()
     var_y = ((eq-ym)**2).sum()
+    
     if var_t == 0.0 or var_y == 0.0:
         return 0.0
+    
     slope = cov / var_t
-    r2    = (cov*cov)/(var_t*var_y)
-    return np.sign(slope) * r2        # ∈[-1,1]
+    r2 = (cov*cov)/(var_t*var_y)
+    
+    # Bonus significativo para pendientes positivas
+    if slope > 0:
+        # Potenciar el R² para pendientes positivas
+        r2_enhanced = min(1.0, r2 * (1.0 + slope/10.0))  # Bonus por pendiente
+        return r2_enhanced
+    else:
+        # Penalizar fuertemente pendientes negativas
+        return -r2
+
 
 @njit(cache=True, fastmath=True)
-def _max_dd_and_gap(eq):
-    peak = eq[0]
-    mdd  = 0.0
-    gap  = 0
-    last_gap = 0
-    for x in eq:
-        if x >= peak:
-            peak = x
-            gap  = 0
+def _linearity_bonus(eq):
+    """Calcula un bonus específico por linealidad ascendente perfecta"""
+    n = eq.size
+    if n < 10:
+        return 0.0
+    
+    # Ajuste lineal manual
+    t = np.arange(n, dtype=np.float64)
+    x_mean = t.mean()
+    y_mean = eq.mean()
+    
+    # Calcular pendiente
+    num = np.sum((t - x_mean) * (eq - y_mean))
+    den = np.sum((t - x_mean) ** 2)
+    
+    if den == 0:
+        return 0.0
+    
+    slope = num / den
+    
+    # Solo bonus para pendientes positivas
+    if slope <= 0:
+        return 0.0
+    
+    # Calcular linealidad (R²)
+    y_pred = slope * (t - x_mean) + y_mean
+    ss_res = np.sum((eq - y_pred) ** 2)
+    ss_tot = np.sum((eq - y_mean) ** 2)
+    
+    if ss_tot == 0:
+        return 1.0 if slope > 0 else 0.0
+    
+    r2 = 1.0 - (ss_res / ss_tot)
+    
+    # Bonus combinado: linealidad * pendiente normalizada
+    # Pendiente ideal: entre 0.1 y 2.0
+    slope_normalized = min(1.0, max(0.0, slope / 2.0))
+    linear_bonus = r2 * slope_normalized
+    
+    return max(0.0, min(1.0, linear_bonus))
+
+
+@njit(cache=True, fastmath=True)
+def _consistency_score(eq):
+    """Evalúa la consistencia del crecimiento (sin volatilidad excesiva)"""
+    if eq.size < 3:
+        return 0.0
+    
+    # Calcular diferencias (returns)
+    diffs = np.diff(eq)
+    
+    # Porcentaje de períodos con crecimiento positivo
+    positive_periods = np.sum(diffs > 0) / len(diffs)
+    
+    # Consistencia de la dirección
+    direction_consistency = min(1.0, positive_periods * 1.5)  # Favor hacia crecimiento
+    
+    # Penalizar volatilidad excesiva relativa al crecimiento promedio
+    if len(diffs) > 0:
+        mean_growth = np.mean(diffs)
+        if mean_growth > 0:
+            volatility = np.std(diffs)
+            vol_ratio = volatility / (mean_growth + 1e-8)
+            vol_penalty = 1.0 / (1.0 + vol_ratio * 2.0)  # Penalizar alta volatilidad
         else:
-            d = peak - x
-            if d > mdd:
-                mdd = d
-            gap += 1
-            last_gap = gap
-    return mdd, last_gap
+            vol_penalty = 0.0
+    else:
+        vol_penalty = 1.0
+    
+    return direction_consistency * vol_penalty
+
 
 @njit(cache=True, fastmath=True)
-def _sharpe(ret, ppy=6240.0, rf=0.0):
-    if ret.size < 2:
+def _slope_reward(eq):
+    """Recompensa específica por pendiente ascendente fuerte"""
+    n = eq.size
+    if n < 2:
         return 0.0
-    ex = ret.mean() - rf/ppy
-    sd = ret.std() + 1e-12
-    return np.sqrt(ppy) * ex / sd
+    
+    # Pendiente simple: (final - inicial) / tiempo
+    total_growth = eq[-1] - eq[0]
+    time_span = n - 1
+    
+    if time_span == 0:
+        return 0.0
+    
+    slope = total_growth / time_span
+    
+    # Normalizar pendiente (rango ideal: 0.1 a 2.0)
+    if slope <= 0:
+        return 0.0
+    
+    # Función sigmoide para recompensar pendientes moderadas a altas
+    # Pendientes muy pequeñas obtienen poco reward
+    # Pendientes ideales (0.2-1.0) obtienen máximo reward
+    # Pendientes muy altas también se recompensan pero menos
+    
+    if slope < 0.1:
+        return slope / 0.1 * 0.3  # Pendientes muy pequeñas: reward mínimo
+    elif slope <= 1.0:
+        return 0.3 + (slope - 0.1) / 0.9 * 0.7  # Rango ideal: reward lineal
+    else:
+        # Pendientes altas: reward alto pero decreciente
+        excess = slope - 1.0
+        return 1.0 * np.exp(-excess * 0.2)  # Decae exponencialmente
 
-@njit(cache=True, fastmath=True)
-def _sortino(ret, ppy=6240.0, rf=0.0):
-    target = rf/ppy
-    ex     = ret.mean() - target
-    if ex <= 0.0:
-        return 0.0
-    downside = ret[ret < target]
-    if downside.size == 0:
-        return 10.0
-    dd_std = downside.std() + 1e-12
-    return np.sqrt(ppy) * ex / dd_std
 
-@njit(cache=True, fastmath=True)
-def _calmar(total_ret, max_dd, years):
-    if abs(max_dd) < 1e-12 or years <= 1e-12:
-        return 0.0
-    if abs(1.0 + total_ret) < 1e-12:
-        return 0.0
-    ann_ret = (1.0 + total_ret) ** (1.0/years) - 1.0
-    return ann_ret / abs(max_dd)
-
-@njit(cache=True, fastmath=True)
-def _deflated_sharpe(sr, skew, kurt, n_obs):
-    if n_obs < 2:
-        return 0.0
-    var_sr = (1.0 + sr*sr/2.0) / (n_obs-1.0)
-    var_sr = max(var_sr, 1e-12)
-    z      = 1.645                      # ≈ 95 %
-    return sr * (1.0 - z*np.sqrt(var_sr))
-
-# ────────── evaluación ───────────────────────────────────────────────────────
 @njit(cache=True, fastmath=True)
 def evaluate_report(eq: np.ndarray, ppy: float = 6240.0):
-    """Devuelve (score, metrics_tuple) - Sistema de scoring más realista."""
-    # 0) sanidad mínima
+    """
+    Sistema de scoring optimizado que favorece curvas lineales ascendentes perfectas.
+    
+    Returns:
+        tuple: (score, metrics_tuple) donde score está optimizado para linealidad ascendente
+    """
+    # Validaciones básicas
     if eq.size < 300 or not np.isfinite(eq).all():
         return (-1.0, (0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 
                       0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0))
-
-    # Protección adicional para curvas con valores muy pequeños o negativos
+    
+    # Protección para valores negativos
     eq_min = np.min(eq)
     if eq_min <= 0.0:
-        # Desplazar la curva para que todos los valores sean positivos
         eq = eq - eq_min + 1.0
     
-    # Cálculo de retornos con protección mejorada
-    eq_prev = eq[:-1]
-    eq_prev_safe = np.maximum(np.abs(eq_prev), 1e-6)  # Protección más fuerte
-    ret = np.diff(eq) / eq_prev_safe
+    # === NUEVAS MÉTRICAS OPTIMIZADAS ===
     
-    n_trades = np.count_nonzero(ret)
-    if n_trades < 250:
-        return (-1.0, (0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 
-                      0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0))
-
-    # 1) métricas básicas
-    sr      = _sharpe(ret, ppy)
-    sortino = _sortino(ret, ppy)
-    r2      = _signed_r2(eq)
-    mdd, gap = _max_dd_and_gap(eq)
-
-    # retornos totales
-    eq_range   = max(abs(eq[-1]), abs(eq[0]), 1.0)
-    total_ret  = (eq[-1]-eq[0]) / eq_range
-    years      = eq.size / ppy
-    calmar     = _calmar(total_ret, mdd/eq_range, years)
-
-    # distribución
-    m  = ret.mean()
-    s  = ret.std() + 1e-12
-    skew = np.mean(((ret-m)/s)**3)
-    kurt = np.mean(((ret-m)/s)**4)
+    # 1. R² con bonus por pendiente positiva
+    r2 = _signed_r2(eq)
     
-    # Volatilidad anualizada para penalización extra
-    vol_annual = s * np.sqrt(ppy)
-
-    # 2) normalizaciones [0,1] - CORREGIDAS Y MÁS ESTRICTAS
-    r2_n    = max(0.0, min(1.0, (r2 + 1.0) / 2.0))  # R² normalizado [-1,1] -> [0,1]
+    # 2. Bonus específico por linealidad ascendente
+    linearity_bonus = _linearity_bonus(eq)
     
-    # Sharpe y Sortino: más estrictos y realistas
-    sr_n    = 1.0 / (1.0 + np.exp(-max(sr, -10.0)/1.0))      # Más estricto
-    sortino_n = 1.0 / (1.0 + np.exp(-max(sortino, -10.0)/1.0))  # Más estricto
+    # 3. Consistencia del crecimiento
+    consistency = _consistency_score(eq)
     
-    # Drawdown: MUCHO más estricto
-    mdd_rel = mdd/eq_range
-    mdd_n   = np.exp(-15.0 * mdd_rel)  # Penalización exponencial severa
+    # 4. Recompensa por pendiente fuerte
+    slope_reward = _slope_reward(eq)
     
-    # Gap/stagnation: más estricto
-    gap_n   = np.exp(-gap/50.0)       # Penalizar estancamiento duramente
+    # 5. Retorno total normalizado
+    total_return = (eq[-1] - eq[0]) / max(abs(eq[0]), 1.0)
     
-    # Calmar: corregido
-    calmar_n = 1.0 / (1.0 + np.exp(-max(calmar, -10.0)))
+    # 6. Penalización por drawdown (simplificada)
+    peak = eq[0]
+    max_dd = 0.0
+    for val in eq:
+        if val > peak:
+            peak = val
+        else:
+            dd = (peak - val) / peak if peak > 0 else 0.0
+            max_dd = max(max_dd, dd)
     
-    # Volatilidad: penalización directa por alta volatilidad
-    vol_penalty = 1.0 / (1.0 + vol_annual/0.3)  # Penalizar vol > 30% anual
+    # Penalización por drawdown exponencial
+    dd_penalty = np.exp(-max_dd * 10.0)  # Fuerte penalización por DD > 10%
     
-    # Distribución
-    skew_n  = 1.0/(1.0+np.exp(-skew))
-    kurt_n  = 1.0/(1.0+0.25*(kurt-3.0)**2)
-    activ   = 1.0/(1.0+np.exp(-(n_trades-300.0)/30.0))
-    agil_n  = gap_n
-
-    # 3) Score final: priorizar riesgo-retorno pero premiar curvas lineales
-
-    # Componentes principales con pesos más realistas
-    risk_adj = (sr_n * sortino_n * calmar_n) ** (1.0/3.0)  # Riesgo-retorno (peso dominante)
-    quality  = (mdd_n ** 2.0 * gap_n * vol_penalty) ** (1.0/4.0)  # Control de riesgo MÁS estricto en DD
-
-    # Tendencia: solo se premia si la pendiente es positiva
-    trend_lin = max(0.0, r2)             # [-1,1] -> [0,1] (negativa = 0)
-
-    # Score: riesgo-retorno domina, drawdown penaliza fuertemente,
-    # y se incentiva la linealidad creciente de la curva
-    core_score = (risk_adj ** 3.0 * quality ** 2.0 * trend_lin * activ) ** (1.0/6.0)
+    # === SCORE OPTIMIZADO ===
     
-    # Media geométrica final para suavizar
-    score = core_score ** 0.6  # Permitir más diferenciación
+    # Componentes principales
+    linearity_component = (r2 + linearity_bonus) / 2.0  # [0,1]
+    growth_component = (slope_reward + consistency) / 2.0          # [0,1]
     
-    # Penalización inteligente por retornos negativos
-    if total_ret <= 0.0:
-        # Si tiene buen Sharpe/Sortino, ser menos severo
-        risk_quality = (sr_n * sortino_n) ** 0.5
-        base_penalty = 0.3 + 0.4 * risk_quality  # [0.3, 0.7] basado en calidad
-        ret_penalty = 1.0 / (1.0 + abs(total_ret) * 1.5)  # Gradual por retorno
-        penalty = base_penalty * ret_penalty
-        score *= penalty
-
-    # 4) métricas extra para debug/registro
-    defl_sr = _deflated_sharpe(sr, skew, kurt, n_trades)
-    shape_score = 0.5*(skew_n + kurt_n)
-
-    metrics_tuple = (
-        r2, activ,
-        mdd, mdd_rel, mdd_n,
-        sr, sr_n,
-        sortino, sortino_n,
-        calmar, calmar_n,
-        skew, skew_n,
-        kurt, kurt_n,
-        agil_n, defl_sr,
-        core_score, shape_score,
-        total_ret, n_trades, gap
+    # Score base: promedio ponderado favoreciendo linealidad
+    base_score = (
+        linearity_component * 0.5 +  # 50% peso a linealidad
+        growth_component * 0.3 +      # 30% peso a crecimiento
+        min(1.0, max(0.0, total_return)) * 0.2  # 20% peso a retorno total
     )
+    
+    # Aplicar penalización por drawdown
+    final_score = base_score * dd_penalty
+    
+    # Bonus adicional para curvas perfectamente lineales ascendentes
+    if r2 > 0.98 and slope_reward > 0.5 and max_dd < 0.01:
+        final_score = min(1.0, final_score * 1.2)  # Bonus del 20%
+    
+    # Asegurar rango [0,1]
+    final_score = max(0.0, min(1.0, final_score))
+    
+    # === MÉTRICAS PARA DEBUGGING ===
+    metrics_tuple = (
+        r2, linearity_bonus, consistency, slope_reward,
+        total_return, max_dd, dd_penalty, linearity_component,
+        growth_component, base_score, final_score,
+        0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0  # Padding
+    )
+    
+    return final_score, metrics_tuple
 
-    return score, metrics_tuple
 
-# ────────── conversor ────────────────────────────────────────────────────────
-def metrics_tuple_to_dict(
-        score: float,
-        metrics_tuple: tuple,
-        periods_per_year: float
-    ) -> dict:
-    """Convierte la tupla devuelta por evaluate_report en un dict legible."""
-    # Orden y nombres según la tupla metrics_tuple:
-    # (r2, activ, mdd, mdd_rel, mdd_n, sr, sr_n, sortino, sortino_n, calmar, calmar_n,
-    #  skew, skew_n, kurt, kurt_n, agil_n, defl_sr, core_score, shape_score, total_ret, n_trades, gap)
+def metrics_tuple_to_dict(score: float, metrics_tuple: tuple, periods_per_year: float) -> dict:
+    """Convierte la tupla de métricas optimizada a diccionario"""
     return {
-        # ✅ óptimo global
-        'score':                    score,
-        # ── métricas de tendencia/actividad
-        'r2':                       metrics_tuple[0],
-        'activity':                 metrics_tuple[1],
-        # ── drawdown
-        'max_drawdown':             metrics_tuple[2],
-        'max_drawdown_relative':    metrics_tuple[3],
-        'max_drawdown_normalized':  metrics_tuple[4],
-        # ── riesgo-retorno
-        'sharpe_ratio':             metrics_tuple[5],
-        'sharpe_normalized':        metrics_tuple[6],
-        'sortino_ratio':            metrics_tuple[7],
-        'sortino_normalized':       metrics_tuple[8],
-        'calmar_ratio':             metrics_tuple[9],
-        'calmar_normalized':        metrics_tuple[10],
-        # ── forma de la distribución
-        'skewness':                 metrics_tuple[11],
-        'skewness_normalized':      metrics_tuple[12],
-        'kurtosis':                 metrics_tuple[13],
-        'kurtosis_normalized':      metrics_tuple[14],
-        # ── agilidad / stagnation
-        'agility_normalized':       metrics_tuple[15],
-        # ── control de sobre-optimización
-        'deflated_sharpe':          metrics_tuple[16],
-        # ── componentes internos del score
-        'core_score':               metrics_tuple[17],
-        'shape_score':              metrics_tuple[18],
-        # ── rentabilidad global
-        'total_return':             metrics_tuple[19],
-        # ── operativa
-        'n_trades':                 metrics_tuple[20],
-        'last_high_gap':            metrics_tuple[21],
-        # ── contexto
-        'periods_per_year':         periods_per_year
+        'score': score,
+        'r2': metrics_tuple[0],
+        'linearity_bonus': metrics_tuple[1],
+        'consistency': metrics_tuple[2],
+        'slope_reward': metrics_tuple[3],
+        'total_return': metrics_tuple[4],
+        'max_drawdown': metrics_tuple[5],
+        'dd_penalty': metrics_tuple[6],
+        'linearity_component': metrics_tuple[7],
+        'growth_component': metrics_tuple[8],
+        'base_score': metrics_tuple[9],
+        'final_score': metrics_tuple[10],
+        'periods_per_year': periods_per_year
     }
 
 # ────────── impresor de métricas ─────────────────────────────────────────────
@@ -492,16 +497,12 @@ def print_detailed_metrics(metrics: dict, title: str = "Strategy Metrics"):
     """
     # Correspondencia exacta con el diccionario y la tupla
     print(f"🔍 DEBUG: {title} - Score: {metrics['score']:.4f}\n"
-          f"  • R²={metrics['r2']:.4f} | Activity={metrics['activity']:.4f}\n"
-          f"  • Sharpe={metrics['sharpe_ratio']:.4f} | Sharpe_N={metrics['sharpe_normalized']:.4f}\n"
-          f"  • Sortino={metrics['sortino_ratio']:.4f} | Sortino_N={metrics['sortino_normalized']:.4f}\n"
-          f"  • Calmar={metrics['calmar_ratio']:.4f} | Calmar_N={metrics['calmar_normalized']:.4f}\n"
-          f"  • Max DD={metrics['max_drawdown']:.4f} | Max DD Rel={metrics['max_drawdown_relative']:.4f} | Max DD N={metrics['max_drawdown_normalized']:.4f}\n"
-          f"  • Total Ret={metrics['total_return']:.4f} | Trades={metrics['n_trades']}\n"
-          f"  • Skew={metrics['skewness']:.4f} | Skew_N={metrics['skewness_normalized']:.4f}\n"
-          f"  • Kurt={metrics['kurtosis']:.4f} | Kurt_N={metrics['kurtosis_normalized']:.4f}\n"
-          f"  • Agility_N={metrics['agility_normalized']:.4f} | Gap={metrics['last_high_gap']}\n"
-          f"  • Core={metrics['core_score']:.4f} | Shape={metrics['shape_score']:.4f} | DSR={metrics['deflated_sharpe']:.4f}\n"
+          f"  • R²={metrics['r2']:.4f} | Linearity Bonus={metrics['linearity_bonus']:.4f}\n"
+          f"  • Consistency={metrics['consistency']:.4f} | Slope Reward={metrics['slope_reward']:.4f}\n"
+          f"  • Total Return={metrics['total_return']:.4f} | Max Drawdown={metrics['max_drawdown']:.4f}\n"
+          f"  • DD Penalty={metrics['dd_penalty']:.4f}\n"
+          f"  • Linearity Comp={metrics['linearity_component']:.4f} | Growth Comp={metrics['growth_component']:.4f}\n"
+          f"  • Base Score={metrics['base_score']:.4f} | Final Score={metrics['final_score']:.4f}\n"
           f"  • Periods/Year={metrics['periods_per_year']:.2f}")
 
 def _ort_session(model_path: str):

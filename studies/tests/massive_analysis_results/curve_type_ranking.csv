@@ -1,7 +1,0 @@
-curve_type,mean,std,count,max
-perfect_linear,0.9404,0.1139,8000,1.0
-volatile_uptrend,0.7319,0.2764,800,1.0
-drawdown,0.2072,0.2284,66,0.9239
-exponential,0.103,0.1319,1000,0.5729
-sideways,0.0001,0.0002,70,0.0015
-declining,0.0,0.0,64,0.0

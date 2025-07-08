@@ -1,0 +1,9 @@
+,score,score,score,score,score,score,linearity_bonus,slope_reward,consistency
+,count,mean,std,min,max,median,mean,mean,mean
+curve_type,,,,,,,,,
+declining,64,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0
+drawdown,66,0.2072,0.2284,0.0099,0.9239,0.1176,0.2381,0.5978,0.4082
+exponential,1000,0.103,0.1319,0.0,0.5729,0.0406,0.2446,0.2043,0.1879
+perfect_linear,8000,0.9404,0.1139,0.5992,1.0,1.0,0.6104,0.7587,0.9499
+sideways,70,0.0001,0.0002,0.0,0.0015,0.0,0.0,0.0001,0.0001
+volatile_uptrend,800,0.7319,0.2764,0.0001,1.0,0.8512,0.2804,0.6584,0.5957

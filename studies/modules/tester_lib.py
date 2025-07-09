@@ -529,7 +529,7 @@ def _linearity_bonus(eq):
     
     linear_bonus = r2 * slope_factor * bonus_multiplier
     
-    return max(0.0, min(2.0, linear_bonus))  # Permitir valores > 1.0
+    return max(0.0, min(1.0, linear_bonus))  # ✅ CORRECCIÓN BUG #3: Normalizado a [0,1]
 
 
 @njit(cache=True, fastmath=True)
@@ -694,7 +694,7 @@ def _trade_activity_score(trade_stats: np.ndarray, eq_length: int) -> float:
     # === SCORE COMBINADO ===
     # Frecuencia (40%) + Calidad (45%) + Bonus actividad (15%)
     base_score = freq_score * 0.4 + quality_score * 0.45
-    final_score = base_score * activity_bonus * 0.15  # 15% peso total en evaluación final
+    final_score = base_score * activity_bonus  # ✅ CORRECCIÓN BUG #1: Peso se aplica en agregación
     
     return max(0.0, min(0.3, final_score))  # Cap máximo de 30% del score total
 
@@ -762,7 +762,7 @@ def _trade_consistency_score(trade_stats: np.ndarray, eq: np.ndarray) -> float:
         signal_consistency * 0.30
     )
     
-    return max(0.0, min(0.2, combined_score * 0.2))  # Cap máximo de 20% del score total
+    return max(0.0, min(1.0, combined_score))  # ✅ CORRECCIÓN BUG #2: Peso se aplica en agregación
 
 
 @njit(cache=True, fastmath=True)

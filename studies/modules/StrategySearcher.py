@@ -781,10 +781,20 @@ class StrategySearcher:
                 periods_main = [start_period + i * step_period for i in range(MAX_MAIN_PERIODS)]
                 periods_main = [p for p in periods_main if p <= 200]
             else:  # mixed
-                # Combinación de períodos cortos, medios y largos
-                short_periods = [trial.suggest_int(f'short_period_{i}', 5, 20) for i in range(3)]
-                medium_periods = [trial.suggest_int(f'medium_period_{i}', 21, 60, log=True) for i in range(3)]
-                long_periods = [trial.suggest_int(f'long_period_{i}', 61, 200, log=True) for i in range(3)]
+                # Combinación de períodos cortos, medios y largos - usando nombres únicos para cada período
+                short_period_1 = trial.suggest_int('short_period_1', 5, 20)
+                short_period_2 = trial.suggest_int('short_period_2', 5, 20)
+                short_period_3 = trial.suggest_int('short_period_3', 5, 20)
+                medium_period_1 = trial.suggest_int('medium_period_1', 21, 60, log=True)
+                medium_period_2 = trial.suggest_int('medium_period_2', 21, 60, log=True)
+                medium_period_3 = trial.suggest_int('medium_period_3', 21, 60, log=True)
+                long_period_1 = trial.suggest_int('long_period_1', 61, 200, log=True)
+                long_period_2 = trial.suggest_int('long_period_2', 61, 200, log=True)
+                long_period_3 = trial.suggest_int('long_period_3', 61, 200, log=True)
+                
+                short_periods = [short_period_1, short_period_2, short_period_3]
+                medium_periods = [medium_period_1, medium_period_2, medium_period_3]
+                long_periods = [long_period_1, long_period_2, long_period_3]
                 periods_main = short_periods + medium_periods + long_periods
             
             # Eliminar duplicados y limitar
@@ -799,34 +809,52 @@ class StrategySearcher:
             # Selección más inteligente de estadísticas por grupos
             stats_selection_strategy = trial.suggest_categorical('stats_strategy', ['balanced', 'momentum_focused', 'volatility_focused', 'distribution_focused'])
             
+            # Pre-selección de estadísticas usando distribuciones categóricas fijas
+            momentum_stat_choice = trial.suggest_categorical('momentum_stat', MOMENTUM_STATS)
+            volatility_stat_choice = trial.suggest_categorical('volatility_stat', VOLATILITY_STATS)
+            distribution_stat_choice = trial.suggest_categorical('distribution_stat', DISTRIBUTION_STATS)
+            simple_stat_choice = trial.suggest_categorical('simple_stat', SIMPLE_STATS)
+            
+            # Estadísticas adicionales con distribuciones fijas
+            momentum_stat_2 = trial.suggest_categorical('momentum_stat_2', MOMENTUM_STATS)
+            momentum_stat_3 = trial.suggest_categorical('momentum_stat_3', MOMENTUM_STATS)
+            volatility_stat_2 = trial.suggest_categorical('volatility_stat_2', VOLATILITY_STATS)
+            volatility_stat_3 = trial.suggest_categorical('volatility_stat_3', VOLATILITY_STATS)
+            distribution_stat_2 = trial.suggest_categorical('distribution_stat_2', DISTRIBUTION_STATS)
+            distribution_stat_3 = trial.suggest_categorical('distribution_stat_3', DISTRIBUTION_STATS)
+            simple_stat_2 = trial.suggest_categorical('simple_stat_2', SIMPLE_STATS)
+            
             if stats_selection_strategy == 'balanced':
                 # Una estadística de cada grupo principal
                 selected_stats = []
                 if len(selected_stats) < params['max_main_stats']:
-                    selected_stats.append(trial.suggest_categorical('momentum_stat', MOMENTUM_STATS))
+                    selected_stats.append(momentum_stat_choice)
                 if len(selected_stats) < params['max_main_stats']:
-                    selected_stats.append(trial.suggest_categorical('volatility_stat', VOLATILITY_STATS))
+                    selected_stats.append(volatility_stat_choice)
                 if len(selected_stats) < params['max_main_stats']:
-                    selected_stats.append(trial.suggest_categorical('distribution_stat', DISTRIBUTION_STATS))
+                    selected_stats.append(distribution_stat_choice)
                 if len(selected_stats) < params['max_main_stats']:
-                    selected_stats.append(trial.suggest_categorical('simple_stat', SIMPLE_STATS))
+                    selected_stats.append(simple_stat_choice)
             elif stats_selection_strategy == 'momentum_focused':
                 # Foco en momentum + algunas de otros grupos
-                selected_stats = [trial.suggest_categorical(f'momentum_stat_{i}', MOMENTUM_STATS) for i in range(min(3, params['max_main_stats']))]
+                selected_stats = [momentum_stat_choice, momentum_stat_2, momentum_stat_3][:min(3, params['max_main_stats'])]
                 remaining = params['max_main_stats'] - len(selected_stats)
                 if remaining > 0:
-                    selected_stats.extend([trial.suggest_categorical(f'other_stat_{i}', VOLATILITY_STATS + DISTRIBUTION_STATS) for i in range(remaining)])
+                    additional_stats = [volatility_stat_choice, distribution_stat_choice][:remaining]
+                    selected_stats.extend(additional_stats)
             elif stats_selection_strategy == 'volatility_focused':
                 # Foco en volatilidad
-                selected_stats = [trial.suggest_categorical(f'vol_stat_{i}', VOLATILITY_STATS) for i in range(min(3, params['max_main_stats']))]
+                selected_stats = [volatility_stat_choice, volatility_stat_2, volatility_stat_3][:min(3, params['max_main_stats'])]
                 remaining = params['max_main_stats'] - len(selected_stats)
                 if remaining > 0:
-                    selected_stats.extend([trial.suggest_categorical(f'other_stat_{i}', MOMENTUM_STATS + SIMPLE_STATS) for i in range(remaining)])
+                    additional_stats = [momentum_stat_choice, simple_stat_choice][:remaining]
+                    selected_stats.extend(additional_stats)
             else:  # distribution_focused
-                selected_stats = [trial.suggest_categorical(f'dist_stat_{i}', DISTRIBUTION_STATS) for i in range(min(3, params['max_main_stats']))]
+                selected_stats = [distribution_stat_choice, distribution_stat_2, distribution_stat_3][:min(3, params['max_main_stats'])]
                 remaining = params['max_main_stats'] - len(selected_stats)
                 if remaining > 0:
-                    selected_stats.extend([trial.suggest_categorical(f'other_stat_{i}', MOMENTUM_STATS + VOLATILITY_STATS) for i in range(remaining)])
+                    additional_stats = [momentum_stat_choice, volatility_stat_choice][:remaining]
+                    selected_stats.extend(additional_stats)
             
             params['stats_main'] = tuple(list(dict.fromkeys(selected_stats))[:params['max_main_stats']])
 
@@ -844,8 +872,13 @@ class StrategySearcher:
                     periods_meta = periods_meta[:params['max_meta_periods']]
                 params['periods_meta'] = tuple(sorted(periods_meta))
                 
-                # Stats meta seleccionadas de forma coherente
-                meta_stats = [trial.suggest_categorical(f'meta_stat_{i}', SIMPLE_STATS + MOMENTUM_STATS[:2]) for i in range(MAX_META_STATS)]
+                # Stats meta seleccionadas de forma coherente - distribuciones fijas
+                META_STATS_OPTIONS = SIMPLE_STATS + MOMENTUM_STATS[:2]  # Lista fija para evitar dynamic value space
+                meta_stat_1 = trial.suggest_categorical('meta_stat_1', META_STATS_OPTIONS)
+                meta_stat_2 = trial.suggest_categorical('meta_stat_2', META_STATS_OPTIONS)
+                meta_stat_3 = trial.suggest_categorical('meta_stat_3', META_STATS_OPTIONS)
+                
+                meta_stats = [meta_stat_1, meta_stat_2, meta_stat_3][:MAX_META_STATS]
                 params['stats_meta'] = tuple(list(dict.fromkeys(meta_stats))[:params['max_meta_stats']])
             else:
                 params['periods_meta'] = tuple()

@@ -147,7 +147,8 @@ class StrategySearcher:
                     pruner=pruners[self.pruner_type],
                     sampler=optuna.samplers.TPESampler(
                         n_startup_trials=int(np.sqrt(self.n_trials)),
-                        multivariate=True, group=True
+                        multivariate=True, group=True,
+                        warn_independent_sampling=False
                     )
                 )
 

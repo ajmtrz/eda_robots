@@ -436,7 +436,13 @@ def evaluate_report(
     total_ret = equity_curve[-1] - equity_curve[0]
     rdd = total_ret / (max_dd + 1e-9)
 
-    base = 0.4 * profit_factor + 0.6 * rdd
+    # --- Aplicar funciones no lineales para evitar saturación ---
+    # profit_factor: log1p para suavizar crecimiento
+    pf_nl = np.log1p(max(0.0, profit_factor))
+    # rdd: tanh para acotar entre -1 y 1 (pero solo valores positivos tienen sentido)
+    rdd_nl = np.tanh(max(0.0, rdd))
+    # base combinada
+    base = pf_nl + rdd_nl
 
     # Penalizaciones suaves (evitar "**" con booleanos)
     if profit_factor < pf_threshold:
@@ -444,22 +450,24 @@ def evaluate_report(
     if rdd < rdd_threshold:
         base *= 0.9
 
-    # ── Ajuste por nº de trades ───────────────────────────────────
-    trade_weight = 1 + np.log1p(max(0, num_trades - min_trades))
-    base *= trade_weight
-
     # ── Linealidad ────────────────────────────────────────────────
     x = np.arange(n, dtype=np.float64)
     y = equity_curve.astype(np.float64)
     r2, slope = manual_linear_regression(x, y)
-    if slope <= 0 or r2 <= 0:
+    if r2 <= 0:
         return -1.0
-    lin_score = r2 * slope
+    # lin_score: tanh para acotar, y log1p para suavizar pendiente
+    lin_score = np.tanh(r2) * np.log1p(max(0.0, slope))
 
     # ── Sharpe opcional ───────────────────────────────────────────
     sharpe = np.mean(returns) / (np.std(returns) + 1e-9)
-    risk_score = max(0, sharpe)  # evita negativos
+    # risk_score: tanh para acotar
+    risk_score = np.tanh(max(0.0, sharpe))  # evita negativos y acota
 
+    # ── Ajuste por nº de trades ───────────────────────────────────
+    trade_weight = np.log1p(max(0, num_trades - min_trades) + 1)
+    
     # ── Combinación final ─────────────────────────────────────────
-    final = 0.45 * base + 0.35 * lin_score + 0.20 * risk_score
+    final = (base + lin_score + risk_score) * trade_weight
+
     return final

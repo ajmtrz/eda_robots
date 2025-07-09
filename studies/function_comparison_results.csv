@@ -1,0 +1,29 @@
+curve_type,params,score_original,score_improved,expected_min,expected_max,original_passed,improved_passed,improvement
+perfect_linear,"{'slope': 0.1, 'noise': 0.0}",1.0,0.8448701805555567,0.85,1.0,True,False,-0.15512981944444326
+perfect_linear,"{'slope': 0.5, 'noise': 0.0}",1.0,1.0,0.9,1.0,True,True,0.0
+perfect_linear,"{'slope': 1.0, 'noise': 0.0}",1.0,1.0,0.9,1.0,True,True,0.0
+perfect_linear,"{'slope': 2.0, 'noise': 0.0}",1.0,0.9813646335401133,0.85,1.0,True,True,-0.018635366459886726
+perfect_linear,"{'slope': 0.5, 'noise': 0.5}",0.674185228360451,0.9470173655142676,0.7,0.9,False,False,0.2728321371538166
+perfect_linear,"{'slope': 0.5, 'noise': 1.0}",0.5317986899809558,0.9171522793333661,0.6,0.85,False,False,0.38535358935241026
+perfect_linear,"{'slope': 0.5, 'noise': 2.0}",0.20789454561084317,0.8000108967215224,0.5,0.75,False,False,0.5921163511106792
+exponential,{'rate': 0.0005},0.6684924698094457,0.7493466535893663,0.6,0.85,True,True,0.0808541837799206
+exponential,{'rate': 0.001},0.7212198666643181,0.8347173531170591,0.55,0.8,True,False,0.11349748645274094
+exponential,{'rate': 0.002},0.6872481183355352,0.8724210282309163,0.5,0.75,True,False,0.18517290989538104
+stepped,"{'step_size': 5.0, 'step_freq': 50}",0.6153262399796627,0.7721922511278579,0.5,0.75,True,False,0.1568660111481952
+stepped,"{'step_size': 10.0, 'step_freq': 100}",0.5559410808856848,0.7415766359712458,0.45,0.7,True,False,0.18563555508556095
+stepped,"{'step_size': -5.0, 'step_freq': 50}",-1.0,0.0021074296264920337,0.0,0.2,False,True,1.002107429626492
+volatile,"{'trend': 0.1, 'volatility': 5.0}",6.29254612439419e-05,0.036789103000316084,0.2,0.5,False,False,0.03672617753907214
+volatile,"{'trend': 0.0, 'volatility': 10.0}",0.0001812269482875925,0.05363986569974313,0.1,0.4,False,False,0.05345863875145554
+volatile,"{'trend': -0.1, 'volatility': 5.0}",-1.0,0.0026531508515287524,0.0,0.2,False,True,1.0026531508515288
+drawdown_recovery,"{'dd_depth': 0.1, 'dd_location': 0.5}",0.11177013562599002,0.5840859279921843,0.6,0.85,False,False,0.47231579236619425
+drawdown_recovery,"{'dd_depth': 0.3, 'dd_location': 0.5}",0.004979314123507339,0.12969040941944698,0.4,0.65,False,False,0.12471109529593964
+drawdown_recovery,"{'dd_depth': 0.5, 'dd_location': 0.3}",0.00024156254439033822,0.07075783255256696,0.2,0.45,False,False,0.07051627000817662
+sawtooth,"{'period': 100, 'amplitude': 20.0}",0.12477801890734273,0.560711426838107,0.3,0.6,False,True,0.4359334079307643
+sawtooth,"{'period': 50, 'amplitude': 10.0}",0.2574710295487716,0.7188829172698576,0.35,0.65,False,False,0.46141188772108604
+random_walk,{'drift': 0.0},0.003964824895118294,0.1840443298441198,0.0,0.3,True,True,0.18007950494900152
+random_walk,{'drift': 0.01},-1.0,0.015371157157615067,0.1,0.4,False,False,1.0153711571576152
+random_walk,{'drift': -0.01},-1.0,0.006650578882468782,0.0,0.2,False,True,1.0066505788824687
+flat,{'value': 100.0},0.09,0.006299999999999999,0.0,0.1,True,True,-0.0837
+sine_trend,"{'trend': 0.1, 'amplitude': 10.0, 'frequency': 0.05}",0.02594489523032276,0.41188601149109116,0.4,0.7,False,True,0.3859411162607684
+sine_trend,"{'trend': 0.2, 'amplitude': 5.0, 'frequency': 0.1}",0.1675738432525578,0.7288471254454885,0.5,0.8,False,True,0.5612732821929307
+compound,"{'components': [{'type': 'linear', 'slope': 0.3}, {'type': 'sine', 'amplitude': 5.0, 'frequency': 0.02}, {'type': 'noise', 'std': 0.5}]}",0.28919749847125514,0.795680128921136,0.65,0.85,False,True,0.5064826304498808

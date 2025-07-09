@@ -640,7 +640,6 @@ def _trade_activity_score(trade_stats: np.ndarray, eq_length: int) -> float:
     # Extraer estadísticas
     total_trades = trade_stats[0]
     positive_trades = trade_stats[1]
-    negative_trades = trade_stats[2]
     win_rate = trade_stats[4]
     
     if total_trades <= 0:
@@ -1024,3 +1023,509 @@ def _predict_one(model_any, X_2d: np.ndarray) -> np.ndarray:
     else:
         # _predict_onnx espera tensor 3-D: (n_sim, n_rows, n_feat)
         return _predict_onnx(model_any, X_2d[None, :, :])[0]
+
+@njit(cache=True, fastmath=True)
+def evaluate_report(eq: np.ndarray, trade_stats: np.ndarray) -> tuple:
+    """
+    Sistema de scoring ULTRA-OPTIMIZADO para curvas de equity perfectamente lineales.
+    
+    VERSIÓN FINAL - Incorpora mejoras basadas en análisis exhaustivo:
+    + Mayor tolerancia al ruido mediante métricas robustas (MAD)
+    + Penalizaciones más equilibradas para drawdowns
+    + Mejor manejo de curvas volátiles
+    + Promoción inteligente del número de trades
+    + Validaciones menos estrictas
+    
+    Returns:
+        tuple: (metrics_tuple con 17 elementos)
+    """
+    # Validaciones básicas más flexibles
+    if eq.size < 20 or not np.isfinite(eq).all():  # Reducido de 50 a 20
+        return (-1.0, 0.0, 0.0, 0.0, 0.0,
+                0.0, 0.0, 0.0, 0.0, 0.0,
+                0.0, 0.0, 0.0, 0.0, 0.0,
+                0.0, 0.0)
+    
+    # Protección para valores negativos
+    eq_min = np.min(eq)
+    if eq_min <= 0.0:
+        eq = eq - eq_min + 1.0
+    
+    # === MÉTRICAS MEJORADAS ===
+    
+    # 1. R² con mejor manejo de pendientes negativas
+    r2 = _signed_r2_v2(eq)
+    if r2 < -0.5:
+        return (-1.0, 0.0, 0.0, 0.0, 0.0,
+                0.0, 0.0, 0.0, 0.0, 0.0,
+                0.0, 0.0, 0.0, 0.0, 0.0,
+                0.0, 0.0)
+    
+    # 2. Score de linealidad perfecta con tolerancia al ruido
+    perfect_linearity = _perfect_linearity_score_v2(eq)
+    
+    # 3. Bonus de linealidad mejorado
+    linearity_bonus = _linearity_bonus_v2(eq)
+    
+    # 4. Consistencia robusta
+    consistency = _consistency_score_v2(eq)
+    
+    # 5. Recompensa por pendiente optimizada
+    slope_reward = _slope_reward_v2(eq)
+    
+    # 6. Score de crecimiento monótono
+    monotonic_growth = _monotonic_growth_score_v2(eq)
+    
+    # 7. Score de suavidad mejorado
+    smoothness = _smoothness_score_v2(eq)
+    
+    # 8. Retorno total normalizado
+    total_return = max(0.0, (eq[-1] - eq[0]) / max(abs(eq[0]), 1.0))
+    
+    # 9. Penalización equilibrada por drawdown
+    dd_penalty = _advanced_drawdown_penalty_v2(eq)
+    
+    # 10. Score de actividad de trades mejorado
+    trade_activity = _trade_activity_score_v2(trade_stats, eq.size)
+    
+    # 11. Score de consistencia de trades
+    trade_consistency = _trade_consistency_score(trade_stats, eq)
+    
+    # === SISTEMA DE SCORING OPTIMIZADO ===
+    
+    # Componente de linealidad (peso principal)
+    linearity_component = (
+        r2 * 0.25 +                    # R² base (reducido)
+        perfect_linearity * 0.45 +     # Linealidad perfecta (aumentado)
+        linearity_bonus * 0.30         # Bonus linealidad
+    )
+    
+    # Componente de crecimiento consistente
+    growth_component = (
+        slope_reward * 0.40 +          # Recompensa pendiente
+        consistency * 0.35 +           # Consistencia
+        monotonic_growth * 0.25        # Crecimiento monótono
+    )
+    
+    # Componente de calidad técnica
+    quality_component = (
+        smoothness * 0.50 +            # Suavidad (reducido)
+        min(1.0, total_return) * 0.50  # Retorno total
+    )
+    
+    # Componente de robustez estadística (trades)
+    robustness_component = (
+        trade_activity * 0.65 +        # Actividad de trades
+        trade_consistency * 0.35       # Consistencia temporal
+    )
+    
+    # Score base con pesos rebalanceados
+    base_score = (
+        linearity_component * 0.40 +  # 40% peso a linealidad
+        growth_component * 0.25 +     # 25% peso a crecimiento
+        quality_component * 0.20 +    # 20% peso a calidad
+        robustness_component * 0.15   # 15% peso a robustez de trades
+    )
+    
+    # Aplicar penalización por drawdown (más suave)
+    penalized_score = base_score * (0.7 + 0.3 * dd_penalty)  # Mínimo 70% del score base
+    
+    # === SISTEMA DE BONIFICACIÓN REFINADO ===
+    
+    final_score = penalized_score
+    
+    # Bonus por linealidad casi perfecta (R² > 0.95)
+    if r2 > 0.95:
+        perfection_bonus = (r2 - 0.95) / 0.05 * 0.15  # Hasta 15% bonus
+        final_score = min(1.0, final_score * (1.0 + perfection_bonus))
+    
+    # Bonus por combinación perfecta de métricas
+    excellence_count = 0
+    if perfect_linearity > 0.85: excellence_count += 1
+    if monotonic_growth > 0.85: excellence_count += 1
+    if smoothness > 0.75: excellence_count += 1
+    if slope_reward > 0.65: excellence_count += 1
+    if consistency > 0.75: excellence_count += 1
+    
+    if excellence_count >= 3:
+        elite_bonus = 0.03 * excellence_count  # 3% por cada métrica excelente
+        final_score = min(1.0, final_score * (1.0 + elite_bonus))
+    
+    # Bonus por alta actividad de trades positivos
+    total_trades = trade_stats[0]
+    win_rate = trade_stats[4] if total_trades > 0 else 0.0
+    
+    if total_trades > 0 and win_rate > 0.75 and trade_activity > 0.15:
+        trading_excellence_bonus = 0.08  # 8% bonus
+        final_score = min(1.0, final_score * (1.0 + trading_excellence_bonus))
+    
+    # Asegurar rango [0,1]
+    final_score = max(0.0, min(1.0, final_score))
+    
+    # Métricas expandidas para debugging
+    metrics_tuple = (
+        final_score, r2, perfect_linearity, linearity_bonus, consistency, 
+        slope_reward, monotonic_growth, smoothness, total_return, dd_penalty,
+        linearity_component, growth_component, quality_component, base_score, penalized_score,
+        trade_activity, robustness_component
+    )
+    
+    return metrics_tuple
+
+
+# === FUNCIONES AUXILIARES MEJORADAS ===
+
+@njit(cache=True, fastmath=True)
+def _signed_r2_v2(eq):
+    """R² con signo - versión mejorada con mejor manejo de casos especiales"""
+    n = eq.size
+    if n < 2:
+        return 0.0
+        
+    t = np.arange(n, dtype=np.float64)
+    xm = t.mean()
+    ym = eq.mean()
+    
+    cov = ((t-xm)*(eq-ym)).sum()
+    var_t = ((t-xm)**2).sum()
+    var_y = ((eq-ym)**2).sum()
+    
+    if var_t == 0.0 or var_y == 0.0:
+        return 0.0
+    
+    slope = cov / var_t
+    r2 = (cov*cov)/(var_t*var_y)
+    
+    if slope > 0:
+        # Ajuste menos agresivo para pendientes positivas
+        return min(1.0, r2)
+    else:
+        # Penalización reducida para pendientes negativas
+        return max(-0.5, -r2 * 0.3)
+
+
+@njit(cache=True, fastmath=True)
+def _perfect_linearity_score_v2(eq):
+    """Métrica de linealidad perfecta con tolerancia mejorada al ruido"""
+    n = eq.size
+    if n < 10:
+        return 0.0
+    
+    # Ajuste lineal robusto
+    t = np.arange(n, dtype=np.float64)
+    x_mean = t.mean()
+    y_mean = eq.mean()
+    
+    num = np.sum((t - x_mean) * (eq - y_mean))
+    den = np.sum((t - x_mean) ** 2)
+    
+    if den == 0:
+        return 0.0
+    
+    slope = num / den
+    intercept = y_mean - slope * x_mean
+    
+    if slope <= 0:
+        return 0.0
+    
+    # Línea teórica
+    y_perfect = slope * t + intercept
+    
+    # Usar MAD (Median Absolute Deviation) para robustez
+    residuals = eq - y_perfect
+    median_residual = np.median(residuals)
+    mad = np.median(np.abs(residuals - median_residual))
+    
+    # Normalizar por rango o valor medio
+    norm_factor = max(np.max(eq) - np.min(eq), np.mean(eq) * 0.1)
+    if norm_factor < 1e-8:
+        return 0.0
+    
+    normalized_mad = mad / norm_factor
+    
+    # Score con tolerancia mejorada al ruido
+    linearity_score = np.exp(-normalized_mad * 8.0)  # Menos estricto que 10.0
+    
+    # Bonus por pendiente en rango ideal
+    if 0.05 <= slope <= 2.0:
+        slope_bonus = 1.0
+    else:
+        slope_bonus = 0.8
+    
+    return linearity_score * slope_bonus
+
+
+@njit(cache=True, fastmath=True)
+def _linearity_bonus_v2(eq):
+    """Bonus de linealidad mejorado para diferentes rangos de pendiente"""
+    n = eq.size
+    if n < 10:
+        return 0.0
+    
+    t = np.arange(n, dtype=np.float64)
+    x_mean = t.mean()
+    y_mean = eq.mean()
+    
+    num = np.sum((t - x_mean) * (eq - y_mean))
+    den = np.sum((t - x_mean) ** 2)
+    
+    if den == 0:
+        return 0.0
+    
+    slope = num / den
+    
+    if slope <= 0:
+        return 0.0
+    
+    # R² para medir ajuste
+    cov = num
+    var_t = den
+    var_y = np.sum((eq - y_mean) ** 2)
+    
+    if var_y == 0:
+        return 0.0
+    
+    r2 = (cov * cov) / (var_t * var_y)
+    
+    # Bonus más generoso para diferentes pendientes
+    if slope < 0.05:
+        slope_factor = slope / 0.05 * 0.5
+    elif slope < 0.1:
+        slope_factor = 0.5 + (slope - 0.05) / 0.05 * 0.2
+    elif slope < 0.5:
+        slope_factor = 0.7 + (slope - 0.1) / 0.4 * 0.2
+    elif slope < 1.5:
+        slope_factor = 0.9 + (slope - 0.5) / 1.0 * 0.1
+    else:
+        slope_factor = 1.0 * np.exp(-(slope - 1.5) * 0.5)
+    
+    return r2 * slope_factor * 1.5  # Factor aumentado
+
+
+@njit(cache=True, fastmath=True)
+def _consistency_score_v2(eq):
+    """Consistencia mejorada con mejor balance entre dirección y volatilidad"""
+    if eq.size < 3:
+        return 0.0
+    
+    diffs = np.diff(eq)
+    if len(diffs) == 0:
+        return 0.0
+    
+    # Métricas de dirección
+    positive_ratio = np.sum(diffs > 0) / len(diffs)
+    non_negative_ratio = np.sum(diffs >= 0) / len(diffs)
+    
+    # Score direccional balanceado
+    direction_score = positive_ratio * 0.6 + non_negative_ratio * 0.4
+    
+    # Volatilidad usando percentiles para robustez
+    if np.sum(diffs > 0) > 0:
+        p75 = np.percentile(np.abs(diffs), 75)
+        p25 = np.percentile(np.abs(diffs), 25)
+        iqr = p75 - p25
+        
+        median_diff = np.median(diffs[diffs > 0])
+        if median_diff > 0:
+            volatility_ratio = iqr / median_diff
+            volatility_penalty = 1.0 / (1.0 + volatility_ratio * 0.5)
+        else:
+            volatility_penalty = 0.8
+    else:
+        volatility_penalty = direction_score * 0.5
+    
+    return direction_score * volatility_penalty
+
+
+@njit(cache=True, fastmath=True)
+def _slope_reward_v2(eq):
+    """Recompensa por pendiente con rangos más amplios"""
+    n = eq.size
+    if n < 2:
+        return 0.0
+    
+    total_growth = eq[-1] - eq[0]
+    time_span = n - 1
+    
+    if time_span == 0:
+        return 0.0
+    
+    slope = total_growth / time_span
+    
+    if slope <= 0:
+        return 0.0
+    
+    # Sistema más generoso para diferentes pendientes
+    if slope < 0.02:
+        return slope / 0.02 * 0.4
+    elif slope < 0.1:
+        return 0.4 + (slope - 0.02) / 0.08 * 0.3
+    elif slope <= 1.0:
+        return 0.7 + (slope - 0.1) / 0.9 * 0.25
+    elif slope <= 2.0:
+        return 0.95 * np.exp(-(slope - 1.0) * 0.3)
+    else:
+        return 0.9 * np.exp(-(slope - 2.0) * 0.5)
+
+
+@njit(cache=True, fastmath=True)
+def _monotonic_growth_score_v2(eq):
+    """Evalúa crecimiento monótono con tolerancia mejorada"""
+    if eq.size < 10:
+        return 0.0
+    
+    diffs = np.diff(eq)
+    
+    # Métricas de monotonía
+    non_negative_periods = np.sum(diffs >= -1e-10) / len(diffs)  # Tolerancia numérica
+    positive_periods = np.sum(diffs > 0) / len(diffs)
+    
+    # Score base
+    monotonic_score = non_negative_periods * 0.7 + positive_periods * 0.3
+    
+    # Evaluar tamaño de retrocesos
+    negative_diffs = diffs[diffs < 0]
+    if len(negative_diffs) > 0:
+        avg_retroceso = np.mean(np.abs(negative_diffs))
+        avg_avance = np.mean(diffs[diffs > 0]) if np.sum(diffs > 0) > 0 else 0.0
+        
+        if avg_avance > 0:
+            retroceso_ratio = avg_retroceso / avg_avance
+            retroceso_penalty = 1.0 / (1.0 + retroceso_ratio * 2.0)
+        else:
+            retroceso_penalty = 0.5
+    else:
+        retroceso_penalty = 1.0
+    
+    return monotonic_score * retroceso_penalty
+
+
+@njit(cache=True, fastmath=True)
+def _smoothness_score_v2(eq):
+    """Métrica de suavidad con normalización mejorada"""
+    if eq.size < 5:
+        return 0.0
+    
+    first_diff = np.diff(eq)
+    if len(first_diff) < 2:
+        return 0.0
+    
+    second_diff = np.diff(first_diff)
+    
+    # Normalizar por volatilidad de primeras diferencias
+    first_diff_std = np.std(first_diff)
+    if first_diff_std < 1e-8:
+        return 1.0
+    
+    # Usar percentil 80 para robustez
+    acceleration_80 = np.percentile(np.abs(second_diff), 80)
+    normalized_acceleration = acceleration_80 / first_diff_std
+    
+    # Score con curva más suave
+    smoothness = np.exp(-normalized_acceleration * 5.0)
+    
+    return smoothness
+
+
+@njit(cache=True, fastmath=True)
+def _advanced_drawdown_penalty_v2(eq):
+    """Penalización por drawdown más equilibrada y menos severa"""
+    if eq.size < 2:
+        return 1.0
+    
+    peak = eq[0]
+    max_dd = 0.0
+    dd_duration = 0
+    max_dd_duration = 0
+    current_dd = 0.0
+    
+    for i in range(len(eq)):
+        val = eq[i]
+        if val >= peak:
+            peak = val
+            dd_duration = 0
+            current_dd = 0.0
+        else:
+            dd_duration += 1
+            max_dd_duration = max(max_dd_duration, dd_duration)
+            current_dd = (peak - val) / peak if peak > 0 else 0.0
+            max_dd = max(max_dd, current_dd)
+    
+    # Sistema de penalización más suave
+    if max_dd < 0.05:
+        dd_penalty = 1.0
+    elif max_dd < 0.10:
+        dd_penalty = 0.95 - (max_dd - 0.05) / 0.05 * 0.1
+    elif max_dd < 0.20:
+        dd_penalty = 0.85 - (max_dd - 0.10) / 0.10 * 0.15
+    elif max_dd < 0.30:
+        dd_penalty = 0.70 - (max_dd - 0.20) / 0.10 * 0.20
+    elif max_dd < 0.50:
+        dd_penalty = 0.50 - (max_dd - 0.30) / 0.20 * 0.25
+    else:
+        dd_penalty = 0.25 * np.exp(-(max_dd - 0.50) * 2.0)
+    
+    # Penalización por duración menos severa
+    duration_ratio = max_dd_duration / eq.size
+    if duration_ratio < 0.1:
+        duration_penalty = 1.0
+    elif duration_ratio < 0.3:
+        duration_penalty = 0.95 - (duration_ratio - 0.1) / 0.2 * 0.1
+    else:
+        duration_penalty = 0.85
+    
+    return dd_penalty * duration_penalty
+
+
+@njit(cache=True, fastmath=True)
+def _trade_activity_score_v2(trade_stats: np.ndarray, eq_length: int) -> float:
+    """Score de actividad de trades mejorado con mejor balance"""
+    if eq_length < 10:
+        return 0.0
+    
+    total_trades = trade_stats[0]
+    positive_trades = trade_stats[1]
+    win_rate = trade_stats[4]
+    
+    if total_trades <= 0:
+        return 0.0
+    
+    # Frecuencia normalizada
+    trade_frequency = total_trades / eq_length
+    
+    # Score de frecuencia más balanceado
+    if trade_frequency < 0.005:
+        freq_score = trade_frequency / 0.005 * 0.3
+    elif trade_frequency < 0.05:
+        freq_score = 0.3 + (trade_frequency - 0.005) / 0.045 * 0.5
+    elif trade_frequency < 0.15:
+        freq_score = 0.8 + (trade_frequency - 0.05) / 0.10 * 0.15
+    elif trade_frequency < 0.25:
+        freq_score = 0.95 - (trade_frequency - 0.15) / 0.10 * 0.1
+    else:
+        freq_score = 0.85 * np.exp(-(trade_frequency - 0.25) * 4.0)
+    
+    # Score de calidad basado en win rate
+    if win_rate >= 0.8:
+        quality_score = 0.9 + (win_rate - 0.8) / 0.2 * 0.1
+    elif win_rate >= 0.6:
+        quality_score = 0.6 + (win_rate - 0.6) / 0.2 * 0.3
+    elif win_rate >= 0.5:
+        quality_score = 0.4 + (win_rate - 0.5) / 0.1 * 0.2
+    else:
+        quality_score = win_rate / 0.5 * 0.4
+    
+    # Bonus por actividad positiva
+    positive_activity = positive_trades / eq_length
+    if positive_activity > 0.10:
+        activity_bonus = 1.0 + min(0.2, (positive_activity - 0.10) * 1.5)
+    elif positive_activity > 0.02:
+        activity_bonus = 1.0 + (positive_activity - 0.02) / 0.08 * 0.1
+    else:
+        activity_bonus = 1.0
+    
+    # Combinar componentes
+    base_score = freq_score * 0.35 + quality_score * 0.65
+    final_score = base_score * activity_bonus
+    
+    return max(0.0, min(0.35, final_score * 0.35))  # Cap máximo 35% del score total

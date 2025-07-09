@@ -1,0 +1,182 @@
+================================================================================
+REPORTE DE EVALUACIÓN DE LA FUNCIÓN evaluate_report
+================================================================================
+
+PRECISIÓN GENERAL: 42.86% (12/28 tests pasados)
+
+ANÁLISIS POR TIPO DE CURVA:
+----------------------------------------
+
+COMPOUND:
+  Score promedio: 0.2920 ± nan
+  Rango: [0.2920, 0.2920]
+  Precisión: 0.00%
+
+DRAWDOWN_RECOVERY:
+  Score promedio: 0.0390 ± 0.0631
+  Rango: [0.0002, 0.1118]
+  Precisión: 0.00%
+
+EXPONENTIAL:
+  Score promedio: 0.6923 ± 0.0267
+  Rango: [0.6685, 0.7212]
+  Precisión: 100.00%
+
+FLAT:
+  Score promedio: 0.0900 ± nan
+  Rango: [0.0900, 0.0900]
+  Precisión: 100.00%
+
+PERFECT_LINEAR:
+  Score promedio: 0.7697 ± 0.3047
+  Rango: [0.2979, 1.0000]
+  Precisión: 57.14%
+
+RANDOM_WALK:
+  Score promedio: 0.0093 ± 0.0076
+  Rango: [0.0013, 0.0163]
+  Precisión: 66.67%
+
+SAWTOOTH:
+  Score promedio: 0.1911 ± 0.0938
+  Rango: [0.1248, 0.2575]
+  Precisión: 0.00%
+
+SINE_TREND:
+  Score promedio: 0.0968 ± 0.1001
+  Rango: [0.0259, 0.1676]
+  Precisión: 0.00%
+
+STEPPED:
+  Score promedio: 0.0571 ± 0.9159
+  Rango: [-1.0000, 0.6153]
+  Precisión: 66.67%
+
+VOLATILE:
+  Score promedio: -1.0000 ± 0.0000
+  Rango: [-1.0000, -1.0000]
+  Precisión: 0.00%
+
+========================================
+CASOS PROBLEMÁTICOS (fuera del rango esperado):
+----------------------------------------
+
+perfect_linear {'slope': 0.5, 'noise': 0.5}:
+  Score actual: 0.6483
+  Rango esperado: [0.7000, 0.9000]
+  Desviación: 0.0517
+
+perfect_linear {'slope': 0.5, 'noise': 1.0}:
+  Score actual: 0.4417
+  Rango esperado: [0.6000, 0.8500]
+  Desviación: 0.1583
+
+perfect_linear {'slope': 0.5, 'noise': 2.0}:
+  Score actual: 0.2979
+  Rango esperado: [0.5000, 0.7500]
+  Desviación: 0.2021
+
+stepped {'step_size': -5.0, 'step_freq': 50}:
+  Score actual: -1.0000
+  Rango esperado: [0.0000, 0.2000]
+  Desviación: 1.0000
+
+volatile {'trend': 0.1, 'volatility': 5.0}:
+  Score actual: -1.0000
+  Rango esperado: [0.2000, 0.5000]
+  Desviación: 1.2000
+
+volatile {'trend': 0.0, 'volatility': 10.0}:
+  Score actual: -1.0000
+  Rango esperado: [0.1000, 0.4000]
+  Desviación: 1.1000
+
+volatile {'trend': -0.1, 'volatility': 5.0}:
+  Score actual: -1.0000
+  Rango esperado: [0.0000, 0.2000]
+  Desviación: 1.0000
+
+drawdown_recovery {'dd_depth': 0.1, 'dd_location': 0.5}:
+  Score actual: 0.1118
+  Rango esperado: [0.6000, 0.8500]
+  Desviación: 0.4882
+
+drawdown_recovery {'dd_depth': 0.3, 'dd_location': 0.5}:
+  Score actual: 0.0050
+  Rango esperado: [0.4000, 0.6500]
+  Desviación: 0.3950
+
+drawdown_recovery {'dd_depth': 0.5, 'dd_location': 0.3}:
+  Score actual: 0.0002
+  Rango esperado: [0.2000, 0.4500]
+  Desviación: 0.1998
+
+sawtooth {'period': 100, 'amplitude': 20.0}:
+  Score actual: 0.1248
+  Rango esperado: [0.3000, 0.6000]
+  Desviación: 0.1752
+
+sawtooth {'period': 50, 'amplitude': 10.0}:
+  Score actual: 0.2575
+  Rango esperado: [0.3500, 0.6500]
+  Desviación: 0.0925
+
+random_walk {'drift': 0.01}:
+  Score actual: 0.0163
+  Rango esperado: [0.1000, 0.4000]
+  Desviación: 0.0837
+
+sine_trend {'trend': 0.1, 'amplitude': 10.0, 'frequency': 0.05}:
+  Score actual: 0.0259
+  Rango esperado: [0.4000, 0.7000]
+  Desviación: 0.3741
+
+sine_trend {'trend': 0.2, 'amplitude': 5.0, 'frequency': 0.1}:
+  Score actual: 0.1676
+  Rango esperado: [0.5000, 0.8000]
+  Desviación: 0.3324
+
+compound {'components': [{'type': 'linear', 'slope': 0.3}, {'type': 'sine', 'amplitude': 5.0, 'frequency': 0.02}, {'type': 'noise', 'std': 0.5}]}:
+  Score actual: 0.2920
+  Rango esperado: [0.6500, 0.8500]
+  Desviación: 0.3580
+
+========================================
+ANÁLISIS DE ROBUSTEZ ESTADÍSTICA:
+----------------------------------------
+
+perfect_linear_ideal:
+  Consistencia (1-CV): 1.0000
+  Rango relativo: 0.0000
+
+perfect_linear_noisy:
+  Consistencia (1-CV): 0.8746
+  Rango relativo: 0.4959
+
+volatile_positive:
+  Consistencia (1-CV): -432.2576
+  Rango relativo: 1013.6096
+
+volatile_negative:
+  Consistencia (1-CV): -432.0296
+  Rango relativo: 1000.4146
+
+random_walk:
+  Consistencia (1-CV): -501.0012
+  Rango relativo: 1055.7734
+
+========================================
+RECOMENDACIONES DE MEJORA:
+----------------------------------------
+
+- La precisión general es menor al 90%. Revisar los pesos de las métricas.
+
+- Las curvas lineales perfectas no siempre obtienen scores muy altos.
+  Considerar aumentar el peso de 'perfect_linearity' y 'linearity_bonus'.
+
+- 10 casos con actividad de trades muy baja.
+  La métrica trade_activity podría necesitar ajustes.
+
+================================================================================
+FIN DEL REPORTE
+================================================================================

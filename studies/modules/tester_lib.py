@@ -31,16 +31,14 @@ _session_lock = threading.RLock()
 # Thread-safe plotting
 _plot_lock = threading.RLock()
 
-def _safe_plot(equity_curve, title="Strategy Performance", score=None):
+def _safe_plot(equity_curve, metrics_dict):
     """Thread-safe plotting function"""
     with _plot_lock:
+        score = metrics_dict.get('final_score', -1.0)
         plt.figure(figsize=(10, 6))
         plt.plot(equity_curve, label='Equity Curve', linewidth=1.5)
-        if score is not None:
-            plt.title(f"{title} - Score: {score:.3f}")
-        else:
-            plt.title(title)
-        plt.xlabel("Time")
+        plt.title(f"Score: {score:.6f}")
+        plt.xlabel("Trades")
         plt.ylabel("Cumulative P&L")
         plt.legend()
         plt.grid(alpha=0.3)
@@ -163,8 +161,6 @@ def tester(
         model_main_cols: list[str],
         model_meta_cols: list[str],
         direction: str = 'both',
-        plot: bool = False,
-        prd: str = '',
         timeframe: str = 'H1',
         print_metrics: bool = False) -> float:
 
@@ -184,10 +180,6 @@ def tester(
         Meta-modelo entrenado con ``predict_proba``.
     direction : str, optional
         ``'buy'``, ``'sell'`` o ``'both'``. Por defecto ``'both'``.
-    plot : bool, optional
-        Si ``True`` muestra la curva de equity.  Por defecto ``False``.
-    prd : str, optional
-        Etiqueta del periodo a mostrar en el gráfico.
     timeframe : str, optional
         Timeframe de los datos para cálculos de anualización. Por defecto ``'H1'``.
     print_metrics : bool, optional
@@ -198,50 +190,45 @@ def tester(
     float
         Puntuación de la estrategia según :func:`evaluate_report`.
     """
-    # Convertir timeframe a períodos por año fuera de funciones jiteadas
-    periods_per_year = get_periods_per_year(timeframe)
+    try:
+        # Convertir timeframe a períodos por año fuera de funciones jiteadas
+        periods_per_year = get_periods_per_year(timeframe)
+        
+        # Preparación de datos
+        ds_main = dataset[model_main_cols].to_numpy()
+        ds_meta = dataset[model_meta_cols].to_numpy()
+        close = dataset['close'].to_numpy()
+
+        # Calcular probabilidades usando ambos modelos (sin binarizar)
+        main = _predict_one(model_main, ds_main)
+        meta = _predict_one(model_meta, ds_meta)
+
+        # Asegurar contigüidad en memoria
+        close = np.ascontiguousarray(close)
+        main = np.ascontiguousarray(main)
+        meta = np.ascontiguousarray(meta)
+
+        if direction == 'both':
+            rpt, _ = process_data(close, main, meta)
+        else:
+            direction_map = {'buy': 0, 'sell': 1}
+            direction_int = direction_map.get(direction, 0)
+            rpt, _ = process_data_one_direction(close, main, meta, direction_int)
+
+        if rpt.size < 2:
+            return -1.0
+
+        metrics_tuple = evaluate_report(rpt)
+        if print_metrics:
+            metrics_dict = metrics_tuple_to_dict(metrics_tuple)
+            _safe_plot(rpt, metrics_dict)
+            print_detailed_metrics(metrics_dict)
+
+        return metrics_tuple[0]
     
-    # Preparación de datos
-    ds_main = dataset[model_main_cols].to_numpy()
-    ds_meta = dataset[model_meta_cols].to_numpy()
-    close = dataset['close'].to_numpy()
-
-    # Calcular probabilidades usando ambos modelos (sin binarizar)
-    main = _predict_one(model_main, ds_main)
-    meta = _predict_one(model_meta, ds_meta)
-
-    # Asegurar contigüidad en memoria
-    close = np.ascontiguousarray(close)
-    main = np.ascontiguousarray(main)
-    meta = np.ascontiguousarray(meta)
-
-    if direction == 'both':
-        rpt, _ = process_data(close, main, meta)
-    else:
-        direction_map = {'buy': 0, 'sell': 1}
-        direction_int = direction_map.get(direction, 0)
-        rpt, _ = process_data_one_direction(close, main, meta, direction_int)
-
-    if rpt.size < 2:
+    except Exception as e:
+        print(f"🔍 DEBUG: Error en tester: {e}")
         return -1.0
-
-    
-    if print_metrics:
-        # Recalcular con métricas completas para debugging
-        score, metrics_tuple = evaluate_report(rpt, periods_per_year)
-        metrics_dict = metrics_tuple_to_dict(score, metrics_tuple, periods_per_year)
-        title = f"Tester {direction.upper()}"
-        if prd:
-            title += f" {prd}"
-        print_detailed_metrics(metrics_dict, title)
-    else:
-        score = evaluate_report(rpt, periods_per_year)[0]
-
-    if plot:
-        title = f"Period: {prd}" if prd else "Strategy Performance"
-        _safe_plot(rpt, title=title, score=score)
-
-    return score
 
 # ────────── helpers ──────────────────────────────────────────────────────────
 
@@ -573,7 +560,7 @@ def _slope_reward(eq):
 
 
 @njit(cache=True, fastmath=True)
-def evaluate_report(eq: np.ndarray, ppy: float = 6240.0):
+def evaluate_report(eq: np.ndarray) -> tuple:
     """
     Sistema de scoring ULTRA-OPTIMIZADO para curvas de equity perfectamente lineales.
     
@@ -584,11 +571,13 @@ def evaluate_report(eq: np.ndarray, ppy: float = 6240.0):
     - Penalizaciones más estrictas para desviaciones
     
     Returns:
-        tuple: (score, metrics_tuple) donde score está maximizado para linealidad perfecta
+        tuple: (metrics_tuple)
     """
     # Validaciones básicas
     if eq.size < 50 or not np.isfinite(eq).all():  # Reducido de 200 a 50
-        return (-1.0, (0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0))
+        return (-1.0, 0.0, 0.0, 0.0, 0.0,
+                0.0, 0.0, 0.0, 0.0, 0.0,
+                0.0, 0.0, 0.0, 0.0, 0.0)
     
     # Protección para valores negativos
     eq_min = np.min(eq)
@@ -600,7 +589,9 @@ def evaluate_report(eq: np.ndarray, ppy: float = 6240.0):
     # 1. R² con sistema de bonificación exponencial
     r2 = _signed_r2(eq)
     if r2 < 0.0:
-        return (-1.0, (0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0))
+        return (-1.0, 0.0, 0.0, 0.0, 0.0,
+                0.0, 0.0, 0.0, 0.0, 0.0,
+                0.0, 0.0, 0.0, 0.0, 0.0)
     
     # 2. Score de linealidad perfecta (NUEVA MÉTRICA)
     perfect_linearity = _perfect_linearity_score(eq)
@@ -683,39 +674,37 @@ def evaluate_report(eq: np.ndarray, ppy: float = 6240.0):
     
     # === MÉTRICAS EXPANDIDAS PARA DEBUGGING ===
     metrics_tuple = (
-        r2, perfect_linearity, linearity_bonus, consistency, slope_reward,
-        monotonic_growth, smoothness, total_return, dd_penalty,
-        linearity_component, growth_component, quality_component,
-        base_score, penalized_score, final_score
+        final_score, r2, perfect_linearity, linearity_bonus, consistency, 
+        slope_reward, monotonic_growth, smoothness, total_return, dd_penalty,
+        linearity_component, growth_component, quality_component, base_score, penalized_score
     )
     
-    return final_score, metrics_tuple
+    return metrics_tuple
 
 
-def metrics_tuple_to_dict(score: float, metrics_tuple: tuple, periods_per_year: float) -> dict:
+def metrics_tuple_to_dict(metrics_tuple: tuple) -> dict:
     """Convierte la tupla de métricas optimizada a diccionario - EXPANDIDO"""
+    # Asegura que la clave 'final_score' esté presente y consistente con la tupla
     return {
-        'score': score,
-        'r2': metrics_tuple[0],
-        'perfect_linearity': metrics_tuple[1],
-        'linearity_bonus': metrics_tuple[2],
-        'consistency': metrics_tuple[3],
-        'slope_reward': metrics_tuple[4],
-        'monotonic_growth': metrics_tuple[5],
-        'smoothness': metrics_tuple[6],
-        'total_return': metrics_tuple[7],
-        'dd_penalty': metrics_tuple[8],
-        'linearity_component': metrics_tuple[9],
-        'growth_component': metrics_tuple[10],
-        'quality_component': metrics_tuple[11],
-        'base_score': metrics_tuple[12],
-        'penalized_score': metrics_tuple[13],
-        'final_score': metrics_tuple[14],
-        'periods_per_year': periods_per_year
+        'final_score': metrics_tuple[0],
+        'r2': metrics_tuple[1],
+        'perfect_linearity': metrics_tuple[2],
+        'linearity_bonus': metrics_tuple[3],
+        'consistency': metrics_tuple[4],
+        'slope_reward': metrics_tuple[5],
+        'monotonic_growth': metrics_tuple[6],
+        'smoothness': metrics_tuple[7],
+        'total_return': metrics_tuple[8],
+        'dd_penalty': metrics_tuple[9],
+        'linearity_component': metrics_tuple[10],
+        'growth_component': metrics_tuple[11],
+        'quality_component': metrics_tuple[12],
+        'base_score': metrics_tuple[13],
+        'penalized_score': metrics_tuple[14]
     }
 
 # ────────── impresor de métricas ─────────────────────────────────────────────
-def print_detailed_metrics(metrics: dict, title: str = "Strategy Metrics"):
+def print_detailed_metrics(metrics_dict: tuple):
     """
     Imprime las métricas detalladas en formato de depuración - EXPANDIDO.
     
@@ -723,22 +712,21 @@ def print_detailed_metrics(metrics: dict, title: str = "Strategy Metrics"):
         metrics: Diccionario devuelto por metrics_tuple_to_dict
         title:   Encabezado para el bloque de debug
     """
-    print(f"🔍 DEBUG: {title} - Score: {metrics['score']:.4f}\n"
+    print(f"🔍 DEBUG: Strategy Metrics - Score: {metrics_dict['final_score']:.6f}\n"
           f"  📈 LINEALITY METRICS:\n"
-          f"    • R²={metrics['r2']:.4f} | Perfect Linearity={metrics['perfect_linearity']:.4f}\n"
-          f"    • Linearity Bonus={metrics['linearity_bonus']:.4f}\n"
+          f"    • R²={metrics_dict['r2']:.6f} | Perfect Linearity={metrics_dict['perfect_linearity']:.6f}\n"
+          f"    • Linearity Bonus={metrics_dict['linearity_bonus']:.6f}\n"
           f"  📊 GROWTH METRICS:\n"
-          f"    • Consistency={metrics['consistency']:.4f} | Slope Reward={metrics['slope_reward']:.4f}\n"
-          f"    • Monotonic Growth={metrics['monotonic_growth']:.4f}\n"
+          f"    • Consistency={metrics_dict['consistency']:.6f} | Slope Reward={metrics_dict['slope_reward']:.6f}\n"
+          f"    • Monotonic Growth={metrics_dict['monotonic_growth']:.6f}\n"
           f"  🎯 QUALITY METRICS:\n"
-          f"    • Smoothness={metrics['smoothness']:.4f} | Total Return={metrics['total_return']:.4f}\n"
-          f"    • DD Penalty={metrics['dd_penalty']:.4f}\n"
+          f"    • Smoothness={metrics_dict['smoothness']:.6f} | Total Return={metrics_dict['total_return']:.6f}\n"
+          f"    • DD Penalty={metrics_dict['dd_penalty']:.6f}\n"
           f"  🔧 COMPONENT SCORES:\n"
-          f"    • Linearity Comp={metrics['linearity_component']:.4f} | Growth Comp={metrics['growth_component']:.4f}\n"
-          f"    • Quality Comp={metrics['quality_component']:.4f}\n"
+          f"    • Linearity Comp={metrics_dict['linearity_component']:.6f} | Growth Comp={metrics_dict['growth_component']:.6f}\n"
+          f"    • Quality Comp={metrics_dict['quality_component']:.6f}\n"
           f"  🏆 FINAL SCORES:\n"
-          f"    • Base={metrics['base_score']:.4f} | Penalized={metrics['penalized_score']:.4f} | Final={metrics['final_score']:.4f}\n"
-          f"  ⏱️ Periods/Year={metrics['periods_per_year']:.2f}")
+          f"    • Base={metrics_dict['base_score']:.6f} | Penalized={metrics_dict['penalized_score']:.6f}\n")
 
 def _ort_session(model_path: str):
     """Thread-safe ONNX session cache"""

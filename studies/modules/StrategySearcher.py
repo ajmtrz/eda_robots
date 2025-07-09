@@ -148,7 +148,7 @@ class StrategySearcher:
                     sampler=optuna.samplers.TPESampler(
                         n_startup_trials=int(np.sqrt(self.n_trials)),
                         multivariate=True, group=True,
-                        warn_independent_sampling=False
+                        warn_independent_sampling=True
                     )
                 )
 
@@ -1066,9 +1066,8 @@ class StrategySearcher:
                     model_main_cols=main_feature_cols,
                     model_meta_cols=meta_feature_cols,
                     direction=self.direction,
-                    plot=True if self.debug else False,
-                    prd='full',
                     timeframe=self.timeframe,
+                    print_metrics=True if self.debug else False,
                 )
             except Exception as tester_error:
                 if self.debug:

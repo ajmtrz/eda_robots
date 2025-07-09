@@ -598,196 +598,333 @@ class StrategySearcher:
     
     def suggest_all_params(self, trial: 'optuna.Trial') -> dict:
         try:
-            MAX_MAIN_PERIODS = 15
+            # ========== CONSTANTES OPTIMIZADAS ==========
+            MAX_MAIN_PERIODS = 12  # Reducido para mejor exploración
             MAX_META_PERIODS = 3
-            MAX_MAIN_STATS = 5
+            MAX_MAIN_STATS = 4     # Reducido para evitar sobreajuste
             MAX_META_STATS = 3
-            all_stats = [
-                "std", "skew", "zscore", "range", "mad", "entropy",
-                "slope", "momentum", "autocorr", "maxdd", "hurst", "corrskew",
-                "sharpe", "fisher", "chande", "var", "effratio", "kurt",
-                "jump_vol", "fractal", "volskew", "approxentropy",
-                "mean", "median", "iqr", "cv",
-            ]
-            params = {
-                'cat_main_iterations': trial.suggest_int('cat_main_iterations', 100, 1000),
-                'cat_main_depth': trial.suggest_int('cat_main_depth', 3, 10),
-                'cat_main_learning_rate': trial.suggest_float('cat_main_learning_rate', 0.01, 0.3, log=True),
-                'cat_main_l2_leaf_reg': trial.suggest_float('cat_main_l2_leaf_reg', 0.1, 10.0, log=True),
-                'cat_main_early_stopping': trial.suggest_int('cat_main_early_stopping', 20, 200),
-                'cat_meta_iterations': trial.suggest_int('cat_meta_iterations', 100, 1000),
-                'cat_meta_depth': trial.suggest_int('cat_meta_depth', 3, 10),
-                'cat_meta_learning_rate': trial.suggest_float('cat_meta_learning_rate', 0.01, 0.3, log=True),
-                'cat_meta_l2_leaf_reg': trial.suggest_float('cat_meta_l2_leaf_reg', 0.1, 10.0, log=True),
-                'cat_meta_early_stopping': trial.suggest_int('cat_meta_early_stopping', 20, 200),
-                'max_main_periods': trial.suggest_int('max_main_periods', 5, MAX_MAIN_PERIODS, log=True),
-                'max_main_stats': trial.suggest_int('max_main_stats', 3, MAX_MAIN_STATS, log=True),
-            }
-            # ---------- Parámetros de etiquetado dinámicos ----------
+            
+            # Estadísticas agrupadas por funcionalidad para mejor coherencia
+            MOMENTUM_STATS = ["momentum", "slope", "hurst", "autocorr", "effratio"]
+            VOLATILITY_STATS = ["std", "range", "mad", "var", "maxdd", "jump_vol", "volskew"]
+            DISTRIBUTION_STATS = ["skew", "kurt", "entropy", "zscore", "corrskew", "fisher"]
+            SIMPLE_STATS = ["mean", "median", "iqr", "cv", "sharpe", "chande"]
+            COMPLEXITY_STATS = ["fractal", "approxentropy"]
+            
+            all_stats = MOMENTUM_STATS + VOLATILITY_STATS + DISTRIBUTION_STATS + SIMPLE_STATS + COMPLEXITY_STATS
+
+            params = {}
+            
+            # ========== PARÁMETROS CATBOOST MAIN (AGRUPADOS) ==========
+            # Usar rangos más coherentes y distribuciones logarítmicas donde corresponda
+            catboost_complexity = trial.suggest_float('catboost_complexity', 0.1, 1.0)  # Factor de complejidad
+            
+            # Iterations correlacionadas con complejidad
+            base_iterations = trial.suggest_int('base_iterations', 200, 800, step=50)
+            params['cat_main_iterations'] = int(base_iterations * (0.8 + 0.4 * catboost_complexity))
+            
+            # Profundidad correlacionada con complejidad
+            params['cat_main_depth'] = trial.suggest_int('cat_main_depth', 4, 8)
+            
+            # Learning rate inversamente correlacionado con iterations
+            lr_factor = trial.suggest_float('lr_factor', 0.5, 2.0, log=True)
+            base_lr = 0.1 / np.sqrt(base_iterations / 300)  # Inversamente proporcional
+            params['cat_main_learning_rate'] = base_lr * lr_factor
+            
+            # Regularización correlacionada con complejidad
+            params['cat_main_l2_leaf_reg'] = trial.suggest_float('cat_main_l2_leaf_reg', 1.0, 20.0, log=True)
+            
+            # Early stopping proporcional a iterations
+            early_stopping_ratio = trial.suggest_float('early_stopping_ratio', 0.1, 0.4)
+            params['cat_main_early_stopping'] = max(20, int(params['cat_main_iterations'] * early_stopping_ratio))
+
+            # ========== PARÁMETROS CATBOOST META (COHERENTES CON MAIN) ==========
+            # Factor de escalamiento para meta vs main
+            meta_scale_factor = trial.suggest_float('meta_scale_factor', 0.6, 1.2)
+            
+            params['cat_meta_iterations'] = max(100, int(params['cat_main_iterations'] * meta_scale_factor))
+            params['cat_meta_depth'] = max(3, min(10, params['cat_main_depth'] + trial.suggest_int('meta_depth_offset', -2, 2)))
+            
+            # Learning rate del meta correlacionado con el main
+            meta_lr_factor = trial.suggest_float('meta_lr_factor', 0.8, 1.5)
+            params['cat_meta_learning_rate'] = params['cat_main_learning_rate'] * meta_lr_factor
+            
+            # Regularización del meta
+            meta_reg_factor = trial.suggest_float('meta_reg_factor', 0.5, 2.0, log=True)
+            params['cat_meta_l2_leaf_reg'] = params['cat_main_l2_leaf_reg'] * meta_reg_factor
+            
+            params['cat_meta_early_stopping'] = max(20, int(params['cat_meta_iterations'] * early_stopping_ratio))
+
+            # ========== PARÁMETROS DE FEATURES (OPTIMIZADOS) ==========
+            # Usar distribución más coherente para períodos y stats
+            feature_complexity = trial.suggest_float('feature_complexity', 0.3, 1.0)  # Factor de complejidad de features
+            
+            params['max_main_periods'] = trial.suggest_int('max_main_periods', 3, int(MAX_MAIN_PERIODS * feature_complexity) + 2)
+            params['max_main_stats'] = trial.suggest_int('max_main_stats', 2, int(MAX_MAIN_STATS * feature_complexity) + 1)
+
+            # ========== PARÁMETROS DE ETIQUETADO DINÁMICOS (MEJORADOS) ==========
             label_func = self.LABEL_FUNCS.get(self.label_method, get_labels_one_direction)
             label_params = inspect.signature(label_func).parameters
 
-            # Si el método de etiquetado es 'random', permitir elegir el método determinista
+            # Parámetros básicos de etiquetado
             if 'method' in label_params:
                 params['method'] = trial.suggest_categorical('method', ['first', 'last', 'mean', 'max', 'min', 'random'])
 
             if 'filter' in label_params:
                 params['filter'] = trial.suggest_categorical('filter', ['savgol', 'spline', 'sma', 'ema', 'mean'])
 
+            # Markup con distribución logarítmica más coherente
             if 'markup' in label_params:
-                params['markup'] = trial.suggest_float('markup', 0.1, 3.0, log=True)
+                params['markup'] = trial.suggest_float('markup', 0.2, 2.0, log=True)
 
+            # Parámetros de valor con mejor distribución
             if 'min_val' in label_params: 
-                params['min_val'] = trial.suggest_int('min_val', 1, 5)
+                params['min_val'] = trial.suggest_int('min_val', 1, 4)
 
             if 'max_val' in label_params:
-                params['max_val'] = trial.suggest_int('max_val', 6, 20)
+                params['max_val'] = trial.suggest_int('max_val', 
+                                                     params.get('min_val', 1) + 2, 
+                                                     max(params.get('min_val', 1) + 5, 15))
 
+            # Parámetros de período con distribución logarítmica
             if 'atr_period' in label_params:
-                params['atr_period'] = trial.suggest_int('atr_period', 5, 50, log=True)
+                params['atr_period'] = trial.suggest_int('atr_period', 10, 50, log=True)
 
             if 'polyorder' in label_params:
-                params['polyorder'] = trial.suggest_int('polyorder', 2, 5)
+                params['polyorder'] = trial.suggest_int('polyorder', 2, 4)
 
+            # Rolling con distribución logarítmica y dependencia de polyorder
             if 'rolling' in label_params:
-                params['rolling'] = trial.suggest_int('rolling', 20, 400, log=True)
-                # Ajuste para cumplir la condición rolling > polyorder
-                if 'polyorder' in label_params and params['rolling'] <= params['polyorder']:
-                    params['rolling'] = params['polyorder'] + 2 + (params['polyorder'] % 2)
+                min_rolling = max(50, params.get('polyorder', 2) * 10)
+                params['rolling'] = trial.suggest_int('rolling', min_rolling, 300, log=True)
 
+            # Threshold con distribución uniforme más apropiada
             if 'threshold' in label_params:
-                params['threshold'] = trial.suggest_float('threshold', 0.1, 1.0)
+                params['threshold'] = trial.suggest_float('threshold', 0.2, 0.8)
 
+            # Parámetros de clustering con distribución logarítmica
             if 'l_n_clusters' in label_params:
-                params['l_n_clusters'] = trial.suggest_int('l_n_clusters', 5, 50)
+                params['l_n_clusters'] = trial.suggest_int('l_n_clusters', 8, 40, log=True)
 
             if 'l_window_size' in label_params:
-                params['l_window_size'] = trial.suggest_int('l_window_size', 10, 100)
+                params['l_window_size'] = trial.suggest_int('l_window_size', 20, 80, log=True)
 
             if 'vol_window' in label_params:
                 params['vol_window'] = trial.suggest_int('vol_window', 20, 100, log=True)
 
+            # Window sizes múltiples con mejor distribución
             if 'window_sizes' in label_params:
-                ws = [trial.suggest_int(f'window_size_{i}', 10, 100, step=10) for i in range(3)]
-                ws = list(dict.fromkeys(ws))
-                params['window_sizes'] = tuple(ws)
+                base_window = trial.suggest_int('base_window_size', 20, 80, log=True)
+                ws = [
+                    base_window,
+                    int(base_window * trial.suggest_float('window_ratio_2', 1.2, 2.0)),
+                    int(base_window * trial.suggest_float('window_ratio_3', 2.1, 4.0))
+                ]
+                params['window_sizes'] = tuple(sorted(set(ws)))
 
+            # Threshold percentage más coherente
             if 'threshold_pct' in label_params:
-                params['threshold_pct'] = trial.suggest_float('threshold_pct', 0.005, 0.05)
+                params['threshold_pct'] = trial.suggest_float('threshold_pct', 0.01, 0.03, log=True)
 
             if 'min_touches' in label_params:
-                params['min_touches'] = trial.suggest_int('min_touches', 2, 5)
+                params['min_touches'] = trial.suggest_int('min_touches', 2, 4)
 
             if 'peak_prominence' in label_params:
-                params['peak_prominence'] = trial.suggest_float('peak_prominence', 0.05, 0.5)
+                params['peak_prominence'] = trial.suggest_float('peak_prominence', 0.1, 0.4)
 
             if 'decay_factor' in label_params:
-                params['decay_factor'] = trial.suggest_float('decay_factor', 0.8, 1.0)
+                params['decay_factor'] = trial.suggest_float('decay_factor', 0.85, 0.98)
 
             if 'shift' in label_params:
-                params['shift'] = trial.suggest_int('shift', -5, 5)
+                params['shift'] = trial.suggest_int('shift', -3, 3)
 
+            # Rolling parameters correlacionados
             if 'rolling1' in label_params:
-                params['rolling1'] = trial.suggest_int('rolling1', 20, 400, log=True)
+                base_rolling = trial.suggest_int('base_rolling', 50, 250, log=True)
+                params['rolling1'] = base_rolling
 
             if 'rolling2' in label_params:
-                params['rolling2'] = trial.suggest_int('rolling2', 20, 400, log=True)
+                rolling2_factor = trial.suggest_float('rolling2_factor', 1.2, 3.0)
+                params['rolling2'] = int(params.get('rolling1', 100) * rolling2_factor)
 
+            # Rolling periods múltiples con mejor correlación
             if 'rolling_periods' in label_params:
-                rps = [trial.suggest_int(f'rolling_period_{i}', 20, 400, log=True) for i in range(3)]
-                rps = list(dict.fromkeys(rps))
-                params['rolling_periods'] = tuple(rps)
-
-            if 'quantiles' in label_params:
-                q_low = trial.suggest_float('q_low', 0.3, 0.49)
-                q_high = trial.suggest_float('q_high', 0.51, 0.7)
-                params['quantiles'] = [q_low, q_high]
-            # ---------- PERÍODOS MAIN ----------
-            periods_main = [
-                trial.suggest_int(f'period_main_{i}', 5, 200, log=True)
-                for i in range(MAX_MAIN_PERIODS)
-            ]
-            periods_main = list(dict.fromkeys(periods_main))
-            if len(periods_main) > params['max_main_periods']:
-                periods_main = random.sample(periods_main, params['max_main_periods'])
-            params['periods_main'] = tuple(sorted(periods_main[:params['max_main_periods']]))
-            # ---------- STATS MAIN ----------
-            stats_main = [trial.suggest_categorical(f'stat_main_{i}', all_stats)
-                        for i in range(MAX_MAIN_STATS)]
-            stats_main = list(dict.fromkeys(stats_main))
-            params['stats_main'] = tuple(stats_main[:params['max_main_stats']])
-            # ---------- Hiperparámetros meta solo si no es mapie o causal ----------
-            if self.search_type in ['clusters', 'markov', 'lgmm', 'wkmeans']:
-                params['max_meta_periods'] = trial.suggest_int('max_meta_periods', 1, MAX_META_PERIODS, log=True)
-                params['max_meta_stats'] = trial.suggest_int('max_meta_stats', 1, MAX_META_STATS, log=True)
-                periods_meta = [
-                    trial.suggest_int(f'period_meta_{i}', 3, 7)
-                    for i in range(MAX_META_PERIODS)
+                base_rp = trial.suggest_int('base_rolling_period', 30, 150, log=True)
+                rps = [
+                    base_rp,
+                    int(base_rp * trial.suggest_float('rp_factor_2', 1.5, 2.5)),
+                    int(base_rp * trial.suggest_float('rp_factor_3', 3.0, 5.0))
                 ]
+                params['rolling_periods'] = tuple(sorted(set(rps)))
+
+            # Quantiles con mejor distribución
+            if 'quantiles' in label_params:
+                q_spread = trial.suggest_float('quantile_spread', 0.15, 0.25)
+                q_center = 0.5
+                params['quantiles'] = [q_center - q_spread, q_center + q_spread]
+
+            # ========== PERÍODOS MAIN (OPTIMIZADOS) ==========
+            # Usar distribución más inteligente para períodos
+            period_strategy = trial.suggest_categorical('period_strategy', ['geometric', 'arithmetic', 'mixed'])
+            
+            if period_strategy == 'geometric':
+                # Distribución geométrica para mejor cobertura
+                base_period = trial.suggest_int('base_period', 5, 15)
+                growth_factor = trial.suggest_float('period_growth_factor', 1.3, 2.0)
+                periods_main = [int(base_period * (growth_factor ** i)) for i in range(MAX_MAIN_PERIODS)]
+                periods_main = [min(p, 200) for p in periods_main if p <= 200]
+            elif period_strategy == 'arithmetic':
+                # Distribución aritmética
+                start_period = trial.suggest_int('start_period', 5, 20)
+                step_period = trial.suggest_int('period_step', 10, 25)
+                periods_main = [start_period + i * step_period for i in range(MAX_MAIN_PERIODS)]
+                periods_main = [p for p in periods_main if p <= 200]
+            else:  # mixed
+                # Combinación de períodos cortos, medios y largos
+                short_periods = [trial.suggest_int(f'short_period_{i}', 5, 20) for i in range(3)]
+                medium_periods = [trial.suggest_int(f'medium_period_{i}', 21, 60, log=True) for i in range(3)]
+                long_periods = [trial.suggest_int(f'long_period_{i}', 61, 200, log=True) for i in range(3)]
+                periods_main = short_periods + medium_periods + long_periods
+            
+            # Eliminar duplicados y limitar
+            periods_main = sorted(list(set(periods_main)))
+            if len(periods_main) > params['max_main_periods']:
+                # Selección más inteligente en lugar de random
+                step = len(periods_main) // params['max_main_periods']
+                periods_main = periods_main[::step][:params['max_main_periods']]
+            params['periods_main'] = tuple(periods_main)
+
+            # ========== STATS MAIN (OPTIMIZADOS POR GRUPOS) ==========
+            # Selección más inteligente de estadísticas por grupos
+            stats_selection_strategy = trial.suggest_categorical('stats_strategy', ['balanced', 'momentum_focused', 'volatility_focused', 'distribution_focused'])
+            
+            if stats_selection_strategy == 'balanced':
+                # Una estadística de cada grupo principal
+                selected_stats = []
+                if len(selected_stats) < params['max_main_stats']:
+                    selected_stats.append(trial.suggest_categorical('momentum_stat', MOMENTUM_STATS))
+                if len(selected_stats) < params['max_main_stats']:
+                    selected_stats.append(trial.suggest_categorical('volatility_stat', VOLATILITY_STATS))
+                if len(selected_stats) < params['max_main_stats']:
+                    selected_stats.append(trial.suggest_categorical('distribution_stat', DISTRIBUTION_STATS))
+                if len(selected_stats) < params['max_main_stats']:
+                    selected_stats.append(trial.suggest_categorical('simple_stat', SIMPLE_STATS))
+            elif stats_selection_strategy == 'momentum_focused':
+                # Foco en momentum + algunas de otros grupos
+                selected_stats = [trial.suggest_categorical(f'momentum_stat_{i}', MOMENTUM_STATS) for i in range(min(3, params['max_main_stats']))]
+                remaining = params['max_main_stats'] - len(selected_stats)
+                if remaining > 0:
+                    selected_stats.extend([trial.suggest_categorical(f'other_stat_{i}', VOLATILITY_STATS + DISTRIBUTION_STATS) for i in range(remaining)])
+            elif stats_selection_strategy == 'volatility_focused':
+                # Foco en volatilidad
+                selected_stats = [trial.suggest_categorical(f'vol_stat_{i}', VOLATILITY_STATS) for i in range(min(3, params['max_main_stats']))]
+                remaining = params['max_main_stats'] - len(selected_stats)
+                if remaining > 0:
+                    selected_stats.extend([trial.suggest_categorical(f'other_stat_{i}', MOMENTUM_STATS + SIMPLE_STATS) for i in range(remaining)])
+            else:  # distribution_focused
+                selected_stats = [trial.suggest_categorical(f'dist_stat_{i}', DISTRIBUTION_STATS) for i in range(min(3, params['max_main_stats']))]
+                remaining = params['max_main_stats'] - len(selected_stats)
+                if remaining > 0:
+                    selected_stats.extend([trial.suggest_categorical(f'other_stat_{i}', MOMENTUM_STATS + VOLATILITY_STATS) for i in range(remaining)])
+            
+            params['stats_main'] = tuple(list(dict.fromkeys(selected_stats))[:params['max_main_stats']])
+
+            # ========== HIPERPARÁMETROS META (COHERENTES) ==========
+            if self.search_type in ['clusters', 'markov', 'lgmm', 'wkmeans']:
+                # Meta periods correlacionados con feature complexity
+                params['max_meta_periods'] = trial.suggest_int('max_meta_periods', 1, MAX_META_PERIODS)
+                params['max_meta_stats'] = trial.suggest_int('max_meta_stats', 1, MAX_META_STATS)
+                
+                # Períodos meta más cortos y coherentes
+                meta_base_period = trial.suggest_int('meta_base_period', 3, 5)
+                periods_meta = [meta_base_period + i for i in range(MAX_META_PERIODS)]
                 periods_meta = list(dict.fromkeys(periods_meta))
                 if len(periods_meta) > params['max_meta_periods']:
-                    periods_meta = random.sample(periods_meta, params['max_meta_periods'])
-                params['periods_meta'] = tuple(sorted(periods_meta[:params['max_meta_periods']]))
-                stats_meta = [trial.suggest_categorical(f'stat_meta_{i}', all_stats)
-                            for i in range(MAX_META_STATS)]
-                stats_meta = list(dict.fromkeys(stats_meta))
-                params['stats_meta'] = tuple(stats_meta[:params['max_meta_stats']])
+                    periods_meta = periods_meta[:params['max_meta_periods']]
+                params['periods_meta'] = tuple(sorted(periods_meta))
+                
+                # Stats meta seleccionadas de forma coherente
+                meta_stats = [trial.suggest_categorical(f'meta_stat_{i}', SIMPLE_STATS + MOMENTUM_STATS[:2]) for i in range(MAX_META_STATS)]
+                params['stats_meta'] = tuple(list(dict.fromkeys(meta_stats))[:params['max_meta_stats']])
             else:
-                # Para mapie y causal, usar listas vacías para evitar múltiples firmas
                 params['periods_meta'] = tuple()
                 params['stats_meta'] = tuple()
-            # ---------- Otros hiperparámetros específicos ----------
+
+            # ========== PARÁMETROS ESPECÍFICOS DEL ALGORITMO (OPTIMIZADOS) ==========
             if self.search_type == 'markov':
+                # Parámetros markov con distribuciones mejoradas
                 params.update({
                     'model_type': trial.suggest_categorical('model_type', ['GMMHMM', 'HMM', 'VARHMM']),
-                    'n_regimes': trial.suggest_int('n_regimes', 2, 10, log=True),
-                    'n_iter': trial.suggest_int('n_iter', 50, 200, step=10),
-                    'n_mix': trial.suggest_int('n_mix', 1, 5, log=True)
+                    'n_regimes': trial.suggest_int('n_regimes', 3, 8, log=True),
+                    'n_iter': trial.suggest_int('n_iter', 80, 150, step=10),
+                    'n_mix': trial.suggest_int('n_mix', 1, 4)
                 })
+                
             elif self.search_type == 'clusters':
-                params.update({
-                    'n_clusters': trial.suggest_int('n_clusters', 3, 50, step=5)
-                })
+                cluster_complexity = trial.suggest_float('cluster_complexity', 0.5, 1.0)
+                base_clusters = trial.suggest_int('base_clusters', 8, 30, log=True)
+                params['n_clusters'] = int(base_clusters * cluster_complexity)
+                
                 if self.search_subtype == 'advanced':
-                    params.update({
-                        'window_size': trial.suggest_int('window_size', 20, 365, step=50)
-                    })
+                    # Window size correlacionado con número de clusters
+                    cluster_window_factor = trial.suggest_float('cluster_window_factor', 5, 15)
+                    params['window_size'] = int(params['n_clusters'] * cluster_window_factor)
+                    
             elif self.search_type == 'lgmm':
+                # Parámetros LGMM más coherentes
                 params.update({
-                    'n_components': trial.suggest_int('n_components', 2, 20),
+                    'n_components': trial.suggest_int('n_components', 3, 15, log=True),
                     'covariance_type': trial.suggest_categorical('covariance_type', ['full', 'diag']),
-                    'max_iter': trial.suggest_int('max_iter', 50, 300, step=10),
+                    'max_iter': trial.suggest_int('max_iter', 80, 200, step=20),
                 })
-            if self.search_type == "wkmeans":
+                
+            elif self.search_type == "wkmeans":
+                # Parámetros wkmeans optimizados
+                wk_complexity = trial.suggest_float('wk_complexity', 0.6, 1.0)
+                base_wk_clusters = trial.suggest_int('base_wk_clusters', 6, 20, log=True)
+                
                 params.update({
-                    "n_clusters" : trial.suggest_int("n_clusters", 4, 25, log=True),
-                    "window_size": trial.suggest_int("window_size", 30, 365, log=True),
-                    "step"       : trial.suggest_int("step", 1, 20),
-                    "max_iter"   : trial.suggest_int("max_iter", 100, 500, step=25),
-                    "bandwidth" : trial.suggest_float("bandwidth", 0.01, 10.0, log=True),
-                    "n_proj"    : trial.suggest_int("n_proj", 10, 500, log=True),
+                    "n_clusters": int(base_wk_clusters * wk_complexity),
+                    "window_size": trial.suggest_int("window_size", 40, 250, log=True),
+                    "step": trial.suggest_int("step", 1, 15),
+                    "max_iter": trial.suggest_int("max_iter", 150, 400, step=25),
+                    "bandwidth": trial.suggest_float("bandwidth", 0.1, 5.0, log=True),
+                    "n_proj": trial.suggest_int("n_proj", 50, 300, log=True),
                 })
+                
             elif self.search_type == 'mapie':
+                # Parámetros MAPIE optimizados
                 params.update({
-                    'mapie_confidence_level': trial.suggest_float('mapie_confidence_level', 0.7, 0.99),
-                    'mapie_cv': trial.suggest_int('mapie_cv', 3, 10),
+                    'mapie_confidence_level': trial.suggest_float('mapie_confidence_level', 0.8, 0.95),
+                    'mapie_cv': trial.suggest_int('mapie_cv', 4, 8),
                 })
+                
             elif self.search_type == 'causal':
+                # Parámetros causales con mejor distribución
                 params.update({
-                    'n_meta_learners': trial.suggest_int('n_meta_learners', 5, 30),
+                    'n_meta_learners': trial.suggest_int('n_meta_learners', 10, 25),
                 })
-            # Actualizar trial.params con los valores procesados
+
+            # ========== GUARDAR ATRIBUTOS DEL TRIAL ==========
             for key, value in params.items():
                 trial.set_user_attr(key, value)
 
             if self.debug:
-                print("🔍 DEBUG: Parámetros sugeridos:")
-                for key, value in params.items():
-                    print(f"  {key}: {value}")
+                print("🔍 DEBUG: Parámetros optimizados sugeridos:")
+                print(f"  🎯 Feature complexity: {feature_complexity:.3f}")
+                print(f"  🎯 CatBoost complexity: {catboost_complexity:.3f}")
+                print(f"  📊 Periods strategy: {period_strategy}")
+                print(f"  📊 Stats strategy: {stats_selection_strategy}")
+                for key, value in sorted(params.items()):
+                    if isinstance(value, (tuple, list)) and len(value) > 0:
+                        print(f"  {key}: {value}")
+                    elif not isinstance(value, (tuple, list)):
+                        print(f"  {key}: {value}")
 
             return params
+            
         except Exception as e:
-            print(f"⚠️ ERROR en suggest_all_params: {str(e)}")
+            print(f"⚠️ ERROR en suggest_all_params optimizado: {str(e)}")
             return None
 
     def fit_final_models(self, trial: optuna.trial,

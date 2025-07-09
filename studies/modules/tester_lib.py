@@ -24,6 +24,61 @@ def clear_onnx_cache():
     with _session_lock:
         _session_cache.clear()
 
+def _ort_session(model_path: str):
+    """Thread-safe ONNX session cache"""
+    _configure_onnx_runtime()
+    
+    with _session_lock:
+        if model_path in _session_cache:
+            return _session_cache[model_path]
+        
+        # Crear nueva sesión
+        sess = rt.InferenceSession(model_path, providers=['CPUExecutionProvider'])
+        iname = sess.get_inputs()[0].name
+        
+        # Limitar el tamaño de la caché (máximo 10 sessions)
+        if len(_session_cache) >= 10:
+            # Eliminar la primera entrada (FIFO)
+            oldest_key = next(iter(_session_cache))
+            del _session_cache[oldest_key]
+        
+        _session_cache[model_path] = (sess, iname)
+    return sess, iname
+
+def _predict_onnx(model_path:str, X_3d:np.ndarray) -> np.ndarray:
+    n_sim, n_rows, n_feat = X_3d.shape
+    sess, iname = _ort_session(model_path)
+
+    raw = sess.run(None, {iname: X_3d.reshape(-1, n_feat).astype(np.float32)})[0]
+
+    # ─── des-ZipMap / distintos formatos de salida ─────────────────────
+    if raw.dtype == object:                     # lista de dicts
+        prob_pos = np.fromiter((row[b'1'] for row in raw), dtype=np.float32)
+
+    elif raw.ndim == 2:                         # matriz (n,2)
+        prob_pos = raw[:, 1].astype(np.float32)
+
+    elif raw.ndim == 1:                         # vector (n,)  → ya es proba+
+        prob_pos = raw.astype(np.float32)
+
+    else:
+        raise RuntimeError(f"Formato de salida ONNX no soportado: {raw.shape}")
+
+    return prob_pos.reshape(n_sim, n_rows)
+
+def _predict_one(model_any, X_2d: np.ndarray) -> np.ndarray:
+    """
+    Devuelve la probabilidad de la clase positiva para una sola matriz 2-D.
+      · Si 'model_any' es CatBoost -> usa predict_proba.
+      · Si es ruta .onnx, bytes, o ModelProto -> usa _predict_onnx.
+    Resultado shape: (n_rows,)
+    """
+    if hasattr(model_any, "predict_proba"):
+        return model_any.predict_proba(X_2d)[:, 1]
+    else:
+        # _predict_onnx espera tensor 3-D: (n_sim, n_rows, n_feat)
+        return _predict_onnx(model_any, X_2d[None, :, :])[0]
+    
 # Thread-safe session cache
 _session_cache = {}
 _session_lock = threading.RLock()
@@ -31,10 +86,9 @@ _session_lock = threading.RLock()
 # Thread-safe plotting
 _plot_lock = threading.RLock()
 
-def _safe_plot(equity_curve, metrics_dict):
+def _safe_plot(equity_curve, score):
     """Thread-safe plotting function"""
     with _plot_lock:
-        score = metrics_dict.get('final_score', -1.0)
         plt.figure(figsize=(10, 6))
         plt.plot(equity_curve, label='Equity Curve', linewidth=1.5)
         plt.title(f"Score: {score:.6f}")
@@ -186,38 +240,6 @@ def process_data_one_direction(close, main_labels, meta_labels, direction_int):
 
     return np.asarray(report, dtype=np.float64), np.asarray(chart, dtype=np.float64), trade_stats
 
-
-# ───────────────────────────────────────────────────────────────────
-# 2)  Wrappers del tester
-# ───────────────────────────────────────────────────────────────────
-
-def get_periods_per_year(timeframe: str) -> float:
-    """
-    Calcula períodos por año basado en el timeframe.
-    Asume mercado XAUUSD: ~120 horas de trading por semana, 52 semanas/año.
-    
-    Args:
-        timeframe: 'M5', 'M15', 'M30', 'H1', 'H4', 'D1'
-    
-    Returns:
-        float: Número de períodos por año para ese timeframe
-    """
-    # Mapeo de timeframes a períodos por año (ajustado para XAUUSD)
-    if timeframe == 'M5':
-        return 74880.0    # 120h/sem * 60min/h / 5min * 52sem = 74,880
-    elif timeframe == 'M15':
-        return 24960.0    # 120h/sem * 60min/h / 15min * 52sem = 24,960
-    elif timeframe == 'M30':
-        return 12480.0    # 120h/sem * 60min/h / 30min * 52sem = 12,480
-    elif timeframe == 'H1':
-        return 6240.0     # 120h/sem * 52sem = 6,240
-    elif timeframe == 'H4':
-        return 1560.0     # 30 períodos/sem * 52sem = 1,560
-    elif timeframe == 'D1':
-        return 260.0      # 5 días/sem * 52sem = 260
-    else:
-        return 6240.0     # Default a H1 si timeframe no reconocido
-
 def tester(
         dataset: pd.DataFrame,
         model_main: object,
@@ -279,16 +301,11 @@ def tester(
             direction_int = direction_map.get(direction, 0)
             rpt, _, trade_stats = process_data_one_direction(close, main, meta, direction_int)
 
-        if rpt.size < 2:
-            return -1.0
-
-        metrics_tuple = evaluate_report(rpt, trade_stats)
+        score = evaluate_report(rpt)
         if print_metrics:
-            metrics_dict = metrics_tuple_to_dict(metrics_tuple)
-            _safe_plot(rpt, metrics_dict)
-            print_detailed_metrics(metrics_dict)
+            _safe_plot(rpt, score)
 
-        return metrics_tuple[0]
+        return score
     
     except Exception as e:
         print(f"🔍 DEBUG: Error en tester: {e}")
@@ -296,754 +313,153 @@ def tester(
 
 # ────────── helpers ──────────────────────────────────────────────────────────
 
-@njit(cache=True, fastmath=True)
-def _signed_r2(eq):
-    """R² con signo - versión ultra-optimizada que favorece pendientes positivas perfectas"""
-    n = eq.size
-    t = np.arange(n, dtype=np.float64)
-    xm = t.mean()
-    ym = eq.mean()
-    cov = ((t-xm)*(eq-ym)).sum()
-    var_t = ((t-xm)**2).sum()
-    var_y = ((eq-ym)**2).sum()
-    
-    if var_t == 0.0 or var_y == 0.0:
-        return 0.0
-    
-    slope = cov / var_t
-    r2 = (cov*cov)/(var_t*var_y)
-    
-    if slope > 0:
-        # Sistema de potenciación exponencial para pendientes positivas perfectas
-        slope_factor = min(3.0, max(1.0, slope * 2.0))  # Factor entre 1-3
-        r2_enhanced = min(1.0, r2 * (1.0 + slope_factor/5.0))
-        
-        # Bonus adicional por linealidad casi perfecta
-        if r2 > 0.95:
-            perfection_bonus = (r2 - 0.95) / 0.05 * 0.3  # Hasta 30% bonus
-            r2_enhanced = min(1.0, r2_enhanced + perfection_bonus)
-        
-        return r2_enhanced
-    else:
-        # Penalización exponencial para pendientes negativas
-        return -r2 * 2.0
-
-
-@njit(cache=True, fastmath=True)
-def _perfect_linearity_score(eq):
-    """Nueva métrica: detecta y recompensa curvas perfectamente lineales"""
-    n = eq.size
-    if n < 20:
-        return 0.0
-    
-    # Ajuste lineal de alta precisión
-    t = np.arange(n, dtype=np.float64)
-    x_mean = t.mean()
-    y_mean = eq.mean()
-    
-    # Calcular pendiente y intercepto
-    num = np.sum((t - x_mean) * (eq - y_mean))
-    den = np.sum((t - x_mean) ** 2)
-    
-    if den == 0:
-        return 0.0
-    
-    slope = num / den
-    intercept = y_mean - slope * x_mean
-    
-    # Solo procesar pendientes positivas
-    if slope <= 0:
-        return 0.0
-    
-    # Línea teórica perfecta
-    y_perfect = slope * t + intercept
-    
-    # Calcular desviación promedio absoluta normalizada
-    deviations = np.abs(eq - y_perfect)
-    mean_deviation = np.mean(deviations)
-    
-    # Normalizar por el rango de la serie
-    data_range = max(eq[-1] - eq[0], 1e-8)
-    normalized_deviation = mean_deviation / data_range
-    
-    # Score de linealidad perfecta (0 = perfecto, 1 = muy desviado)
-    linearity_score = np.exp(-normalized_deviation * 20.0)  # Penalización exponencial
-    
-    # Bonus por pendiente ideal (0.1 a 2.0)
-    if 0.1 <= slope <= 2.0:
-        slope_bonus = 1.0
-    elif slope < 0.1:
-        slope_bonus = slope / 0.1
-    else:
-        slope_bonus = np.exp(-(slope - 2.0) * 0.5)
-    
-    return linearity_score * slope_bonus
-
-
-@njit(cache=True, fastmath=True)
-def _monotonic_growth_score(eq):
-    """Evalúa crecimiento monótono casi perfecto"""
-    if eq.size < 10:
-        return 0.0
-    
-    # Calcular diferencias consecutivas
-    diffs = np.diff(eq)
-    
-    # Porcentaje de períodos con crecimiento no negativo
-    non_negative_periods = np.sum(diffs >= 0) / len(diffs)
-    
-    # Porcentaje de períodos con crecimiento positivo
-    positive_periods = np.sum(diffs > 0) / len(diffs)
-    
-    # Evaluar consistencia de crecimiento
-    # Ideal: 95%+ períodos con crecimiento no negativo
-    monotonic_score = min(1.0, non_negative_periods * 1.05)
-    
-    # Bonus por períodos con crecimiento activo
-    growth_activity = min(1.0, positive_periods * 1.2)
-    
-    # Penalización por volatilidad excesiva
-    if len(diffs) > 0 and np.mean(diffs) > 0:
-        cv = np.std(diffs) / (np.mean(diffs) + 1e-8)  # Coeficiente de variación
-        volatility_penalty = 1.0 / (1.0 + cv * 1.5)
-    else:
-        volatility_penalty = 0.0
-    
-    return (monotonic_score * 0.6 + growth_activity * 0.4) * volatility_penalty
-
-
-@njit(cache=True, fastmath=True)
-def _smoothness_score(eq):
-    """Evalúa la suavidad de la curva (ausencia de ruido excesivo)"""
-    if eq.size < 5:
-        return 0.0
-    
-    # Calcular segundas diferencias (aceleración)
-    first_diff = np.diff(eq)
-    if len(first_diff) < 2:
-        return 0.0
-    
-    second_diff = np.diff(first_diff)
-    
-    # La suavidad ideal tiene segundas diferencias pequeñas
-    # (cambios graduales en la velocidad de crecimiento)
-    
-    if len(second_diff) == 0:
-        return 1.0
-    
-    # Normalizar por el rango de primeras diferencias
-    first_diff_range = max(np.max(first_diff) - np.min(first_diff), 1e-8)
-    normalized_second_diff = np.abs(second_diff) / first_diff_range
-    
-    # Score de suavidad (menor variación = mayor score)
-    mean_volatility = np.mean(normalized_second_diff)
-    smoothness = np.exp(-mean_volatility * 10.0)
-    
-    return smoothness
-
-
-@njit(cache=True, fastmath=True)
-def _advanced_drawdown_penalty(eq):
-    """Sistema avanzado de penalización por drawdown"""
-    if eq.size < 2:
-        return 1.0
-    
-    peak = eq[0]
-    max_dd = 0.0
-    consecutive_dd_periods = 0
-    max_consecutive_dd = 0
-    
-    for val in eq:
-        if val >= peak:
-            peak = val
-            consecutive_dd_periods = 0
-        else:
-            consecutive_dd_periods += 1
-            max_consecutive_dd = max(max_consecutive_dd, consecutive_dd_periods)
-            dd = (peak - val) / peak if peak > 0 else 0.0
-            max_dd = max(max_dd, dd)
-    
-    # Penalización base por drawdown máximo
-    dd_penalty_base = np.exp(-max_dd * 15.0)  # Muy estricto con drawdowns
-    
-    # Penalización adicional por períodos consecutivos de drawdown
-    periods_penalty = np.exp(-max_consecutive_dd / 20.0)
-    
-    # Combinar penalizaciones
-    final_penalty = dd_penalty_base * (0.7 + 0.3 * periods_penalty)
-    
-    return max(0.0, min(1.0, final_penalty))
-
-
-@njit(cache=True, fastmath=True)
-def _linearity_bonus(eq):
-    """Calcula un bonus específico por linealidad ascendente perfecta - MEJORADO"""
-    n = eq.size
-    if n < 10:
-        return 0.0
-    
-    # Ajuste lineal manual
-    t = np.arange(n, dtype=np.float64)
-    x_mean = t.mean()
-    y_mean = eq.mean()
-    
-    # Calcular pendiente
-    num = np.sum((t - x_mean) * (eq - y_mean))
-    den = np.sum((t - x_mean) ** 2)
-    
-    if den == 0:
-        return 0.0
-    
-    slope = num / den
-    
-    # Solo bonus para pendientes positivas
-    if slope <= 0:
-        return 0.0
-    
-    # Calcular linealidad (R²) con mayor precisión
-    y_pred = slope * (t - x_mean) + y_mean
-    ss_res = np.sum((eq - y_pred) ** 2)
-    ss_tot = np.sum((eq - y_mean) ** 2)
-    
-    if ss_tot == 0:
-        return 1.0 if slope > 0 else 0.0
-    
-    r2 = 1.0 - (ss_res / ss_tot)
-    
-    # Sistema de bonus más agresivo para linealidad alta
-    if r2 > 0.98:
-        # Linealidad casi perfecta: bonus exponencial
-        perfection_factor = (r2 - 0.98) / 0.02  # 0-1
-        bonus_multiplier = 1.0 + perfection_factor * 2.0  # 1.0-3.0
-    elif r2 > 0.95:
-        # Linealidad muy alta: bonus moderado
-        bonus_multiplier = 1.0 + (r2 - 0.95) / 0.03 * 0.5  # 1.0-1.5
-    else:
-        bonus_multiplier = 1.0
-    
-    # Pendiente normalizada más agresiva
-    if slope >= 0.5:
-        slope_factor = min(1.0, slope / 1.5)  # Ideal: 0.5-1.5
-    else:
-        slope_factor = slope / 0.5 * 0.8  # Reducido para pendientes pequeñas
-    
-    linear_bonus = r2 * slope_factor * bonus_multiplier
-    
-    return max(0.0, min(1.0, linear_bonus))  # ✅ CORRECCIÓN BUG #3: Normalizado a [0,1]
-
-
-@njit(cache=True, fastmath=True)
-def _consistency_score(eq):
-    """Evalúa la consistencia del crecimiento - MEJORADO"""
-    if eq.size < 3:
-        return 0.0
-    
-    # Calcular diferencias (returns)
-    diffs = np.diff(eq)
-    
-    # Porcentaje de períodos con crecimiento positivo
-    positive_periods = np.sum(diffs > 0) / len(diffs)
-    
-    # Porcentaje de períodos sin pérdidas (incluyendo flat)
-    non_negative_periods = np.sum(diffs >= 0) / len(diffs)
-    
-    # Consistencia direccional mejorada
-    # Ideal: 85%+ períodos positivos, 95%+ períodos no negativos
-    direction_score = (positive_periods * 0.85 + non_negative_periods * 0.15)
-    direction_consistency = min(1.0, direction_score * 1.1)
-    
-    # Análisis de volatilidad más sofisticado
-    if len(diffs) > 0:
-        mean_growth = np.mean(diffs)
-        if mean_growth > 0:
-            # Coeficiente de variación
-            cv = np.std(diffs) / (mean_growth + 1e-8)
-            
-            # Volatility penalty más estricto
-            vol_penalty = 1.0 / (1.0 + cv * 3.0)
-            
-            # Bonus por crecimiento estable
-            if cv < 0.5:  # Baja volatilidad
-                stability_bonus = 1.0 + (0.5 - cv) * 0.4
-            else:
-                stability_bonus = 1.0
-                
-            vol_penalty *= stability_bonus
-        else:
-            vol_penalty = 0.0
-    else:
-        vol_penalty = 1.0
-    
-    return direction_consistency * vol_penalty
-
-
-@njit(cache=True, fastmath=True)
-def _slope_reward(eq):
-    """Recompensa ULTRA-OPTIMIZADA por pendiente ascendente fuerte - PROMOCIÓN AGRESIVA de ganancias"""
-    n = eq.size
-    if n < 2:
-        return 0.0
-    
-    # Pendiente global: (final - inicial) / tiempo
-    total_growth = eq[-1] - eq[0]
-    time_span = n - 1
-    
-    if time_span == 0:
-        return 0.0
-    
-    slope = total_growth / time_span
-    
-    # Solo recompensar pendientes positivas
-    if slope <= 0:
-        return 0.0
-    
-    # NUEVO SISTEMA: Recompensa mucho más agresiva por ganancias
-    if slope < 0.03:
-        # Pendientes muy pequeñas: reward mínimo pero mejorado
-        return slope / 0.03 * 0.15
-    elif slope < 0.15:
-        # Pendientes pequeñas pero aceptables: reward mejorado
-        return 0.15 + (slope - 0.03) / 0.12 * 0.35
-    elif slope < 0.3:
-        # Pendientes moderadas: reward alto
-        return 0.5 + (slope - 0.15) / 0.15 * 0.3
-    elif slope <= 2.0:
-        # Rango ideal expandido: reward muy alto con bonus exponencial
-        base_reward = 0.8 + (slope - 0.3) / 1.7 * 0.15
-        
-        # NUEVO BONUS EXPONENCIAL por estar en el rango perfecto (0.5-1.5)
-        if 0.5 <= slope <= 1.5:
-            ideal_bonus = 1.0 + 0.5  # 50% bonus (aumentado de 30%)
-        elif 0.3 <= slope <= 2.0:
-            ideal_bonus = 1.0 + 0.2  # 20% bonus para rango ampliado
-        else:
-            ideal_bonus = 1.0
-            
-        return base_reward * ideal_bonus
-    else:
-        # Pendientes muy altas: reward alto con decaimiento más suave
-        excess = slope - 2.0
-        base_reward = 0.95
-        decay = np.exp(-excess * 0.2)  # Decaimiento más suave
-        return base_reward * decay
-
-
-@njit(cache=True, fastmath=True)
-def _trade_activity_score(trade_stats: np.ndarray, eq_length: int) -> float:
+def get_periods_per_year(timeframe: str) -> float:
     """
-    Métrica ULTRA-OPTIMIZADA de actividad de trades - PROMOCIÓN AGRESIVA de trades y ganancias.
-    
-    NUEVAS CARACTERÍSTICAS:
-    + Promoción mucho más agresiva del número de trades
-    + Bonus exponencial por alta actividad de trades positivos
-    + Recompensa extra por ganancias significativas
-    + Sistema de bonificación más generoso
-    """
-    if eq_length < 10:
-        return 0.0
-    
-    # Extraer estadísticas
-    total_trades = trade_stats[0]
-    positive_trades = trade_stats[1]
-    negative_trades = trade_stats[2]
-    win_rate = trade_stats[4]
-    
-    if total_trades <= 0:
-        return 0.0
-    
-    # === FRECUENCIA NORMALIZADA - PROMOCIÓN AGRESIVA ===
-    # Frecuencia como proporción de la serie temporal
-    trade_frequency = total_trades / eq_length
-    
-    # NUEVA ESTRATEGIA: Promoción mucho más agresiva de frecuencias altas
-    if trade_frequency <= 0.005:  # Muy poca actividad
-        freq_score = trade_frequency / 0.005 * 0.2
-    elif trade_frequency <= 0.02:  # Actividad baja pero aceptable
-        freq_score = 0.2 + (trade_frequency - 0.005) / 0.015 * 0.4
-    elif trade_frequency <= 0.40:  # Rango ideal expandido: hasta 40%
-        freq_score = 0.6 + (trade_frequency - 0.02) / 0.38 * 0.35
-    else:
-        # Decaimiento más suave para frecuencias muy altas
-        excess = trade_frequency - 0.40
-        freq_score = 0.95 * np.exp(-excess * 2.0)  # Menos penalización
-    
-    # === CALIDAD DE TRADES - BONUS EXPONENCIAL ===
-    positive_ratio = positive_trades / total_trades
-    
-    # NUEVO SISTEMA: Bonus exponencial más agresivo
-    if positive_ratio >= 0.85:  # Excelente: bonus exponencial máximo
-        quality_score = 1.0 + (positive_ratio - 0.85) / 0.15 * 0.5  # Hasta 1.5
-    elif positive_ratio >= 0.75:  # Muy bueno: bonus alto
-        quality_score = 0.8 + (positive_ratio - 0.75) / 0.1 * 0.2
-    elif positive_ratio >= 0.65:  # Bueno: score mejorado
-        quality_score = 0.6 + (positive_ratio - 0.65) / 0.1 * 0.2
-    elif positive_ratio >= 0.55:  # Aceptable: score moderado
-        quality_score = 0.4 + (positive_ratio - 0.55) / 0.1 * 0.2
-    else:
-        # Malo: penalización reducida
-        quality_score = positive_ratio / 0.55 * 0.4
-    
-    # === BONUS POR ACTIVIDAD POSITIVA - PROMOCIÓN AGRESIVA ===
-    positive_activity = positive_trades / eq_length
-    
-    # NUEVO SISTEMA: Bonus más generoso
-    if positive_activity > 0.20:  # >20% de períodos con trades positivos
-        activity_bonus = 1.0 + min(0.5, (positive_activity - 0.20) * 3.0)  # Hasta 50% bonus
-    elif positive_activity > 0.10:  # >10% pero ≤20%
-        activity_bonus = 1.0 + (positive_activity - 0.10) / 0.10 * 0.25
-    elif positive_activity > 0.05:  # >5% pero ≤10%
-        activity_bonus = 1.0 + (positive_activity - 0.05) / 0.05 * 0.15
-    else:
-        activity_bonus = 1.0
-    
-    # === NUEVO BONUS POR GANANCIAS SIGNIFICATIVAS ===
-    # Recompensa extra por alta cantidad de trades positivos
-    if positive_trades >= 10 and positive_ratio >= 0.7:
-        volume_bonus = 1.0 + min(0.3, positive_trades / 50.0)  # Bonus por volumen
-    else:
-        volume_bonus = 1.0
-    
-    # === SCORE COMBINADO - PESOS OPTIMIZADOS ===
-    # Frecuencia (35%) + Calidad (40%) + Bonus actividad (15%) + Bonus volumen (10%)
-    base_score = freq_score * 0.35 + quality_score * 0.40
-    final_score = base_score * activity_bonus * volume_bonus
-    
-    return max(0.0, min(0.4, final_score))  # Aumentado cap máximo a 40% del score total
-
-
-@njit(cache=True, fastmath=True)
-def _trade_consistency_score(trade_stats: np.ndarray, eq: np.ndarray) -> float:
-    """
-    Métrica de CONSISTENCIA de trades - evalúa la distribución temporal inteligente.
-    
-    Promueve:
-    - Distribución uniforme de trades en el tiempo
-    - Ausencia de períodos largos sin actividad
-    - Consistencia en la generación de señales
-    """
-    if eq.size < 20:
-        return 0.0
-    
-    total_trades = trade_stats[0]
-    
-    if total_trades < 5:  # Mínimo estadísticamente significativo
-        return 0.0
-    
-    # === DISTRIBUCIÓN TEMPORAL ===
-    # Evaluar qué tan bien distribuidos están los trades en el tiempo
-    expected_spacing = eq.size / total_trades
-    
-    # Score de distribución basado en espaciado esperado
-    if 2.0 <= expected_spacing <= 20.0:
-        # Rango ideal: trades no muy frecuentes ni muy espaciados
-        distribution_score = 1.0
-    elif expected_spacing < 2.0:
-        # Demasiado frecuente
-        distribution_score = expected_spacing / 2.0 * 0.8
-    else:
-        # Demasiado espaciado
-        distribution_score = np.exp(-(expected_spacing - 20.0) / 15.0) * 0.9
-    
-    # === ACTIVIDAD RELATIVA ===
-    # Qué proporción del tiempo hay actividad de trading
-    activity_ratio = total_trades / eq.size
-    
-    # Actividad ideal entre 2% y 30%
-    if 0.02 <= activity_ratio <= 0.30:
-        activity_score = 1.0
-    elif activity_ratio < 0.02:
-        activity_score = activity_ratio / 0.02 * 0.6
-    else:
-        activity_score = 0.9 * np.exp(-(activity_ratio - 0.30) * 5.0)
-    
-    # === CONSISTENCIA DE SEÑALES ===
-    win_rate = trade_stats[4]
-    
-    # Consistencia basada en win rate estable
-    if win_rate >= 0.7:
-        signal_consistency = 1.0 + (win_rate - 0.7) / 0.3 * 0.2  # Bonus hasta 20%
-    elif win_rate >= 0.5:
-        signal_consistency = 0.7 + (win_rate - 0.5) / 0.2 * 0.3
-    else:
-        signal_consistency = win_rate / 0.5 * 0.7
-    
-    # Combinar métricas
-    combined_score = (
-        distribution_score * 0.35 +
-        activity_score * 0.35 +
-        signal_consistency * 0.30
-    )
-    
-    return max(0.0, min(1.0, combined_score))  # ✅ CORRECCIÓN BUG #2: Peso se aplica en agregación
-
-
-@njit(cache=True, fastmath=True)
-def evaluate_report(eq: np.ndarray, trade_stats: np.ndarray) -> tuple:
-    """
-    Sistema de scoring ULTRA-OPTIMIZADO para curvas de equity perfectamente lineales.
-    
-    NUEVAS CARACTERÍSTICAS:
-    + Promoción inteligente del número de trades (sin números absolutos)
-    + Métricas de actividad y consistencia de trading
-    + Balance entre calidad de curva y robustez estadística
-    
-    Cambios principales:
-    - Nuevas métricas avanzadas para detectar linealidad perfecta
-    - Pesos rebalanceados para maximizar detección de curvas lineales
-    - Sistema de bonificación más agresivo
-    - Penalizaciones más estrictas para desviaciones
-    - ¡PROMOCIÓN INTELIGENTE DE TRADES!
-    
-    Returns:
-        tuple: (metrics_tuple expandida)
-    """
-    # Validaciones básicas
-    if eq.size < 50 or not np.isfinite(eq).all():  # Reducido de 200 a 50
-        return (-1.0, 0.0, 0.0, 0.0, 0.0,
-                0.0, 0.0, 0.0, 0.0, 0.0,
-                0.0, 0.0, 0.0, 0.0, 0.0,
-                0.0, 0.0)  # Expandido para nuevas métricas
-    
-    # Protección para valores negativos
-    eq_min = np.min(eq)
-    if eq_min <= 0.0:
-        eq = eq - eq_min + 1.0
-    
-    # === MÉTRICAS AVANZADAS OPTIMIZADAS ===
-    
-    # 1. R² con sistema de bonificación exponencial
-    r2 = _signed_r2(eq)
-    if r2 < 0.0:
-        return (-1.0, 0.0, 0.0, 0.0, 0.0,
-                0.0, 0.0, 0.0, 0.0, 0.0,
-                0.0, 0.0, 0.0, 0.0, 0.0,
-                0.0, 0.0)
-    
-    # 2. Score de linealidad perfecta (NUEVA MÉTRICA)
-    perfect_linearity = _perfect_linearity_score(eq)
-    
-    # 3. Bonus de linealidad mejorado
-    linearity_bonus = _linearity_bonus(eq)
-    
-    # 4. Consistencia mejorada
-    consistency = _consistency_score(eq)
-    
-    # 5. Recompensa por pendiente optimizada
-    slope_reward = _slope_reward(eq)
-    
-    # 6. Score de crecimiento monótono (NUEVA MÉTRICA)
-    monotonic_growth = _monotonic_growth_score(eq)
-    
-    # 7. Score de suavidad (NUEVA MÉTRICA)
-    smoothness = _smoothness_score(eq)
-    
-    # 8. Retorno total normalizado
-    total_return = max(0.0, (eq[-1] - eq[0]) / max(abs(eq[0]), 1.0))
-    
-    # 9. Penalización avanzada por drawdown
-    dd_penalty = _advanced_drawdown_penalty(eq)
-    
-    # === ¡NUEVAS MÉTRICAS DE TRADES! ===
-    
-    # 10. Score de actividad de trades (NUEVA - PROMOCIÓN INTELIGENTE)
-    trade_activity = _trade_activity_score(trade_stats, eq.size)
-    
-    # 11. Score de consistencia de trades (NUEVA - DISTRIBUCIÓN TEMPORAL)
-    trade_consistency = _trade_consistency_score(trade_stats, eq)
-    
-    # === SISTEMA DE SCORING ULTRA-OPTIMIZADO + PROMOCIÓN AGRESIVA DE TRADES Y GANANCIAS ===
-    
-    # Componente de linealidad perfecta (peso reducido para dar espacio a trades)
-    linearity_component = (
-        r2 * 0.3 +                    # R² base
-        perfect_linearity * 0.4 +     # Linealidad perfecta
-        linearity_bonus * 0.3         # Bonus linealidad
-    )
-    
-    # Componente de crecimiento consistente (PESO AUMENTADO para promover ganancias)
-    growth_component = (
-        slope_reward * 0.5 +          # Recompensa pendiente (aumentado de 0.4)
-        consistency * 0.25 +          # Consistencia (reducido de 0.3)
-        monotonic_growth * 0.25       # Crecimiento monótono (reducido de 0.3)
-    )
-    
-    # Componente de calidad técnica (PESO AUMENTADO para promover retornos)
-    quality_component = (
-        smoothness * 0.4 +            # Suavidad (reducido de 0.6)
-        min(1.0, total_return) * 0.6  # Retorno total (aumentado de 0.4)
-    )
-    
-    # ¡NUEVO! Componente de robustez estadística (trades) - PESO AUMENTADO
-    robustness_component = (
-        trade_activity * 0.7 +        # Actividad de trades (aumentado de 0.6)
-        trade_consistency * 0.3       # Consistencia temporal (reducido de 0.4)
-    )
-    
-    # Score base con pesos REBALANCEADOS para PROMOCIÓN AGRESIVA
-    base_score = (
-        linearity_component * 0.35 +  # 35% peso a linealidad (reducido de 45%)
-        growth_component * 0.30 +     # 30% peso a crecimiento (aumentado de 25%)
-        quality_component * 0.20 +    # 20% peso a calidad (aumentado de 15%)
-        robustness_component * 0.15   # 15% peso a robustez de trades (mantenido)
-    )
-    
-    # Aplicar penalización por drawdown
-    penalized_score = base_score * dd_penalty
-    
-    # === SISTEMA DE BONIFICACIÓN ULTRA-AGRESIVO + PROMOCIÓN AGRESIVA DE TRADES Y GANANCIAS ===
-    
-    final_score = penalized_score
-    
-    # Bonus por linealidad casi perfecta (R² > 0.98) - MANTENIDO
-    if r2 > 0.98:
-        perfection_bonus = (r2 - 0.98) / 0.02 * 0.25  # Hasta 25% bonus
-        final_score = min(1.0, final_score * (1.0 + perfection_bonus))
-    
-    # NUEVO BONUS por combinación perfecta de métricas - CRITERIOS RELAJADOS
-    if (perfect_linearity > 0.85 and monotonic_growth > 0.85 and 
-        smoothness > 0.7 and slope_reward > 0.6):
-        elite_bonus = 0.20  # 20% bonus por excelencia total (aumentado de 15%)
-        final_score = min(1.0, final_score * (1.0 + elite_bonus))
-    
-    # ¡NUEVO! Bonus AGRESIVO por alta actividad de trades positivos - CRITERIOS RELAJADOS
-    total_trades = trade_stats[0]
-    positive_trades = trade_stats[1]
-    win_rate = trade_stats[4]
-    
-    if total_trades > 0 and win_rate > 0.7 and positive_trades / eq.size > 0.08:  # Criterios más flexibles
-        trading_excellence_bonus = 0.25  # 25% bonus por excelencia en trading (aumentado de 12%)
-        final_score = min(1.0, final_score * (1.0 + trading_excellence_bonus))
-    
-    # NUEVO BONUS por alta pendiente y ganancias significativas
-    if slope_reward > 0.8 and total_return > 0.5:
-        profit_excellence_bonus = 0.15  # 15% bonus por excelencia en ganancias
-        final_score = min(1.0, final_score * (1.0 + profit_excellence_bonus))
-    
-    # Bonus por crecimiento monótono perfecto - CRITERIOS RELAJADOS
-    if monotonic_growth > 0.90:  # Reducido de 0.95
-        monotonic_bonus = (monotonic_growth - 0.90) / 0.10 * 0.15  # Hasta 15% bonus (aumentado de 10%)
-        final_score = min(1.0, final_score * (1.0 + monotonic_bonus))
-    
-    # NUEVO BONUS por combinación de trades y ganancias
-    if (total_trades >= 15 and positive_trades >= 10 and 
-        slope_reward > 0.6 and total_return > 0.3):
-        combined_excellence_bonus = 0.18  # 18% bonus por combinación perfecta
-        final_score = min(1.0, final_score * (1.0 + combined_excellence_bonus))
-    
-    # Asegurar rango [0,1]
-    final_score = max(0.0, min(1.0, final_score))
-    
-    # === MÉTRICAS EXPANDIDAS PARA DEBUGGING ===
-    metrics_tuple = (
-        final_score, r2, perfect_linearity, linearity_bonus, consistency, 
-        slope_reward, monotonic_growth, smoothness, total_return, dd_penalty,
-        linearity_component, growth_component, quality_component, base_score, penalized_score,
-        trade_activity, robustness_component  # NUEVAS MÉTRICAS DE TRADES
-    )
-    
-    return metrics_tuple
-
-
-def metrics_tuple_to_dict(metrics_tuple: tuple) -> dict:
-    """Convierte la tupla de métricas optimizada a diccionario - EXPANDIDO CON TRADES"""
-    # Asegura que la clave 'final_score' esté presente y consistente con la tupla
-    return {
-        'final_score': metrics_tuple[0],
-        'r2': metrics_tuple[1],
-        'perfect_linearity': metrics_tuple[2],
-        'linearity_bonus': metrics_tuple[3],
-        'consistency': metrics_tuple[4],
-        'slope_reward': metrics_tuple[5],
-        'monotonic_growth': metrics_tuple[6],
-        'smoothness': metrics_tuple[7],
-        'total_return': metrics_tuple[8],
-        'dd_penalty': metrics_tuple[9],
-        'linearity_component': metrics_tuple[10],
-        'growth_component': metrics_tuple[11],
-        'quality_component': metrics_tuple[12],
-        'base_score': metrics_tuple[13],
-        'penalized_score': metrics_tuple[14],
-        'trade_activity': metrics_tuple[15],
-        'robustness_component': metrics_tuple[16]
-    }
-
-# ────────── impresor de métricas ─────────────────────────────────────────────
-def print_detailed_metrics(metrics_dict: dict):
-    """
-    Imprime las métricas detalladas en formato de depuración - EXPANDIDO CON TRADES.
+    Calcula períodos por año basado en el timeframe.
+    Asume mercado XAUUSD: ~120 horas de trading por semana, 52 semanas/año.
     
     Args:
-        metrics_dict: Diccionario devuelto por metrics_tuple_to_dict
-    """
-    print(f"🔍 DEBUG: Strategy Metrics - Score: {metrics_dict['final_score']:.6f}\n"
-          f"  📈 LINEALITY METRICS:\n"
-          f"    • R²={metrics_dict['r2']:.6f} | Perfect Linearity={metrics_dict['perfect_linearity']:.6f}\n"
-          f"    • Linearity Bonus={metrics_dict['linearity_bonus']:.6f}\n"
-          f"  📊 GROWTH METRICS:\n"
-          f"    • Consistency={metrics_dict['consistency']:.6f} | Slope Reward={metrics_dict['slope_reward']:.6f}\n"
-          f"    • Monotonic Growth={metrics_dict['monotonic_growth']:.6f}\n"
-          f"  🎯 QUALITY METRICS:\n"
-          f"    • Smoothness={metrics_dict['smoothness']:.6f} | Total Return={metrics_dict['total_return']:.6f}\n"
-          f"    • DD Penalty={metrics_dict['dd_penalty']:.6f}\n"
-          f"  � TRADE ROBUSTNESS METRICS (¡NUEVO!):\n"
-          f"    • Trade Activity={metrics_dict['trade_activity']:.6f} | Robustness Comp={metrics_dict['robustness_component']:.6f}\n"
-          f"  �🔧 COMPONENT SCORES:\n"
-          f"    • Linearity Comp={metrics_dict['linearity_component']:.6f} | Growth Comp={metrics_dict['growth_component']:.6f}\n"
-          f"    • Quality Comp={metrics_dict['quality_component']:.6f} | Robustness Comp={metrics_dict['robustness_component']:.6f}\n"
-          f"  🏆 FINAL SCORES:\n"
-          f"    • Base={metrics_dict['base_score']:.6f} | Penalized={metrics_dict['penalized_score']:.6f}\n")
-
-def _ort_session(model_path: str):
-    """Thread-safe ONNX session cache"""
-    _configure_onnx_runtime()
+        timeframe: 'M5', 'M15', 'M30', 'H1', 'H4', 'D1'
     
-    with _session_lock:
-        if model_path in _session_cache:
-            return _session_cache[model_path]
-        
-        # Crear nueva sesión
-        sess = rt.InferenceSession(model_path, providers=['CPUExecutionProvider'])
-        iname = sess.get_inputs()[0].name
-        
-        # Limitar el tamaño de la caché (máximo 10 sessions)
-        if len(_session_cache) >= 10:
-            # Eliminar la primera entrada (FIFO)
-            oldest_key = next(iter(_session_cache))
-            del _session_cache[oldest_key]
-        
-        _session_cache[model_path] = (sess, iname)
-    return sess, iname
-
-def _predict_onnx(model_path:str, X_3d:np.ndarray) -> np.ndarray:
-    n_sim, n_rows, n_feat = X_3d.shape
-    sess, iname = _ort_session(model_path)
-
-    raw = sess.run(None, {iname: X_3d.reshape(-1, n_feat).astype(np.float32)})[0]
-
-    # ─── des-ZipMap / distintos formatos de salida ─────────────────────
-    if raw.dtype == object:                     # lista de dicts
-        prob_pos = np.fromiter((row[b'1'] for row in raw), dtype=np.float32)
-
-    elif raw.ndim == 2:                         # matriz (n,2)
-        prob_pos = raw[:, 1].astype(np.float32)
-
-    elif raw.ndim == 1:                         # vector (n,)  → ya es proba+
-        prob_pos = raw.astype(np.float32)
-
-    else:
-        raise RuntimeError(f"Formato de salida ONNX no soportado: {raw.shape}")
-
-    return prob_pos.reshape(n_sim, n_rows)
-
-def _predict_one(model_any, X_2d: np.ndarray) -> np.ndarray:
+    Returns:
+        float: Número de períodos por año para ese timeframe
     """
-    Devuelve la probabilidad de la clase positiva para una sola matriz 2-D.
-      · Si 'model_any' es CatBoost -> usa predict_proba.
-      · Si es ruta .onnx, bytes, o ModelProto -> usa _predict_onnx.
-    Resultado shape: (n_rows,)
-    """
-    if hasattr(model_any, "predict_proba"):
-        return model_any.predict_proba(X_2d)[:, 1]
+    # Mapeo de timeframes a períodos por año (ajustado para XAUUSD)
+    if timeframe == 'M5':
+        return 74880.0    # 120h/sem * 60min/h / 5min * 52sem = 74,880
+    elif timeframe == 'M15':
+        return 24960.0    # 120h/sem * 60min/h / 15min * 52sem = 24,960
+    elif timeframe == 'M30':
+        return 12480.0    # 120h/sem * 60min/h / 30min * 52sem = 12,480
+    elif timeframe == 'H1':
+        return 6240.0     # 120h/sem * 52sem = 6,240
+    elif timeframe == 'H4':
+        return 1560.0     # 30 períodos/sem * 52sem = 1,560
+    elif timeframe == 'D1':
+        return 260.0      # 5 días/sem * 52sem = 260
     else:
-        # _predict_onnx espera tensor 3-D: (n_sim, n_rows, n_feat)
-        return _predict_onnx(model_any, X_2d[None, :, :])[0]
+        return 6240.0     # Default a H1 si timeframe no reconocido
+    
+@njit(cache=True, fastmath=True)
+def manual_linear_regression(x, y):
+    """
+    Regresión lineal manual optimizada con numba.
+    
+    Args:
+        x: array 1D de valores independientes
+        y: array 1D de valores dependientes
+    
+    Returns:
+        tuple: (r2_signed, slope, intercept)
+    """
+    n = len(x)
+    if n < 2:
+        return 0.0, 0.0
+    
+    # Medias
+    x_mean = np.mean(x)
+    y_mean = np.mean(y)
+    
+    # Calcular numerador y denominador para la pendiente
+    numerator = 0.0
+    denominator = 0.0
+    
+    for i in range(n):
+        x_diff = x[i] - x_mean
+        y_diff = y[i] - y_mean
+        numerator += x_diff * y_diff
+        denominator += x_diff * x_diff
+    
+    # Evitar división por cero
+    if abs(denominator) < 1e-12:
+        return 0.0, 0.0
+    
+    # Pendiente e intercepto
+    slope = numerator / denominator
+    intercept = y_mean - slope * x_mean
+    
+    # Calcular R²
+    ss_res = 0.0  # Suma de cuadrados residuales
+    ss_tot = 0.0  # Suma de cuadrados totales
+    
+    for i in range(n):
+        y_pred = slope * x[i] + intercept
+        y_diff_mean = y[i] - y_mean
+        y_diff_pred = y[i] - y_pred
+        
+        ss_res += y_diff_pred * y_diff_pred
+        ss_tot += y_diff_mean * y_diff_mean
+    
+    # Calcular R²
+    if abs(ss_tot) < 1e-12:
+        r2 = 0.0
+    else:
+        r2 = 1.0 - (ss_res / ss_tot)
+    
+    # Aplicar signo basado en la pendiente
+    sign = 1.0 if slope >= 0 else -1.0
+    r2_signed = r2 * sign
+    
+    return r2_signed, slope
+
+@njit(cache=True, fastmath=True)
+def evaluate_report(
+    equity_curve: np.ndarray,
+    min_trades: int = 200,
+    pf_threshold: float = 1.8,
+    rdd_threshold: float = 1.6,
+) -> float:
+    """
+    Devuelve un score de [0, +∞) para curvas de equity.
+    - equity_curve: serie acumulada.
+    """
+
+    n = equity_curve.size
+    if n < 2:
+        return -1.0
+
+    returns = np.diff(equity_curve)
+    num_trades = returns.size
+    if num_trades < 50:
+        return -1.0
+
+    # ── Métricas base ─────────────────────────────────────────────
+    gains = returns[returns > 0].sum()
+    losses = -returns[returns < 0].sum()
+    profit_factor = gains / (losses + 1e-9)
+
+    running_max = np.empty_like(equity_curve)
+    running_max[0] = equity_curve[0]
+    for i in range(1, equity_curve.size):
+        running_max[i] = max(running_max[i - 1], equity_curve[i])
+    max_dd = np.max(running_max - equity_curve)
+    total_ret = equity_curve[-1] - equity_curve[0]
+    rdd = total_ret / (max_dd + 1e-9)
+
+    base = 0.4 * profit_factor + 0.6 * rdd
+
+    # Penalizaciones suaves (evitar "**" con booleanos)
+    if profit_factor < pf_threshold:
+        base *= 0.9
+    if rdd < rdd_threshold:
+        base *= 0.9
+
+    # ── Ajuste por nº de trades ───────────────────────────────────
+    trade_weight = 1 + np.log1p(max(0, num_trades - min_trades))
+    base *= trade_weight
+
+    # ── Linealidad ────────────────────────────────────────────────
+    x = np.arange(n, dtype=np.float64)
+    y = equity_curve.astype(np.float64)
+    r2, slope = manual_linear_regression(x, y)
+    if slope <= 0 or r2 <= 0:
+        return -1.0
+    lin_score = r2 * slope
+
+    # ── Sharpe opcional ───────────────────────────────────────────
+    sharpe = np.mean(returns) / (np.std(returns) + 1e-9)
+    risk_score = max(0, sharpe)  # evita negativos
+
+    # ── Combinación final ─────────────────────────────────────────
+    final = 0.45 * base + 0.35 * lin_score + 0.20 * risk_score
+    return final

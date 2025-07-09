@@ -579,7 +579,7 @@ def _consistency_score(eq):
 
 @njit(cache=True, fastmath=True)
 def _slope_reward(eq):
-    """Recompensa específica por pendiente ascendente fuerte - MEJORADO"""
+    """Recompensa ULTRA-OPTIMIZADA por pendiente ascendente fuerte - PROMOCIÓN AGRESIVA de ganancias"""
     n = eq.size
     if n < 2:
         return 0.0
@@ -597,42 +597,47 @@ def _slope_reward(eq):
     if slope <= 0:
         return 0.0
     
-    # Sistema de recompensa más agresivo y específico
-    if slope < 0.05:
-        # Pendientes muy pequeñas: reward mínimo
-        return slope / 0.05 * 0.1
-    elif slope < 0.2:
-        # Pendientes pequeñas pero aceptables
-        return 0.1 + (slope - 0.05) / 0.15 * 0.3
-    elif slope <= 1.5:
-        # Rango ideal: reward casi lineal con bonus
-        base_reward = 0.4 + (slope - 0.2) / 1.3 * 0.5
+    # NUEVO SISTEMA: Recompensa mucho más agresiva por ganancias
+    if slope < 0.03:
+        # Pendientes muy pequeñas: reward mínimo pero mejorado
+        return slope / 0.03 * 0.15
+    elif slope < 0.15:
+        # Pendientes pequeñas pero aceptables: reward mejorado
+        return 0.15 + (slope - 0.03) / 0.12 * 0.35
+    elif slope < 0.3:
+        # Pendientes moderadas: reward alto
+        return 0.5 + (slope - 0.15) / 0.15 * 0.3
+    elif slope <= 2.0:
+        # Rango ideal expandido: reward muy alto con bonus exponencial
+        base_reward = 0.8 + (slope - 0.3) / 1.7 * 0.15
         
-        # Bonus por estar en el rango perfecto (0.5-1.0)
-        if 0.5 <= slope <= 1.0:
-            ideal_bonus = 1.0 + 0.3  # 30% bonus
+        # NUEVO BONUS EXPONENCIAL por estar en el rango perfecto (0.5-1.5)
+        if 0.5 <= slope <= 1.5:
+            ideal_bonus = 1.0 + 0.5  # 50% bonus (aumentado de 30%)
+        elif 0.3 <= slope <= 2.0:
+            ideal_bonus = 1.0 + 0.2  # 20% bonus para rango ampliado
         else:
             ideal_bonus = 1.0
             
         return base_reward * ideal_bonus
     else:
-        # Pendientes muy altas: reward alto pero con decaimiento suave
-        excess = slope - 1.5
-        base_reward = 0.9
-        decay = np.exp(-excess * 0.3)
+        # Pendientes muy altas: reward alto con decaimiento más suave
+        excess = slope - 2.0
+        base_reward = 0.95
+        decay = np.exp(-excess * 0.2)  # Decaimiento más suave
         return base_reward * decay
 
 
 @njit(cache=True, fastmath=True)
 def _trade_activity_score(trade_stats: np.ndarray, eq_length: int) -> float:
     """
-    Métrica INTELIGENTE de actividad de trades - promueve más trades sin números absolutos.
+    Métrica ULTRA-OPTIMIZADA de actividad de trades - PROMOCIÓN AGRESIVA de trades y ganancias.
     
-    Estrategia:
-    - Normaliza por la longitud de la serie (no números absolutos)
-    - Promueve principalmente trades positivos
-    - Da crédito moderado a la actividad total
-    - Usa funciones sigmoidales para elegancia matemática
+    NUEVAS CARACTERÍSTICAS:
+    + Promoción mucho más agresiva del número de trades
+    + Bonus exponencial por alta actividad de trades positivos
+    + Recompensa extra por ganancias significativas
+    + Sistema de bonificación más generoso
     """
     if eq_length < 10:
         return 0.0
@@ -646,57 +651,64 @@ def _trade_activity_score(trade_stats: np.ndarray, eq_length: int) -> float:
     if total_trades <= 0:
         return 0.0
     
-    # === FRECUENCIA NORMALIZADA ===
-    # Frecuencia como proporción de la serie temporal (elegante, sin absolutos)
+    # === FRECUENCIA NORMALIZADA - PROMOCIÓN AGRESIVA ===
+    # Frecuencia como proporción de la serie temporal
     trade_frequency = total_trades / eq_length
     
-    # Frecuencia ideal entre 1% y 50% de los períodos
-    # Curva sigmoidal suave que premia frecuencias moderadas-altas
-    if trade_frequency <= 0.01:
-        freq_score = trade_frequency / 0.01 * 0.3  # Score bajo para muy poca actividad
-    elif trade_frequency <= 0.25:
-        # Rango ideal: score casi lineal
-        freq_score = 0.3 + (trade_frequency - 0.01) / 0.24 * 0.6
+    # NUEVA ESTRATEGIA: Promoción mucho más agresiva de frecuencias altas
+    if trade_frequency <= 0.005:  # Muy poca actividad
+        freq_score = trade_frequency / 0.005 * 0.2
+    elif trade_frequency <= 0.02:  # Actividad baja pero aceptable
+        freq_score = 0.2 + (trade_frequency - 0.005) / 0.015 * 0.4
+    elif trade_frequency <= 0.40:  # Rango ideal expandido: hasta 40%
+        freq_score = 0.6 + (trade_frequency - 0.02) / 0.38 * 0.35
     else:
-        # Decaimiento suave para frecuencias muy altas (sobretrading)
-        excess = trade_frequency - 0.25
-        freq_score = 0.9 * np.exp(-excess * 3.0)
+        # Decaimiento más suave para frecuencias muy altas
+        excess = trade_frequency - 0.40
+        freq_score = 0.95 * np.exp(-excess * 2.0)  # Menos penalización
     
-    # === CALIDAD DE TRADES ===
-    # Proporción de trades positivos (mejor que win_rate simple)
+    # === CALIDAD DE TRADES - BONUS EXPONENCIAL ===
     positive_ratio = positive_trades / total_trades
     
-    # Score de calidad exponencial que favorece high win rates
-    if positive_ratio >= 0.8:
-        # Excelente: bonus exponencial
-        quality_score = 0.8 + (positive_ratio - 0.8) / 0.2 * 0.2 * 2.0  # Hasta 1.2
-    elif positive_ratio >= 0.6:
-        # Bueno: score lineal
-        quality_score = 0.4 + (positive_ratio - 0.6) / 0.2 * 0.4
-    elif positive_ratio >= 0.5:
-        # Aceptable: score reducido
-        quality_score = 0.2 + (positive_ratio - 0.5) / 0.1 * 0.2
+    # NUEVO SISTEMA: Bonus exponencial más agresivo
+    if positive_ratio >= 0.85:  # Excelente: bonus exponencial máximo
+        quality_score = 1.0 + (positive_ratio - 0.85) / 0.15 * 0.5  # Hasta 1.5
+    elif positive_ratio >= 0.75:  # Muy bueno: bonus alto
+        quality_score = 0.8 + (positive_ratio - 0.75) / 0.1 * 0.2
+    elif positive_ratio >= 0.65:  # Bueno: score mejorado
+        quality_score = 0.6 + (positive_ratio - 0.65) / 0.1 * 0.2
+    elif positive_ratio >= 0.55:  # Aceptable: score moderado
+        quality_score = 0.4 + (positive_ratio - 0.55) / 0.1 * 0.2
     else:
-        # Malo: penalización
-        quality_score = positive_ratio / 0.5 * 0.2
+        # Malo: penalización reducida
+        quality_score = positive_ratio / 0.55 * 0.4
     
-    # === BONUS POR ACTIVIDAD POSITIVA ===
-    # Recompensa extra por alta cantidad de trades positivos relativos
+    # === BONUS POR ACTIVIDAD POSITIVA - PROMOCIÓN AGRESIVA ===
     positive_activity = positive_trades / eq_length
     
-    if positive_activity > 0.15:  # >15% de períodos con trades positivos
-        activity_bonus = 1.0 + min(0.3, (positive_activity - 0.15) * 2.0)
-    elif positive_activity > 0.05:  # >5% pero ≤15%
-        activity_bonus = 1.0 + (positive_activity - 0.05) / 0.1 * 0.15
+    # NUEVO SISTEMA: Bonus más generoso
+    if positive_activity > 0.20:  # >20% de períodos con trades positivos
+        activity_bonus = 1.0 + min(0.5, (positive_activity - 0.20) * 3.0)  # Hasta 50% bonus
+    elif positive_activity > 0.10:  # >10% pero ≤20%
+        activity_bonus = 1.0 + (positive_activity - 0.10) / 0.10 * 0.25
+    elif positive_activity > 0.05:  # >5% pero ≤10%
+        activity_bonus = 1.0 + (positive_activity - 0.05) / 0.05 * 0.15
     else:
         activity_bonus = 1.0
     
-    # === SCORE COMBINADO ===
-    # Frecuencia (40%) + Calidad (45%) + Bonus actividad (15%)
-    base_score = freq_score * 0.4 + quality_score * 0.45
-    final_score = base_score * activity_bonus  # ✅ CORRECCIÓN BUG #1: Peso se aplica en agregación
+    # === NUEVO BONUS POR GANANCIAS SIGNIFICATIVAS ===
+    # Recompensa extra por alta cantidad de trades positivos
+    if positive_trades >= 10 and positive_ratio >= 0.7:
+        volume_bonus = 1.0 + min(0.3, positive_trades / 50.0)  # Bonus por volumen
+    else:
+        volume_bonus = 1.0
     
-    return max(0.0, min(0.3, final_score))  # Cap máximo de 30% del score total
+    # === SCORE COMBINADO - PESOS OPTIMIZADOS ===
+    # Frecuencia (35%) + Calidad (40%) + Bonus actividad (15%) + Bonus volumen (10%)
+    base_score = freq_score * 0.35 + quality_score * 0.40
+    final_score = base_score * activity_bonus * volume_bonus
+    
+    return max(0.0, min(0.4, final_score))  # Aumentado cap máximo a 40% del score total
 
 
 @njit(cache=True, fastmath=True)
@@ -839,73 +851,84 @@ def evaluate_report(eq: np.ndarray, trade_stats: np.ndarray) -> tuple:
     # 11. Score de consistencia de trades (NUEVA - DISTRIBUCIÓN TEMPORAL)
     trade_consistency = _trade_consistency_score(trade_stats, eq)
     
-    # === SISTEMA DE SCORING ULTRA-OPTIMIZADO + TRADES ===
+    # === SISTEMA DE SCORING ULTRA-OPTIMIZADO + PROMOCIÓN AGRESIVA DE TRADES Y GANANCIAS ===
     
-    # Componente de linealidad perfecta (peso principal)
+    # Componente de linealidad perfecta (peso reducido para dar espacio a trades)
     linearity_component = (
         r2 * 0.3 +                    # R² base
         perfect_linearity * 0.4 +     # Linealidad perfecta
         linearity_bonus * 0.3         # Bonus linealidad
     )
     
-    # Componente de crecimiento consistente
+    # Componente de crecimiento consistente (PESO AUMENTADO para promover ganancias)
     growth_component = (
-        slope_reward * 0.4 +          # Recompensa pendiente
-        consistency * 0.3 +           # Consistencia
-        monotonic_growth * 0.3        # Crecimiento monótono
+        slope_reward * 0.5 +          # Recompensa pendiente (aumentado de 0.4)
+        consistency * 0.25 +          # Consistencia (reducido de 0.3)
+        monotonic_growth * 0.25       # Crecimiento monótono (reducido de 0.3)
     )
     
-    # Componente de calidad técnica
+    # Componente de calidad técnica (PESO AUMENTADO para promover retornos)
     quality_component = (
-        smoothness * 0.6 +            # Suavidad
-        min(1.0, total_return) * 0.4  # Retorno total
+        smoothness * 0.4 +            # Suavidad (reducido de 0.6)
+        min(1.0, total_return) * 0.6  # Retorno total (aumentado de 0.4)
     )
     
-    # ¡NUEVO! Componente de robustez estadística (trades)
+    # ¡NUEVO! Componente de robustez estadística (trades) - PESO AUMENTADO
     robustness_component = (
-        trade_activity * 0.6 +        # Actividad de trades
-        trade_consistency * 0.4       # Consistencia temporal
+        trade_activity * 0.7 +        # Actividad de trades (aumentado de 0.6)
+        trade_consistency * 0.3       # Consistencia temporal (reducido de 0.4)
     )
     
-    # Score base con pesos rebalanceados para incluir trades
+    # Score base con pesos REBALANCEADOS para PROMOCIÓN AGRESIVA
     base_score = (
-        linearity_component * 0.45 +  # 45% peso a linealidad (reducido para hacer espacio)
-        growth_component * 0.25 +     # 25% peso a crecimiento
-        quality_component * 0.15 +    # 15% peso a calidad
-        robustness_component * 0.15   # ¡15% peso a robustez de trades! (NUEVO)
+        linearity_component * 0.35 +  # 35% peso a linealidad (reducido de 45%)
+        growth_component * 0.30 +     # 30% peso a crecimiento (aumentado de 25%)
+        quality_component * 0.20 +    # 20% peso a calidad (aumentado de 15%)
+        robustness_component * 0.15   # 15% peso a robustez de trades (mantenido)
     )
     
     # Aplicar penalización por drawdown
     penalized_score = base_score * dd_penalty
     
-    # === SISTEMA DE BONIFICACIÓN ULTRA-AGRESIVO + TRADES ===
+    # === SISTEMA DE BONIFICACIÓN ULTRA-AGRESIVO + PROMOCIÓN AGRESIVA DE TRADES Y GANANCIAS ===
     
     final_score = penalized_score
     
-    # Bonus por linealidad casi perfecta (R² > 0.98)
+    # Bonus por linealidad casi perfecta (R² > 0.98) - MANTENIDO
     if r2 > 0.98:
         perfection_bonus = (r2 - 0.98) / 0.02 * 0.25  # Hasta 25% bonus
         final_score = min(1.0, final_score * (1.0 + perfection_bonus))
     
-    # Bonus por combinación perfecta de métricas
-    if (perfect_linearity > 0.9 and monotonic_growth > 0.9 and 
-        smoothness > 0.8 and slope_reward > 0.7):
-        elite_bonus = 0.15  # 15% bonus por excelencia total
+    # NUEVO BONUS por combinación perfecta de métricas - CRITERIOS RELAJADOS
+    if (perfect_linearity > 0.85 and monotonic_growth > 0.85 and 
+        smoothness > 0.7 and slope_reward > 0.6):
+        elite_bonus = 0.20  # 20% bonus por excelencia total (aumentado de 15%)
         final_score = min(1.0, final_score * (1.0 + elite_bonus))
     
-    # ¡NUEVO! Bonus por alta actividad de trades positivos
+    # ¡NUEVO! Bonus AGRESIVO por alta actividad de trades positivos - CRITERIOS RELAJADOS
     total_trades = trade_stats[0]
     positive_trades = trade_stats[1]
     win_rate = trade_stats[4]
     
-    if total_trades > 0 and win_rate > 0.8 and positive_trades / eq.size > 0.1:
-        trading_excellence_bonus = 0.12  # 12% bonus por excelencia en trading
+    if total_trades > 0 and win_rate > 0.7 and positive_trades / eq.size > 0.08:  # Criterios más flexibles
+        trading_excellence_bonus = 0.25  # 25% bonus por excelencia en trading (aumentado de 12%)
         final_score = min(1.0, final_score * (1.0 + trading_excellence_bonus))
     
-    # Bonus por crecimiento monótono perfecto
-    if monotonic_growth > 0.95:
-        monotonic_bonus = (monotonic_growth - 0.95) / 0.05 * 0.1  # Hasta 10% bonus
+    # NUEVO BONUS por alta pendiente y ganancias significativas
+    if slope_reward > 0.8 and total_return > 0.5:
+        profit_excellence_bonus = 0.15  # 15% bonus por excelencia en ganancias
+        final_score = min(1.0, final_score * (1.0 + profit_excellence_bonus))
+    
+    # Bonus por crecimiento monótono perfecto - CRITERIOS RELAJADOS
+    if monotonic_growth > 0.90:  # Reducido de 0.95
+        monotonic_bonus = (monotonic_growth - 0.90) / 0.10 * 0.15  # Hasta 15% bonus (aumentado de 10%)
         final_score = min(1.0, final_score * (1.0 + monotonic_bonus))
+    
+    # NUEVO BONUS por combinación de trades y ganancias
+    if (total_trades >= 15 and positive_trades >= 10 and 
+        slope_reward > 0.6 and total_return > 0.3):
+        combined_excellence_bonus = 0.18  # 18% bonus por combinación perfecta
+        final_score = min(1.0, final_score * (1.0 + combined_excellence_bonus))
     
     # Asegurar rango [0,1]
     final_score = max(0.0, min(1.0, final_score))

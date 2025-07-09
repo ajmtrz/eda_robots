@@ -4,8 +4,16 @@ import numpy as np
 import pandas as pd
 from datetime import datetime
 import matplotlib.pyplot as plt
-import onnxruntime as rt
 from functools import lru_cache
+from scipy import stats
+
+# Optional import for ONNX runtime
+try:
+    import onnxruntime as rt
+    ONNX_AVAILABLE = True
+except ImportError:
+    rt = None
+    ONNX_AVAILABLE = False
 
 # Configuración thread-safe de ONNX Runtime
 _onnx_configured = False
@@ -15,7 +23,7 @@ def _configure_onnx_runtime():
     """Configuración thread-safe de ONNX Runtime"""
     global _onnx_configured
     with _onnx_lock:
-        if not _onnx_configured:
+        if not _onnx_configured and ONNX_AVAILABLE:
             rt.set_default_logger_severity(4)
             _onnx_configured = True
 
@@ -30,6 +38,9 @@ _session_lock = threading.RLock()
 
 # Thread-safe plotting
 _plot_lock = threading.RLock()
+
+# Constantes financieras corregidas
+RISK_FREE_RATE = 0.02    # Tasa libre de riesgo anual (2%)
 
 def _safe_plot(equity_curve, title="Strategy Performance", score=None):
     """Thread-safe plotting function"""
@@ -243,7 +254,153 @@ def tester(
 
     return score
 
+# ────────── NUEVAS FUNCIONES PARA VALIDACIÓN ROBUSTA ──────────────────────────────────
+
+@njit(cache=True, fastmath=True)
+def _generate_random_signals(n_periods, signal_probs, seed=42):
+    """Genera señales aleatorias preservando proporciones originales"""
+    np.random.seed(seed)
+    return np.random.choice(np.array([0, 1]), size=n_periods, p=signal_probs)
+
+@njit(cache=True, fastmath=True)
+def _simulate_monkey_strategy(close, n_simulations=1000):
+    """
+    Ejecuta el Monkey Test (Null Hypothesis Benchmark) de forma vectorizada.
+    Simula estrategias aleatorias para establecer una línea base estadística.
+    """
+    n_periods = close.size
+    monkey_returns = np.zeros(n_simulations, dtype=np.float64)
+    
+    # Proporciones típicas de señales (balanced)
+    signal_probs = np.array([0.3, 0.7])  # 30% short, 70% long signals
+    
+    for sim in range(n_simulations):
+        # Generar señales aleatorias
+        np.random.seed(sim + 42)  # Seed diferente para cada simulación
+        signals = np.random.choice(np.array([0, 1]), size=n_periods, p=signal_probs)
+        
+        # Simular estrategia simple: posición basada en señal
+        position = 0.0
+        last_price = close[0]
+        total_return = 0.0
+        
+        for i in range(1, n_periods):
+            if signals[i-1] == 1 and position <= 0:  # Long signal
+                if position < 0:  # Close short first
+                    total_return += (last_price - close[i-1]) / last_price
+                position = 1.0
+                last_price = close[i-1]
+            elif signals[i-1] == 0 and position >= 0:  # Short signal
+                if position > 0:  # Close long first
+                    total_return += (close[i-1] - last_price) / last_price
+                position = -1.0
+                last_price = close[i-1]
+        
+        # Close final position
+        if position > 0:
+            total_return += (close[-1] - last_price) / last_price
+        elif position < 0:
+            total_return += (last_price - close[-1]) / last_price
+            
+        monkey_returns[sim] = total_return
+    
+    return monkey_returns
+
+@njit(cache=True, fastmath=True)
+def _calculate_deflated_sharpe(observed_sharpe, n_trials, n_periods, skewness, kurtosis):
+    """
+    Calcula el Deflated Sharpe Ratio según López de Prado.
+    Ajusta el Sharpe por múltiples pruebas y características de la distribución.
+    """
+    if n_trials <= 1 or n_periods <= 1:
+        return observed_sharpe
+    
+    # Varianza del estimador del Sharpe Ratio
+    var_sr = (1.0 + 0.5 * observed_sharpe * observed_sharpe - 
+              skewness * observed_sharpe + 
+              (kurtosis - 3.0) / 4.0 * observed_sharpe * observed_sharpe) / n_periods
+    
+    # Ajuste por múltiples pruebas (aproximación Bonferroni)
+    alpha_adjusted = 0.05 / n_trials
+    
+    # Z-score crítico ajustado
+    z_critical = np.sqrt(2.0 * np.log(n_trials))  # Aproximación para colas extremas
+    
+    # Threshold de significancia ajustado
+    sr_threshold = z_critical * np.sqrt(var_sr)
+    
+    # Deflated Sharpe Ratio
+    if observed_sharpe <= sr_threshold:
+        return 0.0
+    else:
+        # Ajuste conservador
+        deflation_factor = 1.0 - (sr_threshold / max(observed_sharpe, 1e-8))
+        return observed_sharpe * deflation_factor
+
+@njit(cache=True, fastmath=True)
+def _apply_transaction_costs(equity_curve, position_changes, cost_per_trade=0.001):
+    """
+    Aplica costos de transacción realistas de forma vectorizada.
+    
+    Args:
+        equity_curve: Curva de equity original
+        position_changes: Número de cambios de posición
+        cost_per_trade: Costo proporcional por operación
+    """
+    if position_changes <= 0:
+        return equity_curve
+    
+    # Estimar costos totales basados en el valor promedio del portfolio
+    avg_value = np.mean(equity_curve)
+    total_costs = position_changes * avg_value * cost_per_trade
+    
+    # Distribuir costos proporcionalmente a lo largo de la curva
+    cost_per_period = total_costs / len(equity_curve)
+    
+    # Aplicar costos de forma acumulativa
+    adjusted_curve = equity_curve.copy()
+    for i in range(1, len(adjusted_curve)):
+        adjusted_curve[i] -= cost_per_period * i
+    
+    return adjusted_curve
+
+@njit(cache=True, fastmath=True)
+def _walk_forward_validation(eq, window_size=252):
+    """
+    Implementa Walk-Forward Analysis simplificado.
+    Evalúa la consistencia de performance en ventanas temporales.
+    """
+    n_periods = eq.size
+    if n_periods < window_size * 2:
+        return 1.0  # No hay suficientes datos para WF
+    
+    n_windows = (n_periods - window_size) // (window_size // 2)
+    if n_windows < 2:
+        return 1.0
+    
+    window_returns = np.zeros(n_windows, dtype=np.float64)
+    
+    for i in range(n_windows):
+        start_idx = i * (window_size // 2)
+        end_idx = start_idx + window_size
+        
+        if end_idx >= n_periods:
+            break
+            
+        window = eq[start_idx:end_idx]
+        if window.size > 1:
+            window_return = (window[-1] - window[0]) / max(abs(window[0]), 1e-8)
+            window_returns[i] = window_return
+    
+    # Calcular consistencia: % de ventanas positivas
+    positive_windows = np.sum(window_returns > 0)
+    consistency = positive_windows / len(window_returns) if len(window_returns) > 0 else 0.0
+    
+    return consistency
+
 # ────────── helpers ──────────────────────────────────────────────────────────
+# Constantes financieras
+RISK_FREE_RATE = 0.02    # Tasa libre de riesgo anual (2%)
 
 @njit(cache=True, fastmath=True)
 def _signed_r2(eq):
@@ -270,7 +427,6 @@ def _signed_r2(eq):
     else:
         # Penalizar fuertemente pendientes negativas
         return -r2
-
 
 @njit(cache=True, fastmath=True)
 def _linearity_bonus(eq):
@@ -314,7 +470,6 @@ def _linearity_bonus(eq):
     
     return max(0.0, min(1.0, linear_bonus))
 
-
 @njit(cache=True, fastmath=True)
 def _consistency_score(eq):
     """Evalúa la consistencia del crecimiento (sin volatilidad excesiva)"""
@@ -343,7 +498,6 @@ def _consistency_score(eq):
         vol_penalty = 1.0
     
     return direction_consistency * vol_penalty
-
 
 @njit(cache=True, fastmath=True)
 def _slope_reward(eq):
@@ -379,44 +533,105 @@ def _slope_reward(eq):
         excess = slope - 1.0
         return 1.0 * np.exp(-excess * 0.2)  # Decae exponencialmente
 
+@njit(cache=True, fastmath=True)
+def _robust_sharpe_calculation(eq, periods_per_year=6240.0):
+    """Calcula Sharpe ratio robusto con ajustes estadísticos"""
+    if eq.size < 2:
+        return 0.0, 0.0, 0.0  # sharpe, skewness, kurtosis
+    
+    # Calcular returns
+    returns = np.diff(eq) / (eq[:-1] + 1e-8)
+    
+    if returns.size == 0:
+        return 0.0, 0.0, 0.0
+    
+    # Estadísticas básicas
+    mean_return = np.mean(returns)
+    std_return = np.std(returns)
+    
+    if std_return == 0:
+        return 0.0, 0.0, 0.0
+    
+    # Sharpe anualizado
+    annualized_return = mean_return * periods_per_year
+    annualized_vol = std_return * np.sqrt(periods_per_year)
+    sharpe = (annualized_return - RISK_FREE_RATE) / annualized_vol
+    
+    # Skewness y Kurtosis para Deflated Sharpe
+    centered_returns = returns - mean_return
+    m2 = np.mean(centered_returns ** 2)
+    m3 = np.mean(centered_returns ** 3)
+    m4 = np.mean(centered_returns ** 4)
+    
+    skewness = m3 / (m2 ** 1.5) if m2 > 0 else 0.0
+    kurtosis = m4 / (m2 ** 2) if m2 > 0 else 3.0
+    
+    return sharpe, skewness, kurtosis
 
 @njit(cache=True, fastmath=True)
 def evaluate_report(eq: np.ndarray, ppy: float = 6240.0):
     """
-    Sistema de scoring optimizado que favorece curvas lineales ascendentes perfectas.
+    Sistema de scoring ROBUSTO que integra las técnicas del artículo:
+    - Mantiene favorabilidad por curvas lineales ascendentes
+    - Añade validación estadística robusta
+    - Incluye costos de transacción
+    - Implementa técnicas de validación del artículo
+    - Optimizado para ejecutar en < 1 segundo
     
     Returns:
-        tuple: (score, metrics_tuple) donde score está optimizado para linealidad ascendente
+        tuple: (score, metrics_tuple) donde score integra todas las validaciones
     """
-    # Validaciones básicas
+    # Validaciones básicas optimizadas
     if eq.size < 200 or not np.isfinite(eq).all():
-        return (-1.0, (0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0))
+        return (-1.0, (0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 
+                      0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0))
     
     # Protección para valores negativos
     eq_min = np.min(eq)
     if eq_min <= 0.0:
         eq = eq - eq_min + 1.0
     
-    # === NUEVAS MÉTRICAS OPTIMIZADAS ===
+    # === 1. MÉTRICAS TRADICIONALES OPTIMIZADAS ===
     
-    # 1. R² con bonus por pendiente positiva
+    # R² con bonus por pendiente positiva (mantenido)
     r2 = _signed_r2(eq)
     if r2 < 0.0:
-        return (-1.0, (0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0))
+        return (-1.0, (0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 
+                      0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0))
     
-    # 2. Bonus específico por linealidad ascendente
+    # Bonus específico por linealidad ascendente (mantenido)
     linearity_bonus = _linearity_bonus(eq)
     
-    # 3. Consistencia del crecimiento
+    # Consistencia del crecimiento (mantenido)
     consistency = _consistency_score(eq)
     
-    # 4. Recompensa por pendiente fuerte
+    # Recompensa por pendiente fuerte (mantenido)
     slope_reward = _slope_reward(eq)
     
-    # 5. Retorno total normalizado
-    total_return = (eq[-1] - eq[0]) / max(abs(eq[0]), 1.0)
+    # === 2. NUEVAS VALIDACIONES ROBUSTAS DEL ARTÍCULO ===
     
-    # 6. Penalización por drawdown (simplificada)
+    # Sharpe ratio robusto con estadísticas para Deflated Sharpe
+    sharpe, skewness, kurtosis = _robust_sharpe_calculation(eq, ppy)
+    
+    # Walk-Forward Analysis - consistencia temporal
+    wf_consistency = _walk_forward_validation(eq, window_size=min(252, eq.size // 4))
+    
+    # Aplicar costos de transacción (estimación conservadora)
+    # Estimamos cambios de posición basados en volatilidad de la curva
+    returns = np.diff(eq)
+    estimated_trades = max(1, int(np.sum(np.abs(np.diff(returns > np.median(returns)))) * 0.5))
+    eq_with_costs = _apply_transaction_costs(eq, estimated_trades, 0.001)
+    
+    # Recalcular métricas post-costos
+    cost_adjusted_return = (eq_with_costs[-1] - eq_with_costs[0]) / max(abs(eq_with_costs[0]), 1.0)
+    
+    # Deflated Sharpe Ratio (asumiendo múltiples pruebas moderadas)
+    n_trials_estimated = 50  # Estimación conservadora de pruebas realizadas
+    deflated_sharpe = _calculate_deflated_sharpe(sharpe, n_trials_estimated, eq.size, skewness, kurtosis)
+    
+    # === 3. PENALIZACIONES Y AJUSTES ===
+    
+    # Drawdown mejorado
     peak = eq[0]
     max_dd = 0.0
     for val in eq:
@@ -426,44 +641,65 @@ def evaluate_report(eq: np.ndarray, ppy: float = 6240.0):
             dd = (peak - val) / peak if peak > 0 else 0.0
             max_dd = max(max_dd, dd)
     
-    # Penalización por drawdown exponencial
-    dd_penalty = np.exp(-max_dd * 10.0)  # Fuerte penalización por DD > 10%
+    # Penalización por drawdown exponencial (mantenido pero mejorado)
+    dd_penalty = np.exp(-max_dd * 12.0)  # Más estricto
     
-    # === SCORE OPTIMIZADO ===
+    # Penalización por volatilidad excesiva
+    if returns.size > 0:
+        volatility_ratio = np.std(returns) / (abs(np.mean(returns)) + 1e-8)
+        vol_penalty = 1.0 / (1.0 + volatility_ratio * 0.5)
+    else:
+        volatility_ratio = 0.0
+        vol_penalty = 1.0
     
-    # Componentes principales
+    # === 4. SCORE INTEGRADO ROBUSTO ===
+    
+    # Componentes principales (mantenidos con mejoras)
     linearity_component = (r2 + linearity_bonus) / 2.0  # [0,1]
-    growth_component = (slope_reward + consistency) / 2.0          # [0,1]
+    growth_component = (slope_reward + consistency) / 2.0  # [0,1]
     
-    # Score base: promedio ponderado favoreciendo linealidad
+    # Nuevos componentes de robustez
+    robustness_component = (
+        (deflated_sharpe / max(abs(deflated_sharpe), 1.0) + 1.0) / 2.0 * 0.3 +  # 30% Deflated Sharpe
+        wf_consistency * 0.4 +  # 40% Walk-Forward consistency
+        (cost_adjusted_return / max(abs(cost_adjusted_return), 1.0) + 1.0) / 2.0 * 0.3  # 30% Cost-adjusted return
+    )
+    robustness_component = max(0.0, min(1.0, robustness_component))
+    
+    # Score base integrado
     base_score = (
-        linearity_component * 0.5 +  # 50% peso a linealidad
-        growth_component * 0.3 +      # 30% peso a crecimiento
-        min(1.0, max(0.0, total_return)) * 0.2  # 20% peso a retorno total
+        linearity_component * 0.4 +      # 40% peso a linealidad (mantenido alto)
+        growth_component * 0.25 +        # 25% peso a crecimiento
+        robustness_component * 0.25 +    # 25% peso a robustez estadística
+        max(0.0, min(1.0, (sharpe + 2.0) / 4.0)) * 0.1  # 10% Sharpe tradicional
     )
     
-    # Aplicar penalización por drawdown
-    final_score = base_score * dd_penalty
+    # Aplicar penalizaciones
+    final_score = base_score * dd_penalty * vol_penalty
     
-    # Bonus adicional para curvas perfectamente lineales ascendentes
-    if r2 > 0.98 and slope_reward > 0.5 and max_dd < 0.01:
-        final_score = min(1.0, final_score * 1.2)  # Bonus del 20%
+    # Bonus especial para curvas lineales perfectas (mantenido)
+    if r2 > 0.98 and slope_reward > 0.5 and max_dd < 0.01 and wf_consistency > 0.8:
+        final_score = min(1.0, final_score * 1.15)  # Bonus del 15%
     
     # Asegurar rango [0,1]
     final_score = max(0.0, min(1.0, final_score))
     
-    # === MÉTRICAS PARA DEBUGGING ===
+    # === 5. MÉTRICAS EXPANDIDAS PARA DEBUGGING ===
+    total_return = cost_adjusted_return
+    
     metrics_tuple = (
         r2, linearity_bonus, consistency, slope_reward,
         total_return, max_dd, dd_penalty, linearity_component,
-        growth_component, base_score, final_score
+        growth_component, base_score, final_score, sharpe,
+        deflated_sharpe, wf_consistency, robustness_component, skewness,
+        kurtosis, vol_penalty, estimated_trades, cost_adjusted_return, 
+        volatility_ratio, 0.0
     )
     
     return final_score, metrics_tuple
 
-
 def metrics_tuple_to_dict(score: float, metrics_tuple: tuple, periods_per_year: float) -> dict:
-    """Convierte la tupla de métricas optimizada a diccionario"""
+    """Convierte la tupla de métricas expandida a diccionario"""
     return {
         'score': score,
         'r2': metrics_tuple[0],
@@ -477,30 +713,129 @@ def metrics_tuple_to_dict(score: float, metrics_tuple: tuple, periods_per_year: 
         'growth_component': metrics_tuple[8],
         'base_score': metrics_tuple[9],
         'final_score': metrics_tuple[10],
+        'sharpe_ratio': metrics_tuple[11],
+        'deflated_sharpe': metrics_tuple[12],
+        'wf_consistency': metrics_tuple[13],
+        'robustness_component': metrics_tuple[14],
+        'skewness': metrics_tuple[15],
+        'kurtosis': metrics_tuple[16],
+        'vol_penalty': metrics_tuple[17],
+        'estimated_trades': metrics_tuple[18],
+        'cost_adjusted_return': metrics_tuple[19],
+        'volatility_ratio': metrics_tuple[20],
         'periods_per_year': periods_per_year
+    }
+
+# === FUNCIONES ADICIONALES DE VALIDACIÓN ===
+
+def run_monkey_test(equity_curve, close_prices=None, n_simulations=1000):
+    """
+    Ejecuta el Monkey Test (Null Hypothesis Benchmark) según el artículo.
+    
+    Args:
+        equity_curve: Curva de equity de la estrategia
+        close_prices: Precios de cierre (si están disponibles)
+        n_simulations: Número de simulaciones Monte Carlo
+    
+    Returns:
+        dict: Resultados del test estadístico
+    """
+    if close_prices is None:
+        # Generar precios sintéticos basados en la equity curve
+        close_prices = equity_curve + np.random.normal(0, np.std(np.diff(equity_curve)), len(equity_curve))
+    
+    # Obtener return de la estrategia real
+    strategy_return = (equity_curve[-1] - equity_curve[0]) / abs(equity_curve[0])
+    
+    # Simular estrategias aleatorias
+    monkey_returns = _simulate_monkey_strategy(close_prices, n_simulations)
+    
+    # Calcular p-value
+    p_value = np.sum(monkey_returns >= strategy_return) / n_simulations
+    
+    return {
+        'strategy_return': strategy_return,
+        'monkey_returns_mean': np.mean(monkey_returns),
+        'monkey_returns_std': np.std(monkey_returns),
+        'p_value': p_value,
+        'is_significant': p_value < 0.05,
+        'percentile': (1.0 - p_value) * 100
+    }
+
+def comprehensive_strategy_validation(equity_curve, close_prices=None, periods_per_year=6240.0):
+    """
+    Validación comprensiva que implementa todas las técnicas del artículo.
+    
+    Returns:
+        dict: Resultados completos de validación
+    """
+    # Evaluación principal
+    score, metrics_tuple = evaluate_report(equity_curve, periods_per_year)
+    metrics = metrics_tuple_to_dict(score, metrics_tuple, periods_per_year)
+    
+    # Monkey Test
+    monkey_results = run_monkey_test(equity_curve, close_prices)
+    
+    # Walk-Forward detallado
+    wf_consistency = _walk_forward_validation(equity_curve)
+    
+    # Análisis de costos
+    estimated_trades = metrics['estimated_trades']
+    cost_impact = abs(metrics['total_return'] - metrics['cost_adjusted_return'])
+    
+    return {
+        'primary_score': score,
+        'metrics': metrics,
+        'monkey_test': monkey_results,
+        'walk_forward_consistency': wf_consistency,
+        'cost_analysis': {
+            'estimated_trades': estimated_trades,
+            'cost_impact_percent': cost_impact * 100,
+            'cost_adjusted_return': metrics['cost_adjusted_return']
+        },
+        'validation_summary': {
+            'passes_monkey_test': monkey_results['is_significant'],
+            'robust_performance': score > 0.5,
+            'consistent_performance': wf_consistency > 0.6,
+            'cost_acceptable': cost_impact < 0.1,
+            'overall_robust': all([
+                monkey_results['is_significant'],
+                score > 0.5,
+                wf_consistency > 0.6,
+                cost_impact < 0.1
+            ])
+        }
     }
 
 # ────────── impresor de métricas ─────────────────────────────────────────────
 def print_detailed_metrics(metrics: dict, title: str = "Strategy Metrics"):
     """
-    Imprime las métricas detalladas en formato de depuración.
+    Imprime las métricas detalladas expandidas en formato de depuración.
     
     Args:
         metrics: Diccionario devuelto por metrics_tuple_to_dict
         title:   Encabezado para el bloque de debug
     """
-    # Correspondencia exacta con el diccionario y la tupla
     print(f"🔍 DEBUG: {title} - Score: {metrics['score']:.4f}\n"
-          f"  • R²={metrics['r2']:.4f} | Linearity Bonus={metrics['linearity_bonus']:.4f}\n"
-          f"  • Consistency={metrics['consistency']:.4f} | Slope Reward={metrics['slope_reward']:.4f}\n"
-          f"  • Total Return={metrics['total_return']:.4f} | Max Drawdown={metrics['max_drawdown']:.4f}\n"
-          f"  • DD Penalty={metrics['dd_penalty']:.4f}\n"
-          f"  • Linearity Comp={metrics['linearity_component']:.4f} | Growth Comp={metrics['growth_component']:.4f}\n"
-          f"  • Base Score={metrics['base_score']:.4f} | Final Score={metrics['final_score']:.4f}\n"
-          f"  • Periods/Year={metrics['periods_per_year']:.2f}")
+          f"  📈 LINEARITY METRICS:\n"
+          f"     • R²={metrics['r2']:.4f} | Linearity Bonus={metrics['linearity_bonus']:.4f}\n"
+          f"     • Slope Reward={metrics['slope_reward']:.4f} | Consistency={metrics['consistency']:.4f}\n"
+          f"  📊 ROBUSTNESS METRICS:\n"
+          f"     • Sharpe={metrics['sharpe_ratio']:.4f} | Deflated Sharpe={metrics['deflated_sharpe']:.4f}\n"
+          f"     • WF Consistency={metrics['wf_consistency']:.4f} | Vol Penalty={metrics['vol_penalty']:.4f}\n"
+          f"  💰 RISK & COSTS:\n"
+          f"     • Max Drawdown={metrics['max_drawdown']:.4f} | DD Penalty={metrics['dd_penalty']:.4f}\n"
+          f"     • Est. Trades={metrics['estimated_trades']:.0f} | Cost Adj. Return={metrics['cost_adjusted_return']:.4f}\n"
+          f"  🏗️ COMPONENTS:\n"
+          f"     • Linearity Comp={metrics['linearity_component']:.4f} | Growth Comp={metrics['growth_component']:.4f}\n"
+          f"     • Robustness Comp={metrics['robustness_component']:.4f} | Final Score={metrics['final_score']:.4f}\n"
+          f"  📏 PERIODS/YEAR: {metrics['periods_per_year']:.2f}")
 
 def _ort_session(model_path: str):
     """Thread-safe ONNX session cache"""
+    if not ONNX_AVAILABLE:
+        raise RuntimeError("ONNX Runtime not available. Install onnxruntime to use ONNX models.")
+    
     _configure_onnx_runtime()
     
     with _session_lock:

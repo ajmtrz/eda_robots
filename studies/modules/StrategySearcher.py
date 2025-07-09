@@ -1,4 +1,3 @@
-import gc
 import math
 import time
 import traceback
@@ -175,12 +174,12 @@ class StrategySearcher:
                                     # Guardar nuevas rutas de modelos
                                     study.set_user_attr("best_score", trial.user_attrs['score'])
                                     study.set_user_attr("best_model_paths", trial.user_attrs['model_paths'])
-                                    study.set_user_attr("best_periods_main", trial.user_attrs['periods_main'])
-                                    study.set_user_attr("best_stats_main", trial.user_attrs['stats_main'])
+                                    study.set_user_attr("best_periods_main", trial.user_attrs.get('feature_main_periods'))
+                                    study.set_user_attr("best_stats_main", trial.user_attrs.get('feature_main_stats'))
                                     study.set_user_attr("best_model_cols", trial.user_attrs['model_cols'])
-                                    # Cambia acceso directo por .get para evitar error si no existe
-                                    study.set_user_attr("best_periods_meta", trial.user_attrs.get('periods_meta'))
-                                    study.set_user_attr("best_stats_meta", trial.user_attrs.get('stats_meta'))
+                                    # Cambiar acceso directo por .get para evitar error si no existe
+                                    study.set_user_attr("best_periods_meta", trial.user_attrs.get('feature_meta_periods'))
+                                    study.set_user_attr("best_stats_meta", trial.user_attrs.get('feature_meta_stats'))
                                     # Exportar modelo
                                     export_params = {
                                         "tag": self.tag,
@@ -263,24 +262,30 @@ class StrategySearcher:
         """Implementa la búsqueda de estrategias usando modelos markovianos."""
         try:
             hp = self.suggest_all_params(trial)
+            
+            # 🔍 DEBUG: Supervisar parámetros específicos de markov
+            if self.debug:
+                markov_params = {k: v for k, v in hp.items() if k.startswith('markov_')}
+                print(f"🔍 DEBUG search_markov - Parámetros markov: {markov_params}")
+                
             full_ds = self.get_labeled_full_data(hp)
             if full_ds is None:
                 return -1.0
             if self.search_subtype == 'simple':
                 full_ds = markov_regime_switching_simple(
                     full_ds,
-                    model_type=hp['model_type'],
-                    n_regimes=hp['n_regimes'],
-                    n_iter=hp['n_iter'],
-                    n_mix=hp['n_mix'] if hp['model_type'] == 'VARHMM' else 3
+                    model_type=hp['markov_model'],
+                    n_regimes=hp['markov_regimes'],
+                    n_iter=hp.get('markov_iter', 100),
+                    n_mix=hp.get('markov_mix', 3)
                 )
             elif self.search_subtype == 'advanced':
                 full_ds = markov_regime_switching_advanced(
                     full_ds,
-                    model_type=hp['model_type'],
-                    n_regimes=hp['n_regimes'],
-                    n_iter=hp['n_iter'],
-                    n_mix=hp['n_mix'] if hp['model_type'] == 'VARHMM' else 3
+                    model_type=hp['markov_model'],
+                    n_regimes=hp['markov_regimes'],
+                    n_iter=hp.get('markov_iter', 100),
+                    n_mix=hp.get('markov_mix', 3)
                 )
             score, model_paths, models_cols = self.evaluate_clusters(trial, full_ds, hp)
             if score is None or model_paths is None or models_cols is None:
@@ -297,20 +302,27 @@ class StrategySearcher:
         """Implementa la búsqueda de estrategias usando clustering."""
         try:
             hp = self.suggest_all_params(trial)
+            
+            # 🔍 DEBUG: Supervisar parámetros específicos de clusters
+            if self.debug:
+                clust_params = {k: v for k, v in hp.items() if k.startswith('clust_')}
+                print(f"🔍 DEBUG search_clusters - Parámetros clusters: {clust_params}")
+                print(f"🔍   search_subtype: {self.search_subtype}")
+                
             full_ds = self.get_labeled_full_data(hp)
             if full_ds is None:
                 return -1.0
             if self.search_subtype == 'simple':
                 full_ds = clustering_simple(
                     full_ds,
-                    min_cluster_size=hp['n_clusters']
+                    min_cluster_size=hp['clust_n_clusters']
                 )
             elif self.search_subtype == 'advanced':
                 full_ds = sliding_window_clustering(
                     full_ds,
-                    n_clusters=hp['n_clusters'],
-                    window_size=hp['window_size'],
-                    step=hp.get('step', None),
+                    n_clusters=hp['clust_n_clusters'],
+                    window_size=hp['clust_window'],
+                    step=hp.get('clust_step', None),
                 )
             score, model_paths, models_cols = self.evaluate_clusters(trial, full_ds, hp)
             if score is None or model_paths is None or models_cols is None:
@@ -327,14 +339,20 @@ class StrategySearcher:
         """Búsqueda basada en GaussianMixture para etiquetar clusters."""
         try:
             hp = self.suggest_all_params(trial)
+            
+            # 🔍 DEBUG: Supervisar parámetros específicos de lgmm
+            if self.debug:
+                lgmm_params = {k: v for k, v in hp.items() if k.startswith('lgmm_')}
+                print(f"🔍 DEBUG search_lgmm - Parámetros lgmm: {lgmm_params}")
+                
             full_ds = self.get_labeled_full_data(hp)
             if full_ds is None:
                 return -1.0
             full_ds = lgmm_clustering(
                 full_ds,
-                n_components=hp['n_components'],
-                covariance_type=hp['covariance_type'],
-                max_iter=hp['max_iter'],
+                n_components=hp['lgmm_components'],
+                covariance_type=hp.get('lgmm_covariance', 'full'),
+                max_iter=hp.get('lgmm_iter', 100),
             )
             score, model_paths, models_cols = self.evaluate_clusters(trial, full_ds, hp)
             if score is None or model_paths is None or models_cols is None:
@@ -354,7 +372,7 @@ class StrategySearcher:
             full_ds = self.get_labeled_full_data(hp)
             if full_ds is None:
                 return -1.0
-            feature_cols = [col for col in full_ds.columns if col.endswith('_feature')]
+            feature_cols = [col for col in full_ds.columns if col.endswith('_main_feature')]
             X = full_ds[feature_cols]
             y = full_ds['labels_main'] if 'labels_main' in full_ds.columns else full_ds['labels']
             catboost_params = dict(
@@ -410,7 +428,7 @@ class StrategySearcher:
             full_ds = self.get_labeled_full_data(hp)
             if full_ds is None:
                 return -1.0
-            feature_cols = [c for c in full_ds.columns if c.endswith('_feature')]
+            feature_cols = [c for c in full_ds.columns if c.endswith('_main_feature')]
             X = full_ds[feature_cols]
             y = full_ds['labels_main']
             def _bootstrap_oob_identification(X: pd.DataFrame, y: pd.Series, n_models: int = 25):
@@ -470,7 +488,7 @@ class StrategySearcher:
                         best_s = mean_err
                         best_f = frac
                 return best_f
-            err0, err1, oob = _bootstrap_oob_identification(X, y, n_models=hp.get('n_meta_learners', 5))
+            err0, err1, oob = _bootstrap_oob_identification(X, y, n_models=hp.get('causal_meta_learners', 15))
             best_frac = _optimize_bad_samples_threshold(err0, err1, oob)
             to_mark_0 = (err0 / oob.replace(0, 1)).fillna(0)
             to_mark_1 = (err1 / oob.replace(0, 1)).fillna(0)
@@ -509,18 +527,25 @@ class StrategySearcher:
         """
         try:
             hp = self.suggest_all_params(trial)
+            
+            # 🔍 DEBUG: Supervisar parámetros específicos de wkmeans
+            if self.debug:
+                wk_params = {k: v for k, v in hp.items() if k.startswith('wk_')}
+                print(f"🔍 DEBUG search_wkmeans - Parámetros wkmeans: {wk_params}")
+                print(f"🔍   search_subtype: {self.search_subtype}")
+                
             full_ds = self.get_labeled_full_data(hp)
             if full_ds is None:
                 return -1.0
             full_ds = wkmeans_clustering(
                 full_ds,
-                n_clusters=hp["n_clusters"],
-                window_size=hp["window_size"],
+                n_clusters=hp["wk_n_clusters"],
+                window_size=hp["wk_window"],
                 metric=self.search_subtype,
-                step=hp["step"],
-                bandwidth=hp["bandwidth"] if self.search_subtype == "mmd" else None,
-                n_proj=hp["n_proj"] if self.search_subtype == "sliced_w" else None,
-                max_iter=hp["max_iter"],
+                step=hp.get("wk_step", 1),
+                bandwidth=hp.get("wk_bandwidth", 1.0),
+                n_proj=hp.get("wk_proj", 100),
+                max_iter=hp.get("wk_iter", 300),
             )
             score, model_paths, model_cols = self.evaluate_clusters(trial, full_ds, hp)
             if score is None or model_paths is None or model_cols is None:
@@ -540,6 +565,11 @@ class StrategySearcher:
     def evaluate_clusters(self, trial: optuna.trial, full_ds: pd.DataFrame, hp: Dict[str, Any]) -> tuple[float, tuple, tuple]:
         """Función helper para evaluar clusters y entrenar modelos."""
         try:
+            # 🔍 DEBUG: Supervisar parámetros en evaluate_clusters
+            if self.debug:
+                validation_params = {k: v for k, v in hp.items() if k.startswith('label_')}
+                print(f"🔍 DEBUG evaluate_clusters - Parámetros de validación: {validation_params}")
+                
             best_score = -math.inf
             best_model_paths = (None, None)
             best_models_cols = (None, None)
@@ -555,20 +585,30 @@ class StrategySearcher:
                     return None, None, None
             for clust in cluster_sizes.index:
                 model_main_train_data = full_ds.loc[full_ds["labels_meta"] == clust].copy()
-                main_feature_cols = full_ds.columns[full_ds.columns.str.contains('_feature') & \
-                                                       ~full_ds.columns.str.contains('_meta_feature')]
+                main_feature_cols = full_ds.columns[full_ds.columns.str.contains('_main_feature')]
                 model_main_train_data = model_main_train_data[main_feature_cols.tolist() + ['labels_main']]
                 if model_main_train_data is None or model_main_train_data.empty:
                     continue
-                if 'label_max' in hp and len(model_main_train_data) <= hp["label_max"]:
+                # Usar el nuevo nombre con prefijo
+                if 'label_max_val' in hp and len(model_main_train_data) <= hp["label_max_val"]:
+                    if self.debug:
+                        print(f"🔍   Cluster {clust} descartado: {len(model_main_train_data)} <= label_max_val({hp['label_max_val']})")
                     continue
                 if (model_main_train_data['labels_main'].value_counts() < 2).any():
+                    if self.debug:
+                        print(f"🔍   Cluster {clust} descartado: labels_main insuficientes")
                     continue
                 meta_feature_cols = full_ds.columns[full_ds.columns.str.contains('_meta_feature')]
                 model_meta_train_data = full_ds.loc[:, meta_feature_cols].copy()
                 model_meta_train_data['labels_meta'] = (full_ds['labels_meta'] == clust).astype('int8')
                 if (model_meta_train_data['labels_meta'].value_counts() < 2).any():
+                    if self.debug:
+                        print(f"🔍   Cluster {clust} descartado: labels_meta insuficientes")
                     continue
+                    
+                if self.debug:
+                    print(f"🔍   Evaluando cluster {clust}: {len(model_main_train_data)} filas main, {len(model_meta_train_data)} filas meta")
+                    
                 score, model_paths, models_cols = self.fit_final_models(
                     trial=trial,
                     full_ds=full_ds,
@@ -586,6 +626,8 @@ class StrategySearcher:
                     best_score = score
                     best_model_paths = model_paths
                     best_models_cols = models_cols
+                    if self.debug:
+                        print(f"🔍   Nuevo mejor cluster {clust}: score = {score}")
                 else:
                     for p in model_paths:
                         if p and os.path.exists(p):
@@ -597,258 +639,182 @@ class StrategySearcher:
             print(f"⚠️ ERROR en evaluación de clusters: {str(e)}")
             return None, None, None
     
-    def suggest_all_params(self, trial: 'optuna.Trial') -> dict:
+    def _suggest_catboost(self, group: str, trial: optuna.Trial) -> Dict[str, float]:
+        """Devuelve hiperparámetros CatBoost (main|meta) con prefijo `group`."""
+        p = {}
+        p[f'{group}_iterations']      = trial.suggest_int (f'{group}_iterations',      200, 800, step=50)
+        p[f'{group}_depth']           = trial.suggest_int (f'{group}_depth',           4,   8)
+        p[f'{group}_learning_rate']   = trial.suggest_float(f'{group}_learning_rate',  1e-3, .3, log=True)
+        p[f'{group}_l2_leaf_reg']     = trial.suggest_float(f'{group}_l2_leaf_reg',    1.0,  20.0, log=True)
+        p[f'{group}_early_stopping']  = trial.suggest_int (f'{group}_early_stopping',  20,  200,  step=20)
+        return p
+
+    # ─────────────────────────  CONSTANTES INMUTABLES  ──────────────────────────
+    GROUPS: Dict[str, tuple] = {
+        "trend":       ("slope", "momentum", "hurst", "autocorr", "effratio"),
+        "volatility":  ("std", "range", "mad", "var", "jump_vol", "volskew"),
+        "shape":       ("skew", "kurt", "entropy", "zscore", "corrskew", "fisher"),
+        "central":     ("mean", "median", "iqr", "cv"),
+        "performance": ("sharpe", "chande"),
+    }
+    ALL_STATS: tuple = tuple(sorted({s for g in GROUPS.values() for s in g}))  # ᴜɴɪǫᴜᴇ & sorted
+
+    # ─────────────────────────  FUNCIÓN PRINCIPAL  ──────────────────────────────
+    def _suggest_feature(self, trial: optuna.Trial) -> Dict[str, Any]:
         """
-        Función principal coordinadora que combina todos los parámetros.
-        Separada en módulos para mejor mantenibilidad y compatibilidad con TPESampler.
+        Sugiere períodos y estadísticas de la matriz de features
+        (y opcionalmente los 'meta-features').
+
+        Compatible con TPESampler multivariante y agrupado:
+        - mismos nombres / mismas distribuciones SIEMPRE
+        - prefijos consistentes ('feature_main_', 'feature_meta_')
+        - espacio de hiperparámetros completamente fijo
         """
+        p: Dict[str, Any] = {}
+
+        # ─── FEATURE MAIN - PERÍODOS ────────────────────────────────────────────────
+        n_periods = trial.suggest_int("feature_main_n_periods", 1, 12)
+        feature_periods = [
+            trial.suggest_int(f"feature_main_period_{i}", 5, 200, log=True)
+            for i in range(n_periods)
+        ]
+        p["feature_main_periods"] = tuple(sorted(set(feature_periods)))  # únicos y ordenados
+
+        # ─── FEATURE MAIN - ESTADÍSTICAS ───────────────────────────────────────────
+        n_stats = trial.suggest_int("feature_main_n_stats", 1, 6)
+        feature_stats = [
+            trial.suggest_categorical(f"feature_main_stat_{i}", self.ALL_STATS)
+            for i in range(n_stats)
+        ]
+        # mantener orden de aparición sin duplicados
+        p["feature_main_stats"] = tuple(dict.fromkeys(feature_stats))
+
+        # Estrategia de sampling (información adicional para análisis)
+        p["feature_main_strategy"] = trial.suggest_categorical(
+            "feature_main_strategy",
+            ("balanced", "trend", "volatility", "shape", "central", "performance"),
+        )
+
+        # ─── FEATURE META (solo ciertos search_type) ──────────────────────────
+        if self.search_type in {"markov", "clusters", "lgmm", "wkmeans"}:
+            # períodos meta
+            n_meta_periods = trial.suggest_int("feature_meta_n_periods", 1, 3)
+            meta_periods = [
+                trial.suggest_int(f"feature_meta_period_{i}", 4, 12, log=True)
+                for i in range(n_meta_periods)
+            ]
+            p["feature_meta_periods"] = tuple(sorted(set(meta_periods)))
+
+            # estadísticas meta
+            n_meta_stats = trial.suggest_int("feature_meta_n_stats", 1, 3)
+            meta_stats = [
+                trial.suggest_categorical(f"feature_meta_stat_{i}", self.ALL_STATS)
+                for i in range(n_meta_stats)
+            ]
+            p["feature_meta_stats"] = tuple(dict.fromkeys(meta_stats))
+            
+            # Estrategia meta
+            p["feature_meta_strategy"] = trial.suggest_categorical(
+                "feature_meta_strategy",
+                ("balanced", "trend", "volatility", "shape", "central", "performance"),
+            )
+        else:
+            # para evitar claves ausentes en el resto del código
+            p["feature_meta_periods"] = tuple()
+            p["feature_meta_stats"] = tuple()
+            p["feature_meta_strategy"] = "balanced"
+
+        return p
+
+    # ----------------------------------------------------------------------------- 
+    def _suggest_label(self, trial: optuna.Trial) -> Dict[str, float]:
+        """Hiperparámetros de etiquetado dependientes de la función label_method."""
+        label_search_space = {
+            'label_markup':     lambda t: t.suggest_float('label_markup',     0.2, 2.0, log=True),
+            'label_threshold':  lambda t: t.suggest_float('label_threshold',  0.2, 0.8),
+            'label_rolling':    lambda t: t.suggest_int  ('label_rolling',    50, 300, log=True),
+            'label_atr_period': lambda t: t.suggest_int  ('label_atr_period', 10, 50, log=True),
+            'label_min_val':    lambda t: t.suggest_int  ('label_min_val',    1,  4),
+            'label_max_val':    lambda t: t.suggest_int  ('label_max_val',    5, 15),
+            'label_method':     lambda t: t.suggest_categorical('label_method', ['first', 'last', 'mean', 'max', 'min']),
+            'label_filter':     lambda t: t.suggest_categorical('label_filter', ['savgol', 'spline', 'sma', 'ema']),
+        }
+        p = {}
+        label_func = self.LABEL_FUNCS.get(self.label_method, get_labels_one_direction)
+        params_sig = inspect.signature(label_func).parameters
+        for name in params_sig:
+            if name in label_search_space:
+                p[name] = label_search_space[name](trial)
+        return p
+
+    # ----------------------------------------------------------------------------- 
+    def _suggest_algo_specific(self, trial: optuna.Trial) -> Dict[str, float]:
+        """Parámetros exclusivos según self.search_type."""
+        p = {}
+        if self.search_type == 'markov':
+            p['markov_model']    = trial.suggest_categorical('markov_model', ['GMMHMM', 'HMM'])
+            p['markov_regimes']  = trial.suggest_int ('markov_regimes', 3, 8, log=True)
+            p['markov_iter']     = trial.suggest_int ('markov_iter',    50, 200, log=True)
+            p['markov_mix']      = trial.suggest_int ('markov_mix',     2, 5)
+        elif self.search_type == 'clusters':
+            p['clust_n_clusters'] = trial.suggest_int ('clust_n_clusters', 8, 30, log=True)
+            p['clust_window']     = trial.suggest_int ('clust_window',     40, 250, log=True)
+            if self.search_subtype == 'advanced':
+                p['clust_step']       = trial.suggest_int ('clust_step',       10, 50, log=True)
+        elif self.search_type == 'lgmm':
+            p['lgmm_components']  = trial.suggest_int ('lgmm_components',  3, 15, log=True)
+            p['lgmm_covariance']  = trial.suggest_categorical('lgmm_covariance', ['full', 'tied', 'diag', 'spherical'])
+            p['lgmm_iter']        = trial.suggest_int ('lgmm_iter',        50, 200, log=True)
+        elif self.search_type == 'wkmeans':
+            p['wk_n_clusters']    = trial.suggest_int ('wk_n_clusters',    6, 20, log=True)
+            p['wk_bandwidth']     = trial.suggest_float('wk_bandwidth',    0.1, 5.0, log=True)
+            p['wk_window']        = trial.suggest_int ('wk_window',        30, 120, log=True)
+            p['wk_step']          = trial.suggest_int ('wk_step',          1, 10)
+            p['wk_proj']          = trial.suggest_int ('wk_proj',          50, 200, log=True)
+            p['wk_iter']          = trial.suggest_int ('wk_iter',          100, 500, log=True)
+        elif self.search_type == 'mapie':
+            p['mapie_confidence_level'] = trial.suggest_float('mapie_confidence_level', 0.8, 0.95)
+            p['mapie_cv']               = trial.suggest_int  ('mapie_cv',               3, 10)
+        elif self.search_type == 'causal':
+            p['causal_meta_learners']   = trial.suggest_int  ('causal_meta_learners',  10, 30)
+        return p
+
+    # ========= main entry =========================================================
+    def suggest_all_params(self, trial: optuna.Trial) -> Dict[str, float]:
+        """Sugiere TODOS los hiperparámetros, agrupados de forma independiente."""
         try:
             params = {}
-            
-            # Obtener parámetros por categorías
-            params.update(self._suggest_catboost_params(trial))
-            params.update(self._suggest_feature_params(trial))
-            params.update(self._suggest_labeling_params(trial))
-            params.update(self._suggest_algorithm_params(trial))
-            
-            # Guardar atributos del trial para debug
-            for key, value in params.items():
-                trial.set_user_attr(key, value)
-            
+            # --- CatBoost main & meta ------------------------------------------------
+            params.update(self._suggest_catboost('cat_main', trial))
+            params.update(self._suggest_catboost('cat_meta', trial))
+            # --- Feature engineering -------------------------------------------------
+            params.update(self._suggest_feature(trial))
+            # --- Labelling -----------------------------------------------------------
+            params.update(self._suggest_label(trial))
+            # --- Algo-specific -------------------------------------------------------
+            params.update(self._suggest_algo_specific(trial))
+
             if self.debug:
-                print(f"🔍 DEBUG: Parámetros sugeridos por categorías:")
-                for category in ['catboost', 'feature', 'labeling', 'algorithm']:
-                    cat_params = {k: v for k, v in params.items() if k.startswith(category[:3])}
-                    if cat_params:
-                        print(f"  📊 {category.capitalize()}: {len(cat_params)} params")
-            
+                print(f"🔍 DEBUG suggest_all_params - Parámetros generados:")
+                cat_params = {k: v for k, v in params.items() if k.startswith('cat_')}
+                feature_params = {k: v for k, v in params.items() if k.startswith('feature_')}
+                label_params = {k: v for k, v in params.items() if k.startswith('label_')}
+                algo_params = {k: v for k, v in params.items() if not any(k.startswith(p) for p in ['cat_', 'feature_', 'label_'])}
+                
+                print(f"🔍   CatBoost params: {list(cat_params.keys())}")
+                print(f"🔍   Feature params: {list(feature_params.keys())}")
+                print(f"🔍   Label params: {list(label_params.keys())}")
+                print(f"🔍   Algo params: {list(algo_params.keys())}")
+                print(f"🔍   Total params: {len(params)}")
+
+            # Guarda atributos para posteriores análisis
+            for k, v in params.items():
+                trial.set_user_attr(k, v)
             return params
             
-        except Exception as e:
-            print(f"🔍 DEBUG: ERROR en suggest_all_params: {str(e)}")
-            return {}
-
-    def _suggest_catboost_params(self, trial: 'optuna.Trial') -> dict:
-        """Parámetros de CatBoost para modelos main y meta."""
-        params = {}
-        
-        # === MODELO MAIN ===
-        params['cat_main_iterations'] = trial.suggest_int('cat_main_iterations', 200, 1000, log=True)
-        params['cat_main_depth'] = trial.suggest_int('cat_main_depth', 4, 8)
-        params['cat_main_learning_rate'] = trial.suggest_float('cat_main_learning_rate', 0.01, 0.3, log=True)
-        params['cat_main_l2_leaf_reg'] = trial.suggest_float('cat_main_l2_leaf_reg', 1.0, 20.0, log=True)
-        params['cat_main_early_stopping'] = trial.suggest_int('cat_main_early_stopping', 20, 100)
-        
-        # === MODELO META ===
-        params['cat_meta_iterations'] = trial.suggest_int('cat_meta_iterations', 100, 800, log=True)
-        params['cat_meta_depth'] = trial.suggest_int('cat_meta_depth', 3, 8)
-        params['cat_meta_learning_rate'] = trial.suggest_float('cat_meta_learning_rate', 0.01, 0.3, log=True)
-        params['cat_meta_l2_leaf_reg'] = trial.suggest_float('cat_meta_l2_leaf_reg', 1.0, 20.0, log=True)
-        params['cat_meta_early_stopping'] = trial.suggest_int('cat_meta_early_stopping', 20, 100)
-        
-        return params
-
-    def _suggest_feature_params(self, trial: 'optuna.Trial') -> dict:
-        """Parámetros para generación de features."""
-        params = {}
-        
-        # Constantes de límites
-        MAX_MAIN_PERIODS = 12
-        MAX_META_PERIODS = 3
-        MAX_MAIN_STATS = 4
-        MAX_META_STATS = 3
-        
-        # Estadísticas disponibles por grupos
-        MOMENTUM_STATS = ["momentum", "slope", "hurst", "autocorr", "effratio"]
-        VOLATILITY_STATS = ["std", "range", "mad", "var", "maxdd", "jump_vol", "volskew"]
-        DISTRIBUTION_STATS = ["skew", "kurt", "entropy", "zscore", "corrskew", "fisher"]
-        SIMPLE_STATS = ["mean", "median", "iqr", "cv", "sharpe", "chande"]
-        ALL_STATS = MOMENTUM_STATS + VOLATILITY_STATS + DISTRIBUTION_STATS + SIMPLE_STATS
-        
-        # === FEATURES MAIN ===
-        params['max_main_periods'] = trial.suggest_int('max_main_periods', 3, MAX_MAIN_PERIODS)
-        params['max_main_stats'] = trial.suggest_int('max_main_stats', 2, MAX_MAIN_STATS)
-        
-        # Períodos main - estrategia simple y directa
-        periods_main = []
-        for i in range(params['max_main_periods']):
-            period = trial.suggest_int(f'period_main_{i}', 5, 200, log=True)
-            periods_main.append(period)
-        params['periods_main'] = tuple(sorted(set(periods_main)))
-        
-        # Stats main - selección directa
-        stats_main = []
-        for i in range(params['max_main_stats']):
-            stat = trial.suggest_categorical(f'stat_main_{i}', ALL_STATS)
-            stats_main.append(stat)
-        params['stats_main'] = tuple(dict.fromkeys(stats_main))  # Mantener orden, eliminar duplicados
-        
-        # === FEATURES META (solo para algoritmos que las necesitan) ===
-        if self.search_type in ['clusters', 'markov', 'lgmm', 'wkmeans']:
-            params['max_meta_periods'] = trial.suggest_int('max_meta_periods', 1, MAX_META_PERIODS)
-            params['max_meta_stats'] = trial.suggest_int('max_meta_stats', 1, MAX_META_STATS)
-            
-            # Períodos meta - más cortos que main
-            periods_meta = []
-            for i in range(params['max_meta_periods']):
-                period = trial.suggest_int(f'period_meta_{i}', 4, 50)
-                periods_meta.append(period)
-            params['periods_meta'] = tuple(sorted(set(periods_meta)))
-            
-            # Stats meta - selección simple
-            META_STATS_OPTIONS = SIMPLE_STATS + MOMENTUM_STATS[:2]
-            stats_meta = []
-            for i in range(params['max_meta_stats']):
-                stat = trial.suggest_categorical(f'stat_meta_{i}', META_STATS_OPTIONS)
-                stats_meta.append(stat)
-            params['stats_meta'] = tuple(dict.fromkeys(stats_meta))
-        else:
-            params['periods_meta'] = tuple()
-            params['stats_meta'] = tuple()
-        
-        return params
-
-    def _suggest_labeling_params(self, trial: 'optuna.Trial') -> dict:
-        """Parámetros específicos para la función de etiquetado seleccionada."""
-        params = {}
-        
-        # Obtener función de etiquetado y sus parámetros
-        label_func = self.LABEL_FUNCS.get(self.label_method, get_labels_one_direction)
-        label_params = inspect.signature(label_func).parameters
-        
-        # === PARÁMETROS BÁSICOS COMUNES ===
-        if 'method' in label_params:
-            params['method'] = trial.suggest_categorical('method', ['first', 'last', 'mean', 'max', 'min', 'random'])
-        
-        if 'filter' in label_params:
-            # Filtros permitidos para este método
-            allowed_filters = self.ALLOWED_FILTERS.get(self.label_method, ['sma', 'ema', 'mean'])
-            params['filter'] = trial.suggest_categorical('filter', allowed_filters)
-        
-        # === PARÁMETROS NUMÉRICOS ===
-        if 'markup' in label_params:
-            params['markup'] = trial.suggest_float('markup', 0.2, 2.0, log=True)
-        
-        if 'threshold' in label_params:
-            params['threshold'] = trial.suggest_float('threshold', 0.2, 0.8)
-        
-        if 'threshold_pct' in label_params:
-            params['threshold_pct'] = trial.suggest_float('threshold_pct', 0.01, 0.05, log=True)
-        
-        # === PARÁMETROS DE PERÍODOS ===
-        if 'atr_period' in label_params:
-            params['atr_period'] = trial.suggest_int('atr_period', 10, 50)
-        
-        if 'vol_window' in label_params:
-            params['vol_window'] = trial.suggest_int('vol_window', 20, 100)
-        
-        if 'rolling' in label_params:
-            params['rolling'] = trial.suggest_int('rolling', 50, 300, log=True)
-        
-        if 'rolling1' in label_params:
-            params['rolling1'] = trial.suggest_int('rolling1', 50, 250)
-        
-        if 'rolling2' in label_params:
-            params['rolling2'] = trial.suggest_int('rolling2', 100, 400)
-        
-        # === PARÁMETROS DE VALORES ===
-        if 'min_val' in label_params:
-            params['min_val'] = trial.suggest_int('min_val', 1, 4)
-        
-        if 'max_val' in label_params:
-            min_val = params.get('min_val', 1)
-            params['max_val'] = trial.suggest_int('max_val', min_val + 2, 15)
-        
-        if 'polyorder' in label_params:
-            params['polyorder'] = trial.suggest_int('polyorder', 2, 4)
-        
-        if 'min_touches' in label_params:
-            params['min_touches'] = trial.suggest_int('min_touches', 2, 4)
-        
-        if 'shift' in label_params:
-            params['shift'] = trial.suggest_int('shift', -3, 3)
-        
-        # === PARÁMETROS DE FLOTANTES ===
-        if 'peak_prominence' in label_params:
-            params['peak_prominence'] = trial.suggest_float('peak_prominence', 0.1, 0.4)
-        
-        if 'decay_factor' in label_params:
-            params['decay_factor'] = trial.suggest_float('decay_factor', 0.85, 0.98)
-        
-        # === PARÁMETROS DE CLUSTERING DE ETIQUETADO ===
-        if 'l_n_clusters' in label_params:
-            params['l_n_clusters'] = trial.suggest_int('l_n_clusters', 8, 40, log=True)
-        
-        if 'l_window_size' in label_params:
-            params['l_window_size'] = trial.suggest_int('l_window_size', 20, 80)
-        
-        # === PARÁMETROS DE LISTAS ===
-        if 'window_sizes' in label_params:
-            w1 = trial.suggest_int('window_size_1', 20, 80)
-            w2 = trial.suggest_int('window_size_2', 40, 120)
-            w3 = trial.suggest_int('window_size_3', 80, 200)
-            params['window_sizes'] = tuple(sorted(set([w1, w2, w3])))
-        
-        if 'rolling_periods' in label_params:
-            rp1 = trial.suggest_int('rolling_period_1', 30, 100)
-            rp2 = trial.suggest_int('rolling_period_2', 80, 200)
-            rp3 = trial.suggest_int('rolling_period_3', 150, 300)
-            params['rolling_periods'] = tuple(sorted(set([rp1, rp2, rp3])))
-        
-        if 'quantiles' in label_params:
-            q_low = trial.suggest_float('quantile_low', 0.2, 0.4)
-            q_high = trial.suggest_float('quantile_high', 0.6, 0.8)
-            params['quantiles'] = [q_low, q_high]
-        
-        return params
-
-    def _suggest_algorithm_params(self, trial: 'optuna.Trial') -> dict:
-        """Parámetros específicos del algoritmo de búsqueda seleccionado."""
-        params = {}
-        
-        if self.search_type == 'markov':
-            params.update({
-                'model_type': trial.suggest_categorical('model_type', ['GMMHMM', 'HMM', 'VARHMM']),
-                'n_regimes': trial.suggest_int('n_regimes', 3, 8),
-                'n_iter': trial.suggest_int('n_iter', 80, 150),
-                'n_mix': trial.suggest_int('n_mix', 1, 4)
-            })
-            
-        elif self.search_type == 'clusters':
-            params['n_clusters'] = trial.suggest_int('n_clusters', 8, 40, log=True)
-            if self.search_subtype == 'advanced':
-                params['window_size'] = trial.suggest_int('window_size', 50, 300, log=True)
-                params['step'] = trial.suggest_int('step', 1, 10)
-                
-        elif self.search_type == 'lgmm':
-            params.update({
-                'n_components': trial.suggest_int('n_components', 3, 15),
-                'covariance_type': trial.suggest_categorical('covariance_type', ['full', 'diag']),
-                'max_iter': trial.suggest_int('max_iter', 80, 200),
-            })
-            
-        elif self.search_type == 'wkmeans':
-            params.update({
-                'n_clusters': trial.suggest_int('n_clusters', 6, 25),
-                'window_size': trial.suggest_int('window_size', 40, 250, log=True),
-                'step': trial.suggest_int('step', 1, 15),
-                'max_iter': trial.suggest_int('max_iter', 150, 400),
-                'bandwidth': trial.suggest_float('bandwidth', 0.1, 5.0, log=True),
-                'n_proj': trial.suggest_int('n_proj', 50, 300, log=True),
-            })
-            
-        elif self.search_type == 'mapie':
-            params.update({
-                'mapie_confidence_level': trial.suggest_float('mapie_confidence_level', 0.8, 0.95),
-                'mapie_cv': trial.suggest_int('mapie_cv', 4, 8),
-            })
-            
-        elif self.search_type == 'causal':
-            params.update({
-                'n_meta_learners': trial.suggest_int('n_meta_learners', 10, 25),
-            })
-        
-        return params
+        except Exception as e:   # Optuna gestiona la excepción/prune
+            print(f"⚠️ Suggest params error: {e}")
+            return None
 
     def fit_final_models(self, trial: optuna.trial,
                          full_ds: pd.DataFrame,
@@ -857,6 +823,14 @@ class StrategySearcher:
                          hp: Dict[str, Any]) -> tuple[float, tuple, tuple]:
         """Ajusta los modelos finales y devuelve rutas a archivos temporales."""
         try:
+            # 🔍 DEBUG: Supervisar parámetros CatBoost
+            if self.debug:
+                cat_main_params = {k: v for k, v in hp.items() if k.startswith('cat_main_')}
+                cat_meta_params = {k: v for k, v in hp.items() if k.startswith('cat_meta_')}
+                print(f"🔍 DEBUG fit_final_models - Parámetros CatBoost:")
+                print(f"🔍   cat_main_*: {cat_main_params}")
+                print(f"🔍   cat_meta_*: {cat_meta_params}")
+            
             if 'labels_main' in model_main_train_data.columns:
                 model_main_train_data = model_main_train_data[model_main_train_data['labels_main'].isin([0.0, 1.0])]
             if model_main_train_data.empty:
@@ -905,6 +879,13 @@ class StrategySearcher:
                 task_type='CPU',
                 verbose=False,
             )
+            
+            # 🔍 DEBUG: Mostrar configuración final de CatBoost
+            if self.debug:
+                print(f"🔍 DEBUG: CatBoost Main configuración final:")
+                for k, v in cat_main_params.items():
+                    print(f"🔍   {k}: {v}")
+                
             model_main = CatBoostClassifier(**cat_main_params)
             t_train_main_start = time.time()
             model_main.fit(X_train_main, y_train_main, 
@@ -929,6 +910,13 @@ class StrategySearcher:
                 task_type='CPU',
                 verbose=False,
             )
+            
+            # 🔍 DEBUG: Mostrar configuración final de CatBoost Meta
+            if self.debug:
+                print(f"🔍 DEBUG: CatBoost Meta configuración final:")
+                for k, v in cat_meta_params.items():
+                    print(f"🔍   {k}: {v}")
+                    
             model_meta = CatBoostClassifier(**cat_meta_params)
             t_train_meta_start = time.time()
             model_meta.fit(X_train_meta, y_train_meta, 
@@ -956,7 +944,7 @@ class StrategySearcher:
                     model_meta_cols=meta_feature_cols,
                     direction=self.direction,
                     timeframe=self.timeframe,
-                    print_metrics=True if self.debug else False,
+                    print_metrics=self.debug,  # Simplificado
                 )
             except Exception as tester_error:
                 if self.debug:
@@ -989,31 +977,60 @@ class StrategySearcher:
         params = inspect.signature(label_func).parameters
         kwargs = {}
 
+        # 🔍 DEBUG: Supervisar función de etiquetado y parámetros esperados
+        if self.debug:
+            print(f"🔍 DEBUG apply_labeling - Función: {label_func.__name__}")
+            print(f"🔍   Parámetros esperados por función: {list(params.keys())}")
+            label_params_in_hp = {k: v for k, v in hp.items() if k.startswith('label_')}
+            print(f"🔍   Parámetros label_* en hp: {list(label_params_in_hp.keys())}")
+
         for name, param in params.items():
             if name == 'dataset':
                 continue
             if name == 'direction':
                 kwargs['direction'] = self.direction if self.direction != 'both' else 'both'
+            # ✅ SIMPLIFICADO: Pasar parámetros directamente sin conversiones
             elif name in hp:
                 kwargs[name] = hp[name]
+                if self.debug:
+                    print(f"🔍   Mapeando: {name} = {hp[name]}")
             elif param.default is not inspect.Parameter.empty:
                 kwargs[name] = param.default
+                if self.debug:
+                    print(f"🔍   Default: {name} = {param.default}")
+
+        # 🔍 DEBUG: Supervisar parámetros finales que se pasan a la función
+        if self.debug:
+            print(f"🔍   Parámetros finales para {label_func.__name__}: {list(kwargs.keys())}")
+            critical_params = ['label_markup', 'label_min_val', 'label_max_val', 'label_threshold', 'label_rolling']
+            for cp in critical_params:
+                if cp in kwargs:
+                    print(f"🔍   {cp}: {kwargs[cp]}")
 
         # ── Validaciones simples ───────────────────────────────────────────
         try:
+            if self.debug:
+                print(f"🔍 DEBUG apply_labeling - Validaciones iniciales:")
+                print(f"🔍   Dataset shape: {dataset.shape}")
+                print(f"🔍   Dataset columns: {list(dataset.columns)}")
+            
             if len(dataset) < 2:
+                if self.debug:
+                    print(f"🔍 DEBUG apply_labeling - FALLO: Dataset muy pequeño ({len(dataset)} < 2)")
                 return pd.DataFrame()
 
             polyorder = kwargs.get('polyorder', 2)
             if len(dataset) <= polyorder:
+                if self.debug:
+                    print(f"🔍 DEBUG apply_labeling - FALLO: Dataset <= polyorder ({len(dataset)} <= {polyorder})")
                 return pd.DataFrame()
 
             # Ajuste automático para savgol_filter y similares
-            filter = kwargs.get('filter')
+            filter_val = kwargs.get('label_filter')
             allowed = self.ALLOWED_FILTERS.get(self.label_method)
             # Detectar parámetros de ventana relevantes
             window_keys = [k for k in kwargs if any(x in k for x in ('rolling', 'window', 'window_size'))]
-            if filter == 'savgol' and window_keys:
+            if filter_val == 'savgol' and window_keys:
                 for k in window_keys:
                     v = kwargs[k]
                     if isinstance(v, list) or isinstance(v, tuple):
@@ -1027,6 +1044,8 @@ class StrategySearcher:
                             if win % 2 == 0:
                                 win = max(win - 1, polyorder + 1)
                             if win <= polyorder:
+                                if self.debug:
+                                    print(f"🔍 DEBUG apply_labeling - FALLO: Ventana savgol inválida ({win} <= {polyorder})")
                                 return pd.DataFrame()
                             new_v.append(win)
                         kwargs[k] = new_v
@@ -1039,6 +1058,8 @@ class StrategySearcher:
                         if win % 2 == 0:
                             win = max(win - 1, polyorder + 1)
                         if win <= polyorder:
+                            if self.debug:
+                                print(f"🔍 DEBUG apply_labeling - FALLO: Ventana savgol inválida ({win} <= {polyorder})")
                             return pd.DataFrame()
                         kwargs[k] = win
 
@@ -1054,36 +1075,60 @@ class StrategySearcher:
             for k, v in list(kwargs.items()):
                 if isinstance(v, int) and any(x in k for x in ('rolling', 'window', 'period', 'span', 'max_val')):
                     if v <= 0 or v >= len(dataset):
-                        print(f"⚠️ ERROR en apply_labeling: parámetro '{k}'={v} inválido para dataset de tamaño {len(dataset)}")
+                        if self.debug:
+                            print(f"🔍 DEBUG apply_labeling - FALLO: parámetro '{k}'={v} inválido para dataset de tamaño {len(dataset)}")
                         return pd.DataFrame()
                 elif isinstance(v, list) and any(x in k for x in ('rolling', 'window', 'period')):
                     if any((val <= 0 or val >= len(dataset)) for val in v):
-                        print(f"⚠️ ERROR en apply_labeling: lista '{k}' contiene valores inválidos para dataset de tamaño {len(dataset)}")
+                        if self.debug:
+                            print(f"🔍 DEBUG apply_labeling - FALLO: lista '{k}' contiene valores inválidos para dataset de tamaño {len(dataset)}")
                         return pd.DataFrame()
 
-            if 'min_val' in kwargs and 'max_val' in kwargs and kwargs['min_val'] > kwargs['max_val']:
-                kwargs['min_val'] = kwargs['max_val']
+            # ✅ SIMPLIFICADO: Validaciones directas con nombres originales
+            if 'label_min_val' in kwargs and 'label_max_val' in kwargs and kwargs['label_min_val'] > kwargs['label_max_val']:
+                kwargs['label_min_val'] = kwargs['label_max_val']
 
-            if 'max_val' in hp and len(dataset) <= hp['max_val']:
+            if 'label_max_val' in kwargs and len(dataset) <= kwargs['label_max_val']:
+                if self.debug:
+                    print(f"🔍 DEBUG apply_labeling - FALLO: Dataset <= label_max_val ({len(dataset)} <= {kwargs['label_max_val']})")
                 return pd.DataFrame()
 
-            filter = kwargs.get('filter')
-            allowed = self.ALLOWED_FILTERS.get(self.label_method)
-            if filter and allowed and filter not in allowed:
+            if filter_val and allowed and filter_val not in allowed:
+                if self.debug:
+                    print(f"🔍 DEBUG apply_labeling - FALLO: Filtro '{filter_val}' no permitido para '{self.label_method}'")
                 return pd.DataFrame()
+
+            if self.debug:
+                print(f"🔍 DEBUG apply_labeling - Validaciones pasadas, llamando a {label_func.__name__}")
+                print(f"🔍   kwargs finales: {list(kwargs.keys())}")
 
             df = label_func(dataset, **kwargs)
 
+            if self.debug:
+                print(f"🔍 DEBUG apply_labeling - Resultado de {label_func.__name__}:")
+                print(f"🔍   df is None: {df is None}")
+                print(f"🔍   df.empty: {df.empty if df is not None else 'N/A'}")
+                print(f"🔍   df.shape: {df.shape if df is not None else 'N/A'}")
+                if df is not None and not df.empty:
+                    print(f"🔍   df.columns: {list(df.columns)}")
+
             if df is None or df.empty:
+                if self.debug:
+                    print(f"🔍 DEBUG apply_labeling - FALLO: función de etiquetado devolvió DataFrame vacío o None")
                 return pd.DataFrame()
 
             if 'labels_main' in df.columns:
+                if self.debug:
+                    print(f"🔍   Etiquetado exitoso: {len(df)} filas con labels_main")
                 return df
-            if 'labels' in df.columns:
-                return df.rename(columns={'labels': 'labels_main'})
-            return pd.DataFrame()
+            else:
+                if self.debug:
+                    print(f"🔍 DEBUG apply_labeling - FALLO: No se encontró columna 'labels_main' en el resultado")
+                return pd.DataFrame()
         except Exception as e:
-            print(f"⚠️ ERROR en apply_labeling: {e}")
+            if self.debug:
+                print(f"🔍 DEBUG apply_labeling - EXCEPCIÓN: {e}")
+                print(f"🔍   Traceback: {traceback.format_exc()}")
             return pd.DataFrame()
 
     def get_labeled_full_data(self, hp):
@@ -1098,15 +1143,33 @@ class StrategySearcher:
 
             # ──────────────────────────────────────────────────────────────
             # 1) Calcular el colchón de barras necesario
-            pad = int(max(hp['periods_main']) + max(hp.get('periods_meta', [0])))
+            main_periods = hp.get('feature_main_periods', ())
+            meta_periods = hp.get('feature_meta_periods', ())
+            
+            # 🔍 DEBUG: Supervisar parámetros de features
+            if self.debug:
+                print(f"🔍 DEBUG get_labeled_full_data - Parámetros de features:")
+                feature_params = {k: v for k, v in hp.items() if k.startswith('feature_')}
+                for k, v in feature_params.items():
+                    if isinstance(v, (list, tuple)) and len(v) > 3:
+                        print(f"🔍   {k}: {type(v).__name__}[{len(v)}] = {v[:3]}...")
+                    else:
+                        print(f"🔍   {k}: {v}")
+            
+            if not main_periods:
+                return None
+                
+            pad = int(max(main_periods) + max(meta_periods) if meta_periods else max(main_periods))
             if self.debug:
                 print(f"🔍 DEBUG: pad = {pad}")
 
             # ──────────────────────────────────────────────────────────────
-            # 2) Paso típico de la serie (modal -> inmune a huecos)
+            # 2) Paso típico de la serie (modal → inmune a huecos)
             idx = self.base_df.index.sort_values()
-            bar_delta = idx.to_series().diff().dropna().mode().iloc[0] \
-                if pad and len(idx) > 1 else pd.Timedelta(0)
+            if pad > 0 and len(idx) > 1:
+                bar_delta = idx.to_series().diff().dropna().mode().iloc[0]
+            else:
+                bar_delta = pd.Timedelta(0)
             if self.debug:
                 print(f"🔍 DEBUG: bar_delta = {bar_delta}")
 
@@ -1122,14 +1185,33 @@ class StrategySearcher:
 
             # ──────────────────────────────────────────────────────────────
             # 4) Obtener features de todo el rango extendido
-            hp_tuple = tuple(sorted(hp.items()))
             full_ds = self.base_df.loc[start_ext:end_ext].copy()
             if self.debug:
                 print(f"🔍 DEBUG: full_ds.shape = {full_ds.shape}")
             
-            full_ds = get_features(full_ds, dict(hp_tuple))
+            # 🔍 DEBUG: Supervisar paso de parámetros a get_features
+            if self.debug:
+                print(f"🔍 DEBUG: Llamando get_features con:")
+                print(f"🔍   feature_main_periods: {hp.get('feature_main_periods', 'N/A')}")
+                print(f"🔍   feature_main_stats: {hp.get('feature_main_stats', 'N/A')}")
+                print(f"🔍   feature_meta_periods: {hp.get('feature_meta_periods', 'N/A')}")
+                print(f"🔍   feature_meta_stats: {hp.get('feature_meta_stats', 'N/A')}")
+            
+            full_ds = get_features(full_ds, hp)
             if self.debug:
                 print(f"🔍 DEBUG: full_ds.shape después de get_features = {full_ds.shape}")
+                feature_cols = [c for c in full_ds.columns if 'feature' in c]
+                print(f"🔍   Columnas de features generadas: {len(feature_cols)}")
+                main_features = [c for c in feature_cols if '_main_feature' in c]
+                meta_features = [c for c in feature_cols if '_meta_feature' in c]
+                print(f"🔍   Main features: {len(main_features)}, Meta features: {len(meta_features)}")
+
+            # ✅ SIMPLIFICADO: Pasar hp directamente sin conversiones
+            # 🔍 DEBUG: Supervisar paso de parámetros a apply_labeling
+            if self.debug:
+                print(f"🔍 DEBUG: Llamando apply_labeling con label_method='{self.label_method}'")
+                label_params = {k: v for k, v in hp.items() if k.startswith('label_')}
+                print(f"🔍   Parámetros label_* disponibles: {list(label_params.keys())}")
 
             full_ds = self.apply_labeling(full_ds, hp)
             if self.debug:
@@ -1160,6 +1242,7 @@ class StrategySearcher:
                 feature_cols = [c for c in feature_cols if c not in problematic]
                 if not feature_cols:
                     return None
+
             # --- 5b) Reconstruir hp manteniendo el orden original ---------
             main_periods_ordered = []
             main_stats_ordered   = []
@@ -1173,8 +1256,12 @@ class StrategySearcher:
 
             for col in feature_cols:
                 if col.endswith('_meta_feature'):
-                    p_str, stat = col[:-13].split('_', 1)
-                    p = int(p_str)
+                    # Remover '_meta_feature'
+                    col_parts = col[:-13]
+                    # Dividir en período y estadística
+                    parts = col_parts.split('_')
+                    p = int(parts[0])
+                    stat = '_'.join(parts[1:])  # Reunir el resto como estadística
 
                     # periodo meta
                     if p not in seen_meta_periods:
@@ -1186,9 +1273,13 @@ class StrategySearcher:
                         meta_stats_ordered.append(stat)
                         seen_meta_stats.add(stat)
 
-                elif col.endswith('_feature'):
-                    p_str, stat = col[:-8].split('_', 1)
-                    p = int(p_str)
+                elif col.endswith('_main_feature'):
+                    # Remover '_main_feature'
+                    col_parts = col[:-13]
+                    # Dividir en período y estadística
+                    parts = col_parts.split('_')
+                    p = int(parts[0])
+                    stat = '_'.join(parts[1:])  # Reunir el resto como estadística
 
                     # periodo main
                     if p not in seen_main_periods:
@@ -1200,17 +1291,20 @@ class StrategySearcher:
                         main_stats_ordered.append(stat)
                         seen_main_stats.add(stat)
 
-            # -------- aplicar a hp ----------------------------------------
-            hp['periods_main'] = tuple(main_periods_ordered)
-            hp['stats_main']   = tuple(main_stats_ordered)
-            hp['periods_meta'] = tuple(meta_periods_ordered)
-            hp['stats_meta']   = tuple(meta_stats_ordered)
+            # -------- aplicar a hp con los nombres nuevos ----------------
+            hp['feature_main_periods'] = tuple(main_periods_ordered)
+            hp['feature_main_stats']   = tuple(main_stats_ordered)
+            hp['feature_meta_periods'] = tuple(meta_periods_ordered)
+            hp['feature_meta_stats']   = tuple(meta_stats_ordered)
             if self.debug:
-                print(f"🔍 DEBUG: hp = {hp}")
+                print(f"🔍 DEBUG: hp actualizado = {hp}")
 
             # Verificar que tenemos al menos períodos y stats main
-            if not hp['periods_main'] or not hp['stats_main']:
+            main_periods = hp.get('feature_main_periods', ())
+            main_stats = hp.get('feature_main_stats', ())
+            if len(main_periods) == 0 or len(main_stats) == 0:
                 return None
+                
             # Guardar dataset completo a disco
             if self.debug:
                 if self.tag:
@@ -1224,7 +1318,7 @@ class StrategySearcher:
             return full_ds
 
         except Exception as e:
-            print(f"⚠️ ERROR en get_labeled_full_data: {str(e)}")
+            print(f"🔍 DEBUG: ERROR en get_labeled_full_data: {str(e)}")
             return None
 
     def get_train_test_data(self, dataset) -> tuple[pd.DataFrame, pd.DataFrame]:

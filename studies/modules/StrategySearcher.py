@@ -147,7 +147,7 @@ class StrategySearcher:
                     sampler=optuna.samplers.TPESampler(
                         n_startup_trials=int(np.sqrt(self.n_trials)),
                         multivariate=True, group=True,
-                        warn_independent_sampling=True
+                        warn_independent_sampling=False
                     )
                 )
 
@@ -651,11 +651,24 @@ class StrategySearcher:
 
     # ─────────────────────────  CONSTANTES INMUTABLES  ──────────────────────────
     GROUPS: Dict[str, tuple] = {
-        "trend":       ("slope", "momentum", "hurst", "autocorr", "effratio"),
-        "volatility":  ("std", "range", "mad", "var", "jump_vol", "volskew"),
-        "shape":       ("skew", "kurt", "entropy", "zscore", "corrskew", "fisher"),
-        "central":     ("mean", "median", "iqr", "cv"),
-        "performance": ("sharpe", "chande"),
+        "trend": (
+            "slope", "momentum", "hurst", "autocorr", "effratio", "fractal"
+        ),
+        "volatility": (
+            "std", "range", "mad", "var", "jumpvol", "volskew"
+        ),
+        "shape": (
+            "skew", "kurt", "entropy", "zscore", "corrskew", "fisher"
+        ),
+        "central": (
+            "mean", "median", "iqr", "cv"
+        ),
+        "performance": (
+            "sharpe", "chande", "maxdd"
+        ),
+        "other": (
+            "approxentropy",
+        ),
     }
     ALL_STATS: tuple = tuple(sorted({s for g in GROUPS.values() for s in g}))  # ᴜɴɪǫᴜᴇ & sorted
 

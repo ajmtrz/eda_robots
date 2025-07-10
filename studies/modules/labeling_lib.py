@@ -166,14 +166,14 @@ def hurst_manual(x):
             continue
             
         # Calcular rango reescalado
-        max_val = subseries[0]
-        min_val = subseries[0]
+        label_max_val = subseries[0]
+        label_min_val = subseries[0]
         for j in range(1, subseries.size):
-            if subseries[j] > max_val:
-                max_val = subseries[j]
-            if subseries[j] < min_val:
-                min_val = subseries[j]
-        r = max_val - min_val
+            if subseries[j] > label_max_val:
+                label_max_val = subseries[j]
+            if subseries[j] < label_min_val:
+                label_min_val = subseries[j]
+        r = label_max_val - label_min_val
         rs = r / s
         if rs > 0:  # Solo guardar valores positivos
             valid_rs[valid_count] = rs
@@ -383,64 +383,85 @@ def compute_features(close, periods_main, periods_meta, stats_main, stats_meta):
     # Procesar períodos main
     for win in periods_main:
         for s in stats_main:
-            for i in range(win, n):
+            # ───── AJUSTAR VENTANA PARA ESTADÍSTICOS CON RETORNOS ─────
+            if should_use_returns(s):
+                window_size = win + 1  # +1 precio para obtener 'win' retornos
+                start_idx = window_size
+            else:
+                window_size = win
+                start_idx = win
+                
+            for i in range(start_idx, n):
                 # ───── OPTIMIZACIÓN: Usar slice directo en lugar de [::-1] ─────
-                window = close[i - win:i]
+                window = close[i - window_size:i]
+                
+                # ───── NUEVA FUNCIONALIDAD: Usar retornos para estadísticos específicos ─────
+                if should_use_returns(s):
+                    if window.size <= 1:
+                        features[i, col] = np.nan
+                        continue
+                    window_data = compute_returns(window)
+                    if window_data.size == 0:
+                        features[i, col] = np.nan
+                        continue
+                else:
+                    window_data = window
+                
                 try:
                     if s == "std":
-                        features[i, col] = std_manual(window)
+                        features[i, col] = std_manual(window_data)
                     elif s == "skew":
-                        features[i, col] = skew_manual(window)
+                        features[i, col] = skew_manual(window_data)
                     elif s == "kurt":
-                        features[i, col] = kurt_manual(window)
+                        features[i, col] = kurt_manual(window_data)
                     elif s == "zscore":
-                        features[i, col] = zscore_manual(window)
+                        features[i, col] = zscore_manual(window_data)
                     elif s == "range":
-                        features[i, col] = np.max(window) - np.min(window)
+                        features[i, col] = np.max(window_data) - np.min(window_data)
                     elif s == "mean":
-                        features[i, col] = mean_manual(window)
+                        features[i, col] = mean_manual(window_data)
                     elif s == "median":
-                        features[i, col] = median_manual(window)
+                        features[i, col] = median_manual(window_data)
                     elif s == "iqr":
-                        features[i, col] = iqr_manual(window)
+                        features[i, col] = iqr_manual(window_data)
                     elif s == "cv":
-                        features[i, col] = coeff_var_manual(window)
+                        features[i, col] = coeff_var_manual(window_data)
                     elif s == "mad":
-                        m = mean_manual(window)
-                        features[i, col] = mean_manual(np.abs(window - m))
+                        m = mean_manual(window_data)
+                        features[i, col] = mean_manual(np.abs(window_data - m))
                     elif s == "entropy":
-                        features[i, col] = entropy_manual(window)
+                        features[i, col] = entropy_manual(window_data)
                     elif s == "slope":
-                        features[i, col] = slope_manual(window)
+                        features[i, col] = slope_manual(window_data)
                     elif s == "momentum":
-                        features[i, col] = momentum_roc(window)
+                        features[i, col] = momentum_roc(window_data)
                     elif s == "fractal":
-                        features[i, col] = fractal_dimension_manual(window)
+                        features[i, col] = fractal_dimension_manual(window_data)
                     elif s == "hurst":
-                        features[i, col] = hurst_manual(window)
+                        features[i, col] = hurst_manual(window_data)
                     elif s == "autocorr":
-                        features[i, col] = autocorr1_manual(window)
+                        features[i, col] = autocorr1_manual(window_data)
                     elif s == "maxdd":
-                        features[i, col] = max_dd_manual(window)
+                        features[i, col] = max_dd_manual(window_data)
                     elif s == "sharpe":
-                        features[i, col] = sharpe_manual(window)
+                        features[i, col] = sharpe_manual(window_data)
                     elif s == "fisher":
-                        features[i, col] = fisher_transform(momentum_roc(window))
+                        features[i, col] = fisher_transform(momentum_roc(window_data))
                     elif s == "chande":
-                        features[i, col] = chande_momentum(window)
+                        features[i, col] = chande_momentum(window_data)
                     elif s == "var":
-                        std = std_manual(window)
-                        features[i, col] = std * std * (window.size - 1) / window.size
+                        std = std_manual(window_data)
+                        features[i, col] = std * std * (window_data.size - 1) / window_data.size
                     elif s == "approxentropy":
-                        features[i, col] = approximate_entropy(window)
+                        features[i, col] = approximate_entropy(window_data)
                     elif s == "effratio":
-                        features[i, col] = efficiency_ratio(window)
+                        features[i, col] = efficiency_ratio(window_data)
                     elif s == "corrskew":
-                        features[i, col] = correlation_skew_manual(window)
+                        features[i, col] = correlation_skew_manual(window_data)
                     elif s == "jumpvol":
-                        features[i, col] = jump_volatility_manual(window)
+                        features[i, col] = jump_volatility_manual(window_data)
                     elif s == "volskew":
-                        features[i, col] = volatility_skew(window)
+                        features[i, col] = volatility_skew(window_data)
                 except:
                     return np.full((n, total_features), np.nan)
             col += 1
@@ -449,64 +470,85 @@ def compute_features(close, periods_main, periods_meta, stats_main, stats_meta):
     if len(periods_meta) > 0 and len(stats_meta) > 0:
         for win in periods_meta:
             for s in stats_meta:
-                for i in range(win, n):
+                # ───── AJUSTAR VENTANA PARA ESTADÍSTICOS CON RETORNOS ─────
+                if should_use_returns(s):
+                    window_size = win + 1  # +1 precio para obtener 'win' retornos
+                    start_idx = window_size
+                else:
+                    window_size = win
+                    start_idx = win
+                    
+                for i in range(start_idx, n):
                     # ───── OPTIMIZACIÓN: Usar slice directo ─────
-                    window = close[i - win:i]
+                    window = close[i - window_size:i]
+                    
+                    # ───── NUEVA FUNCIONALIDAD: Usar retornos para estadísticos específicos ─────
+                    if should_use_returns(s):
+                        if window.size <= 1:
+                            features[i, col] = np.nan
+                            continue
+                        window_data = compute_returns(window)
+                        if window_data.size == 0:
+                            features[i, col] = np.nan
+                            continue
+                    else:
+                        window_data = window
+                    
                     try:
                         if s == "std":
-                            features[i, col] = std_manual(window)
+                            features[i, col] = std_manual(window_data)
                         elif s == "skew":
-                            features[i, col] = skew_manual(window)
+                            features[i, col] = skew_manual(window_data)
                         elif s == "kurt":
-                            features[i, col] = kurt_manual(window)
+                            features[i, col] = kurt_manual(window_data)
                         elif s == "zscore":
-                            features[i, col] = zscore_manual(window)
+                            features[i, col] = zscore_manual(window_data)
                         elif s == "range":
-                            features[i, col] = np.max(window) - np.min(window)
+                            features[i, col] = np.max(window_data) - np.min(window_data)
                         elif s == "mean":
-                            features[i, col] = mean_manual(window)
+                            features[i, col] = mean_manual(window_data)
                         elif s == "median":
-                            features[i, col] = median_manual(window)
+                            features[i, col] = median_manual(window_data)
                         elif s == "iqr":
-                            features[i, col] = iqr_manual(window)
+                            features[i, col] = iqr_manual(window_data)
                         elif s == "cv":
-                            features[i, col] = coeff_var_manual(window)
+                            features[i, col] = coeff_var_manual(window_data)
                         elif s == "mad":
-                            m = mean_manual(window)
-                            features[i, col] = mean_manual(np.abs(window - m))
+                            m = mean_manual(window_data)
+                            features[i, col] = mean_manual(np.abs(window_data - m))
                         elif s == "entropy":
-                            features[i, col] = entropy_manual(window)
+                            features[i, col] = entropy_manual(window_data)
                         elif s == "slope":
-                            features[i, col] = slope_manual(window)
+                            features[i, col] = slope_manual(window_data)
                         elif s == "momentum":
-                            features[i, col] = momentum_roc(window)
+                            features[i, col] = momentum_roc(window_data)
                         elif s == "fractal":
-                            features[i, col] = fractal_dimension_manual(window)
+                            features[i, col] = fractal_dimension_manual(window_data)
                         elif s == "hurst":
-                            features[i, col] = hurst_manual(window)
+                            features[i, col] = hurst_manual(window_data)
                         elif s == "autocorr":
-                            features[i, col] = autocorr1_manual(window)
+                            features[i, col] = autocorr1_manual(window_data)
                         elif s == "maxdd":
-                            features[i, col] = max_dd_manual(window)
+                            features[i, col] = max_dd_manual(window_data)
                         elif s == "sharpe":
-                            features[i, col] = sharpe_manual(window)
+                            features[i, col] = sharpe_manual(window_data)
                         elif s == "fisher":
-                            features[i, col] = fisher_transform(momentum_roc(window))
+                            features[i, col] = fisher_transform(momentum_roc(window_data))
                         elif s == "chande":
-                            features[i, col] = chande_momentum(window)
+                            features[i, col] = chande_momentum(window_data)
                         elif s == "var":
-                            std = std_manual(window)
-                            features[i, col] = std * std * (window.size - 1) / window.size
+                            std = std_manual(window_data)
+                            features[i, col] = std * std * (window_data.size - 1) / window_data.size
                         elif s == "approxentropy":
-                            features[i, col] = approximate_entropy(window)
+                            features[i, col] = approximate_entropy(window_data)
                         elif s == "effratio":
-                            features[i, col] = efficiency_ratio(window)
+                            features[i, col] = efficiency_ratio(window_data)
                         elif s == "corrskew":
-                            features[i, col] = correlation_skew_manual(window)
+                            features[i, col] = correlation_skew_manual(window_data)
                         elif s == "jumpvol":
-                            features[i, col] = jump_volatility_manual(window)
+                            features[i, col] = jump_volatility_manual(window_data)
                         elif s == "volskew":
-                            features[i, col] = volatility_skew(window)
+                            features[i, col] = volatility_skew(window_data)
                     except:
                         return np.full((n, total_features), np.nan)
                 col += 1
@@ -516,12 +558,12 @@ def compute_features(close, periods_main, periods_meta, stats_main, stats_meta):
 def get_features(data: pd.DataFrame, hp):
     close = data['close'].values
     index = data.index
-    periods_main = hp["periods_main"]
-    stats_main = hp["stats_main"]
+    periods_main = hp["feature_main_periods"]
+    stats_main = hp["feature_main_stats"]
     
     # Obtener períodos y estadísticas meta, siempre como listas (vacías si no existen)
-    periods_meta = hp.get("periods_meta", [])
-    stats_meta = hp.get("stats_meta", [])
+    periods_meta = hp.get("feature_meta_periods", [])
+    stats_meta = hp.get("feature_meta_stats", [])
     
     if len(stats_main) == 0:
         raise ValueError("La lista de estadísticas MAIN está vacía.")
@@ -544,7 +586,7 @@ def get_features(data: pd.DataFrame, hp):
     colnames = []
     for p in periods_main:
         for s in stats_main:
-            colnames.append(f"{p}_{s}_feature")
+            colnames.append(f"{p}_{s}_main_feature")
     
     # Agregar nombres de columnas meta solo si existen
     if len(periods_meta) > 0 and len(stats_meta) > 0:
@@ -560,7 +602,7 @@ def get_features(data: pd.DataFrame, hp):
     df = pd.concat([df, ohlcv], axis=1)
 
     # 2) limpiar Inf/NaN SOLO en columnas de features
-    feat_cols = df.filter(like='_feature').columns
+    feat_cols = df.filter(like='_main_feature').columns
     df[feat_cols] = df[feat_cols].replace([np.inf, -np.inf], np.nan)
     df = df.dropna(subset=feat_cols)
 
@@ -573,7 +615,7 @@ def get_features(data: pd.DataFrame, hp):
 
 @njit(cache=True, fastmath=True)
 def safe_savgol_filter(x, l_window_size: int, polyorder: int):
-    """Apply Savitzky-Golay filter safely.
+    """Apply Savitzky-Golay label_filter safely.
 
     Parameters
     ----------
@@ -610,23 +652,23 @@ def safe_savgol_filter(x, l_window_size: int, polyorder: int):
     return savgol_filter(x, window_length=wl, polyorder=polyorder)
 
 @njit(cache=True, fastmath=True)
-def calculate_labels_trend(normalized_trend, threshold):
+def calculate_labels_trend(normalized_trend, label_threshold):
     labels = np.empty(len(normalized_trend), dtype=np.float64)
     for i in range(len(normalized_trend)):
-        if normalized_trend[i] > threshold:
+        if normalized_trend[i] > label_threshold:
             labels[i] = 0.0  # Buy (Up trend)
-        elif normalized_trend[i] < -threshold:
+        elif normalized_trend[i] < -label_threshold:
             labels[i] = 1.0  # Sell (Down trend)
         else:
             labels[i] = 2.0  # No signal
     return labels
 
-def get_labels_trend(dataset, rolling=200, polyorder=3, threshold=0.5, vol_window=50) -> pd.DataFrame:
-    smoothed_prices = safe_savgol_filter(dataset['close'].values, window_length=rolling, polyorder=polyorder)
+def get_labels_trend(dataset, label_rolling=200, polyorder=3, label_threshold=0.5, vol_window=50) -> pd.DataFrame:
+    smoothed_prices = safe_savgol_filter(dataset['close'].values, window_length=label_rolling, polyorder=polyorder)
     trend = np.gradient(smoothed_prices)
-    vol = dataset['close'].rolling(vol_window).std().values
+    vol = dataset['close'].label_rolling(vol_window).std().values
     normalized_trend = np.where(vol != 0, trend / vol, np.nan)  # Set NaN where vol is 0
-    labels = calculate_labels_trend(normalized_trend, threshold)
+    labels = calculate_labels_trend(normalized_trend, label_threshold)
     dataset = dataset.iloc[:len(labels)].copy()
     dataset['labels_main'] = labels
     dataset = dataset.dropna()  # Remove rows with NaN
@@ -634,9 +676,9 @@ def get_labels_trend(dataset, rolling=200, polyorder=3, threshold=0.5, vol_windo
 
 def plot_trading_signals(
     dataset: pd.DataFrame,
-    rolling: int = 200,
+    label_rolling: int = 200,
     polyorder: int = 3,
-    threshold: float = 0.5,
+    label_threshold: float = 0.5,
     vol_window: int = 50,
     figsize: tuple = (14, 7)
 ) -> None:
@@ -645,9 +687,9 @@ def plot_trading_signals(
     
     Args:
         dataset: DataFrame with 'close' prices and datetime index
-        rolling: Window size for Savitzky-Golay filter. Default 200
+        label_rolling: Window size for Savitzky-Golay label_filter. Default 200
         polyorder: Polynomial order for smoothing. Default 3
-        threshold: Signal generation threshold. Default 0.5
+        label_threshold: Signal generation label_threshold. Default 0.5
         vol_window: Volatility calculation window. Default 50
         figsize: Figure dimensions. Default (14,7)
     """
@@ -655,14 +697,14 @@ def plot_trading_signals(
     df = dataset[['close']].copy().dropna()
     close_prices = df['close'].values
     
-    # 1. Smooth prices using Savitzky-Golay filter
-    smoothed = safe_savgol_filter(close_prices, window_length=rolling, polyorder=polyorder)
+    # 1. Smooth prices using Savitzky-Golay label_filter
+    smoothed = safe_savgol_filter(close_prices, window_length=label_rolling, polyorder=polyorder)
     
     # 2. Calculate trend gradient
     trend = np.gradient(smoothed)
     
-    # 3. Compute volatility (rolling std)
-    vol = df['close'].rolling(vol_window).std().values
+    # 3. Compute volatility (label_rolling std)
+    vol = df['close'].label_rolling(vol_window).std().values
     
     # 4. Normalize trend by volatility
     normalized_trend = np.zeros_like(trend)
@@ -671,12 +713,12 @@ def plot_trading_signals(
     
     # 5. Generate trading signals
     labels = np.full(len(normalized_trend), 2.0, dtype=np.float64)  # Default 2.0 (no signal)
-    labels[normalized_trend > threshold] = 0.0  # Buy signals
-    labels[normalized_trend < -threshold] = 1.0  # Sell signals
+    labels[normalized_trend > label_threshold] = 0.0  # Buy signals
+    labels[normalized_trend < -label_threshold] = 1.0  # Sell signals
     
-    # 6. Calculate threshold bands
-    upper_band = smoothed + threshold * vol
-    lower_band = smoothed - threshold * vol
+    # 6. Calculate label_threshold bands
+    upper_band = smoothed + label_threshold * vol
+    lower_band = smoothed - label_threshold * vol
     
     # Trim arrays to valid data (remove NaN/zero-vol periods)
     valid_idx = np.where(valid_mask)[0]
@@ -698,15 +740,15 @@ def plot_trading_signals(
     
     # Plot smoothed trend line
     plt.plot(df.index, smoothed,
-             label=f'Savitzky-Golay ({rolling},{polyorder})', 
+             label=f'Savitzky-Golay ({label_rolling},{polyorder})', 
              color='#ff7f0e', 
              lw=2)
     
-    # Fill between threshold bands
+    # Fill between label_threshold bands
     plt.fill_between(df.index, upper_band, lower_band,
                      color='#e0e0e0', 
                      alpha=0.3, 
-                     label=f'Threshold ±{threshold}σ')
+                     label=f'Threshold ±{label_threshold}σ')
     
     # Plot buy/sell signals with distinct markers
     buy_dates = df.index[labels == 0.0]
@@ -717,7 +759,7 @@ def plot_trading_signals(
                 marker='^', 
                 s=80,
                 edgecolor='black',
-                label=f'Buy Signal (>+{threshold}σ)',
+                label=f'Buy Signal (>+{label_threshold}σ)',
                 zorder=5)
     
     plt.scatter(sell_dates, df.loc[sell_dates, 'close'],
@@ -725,11 +767,11 @@ def plot_trading_signals(
                 marker='v', 
                 s=80,
                 edgecolor='black',
-                label=f'Sell Signal (<-{threshold}σ)',
+                label=f'Sell Signal (<-{label_threshold}σ)',
                 zorder=5)
     
     # Configure plot aesthetics
-    plt.title(f'Trading Signals Generation\n(Smoothing: {rolling} periods, Threshold: {threshold}σ)')
+    plt.title(f'Trading Signals Generation\n(Smoothing: {label_rolling} periods, Threshold: {label_threshold}σ)')
     plt.xlabel('Date')
     plt.ylabel('Price')
     plt.grid(alpha=0.2, linestyle='--')
@@ -738,21 +780,21 @@ def plot_trading_signals(
     plt.show()
 
 @njit(cache=True, fastmath=True)
-def calculate_labels_trend_with_profit(close, atr, normalized_trend, threshold, markup, min_val, max_val):
-    labels = np.empty(len(normalized_trend) - max_val, dtype=np.float64)
-    for i in range(len(normalized_trend) - max_val):
-        dyn_mk = markup * atr[i]
-        if normalized_trend[i] > threshold:
+def calculate_labels_trend_with_profit(close, atr, normalized_trend, label_threshold, label_markup, label_min_val, label_max_val):
+    labels = np.empty(len(normalized_trend) - label_max_val, dtype=np.float64)
+    for i in range(len(normalized_trend) - label_max_val):
+        dyn_mk = label_markup * atr[i]
+        if normalized_trend[i] > label_threshold:
             # Проверяем condición para Buy
-            rand = np.random.randint(min_val, max_val + 1)
+            rand = np.random.randint(label_min_val, label_max_val + 1)
             future_pr = close[i + rand]
             if future_pr >= close[i] + dyn_mk:
                 labels[i] = 0.0  # Buy (Profit reached)
             else:
                 labels[i] = 2.0  # No profit
-        elif normalized_trend[i] < -threshold:
+        elif normalized_trend[i] < -label_threshold:
             # Проверяем condición para Sell
-            rand = np.random.randint(min_val, max_val + 1)
+            rand = np.random.randint(label_min_val, label_max_val + 1)
             future_pr = close[i + rand]
             if future_pr <= close[i] - dyn_mk:
                 labels[i] = 1.0  # Sell (Profit reached)
@@ -762,14 +804,14 @@ def calculate_labels_trend_with_profit(close, atr, normalized_trend, threshold, 
             labels[i] = 2.0  # No signal
     return labels
 
-def get_labels_trend_with_profit(dataset, rolling=200, polyorder=3, threshold=0.5, 
-                    vol_window=50, markup=0.5, min_val=1, max_val=15, atr_period=14) -> pd.DataFrame:
+def get_labels_trend_with_profit(dataset, label_rolling=200, polyorder=3, label_threshold=0.5, 
+                    vol_window=50, label_markup=0.5, label_min_val=1, label_max_val=15, label_atr_period=14) -> pd.DataFrame:
     # Smoothing and trend calculation
-    smoothed_prices = safe_savgol_filter(dataset['close'].values, window_length=rolling, polyorder=polyorder)
+    smoothed_prices = safe_savgol_filter(dataset['close'].values, window_length=label_rolling, polyorder=polyorder)
     trend = np.gradient(smoothed_prices)
     
     # Normalizing the trend by volatility
-    vol = dataset['close'].rolling(vol_window).std().values
+    vol = dataset['close'].label_rolling(vol_window).std().values
     normalized_trend = np.where(vol != 0, trend / vol, np.nan)
     
     # Removing NaN and synchronizing data
@@ -778,12 +820,12 @@ def get_labels_trend_with_profit(dataset, rolling=200, polyorder=3, threshold=0.
     close_clean = dataset['close'].values[valid_mask]
     high = dataset["high"].values if "high" in dataset else dataset["close"].values
     low = dataset["low"].values if "low" in dataset else dataset["close"].values
-    atr = calculate_atr_simple(high, low, dataset["close"].values, period=atr_period)
+    atr = calculate_atr_simple(high, low, dataset["close"].values, period=label_atr_period)
     atr_clean = atr[valid_mask]
     dataset_clean = dataset[valid_mask].copy()
     
     # Generating labels
-    labels = calculate_labels_trend_with_profit(close_clean, atr_clean, normalized_trend_clean, threshold, markup, min_val, max_val)
+    labels = calculate_labels_trend_with_profit(close_clean, atr_clean, normalized_trend_clean, label_threshold, label_markup, label_min_val, label_max_val)
     
     # Trimming the dataset and adding labels
     dataset_clean = dataset_clean.iloc[:len(labels)].copy()
@@ -794,21 +836,21 @@ def get_labels_trend_with_profit(dataset, rolling=200, polyorder=3, threshold=0.
     return dataset_clean
 
 @njit(cache=True, fastmath=True)
-def calculate_labels_trend_different_filters(close, atr, normalized_trend, threshold, markup, min_val, max_val):
-    labels = np.empty(len(normalized_trend) - max_val, dtype=np.float64)
-    for i in range(len(normalized_trend) - max_val):
-        dyn_mk = markup * atr[i]
-        if normalized_trend[i] > threshold:
+def calculate_labels_trend_different_filters(close, atr, normalized_trend, label_threshold, label_markup, label_min_val, label_max_val):
+    labels = np.empty(len(normalized_trend) - label_max_val, dtype=np.float64)
+    for i in range(len(normalized_trend) - label_max_val):
+        dyn_mk = label_markup * atr[i]
+        if normalized_trend[i] > label_threshold:
             # Проверяем condición para Buy
-            rand = np.random.randint(min_val, max_val + 1)
+            rand = np.random.randint(label_min_val, label_max_val + 1)
             future_pr = close[i + rand]
             if future_pr >= close[i] + dyn_mk:
                 labels[i] = 0.0  # Buy (Profit reached)
             else:
                 labels[i] = 2.0  # No profit
-        elif normalized_trend[i] < -threshold:
+        elif normalized_trend[i] < -label_threshold:
             # Проверяем condición para Sell
-            rand = np.random.randint(min_val, max_val + 1)
+            rand = np.random.randint(label_min_val, label_max_val + 1)
             future_pr = close[i + rand]
             if future_pr <= close[i] - dyn_mk:
                 labels[i] = 1.0  # Sell (Profit reached)
@@ -818,29 +860,29 @@ def calculate_labels_trend_different_filters(close, atr, normalized_trend, thres
             labels[i] = 2.0  # No signal
     return labels
 
-def get_labels_trend_with_profit_different_filters(dataset, filter='savgol', rolling=200, polyorder=3, threshold=0.5, 
-                    vol_window=50, markup=0.5, min_val=1, max_val=15, atr_period=14) -> pd.DataFrame:
+def get_labels_trend_with_profit_different_filters(dataset, label_filter='savgol', label_rolling=200, polyorder=3, label_threshold=0.5, 
+                    vol_window=50, label_markup=0.5, label_min_val=1, label_max_val=15, label_atr_period=14) -> pd.DataFrame:
     # Smoothing and trend calculation
     close_prices = dataset['close'].values
-    if filter == 'savgol':
-        smoothed_prices = safe_savgol_filter(close_prices, window_length=rolling, polyorder=polyorder)
-    elif filter == 'spline':
+    if label_filter == 'savgol':
+        smoothed_prices = safe_savgol_filter(close_prices, window_length=label_rolling, polyorder=polyorder)
+    elif label_filter == 'spline':
         x = np.arange(len(close_prices))
-        spline = UnivariateSpline(x, close_prices, k=polyorder, s=rolling)
+        spline = UnivariateSpline(x, close_prices, k=polyorder, s=label_rolling)
         smoothed_prices = spline(x)
-    elif filter == 'sma':
-        smoothed_series = pd.Series(close_prices).rolling(window=rolling).mean()
+    elif label_filter == 'sma':
+        smoothed_series = pd.Series(close_prices).label_rolling(window=label_rolling).mean()
         smoothed_prices = smoothed_series.values
-    elif filter == 'ema':
-        smoothed_series = pd.Series(close_prices).ewm(span=rolling, adjust=False).mean()
+    elif label_filter == 'ema':
+        smoothed_series = pd.Series(close_prices).ewm(span=label_rolling, adjust=False).mean()
         smoothed_prices = smoothed_series.values
     else:
-        raise ValueError(f"Unknown smoothing filter: {filter}")
+        raise ValueError(f"Unknown smoothing label_filter: {label_filter}")
     
     trend = np.gradient(smoothed_prices)
     
     # Normalizing the trend by volatility
-    vol = dataset['close'].rolling(vol_window).std().values
+    vol = dataset['close'].label_rolling(vol_window).std().values
     normalized_trend = np.where(vol != 0, trend / vol, np.nan)
     
     # Removing NaN and synchronizing data
@@ -850,11 +892,11 @@ def get_labels_trend_with_profit_different_filters(dataset, filter='savgol', rol
     dataset_clean = dataset[valid_mask].copy()
     high = dataset["high"].values if "high" in dataset else dataset["close"].values
     low = dataset["low"].values if "low" in dataset else dataset["close"].values
-    atr = calculate_atr_simple(high, low, dataset["close"].values, period=atr_period)
+    atr = calculate_atr_simple(high, low, dataset["close"].values, period=label_atr_period)
     atr_clean = atr[valid_mask]
     
     # Generating labels
-    labels = calculate_labels_trend_different_filters(close_clean, atr_clean, normalized_trend_clean, threshold, markup, min_val, max_val)
+    labels = calculate_labels_trend_different_filters(close_clean, atr_clean, normalized_trend_clean, label_threshold, label_markup, label_min_val, label_max_val)
     
     # Trimming the dataset and adding labels
     dataset_clean = dataset_clean.iloc[:len(labels)].copy()
@@ -865,21 +907,21 @@ def get_labels_trend_with_profit_different_filters(dataset, filter='savgol', rol
     return dataset_clean
 
 @njit(cache=True, fastmath=True)
-def calculate_labels_trend_multi(close, atr, normalized_trends, threshold, markup, min_val, max_val):
+def calculate_labels_trend_multi(close, atr, normalized_trends, label_threshold, label_markup, label_min_val, label_max_val):
     num_periods = normalized_trends.shape[0]  # Number of periods
-    labels = np.empty(len(close) - max_val, dtype=np.float64)
-    for i in range(len(close) - max_val):
-        dyn_mk = markup * atr[i]
+    labels = np.empty(len(close) - label_max_val, dtype=np.float64)
+    for i in range(len(close) - label_max_val):
+        dyn_mk = label_markup * atr[i]
         # Select a random number of bars forward once for all periods
-        rand = np.random.randint(min_val, max_val + 1)
+        rand = np.random.randint(label_min_val, label_max_val + 1)
         buy_signals = 0
         sell_signals = 0
         # Check conditions for each period
         for j in range(num_periods):
-            if normalized_trends[j, i] > threshold:
+            if normalized_trends[j, i] > label_threshold:
                 if close[i + rand] >= close[i] + dyn_mk:
                     buy_signals += 1
-            elif normalized_trends[j, i] < -threshold:
+            elif normalized_trends[j, i] < -label_threshold:
                 if close[i + rand] <= close[i] - dyn_mk:
                     sell_signals += 1
         # Combine signals
@@ -891,22 +933,22 @@ def calculate_labels_trend_multi(close, atr, normalized_trends, threshold, marku
             labels[i] = 2.0  # No signal or conflict
     return labels
 
-def get_labels_trend_with_profit_multi(dataset, filter='savgol', rolling_periods=[10, 20, 30], polyorder=3, threshold=0.5, 
-                                       vol_window=50, markup=0.5, min_val=1, max_val=15, atr_period=14) -> pd.DataFrame:
+def get_labels_trend_with_profit_multi(dataset, label_filter='savgol', rolling_periods=[10, 20, 30], polyorder=3, label_threshold=0.5, 
+                                       vol_window=50, label_markup=0.5, label_min_val=1, label_max_val=15, label_atr_period=14) -> pd.DataFrame:
     """
     Generates labels for trading signals (Buy/Sell) based on the normalized trend,
     calculated for multiple smoothing periods.
 
     Args:
         dataset (pd.DataFrame): DataFrame with data, containing the 'close' column.
-        filter (str): Smoothing filter ('savgol', 'spline', 'sma', 'ema').
+        label_filter (str): Smoothing label_filter ('savgol', 'spline', 'sma', 'ema').
         rolling_periods (list): List of smoothing window sizes. Default is [200].
         polyorder (int): Polynomial order for 'savgol' and 'spline' methods.
-        threshold (float): Threshold for the normalized trend.
+        label_threshold (float): Threshold for the normalized trend.
         vol_window (int): Window for volatility calculation.
-        markup (float): Minimum profit to confirm the signal.
-        min_val (int): Minimum number of bars forward.
-        max_val (int): Maximum number of bars forward.
+        label_markup (float): Minimum profit to confirm the signal.
+        label_min_val (int): Minimum number of bars forward.
+        label_max_val (int): Maximum number of bars forward.
 
     Returns:
         pd.DataFrame: DataFrame with added 'labels_main' column:
@@ -918,24 +960,24 @@ def get_labels_trend_with_profit_multi(dataset, filter='savgol', rolling_periods
     normalized_trends = []
 
     # Calculate normalized trend for each period
-    for rolling in rolling_periods:
-        if filter == 'savgol':
-            smoothed_prices = safe_savgol_filter(close_prices, window_length=rolling, polyorder=polyorder)
-        elif filter == 'spline':
+    for label_rolling in rolling_periods:
+        if label_filter == 'savgol':
+            smoothed_prices = safe_savgol_filter(close_prices, window_length=label_rolling, polyorder=polyorder)
+        elif label_filter == 'spline':
             x = np.arange(len(close_prices))
-            spline = UnivariateSpline(x, close_prices, k=polyorder, s=rolling)
+            spline = UnivariateSpline(x, close_prices, k=polyorder, s=label_rolling)
             smoothed_prices = spline(x)
-        elif filter == 'sma':
-            smoothed_series = pd.Series(close_prices).rolling(window=rolling).mean()
+        elif label_filter == 'sma':
+            smoothed_series = pd.Series(close_prices).label_rolling(window=label_rolling).mean()
             smoothed_prices = smoothed_series.values
-        elif filter == 'ema':
-            smoothed_series = pd.Series(close_prices).ewm(span=rolling, adjust=False).mean()
+        elif label_filter == 'ema':
+            smoothed_series = pd.Series(close_prices).ewm(span=label_rolling, adjust=False).mean()
             smoothed_prices = smoothed_series.values
         else:
-            raise ValueError(f"Unknown smoothing filter: {filter}")
+            raise ValueError(f"Unknown smoothing label_filter: {label_filter}")
         
         trend = np.gradient(smoothed_prices)
-        vol = pd.Series(close_prices).rolling(vol_window).std().values
+        vol = pd.Series(close_prices).label_rolling(vol_window).std().values
         normalized_trend = np.where(vol != 0, trend / vol, np.nan)
         normalized_trends.append(normalized_trend)
 
@@ -950,10 +992,10 @@ def get_labels_trend_with_profit_multi(dataset, filter='savgol', rolling_periods
 
     high = dataset["high"].values if "high" in dataset else dataset["close"].values
     low = dataset["low"].values if "low" in dataset else dataset["close"].values
-    atr = calculate_atr_simple(high, low, dataset["close"].values, period=atr_period)
+    atr = calculate_atr_simple(high, low, dataset["close"].values, period=label_atr_period)
     atr_clean = atr[valid_mask]
     # Generate labels
-    labels = calculate_labels_trend_multi(close_clean, atr_clean, normalized_trends_clean, threshold, markup, min_val, max_val)
+    labels = calculate_labels_trend_multi(close_clean, atr_clean, normalized_trends_clean, label_threshold, label_markup, label_min_val, label_max_val)
 
     # Trim data and add labels
     dataset_clean = dataset_clean.iloc[:len(labels)].copy()
@@ -964,13 +1006,13 @@ def get_labels_trend_with_profit_multi(dataset, filter='savgol', rolling_periods
     return dataset_clean
 
 @njit(cache=True, fastmath=True)
-def calculate_labels_clusters(close_data, atr, clusters, markup):
+def calculate_labels_clusters(close_data, atr, clusters, label_markup):
     labels = []
     current_cluster = clusters[0]
     last_price = close_data[0]
     for i in range(1, len(close_data)):
         next_cluster = clusters[i]
-        dyn_mk = markup * atr[i]
+        dyn_mk = label_markup * atr[i]
         if next_cluster != current_cluster and (abs(close_data[i] - last_price) > dyn_mk):
             if close_data[i] > last_price:
                 labels.append(0.0)
@@ -985,7 +1027,7 @@ def calculate_labels_clusters(close_data, atr, clusters, markup):
         labels.append(2.0)
     return labels
 
-def get_labels_clusters(dataset, markup, l_n_clusters=20, atr_period=14) -> pd.DataFrame:
+def get_labels_clusters(dataset, label_markup, l_n_clusters=20, label_atr_period=14) -> pd.DataFrame:
     kmeans = KMeans(n_clusters=l_n_clusters, n_init='auto')
     dataset['cluster'] = kmeans.fit_predict(dataset[['close']])
 
@@ -994,8 +1036,8 @@ def get_labels_clusters(dataset, markup, l_n_clusters=20, atr_period=14) -> pd.D
 
     high = dataset["high"].values if "high" in dataset else dataset["close"].values
     low = dataset["low"].values if "low" in dataset else dataset["close"].values
-    atr = calculate_atr_simple(high, low, dataset["close"].values, period=atr_period)
-    labels = calculate_labels_clusters(close_data, atr, clusters, markup)
+    atr = calculate_atr_simple(high, low, dataset["close"].values, period=label_atr_period)
+    labels = calculate_labels_clusters(close_data, atr, clusters, label_markup)
 
     dataset['labels_main'] = labels
     dataset = dataset.drop(columns=['cluster'])
@@ -1123,7 +1165,7 @@ def get_labels_filter_ZZ(dataset, peak_prominence=0.1) -> pd.DataFrame:
     Args:
         dataset (pd.DataFrame): DataFrame containing financial data with a 'close' column.
         peak_prominence (float, optional): Minimum prominence of peaks and troughs, 
-                                           used to filter out insignificant fluctuations. 
+                                           used to label_filter out insignificant fluctuations. 
                                            Defaults to 0.1.
 
     Returns:
@@ -1149,11 +1191,11 @@ def get_labels_filter_ZZ(dataset, peak_prominence=0.1) -> pd.DataFrame:
 
 # MEAN REVERSION WITH RESTRICTIONS BASED LABELING
 @njit(cache=True, fastmath=True)
-def calculate_labels_mean_reversion(close, atr, lvl, markup, min_val, max_val, q):
-    labels = np.empty(len(close) - max_val, dtype=np.float64)
-    for i in range(len(close) - max_val):
-        dyn_mk = markup * atr[i]
-        rand = np.random.randint(min_val, max_val + 1)
+def calculate_labels_mean_reversion(close, atr, lvl, label_markup, label_min_val, label_max_val, q):
+    labels = np.empty(len(close) - label_max_val, dtype=np.float64)
+    for i in range(len(close) - label_max_val):
+        dyn_mk = label_markup * atr[i]
+        rand = np.random.randint(label_min_val, label_max_val + 1)
         curr_pr = close[i]
         curr_lvl = lvl[i]
         future_pr = close[i + rand]
@@ -1166,28 +1208,28 @@ def calculate_labels_mean_reversion(close, atr, lvl, markup, min_val, max_val, q
             labels[i] = 2.0
     return labels
 
-def get_labels_mean_reversion(dataset, markup, min_val=1, max_val=15, rolling=0.5, quantiles=[.45, .55], filter='spline', decay_factor=0.95, shift=0, atr_period=14) -> pd.DataFrame:
+def get_labels_mean_reversion(dataset, label_markup, label_min_val=1, label_max_val=15, label_rolling=0.5, quantiles=[.45, .55], label_filter='spline', decay_factor=0.95, shift=0, label_atr_period=14) -> pd.DataFrame:
     """
     Generates labels for a financial dataset based on mean reversion principles.
 
     This function calculates trading signals (buy/sell) based on the deviation of
-    the price from a chosen moving average or smoothing filter. It identifies
+    the price from a chosen moving average or smoothing label_filter. It identifies
     potential buy opportunities when the price deviates significantly below its 
     smoothed trend, anticipating a reversion to the mean.
 
     Args:
         dataset (pd.DataFrame): DataFrame containing financial data with a 'close' column.
-        markup (float): The percentage markup used to determine buy signals.
-        min_val (int, optional): Minimum number of consecutive days the markup must hold. Defaults to 1.
-        max_val (int, optional): Maximum number of consecutive days the markup is considered. Defaults to 15.
-        rolling (float, optional): Rolling window size for smoothing/averaging. 
-                                     If filter='spline', this controls the spline smoothing factor.
+        label_markup (float): The percentage label_markup used to determine buy signals.
+        label_min_val (int, optional): Minimum number of consecutive days the label_markup must hold. Defaults to 1.
+        label_max_val (int, optional): Maximum number of consecutive days the label_markup is considered. Defaults to 15.
+        label_rolling (float, optional): Rolling window size for smoothing/averaging. 
+                                     If label_filter='spline', this controls the spline smoothing factor.
                                      Defaults to 0.5.
         quantiles (list, optional): Quantiles to define the "reversion zone". Defaults to [.45, .55].
-        filter (str, optional): Method for calculating the price deviation:
-                                 - 'mean': Deviation from the rolling mean.
+        label_filter (str, optional): Method for calculating the price deviation:
+                                 - 'mean': Deviation from the label_rolling mean.
                                  - 'spline': Deviation from a smoothed spline.
-                                 - 'savgol': Deviation from a Savitzky-Golay filter.
+                                 - 'savgol': Deviation from a Savitzky-Golay label_filter.
                                  Defaults to 'spline'.
         shift (int, optional): Shift the smoothed price data forward (positive) or backward (negative).
                                  Useful for creating a lag/lead effect. Defaults to 0.
@@ -1201,32 +1243,32 @@ def get_labels_mean_reversion(dataset, markup, min_val=1, max_val=15, rolling=0.
                        - The temporary 'lvl' column is removed. 
     """
 
-    # Calculate the price deviation ('lvl') based on the chosen filter
-    if filter == 'mean':
-        diff = (dataset['close'] - dataset['close'].rolling(rolling).mean())
+    # Calculate the price deviation ('lvl') based on the chosen label_filter
+    if label_filter == 'mean':
+        diff = (dataset['close'] - dataset['close'].label_rolling(label_rolling).mean())
         weighted_diff = diff * np.exp(np.arange(len(diff)) * decay_factor / len(diff)) 
         dataset['lvl'] = weighted_diff # Add the weighted difference as 'lvl'
-    elif filter == 'spline':
+    elif label_filter == 'spline':
         x = np.array(range(dataset.shape[0]))
         y = dataset['close'].values
-        spl = UnivariateSpline(x, y, k=3, s=rolling) 
+        spl = UnivariateSpline(x, y, k=3, s=label_rolling) 
         yHat = spl(np.linspace(min(x), max(x), num=x.shape[0]))
         yHat_shifted = np.roll(yHat, shift=shift) # Apply the shift
         diff = dataset['close'] - yHat_shifted
         weighted_diff = diff * np.exp(np.arange(len(diff)) * decay_factor / len(diff)) 
         dataset['lvl'] = weighted_diff # Add the weighted difference as 'lvl'
         dataset = dataset.dropna()  # Remove NaN values potentially introduced by spline/shift
-    elif filter == 'savgol':
-        smoothed_prices = safe_savgol_filter(dataset['close'].values, window_length=int(rolling), polyorder=3)
+    elif label_filter == 'savgol':
+        smoothed_prices = safe_savgol_filter(dataset['close'].values, window_length=int(label_rolling), polyorder=3)
         diff = dataset['close'] - smoothed_prices
         weighted_diff = diff * np.exp(np.arange(len(diff)) * decay_factor / len(diff)) 
         dataset['lvl'] = weighted_diff # Add the weighted difference as 'lvl'
 
     dataset = dataset.dropna()  # Remove NaN values before proceeding
 
-    # Ensure max_val does not exceed dataset length
-    max_val = min(int(max_val), max(len(dataset) - 1, 1))
-    if len(dataset) <= max_val:
+    # Ensure label_max_val does not exceed dataset length
+    label_max_val = min(int(label_max_val), max(len(dataset) - 1, 1))
+    if len(dataset) <= label_max_val:
         return pd.DataFrame()
     q = tuple(dataset['lvl'].quantile(quantiles).to_list())  # Calculate quantiles for the 'reversion zone'
 
@@ -1237,8 +1279,8 @@ def get_labels_mean_reversion(dataset, markup, min_val=1, max_val=15, rolling=0.
     # Calculate buy/sell labels 
     high = dataset["high"].values if "high" in dataset else close
     low = dataset["low"].values if "low" in dataset else close
-    atr = calculate_atr_simple(high, low, close, period=atr_period)
-    labels = calculate_labels_mean_reversion(close, atr, lvl, markup, min_val, max_val, q)
+    atr = calculate_atr_simple(high, low, close, period=label_atr_period)
+    labels = calculate_labels_mean_reversion(close, atr, lvl, label_markup, label_min_val, label_max_val, q)
 
     # Process the dataset and labels
     dataset = dataset.iloc[:len(labels)].copy()
@@ -1247,12 +1289,12 @@ def get_labels_mean_reversion(dataset, markup, min_val=1, max_val=15, rolling=0.
     return dataset.drop(columns=['lvl'])  # Remove the temporary 'lvl' column 
 
 @njit(cache=True, fastmath=True)
-def calculate_labels_mean_reversion_multi(close_data, atr, lvl_data, q_list, markup, min_val, max_val, window_sizes):
+def calculate_labels_mean_reversion_multi(close_data, atr, lvl_data, q_list, label_markup, label_min_val, label_max_val, window_sizes):
     labels = []
     n_win = len(window_sizes)
-    for i in range(len(close_data) - max_val):
-        dyn_mk = markup * atr[i]
-        rand = np.random.randint(min_val, max_val + 1)
+    for i in range(len(close_data) - label_max_val):
+        dyn_mk = label_markup * atr[i]
+        rand = np.random.randint(label_min_val, label_max_val + 1)
         curr_pr = close_data[i]
         future_pr = close_data[i + rand]
 
@@ -1278,14 +1320,14 @@ def calculate_labels_mean_reversion_multi(close_data, atr, lvl_data, q_list, mar
             labels.append(2.0)
     return labels
 
-def get_labels_mean_reversion_multi(dataset, markup, min_val=1, max_val=15, window_sizes=[0.2, 0.3, 0.5], quantiles=[.45, .55], atr_period=14) -> pd.DataFrame:
+def get_labels_mean_reversion_multi(dataset, label_markup, label_min_val=1, label_max_val=15, window_sizes=[0.2, 0.3, 0.5], quantiles=[.45, .55], label_atr_period=14) -> pd.DataFrame:
     q = np.empty((len(window_sizes), 2))  # Initialize as 2D NumPy array
     lvl_data = np.empty((dataset.shape[0], len(window_sizes)))
 
-    for i, rolling in enumerate(window_sizes):
+    for i, label_rolling in enumerate(window_sizes):
         x = np.arange(dataset.shape[0])
         y = dataset['close'].values
-        spl = UnivariateSpline(x, y, k=3, s=rolling)
+        spl = UnivariateSpline(x, y, k=3, s=label_rolling)
         yHat = spl(np.linspace(x.min(), x.max(), x.shape[0]))
         lvl_data[:, i] = dataset['close'] - yHat
         # Store quantiles directly into the NumPy array
@@ -1294,19 +1336,19 @@ def get_labels_mean_reversion_multi(dataset, markup, min_val=1, max_val=15, wind
         q[i, 1] = quantile_values[1]
 
     dataset = dataset.dropna()
-    max_val = min(int(max_val), max(len(dataset) - 1, 1))
-    if len(dataset) <= max_val:
+    label_max_val = min(int(label_max_val), max(len(dataset) - 1, 1))
+    if len(dataset) <= label_max_val:
         return pd.DataFrame()
     close_data = dataset['close'].values
 
     high = dataset["high"].values if "high" in dataset else close_data
     low = dataset["low"].values if "low" in dataset else close_data
-    atr = calculate_atr_simple(high, low, close_data, period=atr_period)
+    atr = calculate_atr_simple(high, low, close_data, period=label_atr_period)
 
     # Convert parameters to Numba typed.List to avoid repeated JIT compilations
     windows_t = List(window_sizes)
     q_t = List([(float(q[i,0]), float(q[i,1])) for i in range(len(window_sizes))])
-    labels = calculate_labels_mean_reversion_multi(close_data, atr, lvl_data, q_t, markup, min_val, max_val, windows_t)
+    labels = calculate_labels_mean_reversion_multi(close_data, atr, lvl_data, q_t, label_markup, label_min_val, label_max_val, windows_t)
 
     dataset = dataset.iloc[:len(labels)].copy()
     dataset['labels_main'] = labels
@@ -1315,11 +1357,11 @@ def get_labels_mean_reversion_multi(dataset, markup, min_val=1, max_val=15, wind
     return dataset
 
 @njit(cache=True, fastmath=True)
-def calculate_labels_mean_reversion_v(close_data, atr, lvl_data, volatility_group, quantile_groups_low, quantile_groups_high, markup, min_val, max_val):
+def calculate_labels_mean_reversion_v(close_data, atr, lvl_data, volatility_group, quantile_groups_low, quantile_groups_high, label_markup, label_min_val, label_max_val):
     labels = []
-    for i in range(len(close_data) - max_val):
-        dyn_mk = markup * atr[i]
-        rand = np.random.randint(min_val, max_val + 1)
+    for i in range(len(close_data) - label_max_val):
+        dyn_mk = label_markup * atr[i]
+        rand = np.random.randint(label_min_val, label_max_val + 1)
         curr_pr = close_data[i]
         curr_lvl = lvl_data[i]
         curr_vol_group = volatility_group[i]
@@ -1337,7 +1379,7 @@ def calculate_labels_mean_reversion_v(close_data, atr, lvl_data, volatility_grou
             labels.append(2.0)
     return labels
 
-def get_labels_mean_reversion_v(dataset, markup, min_val=1, max_val=15, rolling=0.5, quantiles=[.45, .55], filter='spline', shift=1, vol_window=20, atr_period=14) -> pd.DataFrame:
+def get_labels_mean_reversion_v(dataset, label_markup, label_min_val=1, label_max_val=15, label_rolling=0.5, quantiles=[.45, .55], label_filter='spline', shift=1, vol_window=20, label_atr_period=14) -> pd.DataFrame:
     """
     Generates trading labels based on mean reversion principles, incorporating
     volatility-based adjustments to identify buy opportunities.
@@ -1349,16 +1391,16 @@ def get_labels_mean_reversion_v(dataset, markup, min_val=1, max_val=15, rolling=
 
     Args:
         dataset (pd.DataFrame): DataFrame containing financial data with a 'close' column.
-        markup (float): The percentage markup used to determine buy signals.
-        min_val (int, optional): Minimum number of consecutive days the markup must hold. Defaults to 1.
-        max_val (int, optional): Maximum number of consecutive days the markup is considered. Defaults to 15.
-        rolling (float, optional): Rolling window size or spline smoothing factor (see 'filter'). 
+        label_markup (float): The percentage label_markup used to determine buy signals.
+        label_min_val (int, optional): Minimum number of consecutive days the label_markup must hold. Defaults to 1.
+        label_max_val (int, optional): Maximum number of consecutive days the label_markup is considered. Defaults to 15.
+        label_rolling (float, optional): Rolling window size or spline smoothing factor (see 'label_filter'). 
                                      Defaults to 0.5.
         quantiles (list, optional): Quantiles to define the "reversion zone". Defaults to [.45, .55].
-        filter (str, optional): Method for calculating the price deviation:
-                                 - 'mean': Deviation from the rolling mean.
+        label_filter (str, optional): Method for calculating the price deviation:
+                                 - 'mean': Deviation from the label_rolling mean.
                                  - 'spline': Deviation from a smoothed spline.
-                                 - 'savgol': Deviation from a Savitzky-Golay filter.
+                                 - 'savgol': Deviation from a Savitzky-Golay label_filter.
                                  Defaults to 'spline'.
         shift (int, optional): Shift the smoothed price data forward (positive) or backward (negative).
                                  Useful for creating a lag/lead effect. Defaults to 1.
@@ -1374,7 +1416,7 @@ def get_labels_mean_reversion_v(dataset, markup, min_val=1, max_val=15, rolling=
     """
 
     # Calculate Volatility
-    dataset['volatility'] = dataset['close'].pct_change().rolling(window=vol_window).std()
+    dataset['volatility'] = dataset['close'].pct_change().label_rolling(window=vol_window).std()
     vol = dataset['volatility'].dropna()
     if vol.nunique() < 2:
         # No se puede hacer qcut, todos los valores son iguales
@@ -1382,26 +1424,26 @@ def get_labels_mean_reversion_v(dataset, markup, min_val=1, max_val=15, rolling=
     # Divide into 20 groups by volatility 
     dataset['volatility_group'] = pd.qcut(dataset['volatility'], q=20, labels=False, duplicates='drop')
     
-    # Calculate price deviation ('lvl') based on the chosen filter
-    if filter == 'mean':
-        dataset['lvl'] = (dataset['close'] - dataset['close'].rolling(rolling).mean())
-    elif filter == 'spline':
+    # Calculate price deviation ('lvl') based on the chosen label_filter
+    if label_filter == 'mean':
+        dataset['lvl'] = (dataset['close'] - dataset['close'].label_rolling(label_rolling).mean())
+    elif label_filter == 'spline':
         x = np.array(range(dataset.shape[0]))
         y = dataset['close'].values
-        spl = UnivariateSpline(x, y, k=3, s=rolling)
+        spl = UnivariateSpline(x, y, k=3, s=label_rolling)
         yHat = spl(np.linspace(min(x), max(x), num=x.shape[0]))
         yHat_shifted = np.roll(yHat, shift=shift) # Apply the shift 
         dataset['lvl'] = dataset['close'] - yHat_shifted
         dataset = dataset.dropna() 
-    elif filter == 'savgol':
-        smoothed_prices = safe_savgol_filter(dataset['close'].values, window_length=rolling, polyorder=5)
+    elif label_filter == 'savgol':
+        smoothed_prices = safe_savgol_filter(dataset['close'].values, window_length=label_rolling, polyorder=5)
         dataset['lvl'] = dataset['close'] - smoothed_prices
 
     dataset = dataset.dropna()
 
-    # Ensure max_val does not exceed dataset length
-    max_val = min(int(max_val), max(len(dataset) - 1, 1))
-    if len(dataset) <= max_val:
+    # Ensure label_max_val does not exceed dataset length
+    label_max_val = min(int(label_max_val), max(len(dataset) - 1, 1))
+    if len(dataset) <= label_max_val:
         return pd.DataFrame()
 
     # Calculate quantiles for each volatility group
@@ -1424,11 +1466,11 @@ def get_labels_mean_reversion_v(dataset, markup, min_val=1, max_val=15, rolling=
     quantile_groups_low = np.array(quantile_groups_low)
     high = dataset["high"].values if "high" in dataset else close_data
     low = dataset["low"].values if "low" in dataset else close_data
-    atr = calculate_atr_simple(high, low, close_data, period=atr_period)
+    atr = calculate_atr_simple(high, low, close_data, period=label_atr_period)
     quantile_groups_high = np.array(quantile_groups_high)
 
     # Calculate buy/sell labels
-    labels = calculate_labels_mean_reversion_v(close_data, atr, lvl_data, volatility_group, quantile_groups_low, quantile_groups_high, markup, min_val, max_val)
+    labels = calculate_labels_mean_reversion_v(close_data, atr, lvl_data, volatility_group, quantile_groups_low, quantile_groups_high, label_markup, label_min_val, label_max_val)
     
     # Process dataset and labels
     dataset = dataset.iloc[:len(labels)].copy()
@@ -1453,17 +1495,17 @@ def calculate_labels_filter(close, lvl, q):
             labels[i] = 2.0
     return labels
 
-def get_labels_filter(dataset, rolling=200, quantiles=[.45, .55], polyorder=3, decay_factor=0.95) -> pd.DataFrame:
+def get_labels_filter(dataset, label_rolling=200, quantiles=[.45, .55], polyorder=3, decay_factor=0.95) -> pd.DataFrame:
     """
-    Generates labels for a financial dataset based on price deviation from a Savitzky-Golay filter,
+    Generates labels for a financial dataset based on price deviation from a Savitzky-Golay label_filter,
     with exponential weighting applied to prioritize recent data. Optionally incorporates a 
     cyclical component to the price deviation.
 
     Args:
         dataset (pd.DataFrame): DataFrame containing financial data with a 'close' column.
-        rolling (int, optional): Window size for the Savitzky-Golay filter. Defaults to 200.
+        label_rolling (int, optional): Window size for the Savitzky-Golay label_filter. Defaults to 200.
         quantiles (list, optional): Quantiles to define the "reversion zone". Defaults to [.45, .55].
-        polyorder (int, optional): Polynomial order for the Savitzky-Golay filter. Defaults to 3.
+        polyorder (int, optional): Polynomial order for the Savitzky-Golay label_filter. Defaults to 3.
         decay_factor (float, optional): Exponential decay factor for weighting past data. 
                                         Lower values prioritize recent data more. Defaults to 0.95.
         cycle_period (int, optional): Period of the cycle in number of data points. If None, 
@@ -1480,8 +1522,8 @@ def get_labels_filter(dataset, rolling=200, quantiles=[.45, .55], polyorder=3, d
                        - The temporary 'lvl' column is removed. 
     """
 
-    # Calculate smoothed prices using the Savitzky-Golay filter
-    smoothed_prices = safe_savgol_filter(dataset['close'].values, window_length=rolling, polyorder=polyorder)
+    # Calculate smoothed prices using the Savitzky-Golay label_filter
+    smoothed_prices = safe_savgol_filter(dataset['close'].values, window_length=label_rolling, polyorder=polyorder)
     
     # Calculate the difference between the actual closing prices and the smoothed prices
     diff = dataset['close'] - smoothed_prices
@@ -1544,22 +1586,22 @@ def calc_labels_multiple_filters(close, lvls, qs):
 def get_labels_multiple_filters(dataset, rolling_periods=[200, 400, 600], quantiles=[.45, .55], l_window_size=100, polyorder=3) -> pd.DataFrame:
     """
     Generates trading signals (buy/sell) based on price deviation from multiple 
-    smoothed price trends calculated using a Savitzky-Golay filter with different
-    rolling periods and rolling quantiles. 
+    smoothed price trends calculated using a Savitzky-Golay label_filter with different
+    label_rolling periods and label_rolling quantiles. 
 
-    This function applies a Savitzky-Golay filter to the closing prices for each 
+    This function applies a Savitzky-Golay label_filter to the closing prices for each 
     specified 'rolling_period'. It then calculates the price deviation from these
-    smoothed trends and determines dynamic "reversion zones" using rolling quantiles.
+    smoothed trends and determines dynamic "reversion zones" using label_rolling quantiles.
     Buy signals are generated when the price is within these reversion zones 
     across multiple timeframes.
 
     Args:
         dataset (pd.DataFrame): DataFrame containing financial data with a 'close' column.
-        rolling_periods (list, optional): List of rolling l_window_size sizes for the Savitzky-Golay filter. 
+        rolling_periods (list, optional): List of label_rolling l_window_size sizes for the Savitzky-Golay label_filter. 
                                            Defaults to [200, 400, 600].
         quantiles (list, optional): Quantiles to define the "reversion zone". Defaults to [.45, .55].
-        l_window_size (int, optional): Window size for calculating rolling quantiles. Defaults to 100.
-        polyorder (int, optional): Polynomial order for the Savitzky-Golay filter. Defaults to 3.
+        l_window_size (int, optional): Window size for calculating label_rolling quantiles. Defaults to 100.
+        polyorder (int, optional): Polynomial order for the Savitzky-Golay label_filter. Defaults to 3.
 
     Returns:
         pd.DataFrame: The original DataFrame with a new 'labels_main' column and filtered rows:
@@ -1572,27 +1614,27 @@ def get_labels_multiple_filters(dataset, rolling_periods=[200, 400, 600], quanti
     # Create a copy of the dataset to avoid modifying the original
     dataset = dataset.copy()
     
-    # Lists to store price deviation levels and quantiles for each rolling period
+    # Lists to store price deviation levels and quantiles for each label_rolling period
     all_levels = []
     all_quantiles = []
     
-    # Calculate smoothed price trends and rolling quantiles for each rolling period
-    for rolling in rolling_periods:
-        # Calculate smoothed prices using the Savitzky-Golay filter
+    # Calculate smoothed price trends and label_rolling quantiles for each label_rolling period
+    for label_rolling in rolling_periods:
+        # Calculate smoothed prices using the Savitzky-Golay label_filter
         smoothed_prices = safe_savgol_filter(dataset['close'].values,
-                                      window_length=rolling,
+                                      window_length=label_rolling,
                                       polyorder=polyorder)
         # Calculate the price deviation from the smoothed prices
         diff = dataset['close'] - smoothed_prices
         
-        # Create a temporary DataFrame to calculate rolling quantiles
+        # Create a temporary DataFrame to calculate label_rolling quantiles
         temp_df = pd.DataFrame({'diff': diff})
         
-        # Calculate rolling quantiles for the price deviation
-        q_low = temp_df['diff'].rolling(window=l_window_size).quantile(quantiles[0])
-        q_high = temp_df['diff'].rolling(window=l_window_size).quantile(quantiles[1])
+        # Calculate label_rolling quantiles for the price deviation
+        q_low = temp_df['diff'].label_rolling(window=l_window_size).quantile(quantiles[0])
+        q_high = temp_df['diff'].label_rolling(window=l_window_size).quantile(quantiles[1])
         
-        # Store the price deviation and quantiles for the current rolling period
+        # Store the price deviation and quantiles for the current label_rolling period
         all_levels.append(diff)
         all_quantiles.append([q_low.values, q_high.values])
     
@@ -1638,8 +1680,8 @@ def get_labels_filter_bidirectional(dataset, rolling1=200, rolling2=200, quantil
 
     Args:
         dataset (pd.DataFrame): DataFrame containing financial data with a 'close' column.
-        rolling1 (int, optional): Window size for the first Savitzky-Golay filter. Defaults to 200.
-        rolling2 (int, optional): Window size for the second Savitzky-Golay filter. Defaults to 200.
+        rolling1 (int, optional): Window size for the first Savitzky-Golay label_filter. Defaults to 200.
+        rolling2 (int, optional): Window size for the second Savitzky-Golay label_filter. Defaults to 200.
         quantiles (list, optional): Quantiles to define the "reversion zones". Defaults to [.45, .55].
         polyorder (int, optional): Polynomial order for both Savitzky-Golay filters. Defaults to 3.
 
@@ -1652,10 +1694,10 @@ def get_labels_filter_bidirectional(dataset, rolling1=200, rolling2=200, quantil
                        - Temporary 'lvl1' and 'lvl2' columns are removed.
     """
 
-    # Apply the first Savitzky-Golay filter (forward direction)
+    # Apply the first Savitzky-Golay label_filter (forward direction)
     smoothed_prices = safe_savgol_filter(dataset['close'].values, window_length=rolling1, polyorder=polyorder)
     
-    # Apply the second Savitzky-Golay filter (could be in reverse direction if rolling2 is negative)
+    # Apply the second Savitzky-Golay label_filter (could be in reverse direction if rolling2 is negative)
     smoothed_prices2 = safe_savgol_filter(dataset['close'].values, window_length=rolling2, polyorder=polyorder)
 
     # Calculate price deviations from both smoothed price series
@@ -1706,8 +1748,8 @@ def calculate_labels_filter_one_direction(close, lvl, q, direction_int):
                 labels[i] = 0.0
     return labels
 
-def get_labels_filter_one_direction(dataset, rolling=200, quantiles=[.45, .55], polyorder=3, direction='buy') -> pd.DataFrame:
-    smoothed_prices = safe_savgol_filter(dataset['close'].values, window_length=rolling, polyorder=polyorder)
+def get_labels_filter_one_direction(dataset, label_rolling=200, quantiles=[.45, .55], polyorder=3, direction='buy') -> pd.DataFrame:
+    smoothed_prices = safe_savgol_filter(dataset['close'].values, window_length=label_rolling, polyorder=polyorder)
     diff = dataset['close'] - smoothed_prices
     dataset['lvl'] = diff
     dataset = dataset.dropna()
@@ -1738,37 +1780,37 @@ def get_labels_filter_one_direction(dataset, rolling=200, quantiles=[.45, .55], 
     raise ValueError("direction must be 'buy', 'sell', or 'both'")
 
 @njit(cache=True, fastmath=True)
-def calculate_labels_trend_one_direction(normalized_trend, threshold, direction_int):
+def calculate_labels_trend_one_direction(normalized_trend, label_threshold, direction_int):
     labels = np.empty(len(normalized_trend), dtype=np.float64)
     for i in range(len(normalized_trend)):
         if direction_int == 0:  # buy
-            if normalized_trend[i] > threshold:
+            if normalized_trend[i] > label_threshold:
                 labels[i] = 1.0  # Buy (Up trend)
             else:
                 labels[i] = 0.0
         if direction_int == 1:  # sell
-            if normalized_trend[i] < -threshold:
+            if normalized_trend[i] < -label_threshold:
                 labels[i] = 1.0  # Sell (Down trend)
             else:
                 labels[i] = 0.0  # No signal
     return labels
 
-def get_labels_trend_one_direction(dataset, rolling=50, polyorder=3, threshold=0.001, vol_window=50, direction='buy') -> pd.DataFrame:
-    smoothed_prices = safe_savgol_filter(dataset['close'].values, window_length=rolling, polyorder=polyorder)
+def get_labels_trend_one_direction(dataset, label_rolling=50, polyorder=3, label_threshold=0.001, vol_window=50, direction='buy') -> pd.DataFrame:
+    smoothed_prices = safe_savgol_filter(dataset['close'].values, window_length=label_rolling, polyorder=polyorder)
     trend = np.gradient(smoothed_prices)
-    vol = dataset['close'].rolling(vol_window).std().values
+    vol = dataset['close'].label_rolling(vol_window).std().values
     normalized_trend = np.where(vol != 0, trend / vol, np.nan)
     direction_map = {'buy': 0, 'sell': 1}
     if direction in {'buy', 'sell'}:
         direction_int = direction_map.get(direction, 0)
-        labels = calculate_labels_trend_one_direction(normalized_trend, threshold, direction_int)
+        labels = calculate_labels_trend_one_direction(normalized_trend, label_threshold, direction_int)
         dataset = dataset.iloc[:len(labels)].copy()
         dataset['labels_main'] = labels
         dataset = dataset.dropna()
         return dataset
     if direction == 'both':
-        labels_buy = calculate_labels_trend_one_direction(normalized_trend, threshold, 0)
-        labels_sell = calculate_labels_trend_one_direction(normalized_trend, threshold, 1)
+        labels_buy = calculate_labels_trend_one_direction(normalized_trend, label_threshold, 0)
+        labels_sell = calculate_labels_trend_one_direction(normalized_trend, label_threshold, 1)
         n = min(len(labels_buy), len(labels_sell))
         labels = np.full(n, 2.0, dtype=np.float64)
         buy_sig = labels_buy[:n] == 1.0
@@ -1795,17 +1837,17 @@ def calculate_labels_filter_flat(close, lvl, q):
             labels[i] = 2.0
     return labels
 
-def get_labels_filter_flat(dataset, rolling=200, quantiles=[.45, .55], polyorder=3, decay_factor=0.95) -> pd.DataFrame:
+def get_labels_filter_flat(dataset, label_rolling=200, quantiles=[.45, .55], polyorder=3, decay_factor=0.95) -> pd.DataFrame:
     """
-    Generates labels for a financial dataset based on price deviation from a Savitzky-Golay filter,
+    Generates labels for a financial dataset based on price deviation from a Savitzky-Golay label_filter,
     with exponential weighting applied to prioritize recent data. Optionally incorporates a 
     cyclical component to the price deviation.
 
     Args:
         dataset (pd.DataFrame): DataFrame containing financial data with a 'close' column.
-        rolling (int, optional): Window size for the Savitzky-Golay filter. Defaults to 200.
+        label_rolling (int, optional): Window size for the Savitzky-Golay label_filter. Defaults to 200.
         quantiles (list, optional): Quantiles to define the "reversion zone". Defaults to [.45, .55].
-        polyorder (int, optional): Polynomial order for the Savitzky-Golay filter. Defaults to 3.
+        polyorder (int, optional): Polynomial order for the Savitzky-Golay label_filter. Defaults to 3.
         decay_factor (float, optional): Exponential decay factor for weighting past data. 
                                         Lower values prioritize recent data more. Defaults to 0.95.
         cycle_period (int, optional): Period of the cycle in number of data points. If None, 
@@ -1822,8 +1864,8 @@ def get_labels_filter_flat(dataset, rolling=200, quantiles=[.45, .55], polyorder
                        - The temporary 'lvl' column is removed. 
     """
 
-    # Calculate smoothed prices using the Savitzky-Golay filter
-    smoothed_prices = safe_savgol_filter(dataset['close'].values, window_length=rolling, polyorder=polyorder)
+    # Calculate smoothed prices using the Savitzky-Golay label_filter
+    smoothed_prices = safe_savgol_filter(dataset['close'].values, window_length=label_rolling, polyorder=polyorder)
     
     # Calculate the difference between the actual closing prices and the smoothed prices
     diff = dataset['close'] - smoothed_prices
@@ -1887,20 +1929,20 @@ def calculate_atr_simple(high, low, close, period=14):
 
 # ONE DIRECTION LABELING
 @njit(cache=True, fastmath=True)
-def calculate_labels_one_direction(high, low, close, markup, min_val, max_val, direction_int, atr_period=14, method_int=5):
+def calculate_labels_one_direction(high, low, close, label_markup, label_min_val, label_max_val, direction_int, label_atr_period=14, method_int=5):
     n = len(close)
-    if n <= max_val:
+    if n <= label_max_val:
         return np.zeros(0, dtype=np.float64)
-    atr = calculate_atr_simple(high, low, close, period=atr_period)
-    result = np.zeros(n - max_val, dtype=np.float64)
-    for i in range(n - max_val):
-        window = close[i + min_val : i + max_val + 1]
+    atr = calculate_atr_simple(high, low, close, period=label_atr_period)
+    result = np.zeros(n - label_max_val, dtype=np.float64)
+    for i in range(n - label_max_val):
+        window = close[i + label_min_val : i + label_max_val + 1]
         if window.size == 0:
             continue
         if method_int == 0:  # first
-            future_price = close[i + min_val]
+            future_price = close[i + label_min_val]
         elif method_int == 1:  # last
-            future_price = close[i + max_val]
+            future_price = close[i + label_max_val]
         elif method_int == 2:  # mean
             future_price = np.mean(window)
         elif method_int == 3:  # max
@@ -1908,9 +1950,9 @@ def calculate_labels_one_direction(high, low, close, markup, min_val, max_val, d
         elif method_int == 4:  # min
             future_price = np.min(window)
         else:  # random/otro
-            rand = np.random.randint(min_val, max_val + 1)
+            rand = np.random.randint(label_min_val, label_max_val + 1)
             future_price = close[i + rand]
-        dyn_mk = markup * atr[i]
+        dyn_mk = label_markup * atr[i]
         if direction_int == 0:  # buy
             if future_price > close[i] + dyn_mk:
                 result[i] = 1.0
@@ -1919,8 +1961,8 @@ def calculate_labels_one_direction(high, low, close, markup, min_val, max_val, d
                 result[i] = 1.0
     return result
 
-def get_labels_one_direction(dataset, markup=0.5, min_val=1, max_val=5,
-                             direction='buy', atr_period=14, method='random') -> pd.DataFrame:
+def get_labels_one_direction(dataset, label_markup=0.5, label_min_val=1, label_max_val=5,
+                             direction='buy', label_atr_period=14, label_method='random') -> pd.DataFrame:
     close_data = np.ascontiguousarray(dataset['close'].values)
     high_data = np.ascontiguousarray(dataset['high'].values)
     low_data = np.ascontiguousarray(dataset['low'].values)
@@ -1928,27 +1970,27 @@ def get_labels_one_direction(dataset, markup=0.5, min_val=1, max_val=5,
     method_map = {'first': 0, 'last': 1, 'mean': 2, 'max': 3, 'min': 4, 'random': 5}
     if direction in {'buy', 'sell'}:
         direction_int = direction_map.get(direction, 0)
-        method_int = method_map.get(method, 5)
+        method_int = method_map.get(label_method, 5)
         labels = calculate_labels_one_direction(
             high_data, low_data, close_data,
-            markup, min_val, max_val, direction_int,
-            atr_period, method_int
+            label_markup, label_min_val, label_max_val, direction_int,
+            label_atr_period, method_int
         )
         dataset = dataset.iloc[:len(labels)].copy()
         dataset['labels_main'] = labels
         dataset = dataset.dropna()
         return dataset
     if direction == 'both':
-        method_int = method_map.get(method, 5)
+        method_int = method_map.get(label_method, 5)
         labels_buy = calculate_labels_one_direction(
             high_data, low_data, close_data,
-            markup, min_val, max_val, 0,
-            atr_period, method_int
+            label_markup, label_min_val, label_max_val, 0,
+            label_atr_period, method_int
         )
         labels_sell = calculate_labels_one_direction(
             high_data, low_data, close_data,
-            markup, min_val, max_val, 1,
-            atr_period, method_int
+            label_markup, label_min_val, label_max_val, 1,
+            label_atr_period, method_int
         )
         n = min(len(labels_buy), len(labels_sell))
         labels = np.full(n, 2.0, dtype=np.float64)
@@ -2641,3 +2683,27 @@ def wkmeans_clustering(
 
     res["labels_meta"] = res["labels_meta"].ffill()
     return res
+
+# ───── HELPER PARA RETORNOS ─────
+@njit(cache=True, fastmath=True)
+def compute_returns(prices):
+    """
+    Calcula retornos logarítmicos de forma eficiente.
+    Retorna un array de size-1 con los retornos.
+    """
+    if prices.size <= 1:
+        return np.empty(0, dtype=np.float64)
+    
+    returns = np.empty(prices.size - 1, dtype=np.float64)
+    for i in range(prices.size - 1):
+        if prices[i] <= 0:
+            returns[i] = 0.0  # Evitar log(0) o log(negativo)
+        else:
+            returns[i] = np.log(prices[i + 1] / prices[i])
+    return returns
+
+# ───── ESTADÍSTICOS QUE USAN RETORNOS ─────
+@njit(cache=True, fastmath=True)
+def should_use_returns(stat_name):
+    """Determina si un estadístico debe usar retornos en lugar de precios."""
+    return stat_name in ("mean", "median", "std", "iqr", "mad")

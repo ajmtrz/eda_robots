@@ -81,23 +81,43 @@ def export_to_mql5(**kwargs):
     models_export_path = kwargs.get('models_export_path')
     include_export_path = kwargs.get('include_export_path')
 
+    def _should_use_returns(stat_name):
+        """Determina si un estadístico debe usar retornos en lugar de precios."""
+        return stat_name in ["mean", "median", "std", "iqr", "mad"]
+
     def _build_periods_funcs(cols: list[str]) -> tuple[list[str], list[str]]:
-        """Devuelve dos listas: [periodos]   y   [punteros a stat_X]."""
+        """Devuelve dos listas: [periodos] y [punteros a stat_X]."""
         periods, funcs = [], []
         for c in cols:
-            if c.endswith("_meta_feature"):
+            if c.endswith("_main_feature"):
                 base = c[:-13]
-            elif c.endswith("_feature"):
-                base = c[:-8]
+            elif c.endswith("_meta_feature"):
+                base = c[:-13]
             p_str, stat = base.split('_', 1)
-            periods.append(int(p_str))
-            funcs  .append(f"stat_{stat}")
+            period = int(p_str)
+            
+            # ───── AJUSTAR PERÍODO PARA ESTADÍSTICOS CON RETORNOS ─────
+            # Si el estadístico usa retornos, incrementamos el período en 1
+            # para obtener el número correcto de retornos
+            if _should_use_returns(stat):
+                period += 1
+            
+            periods.append(period)
+            funcs.append(f"stat_{stat}")
         return periods, funcs
     
     try:
         main_cols, meta_cols = model_cols
         main_periods, main_funcs = _build_periods_funcs(main_cols)
         meta_periods, meta_funcs = _build_periods_funcs(meta_cols)
+        
+        # Determinar qué estadísticos usan retornos
+        main_stats_set = set([func.replace("stat_", "") for func in main_funcs])
+        meta_stats_set = set([func.replace("stat_", "") for func in meta_funcs]) if meta_funcs else set()
+        all_stats = main_stats_set | meta_stats_set
+        
+        uses_returns = any(_should_use_returns(stat) for stat in all_stats)
+        
         # Copia los modelos ONNX desde los archivos temporales a la ruta de destino
         filename_model_main = f"{tag}_main.onnx"
         filepath_model_main = os.path.join(models_export_path, filename_model_main)
@@ -643,6 +663,7 @@ def export_to_mql5(**kwargs):
                 }
             """,
         }
+        
         code = r"#include <Math\Stat\Math.mqh>"
         code += '\n'
         code += rf'#resource "\\Files\\{filename_model_main}" as uchar ExtModel_[]'
@@ -655,6 +676,38 @@ def export_to_mql5(**kwargs):
         code += '\n\n'
         code += f'#define DIRECTION            "{str(direction)}"\n'
         code += f'#define MAGIC_NUMBER         {str(model_seed)}\n'
+        
+        # ───── AGREGAR FUNCIÓN DE RETORNOS SI ES NECESARIA ─────
+        if uses_returns:
+            code += """
+// ───── FUNCIÓN PARA CALCULAR RETORNOS LOGARÍTMICOS ─────
+void compute_returns(const double &prices[], double &returns[])
+{
+    int n = ArraySize(prices);
+    if(n <= 1) {
+        ArrayResize(returns, 0);
+        return;
+    }
+    
+    ArrayResize(returns, n - 1);
+    for(int i = 0; i < n - 1; i++) {
+        if(prices[i] <= 0) {
+            returns[i] = 0.0;  // Evitar log(0) o log(negativo)
+        } else {
+            returns[i] = MathLog(prices[i + 1] / prices[i]);
+        }
+    }
+}
+
+// ───── FUNCIÓN PARA DETERMINAR SI UN ESTADÍSTICO USA RETORNOS ─────
+bool should_use_returns(string stat_name)
+{
+    return (stat_name == "mean" || stat_name == "median" || 
+            stat_name == "std" || stat_name == "iqr" || stat_name == "mad");
+}
+
+"""
+        
         stats_total = set(stats_main + stats_meta)
         if "mean" not in stats_total:
             code += stat_function_templates["mean"] + "\n"
@@ -672,40 +725,71 @@ def export_to_mql5(**kwargs):
         code += "typedef double (*StatFunc)(const double &[]);\n"
 
         code += "const int      PERIODS_MAIN[] = { " + ", ".join(map(str, main_periods)) + " };\n"
-        code += "const StatFunc FUNCS_MAIN  [] = { " + ", ".join(main_funcs) + " };\n\n"
+        code += "const StatFunc FUNCS_MAIN  [] = { " + ", ".join(main_funcs) + " };\n"
+        
+        # ───── AGREGAR ARRAYS PARA IDENTIFICAR ESTADÍSTICOS CON RETORNOS ─────
+        main_uses_returns = [_should_use_returns(func.replace("stat_", "")) for func in main_funcs]
+        code += "const bool     USES_RETURNS_MAIN[] = { " + ", ".join(["true" if x else "false" for x in main_uses_returns]) + " };\n\n"
 
         if meta_periods:      # sólo si hay features meta
             code += "const int      PERIODS_META[] = { " + ", ".join(map(str, meta_periods)) + " };\n"
-            code += "const StatFunc FUNCS_META  [] = { " + ", ".join(meta_funcs) + " };\n\n"
+            code += "const StatFunc FUNCS_META  [] = { " + ", ".join(meta_funcs) + " };\n"
+            meta_uses_returns = [_should_use_returns(func.replace("stat_", "")) for func in meta_funcs]
+            code += "const bool     USES_RETURNS_META[] = { " + ", ".join(["true" if x else "false" for x in meta_uses_returns]) + " };\n\n"
 
         # ──────────────────────────────────────────────────────────────────
-        # 2)  Rutinas compactas de cálculo (una pasada, sin StringSplit)
+        # 2)  Rutinas compactas de cálculo (una pasada, con soporte para retornos)
         # ──────────────────────────────────────────────────────────────────
         code += R"""
-        void fill_arays_main(double &dst[])
-        {
-        double pr[];
-        for(int k=0; k<ArraySize(PERIODS_MAIN); ++k)
-            {
-            int per = PERIODS_MAIN[k];
-            CopyClose(_Symbol, _Period, 1, per, pr);
-            ArraySetAsSeries(pr, false);
+void fill_arays_main(double &dst[])
+{
+    double pr[], returns[];
+    for(int k=0; k<ArraySize(PERIODS_MAIN); ++k)
+    {
+        int per = PERIODS_MAIN[k];
+        CopyClose(_Symbol, _Period, 1, per, pr);
+        ArraySetAsSeries(pr, false);
+        
+        // ───── USAR RETORNOS SI EL ESTADÍSTICO LO REQUIERE ─────
+        if(USES_RETURNS_MAIN[k]) {
+            compute_returns(pr, returns);
+            if(ArraySize(returns) == 0) {
+                dst[k] = 0.0;  // Valor por defecto si no se pueden calcular retornos
+            } else {
+                dst[k] = FUNCS_MAIN[k](returns);
+            }
+        } else {
             dst[k] = FUNCS_MAIN[k](pr);
-            }
         }
+    }
+}
+"""
 
-        void fill_arays_meta(double &dst[])
-        {
-        double pr[];
-        for(int k=0; k<ArraySize(PERIODS_META); ++k)
-            {
-            int per = PERIODS_META[k];
-            CopyClose(_Symbol, _Period, 1, per, pr);
-            ArraySetAsSeries(pr, false);
-            dst[k] = FUNCS_META[k](pr);
+        if meta_periods:  # Solo agregar si hay features meta
+            code += R"""
+void fill_arays_meta(double &dst[])
+{
+    double pr[], returns[];
+    for(int k=0; k<ArraySize(PERIODS_META); ++k)
+    {
+        int per = PERIODS_META[k];
+        CopyClose(_Symbol, _Period, 1, per, pr);
+        ArraySetAsSeries(pr, false);
+        
+        // ───── USAR RETORNOS SI EL ESTADÍSTICO LO REQUIERE ─────
+        if(USES_RETURNS_META[k]) {
+            compute_returns(pr, returns);
+            if(ArraySize(returns) == 0) {
+                dst[k] = 0.0;  // Valor por defecto si no se pueden calcular retornos
+            } else {
+                dst[k] = FUNCS_META[k](returns);
             }
+        } else {
+            dst[k] = FUNCS_META[k](pr);
         }
-        """
+    }
+}
+"""
 
         file_name = os.path.join(include_export_path, f"{tag}.mqh")
         with open(file_name, "w") as file:

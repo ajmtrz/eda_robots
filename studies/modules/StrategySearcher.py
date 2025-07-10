@@ -28,9 +28,9 @@ from modules.labeling_lib import (
     get_labels_trend_one_direction, get_labels_filter_flat,
     sliding_window_clustering, clustering_simple,
     markov_regime_switching_simple, markov_regime_switching_advanced,
-    lgmm_clustering, wkmeans_clustering
+    lgmm_clustering, wkmeans_clustering, get_labels_fractal_patterns
 )
-from modules.tester_lib import tester, clear_onnx_cache
+from modules.tester_lib import tester, clear_onnx_session_cache
 from modules.export_lib import export_models_to_ONNX, export_to_mql5
 
 class StrategySearcher:
@@ -52,6 +52,7 @@ class StrategySearcher:
         "filter_one": get_labels_filter_one_direction,
         "trend_one": get_labels_trend_one_direction,
         "filter_flat": get_labels_filter_flat,
+        "fractal": get_labels_fractal_patterns,
     }
     # Allowed smoothing methods for label functions that support a 'filter' kwarg
     ALLOWED_FILTERS = {
@@ -161,7 +162,7 @@ class StrategySearcher:
                             pass
                     try:
                         # Obtener el mejor trial
-                        if study.best_trial and study.best_trial.value > -1.0:
+                        if study.best_trial and study.best_trial.value > 0.0:
                             best_trial = study.best_trial
                             # Si este trial es el mejor, guardar sus modelos
                             if trial.number == best_trial.number:
@@ -258,6 +259,43 @@ class StrategySearcher:
     # Métodos de búsqueda específicos
     # =========================================================================
 
+    def search_clusters(self, trial: optuna.Trial) -> float:
+        """Implementa la búsqueda de estrategias usando clustering."""
+        try:
+            hp = self.suggest_all_params(trial)
+            
+            # 🔍 DEBUG: Supervisar parámetros específicos de clusters
+            if self.debug:
+                clust_params = {k: v for k, v in hp.items() if k.startswith('clust_')}
+                print(f"🔍 DEBUG search_clusters - Parámetros clusters: {clust_params}")
+                print(f"🔍   search_subtype: {self.search_subtype}")
+                
+            full_ds = self.get_labeled_full_data(hp)
+            if full_ds is None:
+                return -1.0
+            if self.search_subtype == 'simple':
+                full_ds = clustering_simple(
+                    full_ds,
+                    min_cluster_size=hp['clust_n_clusters']
+                )
+            elif self.search_subtype == 'advanced':
+                full_ds = sliding_window_clustering(
+                    full_ds,
+                    n_clusters=hp['clust_n_clusters'],
+                    window_size=hp['clust_window'],
+                    step=hp.get('clust_step', None),
+                )
+            score, model_paths, models_cols = self.evaluate_clusters(trial, full_ds, hp)
+            if score is None or model_paths is None or models_cols is None:
+                return -1.0
+            trial.set_user_attr('score', score)
+            trial.set_user_attr('model_paths', model_paths)
+            trial.set_user_attr('model_cols', models_cols)
+            return trial.user_attrs.get('score', -1.0)
+        except Exception as e:
+            print(f"Error en search_clusters: {str(e)}")
+            return -1.0
+
     def search_markov(self, trial: optuna.Trial) -> float:
         """Implementa la búsqueda de estrategias usando modelos markovianos."""
         try:
@@ -296,43 +334,6 @@ class StrategySearcher:
             return trial.user_attrs.get('score', -1.0)
         except Exception as e:
             print(f"Error en search_markov: {str(e)}")
-            return -1.0
-
-    def search_clusters(self, trial: optuna.Trial) -> float:
-        """Implementa la búsqueda de estrategias usando clustering."""
-        try:
-            hp = self.suggest_all_params(trial)
-            
-            # 🔍 DEBUG: Supervisar parámetros específicos de clusters
-            if self.debug:
-                clust_params = {k: v for k, v in hp.items() if k.startswith('clust_')}
-                print(f"🔍 DEBUG search_clusters - Parámetros clusters: {clust_params}")
-                print(f"🔍   search_subtype: {self.search_subtype}")
-                
-            full_ds = self.get_labeled_full_data(hp)
-            if full_ds is None:
-                return -1.0
-            if self.search_subtype == 'simple':
-                full_ds = clustering_simple(
-                    full_ds,
-                    min_cluster_size=hp['clust_n_clusters']
-                )
-            elif self.search_subtype == 'advanced':
-                full_ds = sliding_window_clustering(
-                    full_ds,
-                    n_clusters=hp['clust_n_clusters'],
-                    window_size=hp['clust_window'],
-                    step=hp.get('clust_step', None),
-                )
-            score, model_paths, models_cols = self.evaluate_clusters(trial, full_ds, hp)
-            if score is None or model_paths is None or models_cols is None:
-                return -1.0
-            trial.set_user_attr('score', score)
-            trial.set_user_attr('model_paths', model_paths)
-            trial.set_user_attr('model_cols', models_cols)
-            return trial.user_attrs.get('score', -1.0)
-        except Exception as e:
-            print(f"Error en search_clusters: {str(e)}")
             return -1.0
 
     def search_lgmm(self, trial: optuna.Trial) -> float:
@@ -751,6 +752,12 @@ class StrategySearcher:
             'label_max_val':    lambda t: t.suggest_int  ('label_max_val',    5, 15),
             'label_method':     lambda t: t.suggest_categorical('label_method', ['first', 'last', 'mean', 'max', 'min']),
             'label_filter':     lambda t: t.suggest_categorical('label_filter', ['savgol', 'spline', 'sma', 'ema']),
+            'label_min_window': lambda t: t.suggest_int('label_min_window', 6, 30, log=True),
+            'label_max_window': lambda t: t.suggest_int('label_max_window', 40, 120, log=True),
+            'label_corr_threshold': lambda t: t.suggest_float('label_corr_threshold', 0.6, 0.9),
+            'label_min_horizon': lambda t: t.suggest_int('label_min_horizon', 3, 15, log=True),
+            'label_max_horizon': lambda t: t.suggest_int('label_max_horizon', 10, 30, log=True),
+            'label_markup':     lambda t: t.suggest_float('label_markup', 0.00005, 0.0005, log=True),
         }
         p = {}
         label_func = self.LABEL_FUNCS.get(self.label_method, get_labels_one_direction)
@@ -979,7 +986,7 @@ class StrategySearcher:
             print(f"Error en función de entrenamiento y test: {str(e)}")
             return None, None, None
         finally:
-            clear_onnx_cache()
+            clear_onnx_session_cache()
         
     def apply_labeling(self, dataset: pd.DataFrame, hp: dict) -> pd.DataFrame:
         """Apply the selected labeling function dynamically.

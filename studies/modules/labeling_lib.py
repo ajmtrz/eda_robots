@@ -2490,7 +2490,7 @@ def _kmedoids_pam(
 
     return labels, medoids
 
-@njit(parallel=True, fastmath=True)
+@njit(parallel=True, fastmath=True, cache=True)
 def _euclidean_matrix_numba(window_sizes):
     n = window_sizes.shape[0]
     dist_mat = np.zeros((n, n), dtype=np.float64)
@@ -2500,13 +2500,13 @@ def _euclidean_matrix_numba(window_sizes):
             dist_mat[i, j] = dist_mat[j, i] = d
     return dist_mat
 
-@njit(fastmath=True)
+@njit(fastmath=True, cache=True)
 def _wasserstein1d_numba(x, y):
     x = np.sort(x)
     y = np.sort(y)
     return np.mean(np.abs(x - y))
 
-@njit(parallel=True, fastmath=True)
+@njit(parallel=True, fastmath=True, cache=True)
 def _wasserstein1d_matrix(window_sizes):
     n = window_sizes.shape[0]
     dist_mat = np.zeros((n, n), dtype=np.float64)
@@ -2519,7 +2519,7 @@ def _wasserstein1d_matrix(window_sizes):
             dist_mat[i, j] = dist_mat[j, i] = d
     return dist_mat
 
-@njit(parallel=True, fastmath=True)
+@njit(parallel=True, fastmath=True, cache=True)
 def _sliced_wasserstein_numba(window_sizes, n_proj=50):
     n = window_sizes.shape[0]
     d = window_sizes.shape[2] if window_sizes.ndim == 3 else 1
@@ -2553,7 +2553,7 @@ def _sliced_wasserstein_numba(window_sizes, n_proj=50):
     dist_mat /= n_proj
     return dist_mat
 
-@njit(fastmath=True)
+@njit(fastmath=True, cache=True)
 def _mmd_rbf_numba(x, y, gamma):
     n = x.shape[0]
     m = y.shape[0]
@@ -2583,7 +2583,7 @@ def _mmd_rbf_numba(x, y, gamma):
     mmd2 = (k_xx / (n * (n - 1) + 1e-12)) + (k_yy / (m * (m - 1) + 1e-12)) - 2.0 * (k_xy / (n * m))
     return np.sqrt(max(mmd2, 0.0))
 
-@njit(parallel=True, fastmath=True)
+@njit(parallel=True, fastmath=True, cache=True)
 def _mmd_matrix_numba(window_sizes, bandwidth):
     n = window_sizes.shape[0]
     dist_mat = np.zeros((n, n), dtype=np.float64)

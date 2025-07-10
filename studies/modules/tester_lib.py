@@ -1,244 +1,10 @@
 import threading
-from numba import njit, prange, float64, int64
+from numba import njit
 import numpy as np
 import pandas as pd
-from datetime import datetime
 import matplotlib.pyplot as plt
 import onnxruntime as rt
-from functools import lru_cache
-
-# Configuración thread-safe de ONNX Runtime
-_onnx_configured = False
-_onnx_lock = threading.RLock()
-
-def _configure_onnx_runtime():
-    """Configuración thread-safe de ONNX Runtime"""
-    global _onnx_configured
-    with _onnx_lock:
-        if not _onnx_configured:
-            rt.set_default_logger_severity(4)
-            _onnx_configured = True
-
-def clear_onnx_cache():
-    """Limpia la caché de sesiones ONNX (útil para gestión de memoria)"""
-    with _session_lock:
-        _session_cache.clear()
-
-def _ort_session(model_path: str):
-    """Thread-safe ONNX session cache"""
-    _configure_onnx_runtime()
-    
-    with _session_lock:
-        if model_path in _session_cache:
-            return _session_cache[model_path]
-        
-        # Crear nueva sesión
-        sess = rt.InferenceSession(model_path, providers=['CPUExecutionProvider'])
-        iname = sess.get_inputs()[0].name
-        
-        # Limitar el tamaño de la caché (máximo 10 sessions)
-        if len(_session_cache) >= 10:
-            # Eliminar la primera entrada (FIFO)
-            oldest_key = next(iter(_session_cache))
-            del _session_cache[oldest_key]
-        
-        _session_cache[model_path] = (sess, iname)
-    return sess, iname
-
-def _predict_onnx(model_path:str, X_3d:np.ndarray) -> np.ndarray:
-    n_sim, n_rows, n_feat = X_3d.shape
-    sess, iname = _ort_session(model_path)
-
-    raw = sess.run(None, {iname: X_3d.reshape(-1, n_feat).astype(np.float32)})[0]
-
-    # ─── des-ZipMap / distintos formatos de salida ─────────────────────
-    if raw.dtype == object:                     # lista de dicts
-        prob_pos = np.fromiter((row[b'1'] for row in raw), dtype=np.float32)
-
-    elif raw.ndim == 2:                         # matriz (n,2)
-        prob_pos = raw[:, 1].astype(np.float32)
-
-    elif raw.ndim == 1:                         # vector (n,)  → ya es proba+
-        prob_pos = raw.astype(np.float32)
-
-    else:
-        raise RuntimeError(f"Formato de salida ONNX no soportado: {raw.shape}")
-
-    return prob_pos.reshape(n_sim, n_rows)
-
-def _predict_one(model_any, X_2d: np.ndarray) -> np.ndarray:
-    """
-    Devuelve la probabilidad de la clase positiva para una sola matriz 2-D.
-      · Si 'model_any' es CatBoost -> usa predict_proba.
-      · Si es ruta .onnx, bytes, o ModelProto -> usa _predict_onnx.
-    Resultado shape: (n_rows,)
-    """
-    if hasattr(model_any, "predict_proba"):
-        return model_any.predict_proba(X_2d)[:, 1]
-    else:
-        # _predict_onnx espera tensor 3-D: (n_sim, n_rows, n_feat)
-        return _predict_onnx(model_any, X_2d[None, :, :])[0]
-    
-# Thread-safe session cache
-_session_cache = {}
-_session_lock = threading.RLock()
-
-# Thread-safe plotting
-_plot_lock = threading.RLock()
-
-def _safe_plot(equity_curve, score):
-    """Thread-safe plotting function"""
-    with _plot_lock:
-        plt.figure(figsize=(10, 6))
-        plt.plot(equity_curve, label='Equity Curve', linewidth=1.5)
-        plt.title(f"Score: {score:.6f}")
-        plt.xlabel("Trades")
-        plt.ylabel("Cumulative P&L")
-        plt.legend()
-        plt.grid(alpha=0.3)
-        plt.show()
-        plt.close()
-
-@njit(cache=True, fastmath=True)
-def process_data(close, labels, metalabels, meta_thr=0.5):
-    last_deal  = 2
-    last_price = 0.0
-    report, chart = [0.0], [0.0]
-    
-    # ── NUEVAS VARIABLES PARA TRACKING DE TRADES ──
-    trade_profits = []  # Lista de profits individuales
-    trade_count = 0     # Contador total de trades
-
-    for i in range(len(close)):
-        pred, pr, pred_meta = labels[i], close[i], metalabels[i]
-
-        # ── abrir posición
-        if last_deal == 2 and pred_meta > meta_thr:
-            last_price = pr
-            last_deal  = 0 if pred < 0.5 else 1
-            continue
-
-        # ── cerrar por señal opuesta
-        if last_deal == 0 and pred > 0.5:
-            last_deal = 2
-            profit = (pr - last_price)
-            report.append(report[-1] + profit)
-            chart.append(chart[-1] + profit)
-            # ── REGISTRAR TRADE ──
-            trade_profits.append(profit)
-            trade_count += 1
-            continue
-
-        if last_deal == 1 and pred < 0.5:
-            last_deal = 2
-            profit = (last_price - pr)
-            report.append(report[-1] + profit)
-            chart.append(chart[-1] + (pr - last_price))
-            # ── REGISTRAR TRADE ──
-            trade_profits.append(profit)
-            trade_count += 1
-            continue
-
-    # Cierre forzoso al final si sigue abierta
-    if last_deal == 0:
-        profit = close[-1] - last_price
-        report.append(report[-1] + profit)
-        chart.append(chart[-1] + profit)
-        # ── REGISTRAR TRADE FINAL ──
-        trade_profits.append(profit)
-        trade_count += 1
-    elif last_deal == 1:
-        profit = last_price - close[-1]
-        report.append(report[-1] + profit)
-        chart.append(chart[-1] + (close[-1] - last_price))
-        # ── REGISTRAR TRADE FINAL ──
-        trade_profits.append(profit)
-        trade_count += 1
-
-    # ── CALCULAR ESTADÍSTICAS DE TRADES ──
-    if trade_count > 0:
-        trade_profits_array = np.array(trade_profits)
-        positive_trades = np.sum(trade_profits_array > 0)
-        negative_trades = np.sum(trade_profits_array < 0)
-        zero_trades = np.sum(trade_profits_array == 0)
-        win_rate = positive_trades / trade_count
-        avg_positive = np.mean(trade_profits_array[trade_profits_array > 0]) if positive_trades > 0 else 0.0
-        avg_negative = np.mean(trade_profits_array[trade_profits_array < 0]) if negative_trades > 0 else 0.0
-    else:
-        positive_trades = negative_trades = zero_trades = 0
-        win_rate = avg_positive = avg_negative = 0.0
-
-    # ── EMPAQUETIZAR ESTADÍSTICAS ──
-    trade_stats = np.array([
-        trade_count, positive_trades, negative_trades, zero_trades,
-        win_rate, avg_positive, avg_negative
-    ], dtype=np.float64)
-
-    return np.array(report), np.array(chart), trade_stats
-
-@njit(cache=True, fastmath=True)
-def process_data_one_direction(close, main_labels, meta_labels, direction_int):
-    last_deal  = 2            # 2 = flat, 1 = position open
-    last_price = 0.0
-    report = [0.0]
-    chart  = [0.0]
-    long_side = (direction_int == 0)  # 0=buy, 1=sell
-    min_prob  = 0.5
-    
-    # ── NUEVAS VARIABLES PARA TRACKING DE TRADES ──
-    trade_profits = []  # Lista de profits individuales
-    trade_count = 0     # Contador total de trades
-
-    for i in range(close.size):
-        pred_main = main_labels[i]
-        pr        = close[i]
-        pred_meta = meta_labels[i]
-
-        # ── abrir posición ───────────────────────────────
-        if last_deal == 2 and pred_meta > min_prob and pred_main > min_prob:
-            last_deal  = 1
-            last_price = pr
-            continue
-
-        # ── cerrar posición ──────────────────────────────
-        if last_deal == 1 and pred_main < min_prob:
-            last_deal = 2
-            profit = (pr - last_price) if long_side else (last_price - pr)
-            report.append(report[-1] + profit)
-            chart.append(chart[-1]  + profit)
-            # ── REGISTRAR TRADE ──
-            trade_profits.append(profit)
-            trade_count += 1
-
-    # Cierre forzoso al final si sigue abierta
-    if last_deal == 1:
-        profit = (close[-1] - last_price) if long_side else (last_price - close[-1])
-        report.append(report[-1] + profit)
-        chart.append(chart[-1]  + profit)
-        # ── REGISTRAR TRADE FINAL ──
-        trade_profits.append(profit)
-        trade_count += 1
-
-    # ── CALCULAR ESTADÍSTICAS DE TRADES ──
-    if trade_count > 0:
-        trade_profits_array = np.array(trade_profits)
-        positive_trades = np.sum(trade_profits_array > 0)
-        negative_trades = np.sum(trade_profits_array < 0)
-        zero_trades = np.sum(trade_profits_array == 0)
-        win_rate = positive_trades / trade_count
-        avg_positive = np.mean(trade_profits_array[trade_profits_array > 0]) if positive_trades > 0 else 0.0
-        avg_negative = np.mean(trade_profits_array[trade_profits_array < 0]) if negative_trades > 0 else 0.0
-    else:
-        positive_trades = negative_trades = zero_trades = 0
-        win_rate = avg_positive = avg_negative = 0.0
-
-    # ── EMPAQUETIZAR ESTADÍSTICAS ──
-    trade_stats = np.array([
-        trade_count, positive_trades, negative_trades, zero_trades,
-        win_rate, avg_positive, avg_negative
-    ], dtype=np.float64)
-
-    return np.asarray(report, dtype=np.float64), np.asarray(chart, dtype=np.float64), trade_stats
+from typing import List, Tuple
 
 def tester(
         dataset: pd.DataFrame,
@@ -286,30 +52,240 @@ def tester(
         close = dataset['close'].to_numpy()
 
         # Calcular probabilidades usando ambos modelos (sin binarizar)
-        main = _predict_one(model_main, ds_main)
-        meta = _predict_one(model_meta, ds_meta)
+        main = predict_proba_onnx_models([model_main], ds_main)
+        meta = predict_proba_onnx_models([model_meta], ds_meta)
+
+        # Como predict_proba_onnx_models devuelve shape (n_models, n_samples), 
+        # necesitamos aplanar para obtener shape (n_samples,)
+        main = main.flatten()
+        meta = meta.flatten()
 
         # Asegurar contigüidad en memoria
         close = np.ascontiguousarray(close)
         main = np.ascontiguousarray(main)
         meta = np.ascontiguousarray(meta)
 
-        if direction == 'both':
-            rpt, _, trade_stats = process_data(close, main, meta)
+        # ── BACKTEST ──────────────────────────────────────────────────
+        dir_flag = {"buy": 0, "sell": 1, "both": 2}[direction]
+        if dir_flag == 0:
+            pb = main
+            ps = np.zeros_like(main)
+        elif dir_flag == 1:
+            pb = np.zeros_like(main)
+            ps = main
         else:
-            direction_map = {'buy': 0, 'sell': 1}
-            direction_int = direction_map.get(direction, 0)
-            rpt, _, trade_stats = process_data_one_direction(close, main, meta, direction_int)
+            pb = main
+            ps = 1.0 - main
 
-        score = evaluate_report(rpt)
-        # if print_metrics:
-        #     _safe_plot(rpt, score)
+        rpt, _, trade_stats = backtest_equivalent(
+            close,
+            prob_buy   = pb,
+            prob_sell  = ps,
+            meta_sig   = meta,
+            main_thr   = 0.5,
+            meta_thr   = 0.5,
+            direction  = dir_flag,
+            max_orders = 0,
+            delay_bars = 1
+        )
+
+        rdd_nl, pf_nl, lin_nl, trade_nl = evaluate_report(rpt)
+        if (rdd_nl < -1.0 and pf_nl < -1.0 and lin_nl < -1.0 and trade_nl < -1.0):
+            return -1.0
+        score = rdd_nl + pf_nl + lin_nl + trade_nl
+        if print_metrics:
+            print(f"🔍 DEBUG: main predictions shape: {main.shape}")
+            print(f"🔍 DEBUG: main predictions range: [{main.min():.6f}, {main.max():.6f}]")
+            print(f"🔍 DEBUG: main predictions mean: {main.mean():.6f}")
+            print(f"🔍 DEBUG: meta predictions range: [{meta.min():.6f}, {meta.max():.6f}]")
+            print(f"🔍 DEBUG: meta predictions mean: {meta.mean():.6f}")
+            print(f"🔍 DEBUG: direction: {direction}")
+            print(f"🔍 DEBUG: first 10 main values: {main[:10]}")
+            print(f"🔍 DEBUG: first 10 meta values: {meta[:10]}")
+            print(f"🔍 DEBUG: main has NaN: {np.isnan(main).any()}")
+            print(f"🔍 DEBUG: main has inf: {np.isinf(main).any()}")
+            print(f"🔍 DEBUG - Métricas de evaluación: rdd_nl: {rdd_nl}, pf_nl: {pf_nl}, lin_nl: {lin_nl}, trade_nl: {trade_nl}")
+            print(f"🔍 DEBUG - Trade stats: n_trades: {trade_stats[0]}, n_positivos: {trade_stats[1]}, n_negativos: {trade_stats[2]}")
+            plt.figure(figsize=(10, 6))
+            plt.plot(rpt, label='Equity Curve', linewidth=1.5)
+            plt.title(f"Score: {score:.6f}")
+            plt.xlabel("Trades")
+            plt.ylabel("Cumulative P&L")
+            plt.legend()
+            plt.grid(alpha=0.3)
+            plt.show()
+            plt.close()
 
         return score
     
     except Exception as e:
         print(f"🔍 DEBUG: Error en tester: {e}")
         return -1.0
+
+@njit(cache=True, fastmath=True)
+def backtest_equivalent(close,
+                        prob_buy,          # numpy[float] - P(buy) de la red MAIN
+                        prob_sell,         # numpy[float] - P(sell) idem
+                        meta_sig,          # numpy[float] - P(clase 1) de la red META
+                        main_thr   = 0.5,
+                        meta_thr   = 0.5,
+                        direction  = 2,    # 0=solo buy, 1=solo sell, 2=both
+                        max_orders = 0,    # 0 → ilimitado
+                        delay_bars = 1):
+    """
+    Réplica exacta de la lógica MQL5 para abrir/cerrar posiciones.
+    Devuelve:
+        report  – equity acumulada por trade   (len = nº_trades + 1)
+        chart   – equity tick-a-tick (para dibujar)
+        stats   – tupla (n_trades, n_positivos, n_negativos)
+    """
+    FLAT, LONG, SHORT = 2, 0, 1
+    pos_state   = FLAT
+    last_price  = 0.0
+    last_trade_bar = -delay_bars-1   # para que se pueda abrir en la barra 0
+    open_trades = 0                  # número de posiciones vivas (≤ max_orders)
+
+    report = [0.0]                   # equity por trade
+    chart  = [0.0]                   # equity tick-a-tick
+    trade_profits = []
+
+    for bar in range(close.size):
+        pb, ps, pm = prob_buy[bar], prob_sell[bar], meta_sig[bar]
+        price      = close[bar]
+
+        # 0) señales elementales
+        buy_sig  = pb > main_thr if direction != 1 else False
+        sell_sig = ps > main_thr if direction != 0 else False
+        meta_ok  = pm > meta_thr
+
+        # 1) CIERRE si la señal desaparece
+        if pos_state == LONG and not buy_sig:
+            profit = price - last_price
+            report.append(report[-1] + profit)
+            chart.append(chart[-1]  + profit)
+            trade_profits.append(profit)
+            pos_state = FLAT
+            open_trades -= 1
+            last_trade_bar = bar
+        elif pos_state == SHORT and not sell_sig:
+            profit = last_price - price
+            report.append(report[-1] + profit)
+            chart.append(chart[-1]  + profit)
+            trade_profits.append(profit)
+            pos_state = FLAT
+            open_trades -= 1
+            last_trade_bar = bar
+
+        # 2) Apertura:  meta OK, señal BUY/SELL OK, delay cumplido, cupo OK
+        if meta_ok and (bar - last_trade_bar) >= delay_bars \
+           and (max_orders == 0 or open_trades < max_orders):
+
+            if buy_sig and pos_state == FLAT:
+                pos_state  = LONG
+                last_price = price
+                open_trades += 1
+                last_trade_bar = bar
+                continue
+
+            if sell_sig and pos_state == FLAT:
+                pos_state  = SHORT
+                last_price = price
+                open_trades += 1
+                last_trade_bar = bar
+                continue
+
+        # 3) tick-equity (solo para visual)
+        chart.append(chart[-1])
+
+    # 4) Cierre forzoso al final
+    if pos_state == LONG:
+        profit = close[-1] - last_price
+        report.append(report[-1] + profit)
+        chart.append(chart[-1]  + profit)
+        trade_profits.append(profit)
+    elif pos_state == SHORT:
+        profit = last_price - close[-1]
+        report.append(report[-1] + profit)
+        chart.append(chart[-1]  + profit)
+        trade_profits.append(profit)
+
+    # Calcular estadísticas de trades
+    n_trades = len(trade_profits)
+    n_positivos = 0
+    n_negativos = 0
+    for p in trade_profits:
+        if p > 0:
+            n_positivos += 1
+        elif p < 0:
+            n_negativos += 1
+
+    stats = (n_trades, n_positivos, n_negativos)
+
+    return np.asarray(report, dtype=np.float64), \
+           np.asarray(chart,  dtype=np.float64), \
+           stats
+
+@njit(cache=True, fastmath=True)
+def evaluate_report(
+    equity_curve: np.ndarray,
+    min_trades: int = 200,
+    rdd_floor: float = 1.0,
+    pf_floor: float = 1.0
+) -> float:
+    """
+    Devuelve un score escalar para Optuna.
+    Premia:
+        1. pendiente media positiva y estable
+        2. ratio retorno / drawdown alto
+        3. número suficiente de trades
+        4. buen ajuste lineal (R²)
+    Penaliza curvas cortas, con drawdown cero o pendiente negativa.
+    """
+    n = equity_curve.size
+    if n < 2:
+        return -1.0, -1.0, -1.0, -1.0
+
+    # ---------- nº de trades (normalizado) -----------------------------------
+    returns = np.diff(equity_curve)
+    num_trades = returns.size
+    trade_nl = np.log1p(max(0, num_trades - min_trades))
+
+    # ---------- return / drawdown (normalizado) ------------------------------
+    running_max = np.empty_like(equity_curve)
+    running_max[0] = equity_curve[0]
+    for i in range(1, n):
+        running_max[i] = running_max[i - 1] if running_max[i - 1] > equity_curve[i] else equity_curve[i]
+    max_dd = np.max(running_max - equity_curve)
+    total_ret = equity_curve[-1] - equity_curve[0]
+    # Protección contra división por cero en max_dd
+    if max_dd == 0.0:
+        rdd = 0.0
+    else:
+        rdd = total_ret / max_dd
+    if rdd < rdd_floor:
+        rdd *= 0.8
+    rdd_nl = np.log1p(rdd)
+
+    # ---------- profit factor (normalizado) -----------------------------------
+    gross_profit = np.sum(returns[returns > 0])
+    gross_loss = -np.sum(returns[returns < 0])
+    # Protección contra división por cero en gross_loss
+    if gross_loss == 0.0:
+        profit_factor = 0.0
+    else:
+        profit_factor = gross_profit / gross_loss
+    if profit_factor < pf_floor:
+        profit_factor *= 0.8
+    pf_nl = np.log1p(profit_factor)
+
+    # ---------- linealidad y pendiente (normalizado) ---------------------------
+    x = np.arange(n, dtype=np.float64)
+    y = equity_curve.astype(np.float64)
+    r2, slope = manual_linear_regression(x, y)
+    lin_nl = r2 * np.log1p(slope / n)
+
+    # ---------- score final ---------------------------------------------------
+    return (rdd_nl, pf_nl, lin_nl, trade_nl)
 
 # ────────── helpers ──────────────────────────────────────────────────────────
 
@@ -396,57 +372,81 @@ def manual_linear_regression(x, y):
     else:
         r2 = 1.0 - (ss_res / ss_tot)
     
-    # Aplicar signo basado en la pendiente
-    sign = 1.0 if slope >= 0 else -1.0
-    r2_signed = r2 * sign
-    
-    return r2_signed, slope
+    return r2, slope
 
-@njit(cache=True, fastmath=True)
-def evaluate_report(
-    equity_curve: np.ndarray,
-    min_trades: int = 200,
-    rdd_threshold: float = 3.0,
-) -> float:
+# ───── sesión cache – thread-safe ────────────────────────────────────────────
+_session_cache: dict[str, Tuple[rt.InferenceSession, str]] = {}
+_session_lock = threading.RLock()
+
+def _get_ort_session(model_path: str) -> Tuple[rt.InferenceSession, str]:
     """
-    Devuelve un score de [0, +∞) para curvas de equity.
-    - equity_curve: serie acumulada.
+    Devuelve (sess, input_name) reutilizando sesiones ya abiertas.
     """
+    with _session_lock:
+        if model_path in _session_cache:
+            return _session_cache[model_path]
 
-    n = equity_curve.size
-    if n < 2:
-        return -1.0
+        sess = rt.InferenceSession(model_path, providers=["CPUExecutionProvider"])
+        input_name = sess.get_inputs()[0].name
+        _session_cache[model_path] = (sess, input_name)
+        return sess, input_name
 
-    returns = np.diff(equity_curve)
-    num_trades = returns.size
-    if num_trades < 50:
-        return -1.0
+def clear_onnx_session_cache():
+    """
+    Limpia el caché de sesiones ONNX de manera thread-safe.
+    Debe ser llamada al finalizar fit_final_models para liberar memoria.
+    """
+    with _session_lock:
+        # Cerrar explícitamente todas las sesiones si es posible
+        for session, _ in _session_cache.values():
+            try:
+                # Las sesiones de ONNX Runtime se liberan automáticamente
+                # pero podemos forzar la liberación de referencias
+                del session
+            except Exception:
+                pass  # Ignorar errores al cerrar sesiones
+        
+        # Limpiar el diccionario del caché
+        _session_cache.clear()
 
-    # ── Métricas base ─────────────────────────────────────────────
-    running_max = np.empty_like(equity_curve)
-    running_max[0] = equity_curve[0]
-    for i in range(1, equity_curve.size):
-        running_max[i] = max(running_max[i - 1], equity_curve[i])
-    max_dd = np.max(running_max - equity_curve)
-    total_ret = equity_curve[-1] - equity_curve[0]
-    if total_ret <= 0:
-        return -1.0
-    rdd = total_ret / (max_dd + 1e-9)
-    if rdd < rdd_threshold:
-        rdd *= 0.9
-    # log1p para suavizar
-    rdd_nl = np.log1p(max(0.0, rdd))
+# ───── función principal ────────────────────────────────────────────────────
+def predict_proba_onnx_models(
+    onnx_paths: List[str],
+    X: np.ndarray,
+) -> np.ndarray:
+    """
+    Devuelve las probabilidades de clase positiva para varios modelos ONNX.
 
-    # ── Ajuste por nº de trades ───────────────────────────────────
-    trade_nl = 1 + np.log1p(max(0, num_trades - min_trades))
-    
-    # ── Linealidad ───────────────────────────────────────────────
-    x = np.arange(n, dtype=np.float64)
-    y = equity_curve.astype(np.float64)
-    r2, slope = manual_linear_regression(x, y)
-    # lin_score: tanh para acotar, y log1p para suavizar pendiente
-    lin_nl = np.tanh(r2) * np.log1p(max(0.0, slope))
-    
-    final = rdd_nl * lin_nl * trade_nl
+    Parameters
+    ----------
+    onnx_paths : list[str]
+        Rutas a los ficheros .onnx generados por `export_models_to_ONNX`.
+    X : np.ndarray  shape (n_samples, n_features)
+        Matriz de características.
 
-    return final
+    Returns
+    -------
+    np.ndarray
+        Si agg='none' → shape (n_models, n_samples)
+        en otro caso  → shape (n_samples,)
+    """
+    X = X.astype(np.float32, copy=False)
+    n_models = len(onnx_paths)
+    n_samples = X.shape[0]
+    probs = np.empty((n_models, n_samples), dtype=np.float32)
+
+    for k, path in enumerate(onnx_paths):
+        sess, inp = _get_ort_session(path)
+        raw = sess.run(None, {inp: X})[0]
+
+        # --- detectar formato de salida ---
+        if raw.dtype == object:          # listado de dicts {'0':p0,'1':p1}
+            probs[k] = np.fromiter((r[b"1"] for r in raw), dtype=np.float32)
+        elif raw.ndim == 2:              # matriz (n_samples, 2)
+            probs[k] = raw[:, 1]
+        elif raw.ndim == 1:              # vector ya binario
+            probs[k] = raw
+        else:
+            raise RuntimeError(f"Salida ONNX inesperada: shape={raw.shape}")
+
+    return probs

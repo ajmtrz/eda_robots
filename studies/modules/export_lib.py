@@ -61,7 +61,8 @@ def export_models_to_ONNX(models):
         onnx_model = convert_sklearn(
             model,
             initial_types=[('input', FloatTensorType([None, len(model.feature_names_)]))],
-            target_opset={"": 18, "ai.onnx.ml": 2}
+            target_opset={"": 18, "ai.onnx.ml": 2},
+            options={"nocl": False, "zipmap": False}
         )
         tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".onnx")
         tmp.write(onnx_model.SerializeToString())
@@ -677,9 +678,8 @@ def export_to_mql5(**kwargs):
         code += f'#define DIRECTION            "{str(direction)}"\n'
         code += f'#define MAGIC_NUMBER         {str(model_seed)}\n'
         
-        # ───── AGREGAR FUNCIÓN DE RETORNOS SI ES NECESARIA ─────
-        if uses_returns:
-            code += """
+        # ───── AGREGAR FUNCIÓN DE RETORNOS ─────
+        code += """
 // ───── FUNCIÓN PARA CALCULAR RETORNOS LOGARÍTMICOS ─────
 void compute_returns(const double &prices[], double &returns[])
 {

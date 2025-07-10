@@ -2707,3 +2707,224 @@ def compute_returns(prices):
 def should_use_returns(stat_name):
     """Determina si un estadístico debe usar retornos en lugar de precios."""
     return stat_name in ("mean", "median", "std", "iqr", "mad")
+
+@njit(cache=True, fastmath=True)
+def calculate_symmetric_correlation_dynamic(data, min_window_size, max_window_size):
+    """
+    Calcula correlación simétrica dinámica para detectar patrones fractales.
+    
+    Args:
+        data: Array de precios de cierre
+        min_window_size: Tamaño mínimo de ventana para patrones
+        max_window_size: Tamaño máximo de ventana para patrones
+    
+    Returns:
+        correlations: Array de correlaciones máximas para cada punto
+        best_window_sizes: Array de tamaños de ventana correspondientes
+    """
+    n = len(data)
+    min_w = max(2, min_window_size)
+    max_w = max(min_w, max_window_size)
+    num_correlations = max(0, n - min_w + 1)
+
+    if num_correlations == 0:
+        return np.zeros(0, dtype=np.float64), np.zeros(0, dtype=np.int64)
+
+    correlations = np.zeros(num_correlations, dtype=np.float64)
+    best_window_sizes = np.full(num_correlations, -1, dtype=np.int64)
+
+    for i in range(num_correlations):
+        max_abs_corr_for_i = -1.0
+        best_corr_for_i = 0.0
+        current_best_w = -1
+        current_max_w = min(max_w, n - i)
+        start_w = min_w
+        if start_w % 2 != 0:
+            start_w += 1
+
+        for w in range(start_w, current_max_w + 1, 2):
+            if w < 2 or i + w > n:
+                continue
+            half_window = w // 2
+            window = data[i : i + w]
+            first_half = window[:half_window]
+            second_half = (window[half_window:] * -1)[::-1]
+            
+            std1 = np.std(first_half)
+            std2 = np.std(second_half)
+
+            if std1 > 1e-9 and std2 > 1e-9:
+                mean1 = np.mean(first_half)
+                mean2 = np.mean(second_half)
+                cov = np.mean((first_half - mean1) * (second_half - mean2))
+                corr = cov / (std1 * std2)
+                if abs(corr) > max_abs_corr_for_i:
+                    max_abs_corr_for_i = abs(corr)
+                    best_corr_for_i = corr
+                    current_best_w = w
+        
+        correlations[i] = best_corr_for_i
+        best_window_sizes[i] = current_best_w
+    
+    return correlations, best_window_sizes
+
+
+@njit(cache=True, fastmath=True)
+def generate_future_outcome_labels_for_patterns(
+    close_data_len,
+    correlations_at_window_start,
+    window_sizes_at_window_start,
+    source_close_data,
+    correlation_threshold,
+    min_future_horizon,
+    max_future_horizon,
+    markup_points
+):
+    """
+    Genera etiquetas basadas en resultados futuros para patrones fractales.
+    
+    Args:
+        close_data_len: Longitud total de los datos
+        correlations_at_window_start: Array de correlaciones
+        window_sizes_at_window_start: Array de tamaños de ventana
+        source_close_data: Array completo de precios de cierre
+        correlation_threshold: Umbral de correlación para considerar patrón válido
+        min_future_horizon: Horizonte mínimo de predicción
+        max_future_horizon: Horizonte máximo de predicción
+        markup_points: Puntos de markup para determinar cambio significativo
+    
+    Returns:
+        labels: Array de etiquetas (0.0=compra, 1.0=venta, 2.0=neutral)
+    """
+    labels = np.full(close_data_len, 2.0, dtype=np.float64)  # 2.0: no signal/neutral
+    num_potential_windows = len(correlations_at_window_start)
+
+    for idx_window_start in range(num_potential_windows):
+        corr_value = correlations_at_window_start[idx_window_start]
+        w = window_sizes_at_window_start[idx_window_start]
+
+        # Condición 1: La correlación debe ser suficientemente fuerte
+        if abs(corr_value) < correlation_threshold:
+            continue
+
+        # Condición 2: Debe encontrarse una ventana válida
+        if w < 2:
+            continue
+
+        # Momento en el tiempo (índice) cuando el patrón de correlación está completamente formado
+        signal_time_idx = idx_window_start + w - 1
+
+        if signal_time_idx >= close_data_len:  # Teóricamente no debería ocurrir
+            continue
+            
+        # Array para almacenar etiquetas de todo el patrón (tanto parte izquierda como derecha)
+        pattern_labels = []
+        
+        # Calculamos etiquetas individuales para todos los puntos del patrón
+        for point_idx in range(idx_window_start, signal_time_idx + 1):
+            # Precio actual para este punto específico
+            current_price = source_close_data[point_idx]
+            
+            # Determinamos el horizonte para la predicción
+            current_horizon = min_future_horizon
+            if max_future_horizon > min_future_horizon:
+                current_horizon = np.random.randint(min_future_horizon, max_future_horizon + 1)
+            
+            # Índice del precio futuro relativo al punto actual
+            future_price_idx = point_idx + current_horizon
+            
+            if future_price_idx >= close_data_len:
+                continue
+                
+            future_price = source_close_data[future_price_idx]
+            
+            # Determinamos la etiqueta para el punto actual
+            current_label = 2.0  # Neutral por defecto
+            if future_price > current_price + markup_points:
+                current_label = 0.0  # Precio subió
+            elif future_price < current_price - markup_points:
+                current_label = 1.0  # Precio bajó
+                
+            # Agregamos la etiqueta al array si no es neutral
+            if current_label != 2.0:
+                pattern_labels.append(current_label)
+        
+        # Si no hay etiquetas significativas en el patrón, pasamos al siguiente
+        if len(pattern_labels) == 0:
+            continue
+            
+        # Calculamos la etiqueta promedio de todos los puntos del patrón
+        avg_label = 0.0
+        for l in pattern_labels:
+            avg_label += l
+        avg_label /= len(pattern_labels)
+        
+        # Determinamos la etiqueta general para todo el patrón
+        pattern_label = 0.0 if avg_label < 0.5 else 1.0
+        
+        # Asignamos esta etiqueta a todos los puntos del patrón
+        for i in range(idx_window_start, signal_time_idx + 1):
+            labels[i] = pattern_label
+    
+    return labels
+
+
+def get_labels_fractal_patterns(
+    dataset,
+    min_window_size=6,
+    max_window_size=60,
+    correlation_threshold=0.7,
+    min_future_horizon=5,
+    max_future_horizon=5,
+    markup_points=0.00010
+) -> pd.DataFrame:
+    """
+    Genera etiquetas basadas en patrones fractales simétricos.
+    
+    Args:
+        dataset: DataFrame con columna 'close'
+        min_window_size: Tamaño mínimo de ventana para patrones
+        max_window_size: Tamaño máximo de ventana para patrones
+        correlation_threshold: Umbral de correlación para patrones válidos
+        min_future_horizon: Horizonte mínimo de predicción en barras
+        max_future_horizon: Horizonte máximo de predicción en barras
+        markup_points: Puntos de markup para cambios significativos
+    
+    Returns:
+        DataFrame con columna 'labels' agregada
+    """
+    if 'close' not in dataset.columns:
+        raise ValueError("Dataset must contain a 'close' column.")
+
+    close_data = dataset['close'].values
+    n_data = len(close_data)
+
+    if min_window_size < 2:
+        min_window_size = 2
+    if max_window_size < min_window_size:
+        max_window_size = min_window_size
+    if min_future_horizon <= 0:
+        raise ValueError("min_future_horizon must be > 0")
+    if max_future_horizon < min_future_horizon:
+        raise ValueError("max_future_horizon must be >= min_future_horizon")
+    
+    correlations_at_start, best_window_sizes_at_start = calculate_symmetric_correlation_dynamic(
+        close_data,
+        min_window_size,
+        max_window_size,
+    )
+
+    labels = generate_future_outcome_labels_for_patterns(
+        n_data,
+        correlations_at_start,
+        best_window_sizes_at_start,
+        close_data,
+        correlation_threshold,
+        min_future_horizon,
+        max_future_horizon,
+        markup_points
+    )
+
+    result_df = dataset.copy()
+    result_df['labels'] = pd.Series(labels, index=dataset.index)
+    return result_df

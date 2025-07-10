@@ -28,7 +28,7 @@ from modules.labeling_lib import (
     get_labels_trend_one_direction, get_labels_filter_flat,
     sliding_window_clustering, clustering_simple,
     markov_regime_switching_simple, markov_regime_switching_advanced,
-    lgmm_clustering, wkmeans_clustering
+    lgmm_clustering, wkmeans_clustering, get_labels_fractal_patterns
 )
 from modules.tester_lib import tester, clear_onnx_cache
 from modules.export_lib import export_models_to_ONNX, export_to_mql5
@@ -52,6 +52,7 @@ class StrategySearcher:
         "filter_one": get_labels_filter_one_direction,
         "trend_one": get_labels_trend_one_direction,
         "filter_flat": get_labels_filter_flat,
+        "fractal": get_labels_fractal_patterns,
     }
     # Allowed smoothing methods for label functions that support a 'filter' kwarg
     ALLOWED_FILTERS = {
@@ -121,6 +122,7 @@ class StrategySearcher:
             'mapie': self.search_mapie,
             'causal': self.search_causal,
             'wkmeans' : self.search_wkmeans,
+            'fractal': self.search_fractal,
         }
         
         if self.search_type not in search_funcs:
@@ -558,6 +560,77 @@ class StrategySearcher:
             print(f"Error en search_wkmeans: {str(e)}")
             return -1.0
 
+    def search_fractal(self, trial: optuna.Trial) -> float:
+        """
+        Implementa la búsqueda de estrategias utilizando detección de patrones fractales.
+        Basado en el artículo "Detección y clasificación de patrones fractales" de MQL5.
+        Utiliza correlación simétrica dinámica para detectar patrones auto-similares en el mercado.
+        """
+        try:
+            hp = self.suggest_all_params(trial)
+            
+            # 🔍 DEBUG: Supervisar parámetros específicos de fractal
+            if self.debug:
+                fractal_params = {k: v for k, v in hp.items() if k.startswith('fractal_')}
+                print(f"🔍 DEBUG search_fractal - Parámetros fractal: {fractal_params}")
+                print(f"🔍   search_subtype: {self.search_subtype}")
+                
+            full_ds = self.get_labeled_full_data(hp)
+            if full_ds is None:
+                return -1.0
+            
+            # Aplicar etiquetado basado en patrones fractales
+            # El search_subtype determina el tipo de configuración fractal
+            if self.search_subtype == 'simple':
+                # Configuración simple: ventanas pequeñas, umbral moderado
+                full_ds = get_labels_fractal_patterns(
+                    full_ds,
+                    min_window_size=hp.get('fractal_min_window', 10),
+                    max_window_size=hp.get('fractal_max_window', 50),
+                    correlation_threshold=hp.get('fractal_corr_threshold', 0.7),
+                    min_future_horizon=hp.get('fractal_min_horizon', 5),
+                    max_future_horizon=hp.get('fractal_max_horizon', 15),
+                    markup_points=hp.get('fractal_markup', 0.0001)
+                )
+            elif self.search_subtype == 'advanced':
+                # Configuración avanzada: ventanas más grandes, umbral más estricto
+                full_ds = get_labels_fractal_patterns(
+                    full_ds,
+                    min_window_size=hp.get('fractal_min_window', 20),
+                    max_window_size=hp.get('fractal_max_window', 100),
+                    correlation_threshold=hp.get('fractal_corr_threshold', 0.8),
+                    min_future_horizon=hp.get('fractal_min_horizon', 10),
+                    max_future_horizon=hp.get('fractal_max_horizon', 25),
+                    markup_points=hp.get('fractal_markup', 0.0002)
+                )
+            else:
+                # Configuración por defecto
+                full_ds = get_labels_fractal_patterns(
+                    full_ds,
+                    min_window_size=hp.get('fractal_min_window', 15),
+                    max_window_size=hp.get('fractal_max_window', 75),
+                    correlation_threshold=hp.get('fractal_corr_threshold', 0.75),
+                    min_future_horizon=hp.get('fractal_min_horizon', 8),
+                    max_future_horizon=hp.get('fractal_max_horizon', 20),
+                    markup_points=hp.get('fractal_markup', 0.00015)
+                )
+            
+            # Crear etiquetas meta basadas en la presencia de patrones fractales
+            # Los patrones fractales válidos (labels != 2.0) se marcan como 1, el resto como 0
+            full_ds['labels_meta'] = (full_ds['labels'] != 2.0).astype('int8')
+            
+            # Evaluar usando el mismo sistema que los otros métodos
+            score, model_paths, model_cols = self.evaluate_clusters(trial, full_ds, hp)
+            if score is None or model_paths is None or model_cols is None:
+                return -1.0
+            trial.set_user_attr("score", score)
+            trial.set_user_attr("model_paths", model_paths)
+            trial.set_user_attr("model_cols", model_cols)
+            return trial.user_attrs.get("score", -1.0)
+        except Exception as e:
+            print(f"Error en search_fractal: {str(e)}")
+            return -1.0
+
     # =========================================================================
     # Métodos auxiliares
     # =========================================================================
@@ -709,7 +782,7 @@ class StrategySearcher:
         )
 
         # ─── FEATURE META (solo ciertos search_type) ──────────────────────────
-        if self.search_type in {"markov", "clusters", "lgmm", "wkmeans"}:
+        if self.search_type in {"markov", "clusters", "lgmm", "wkmeans", "fractal"}:
             # períodos meta
             n_meta_periods = trial.suggest_int("feature_meta_n_periods", 1, 3)
             meta_periods = [
@@ -790,6 +863,13 @@ class StrategySearcher:
             p['mapie_cv']               = trial.suggest_int  ('mapie_cv',               3, 10)
         elif self.search_type == 'causal':
             p['causal_meta_learners']   = trial.suggest_int  ('causal_meta_learners',  10, 30)
+        elif self.search_type == 'fractal':
+            p['fractal_min_window']     = trial.suggest_int  ('fractal_min_window',     6,  30, log=True)
+            p['fractal_max_window']     = trial.suggest_int  ('fractal_max_window',     40, 120, log=True)
+            p['fractal_corr_threshold'] = trial.suggest_float('fractal_corr_threshold', 0.6, 0.9)
+            p['fractal_min_horizon']    = trial.suggest_int  ('fractal_min_horizon',    3,  15, log=True)
+            p['fractal_max_horizon']    = trial.suggest_int  ('fractal_max_horizon',    10, 30, log=True)
+            p['fractal_markup']         = trial.suggest_float('fractal_markup',         0.00005, 0.0005, log=True)
         return p
 
     # ========= main entry =========================================================

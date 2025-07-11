@@ -88,17 +88,17 @@ def tester(
         )
 
         periods_per_year = get_periods_per_year(timeframe)
-        trade_nl, rdd_nl, r2, slope_nl, calmar_nl = evaluate_report(rpt, periods_per_year=periods_per_year)
+        trade_nl, rdd_nl, r2, slope_nl, calmar_nl, wf_nl = evaluate_report(rpt, periods_per_year=periods_per_year)
         if (trade_nl <= -1.0 and rdd_nl <= -1.0 and r2 <= -1.0 and slope_nl <= -1.0 and calmar_nl <= -1.0):
             return -1.0
-        # Asignar pesos para promover sobre todo el ajuste de los datos a la recta (r2)
-        # Ejemplo de pesos: r2 0.5, pendiente 0.15, rdd 0.1, calmar 0.15, trade_nl 0.1
+        # Pesos optimizados para promover consistencia temporal (in-sample similar a out-of-sample)
         score = (
-            0.5 * r2 +
-            0.15 * slope_nl +
-            0.1 * rdd_nl +
-            0.15 * calmar_nl +
-            0.1 * trade_nl
+            0.25 * r2 +           # Aumentado: La linealidad es clave para consistencia
+            0.22 * slope_nl +     # Aumentado: Pendiente positiva constante
+            0.20 * rdd_nl +       # Aumentado: Eficiencia del crecimiento
+            0.08 * calmar_nl +    # Reducido: Ya es excelente (0.99)
+            0.10 * trade_nl +     # Reducido: Ya es bueno (0.82)
+            0.15 * wf_nl          # Reducido ligeramente: Consistencia walk-forward
         )
         if score < 0.0:
             return -1.0
@@ -128,7 +128,7 @@ def evaluate_report(
     min_trades: int = 200,
     rdd_floor: float = 1.0,
     calmar_floor: float = 1.0
-) -> tuple[float, float, float, float, float]:
+) -> tuple:
     """
     Devuelve un score escalar para Optuna.
     Premia:
@@ -137,19 +137,19 @@ def evaluate_report(
         3. número suficiente de trades
         4. buen ajuste lineal (R²)
         5. Calmar Ratio anualizado alto
+        6. Consistencia temporal (walk-forward)
     Penaliza curvas cortas, con drawdown cero o pendiente negativa.
     """
     n = equity_curve.size
     if n < 2:
-        return -1.0, -1.0, -1.0, -1.0, -1.0
+        # Siempre devolver 6 valores para evitar error de tipado en Numba
+        return -1.0, -1.0, -1.0, -1.0, -1.0, -1.0
 
     # ---------- nº de trades (normalizado) -----------------------------------
     returns = np.diff(equity_curve)
     n_trades = returns.size
     if n_trades < min_trades:
-        return -1.0, -1.0, -1.0, -1.0, -1.0
-    # Normalización avanzada: escalar n_trades entre 0 y 1 usando una función logística suave
-    # El centro de la transición es min_trades, la pendiente la controla el divisor (ajustable)
+        return -1.0, -1.0, -1.0, -1.0, -1.0, -1.0
     trade_nl = 1.0 / (1.0 + np.exp(-(n_trades - min_trades) / (min_trades * 5.0)))
 
     # ---------- return / drawdown (normalizado) ------------------------------
@@ -159,31 +159,22 @@ def evaluate_report(
         running_max[i] = running_max[i - 1] if running_max[i - 1] > equity_curve[i] else equity_curve[i]
     max_dd = np.max(running_max - equity_curve)
     total_ret = equity_curve[-1] - equity_curve[0]
-    # Protección contra división por cero en max_dd
     if max_dd == 0.0:
         rdd = 0.0
     else:
         rdd = total_ret / max_dd
     if rdd < rdd_floor:
-        return -1.0, -1.0, -1.0, -1.0, -1.0
-
-    # Normalización avanzada de rdd entre 0 y 1 usando función logística suave
-    # El centro de la transición es rdd_floor, la pendiente la controla el divisor (ajustable)
-    # Esto penaliza valores bajos y suaviza la transición
+        return -1.0, -1.0, -1.0, -1.0, -1.0, -1.0
     rdd_nl = 1.0 / (1.0 + np.exp(-(rdd - rdd_floor) / (rdd_floor * 5.0)))
 
     # ---------- Calmar Ratio anualizado (normalizado) -------------------------
-    # Calmar Ratio = Retorno Anualizado / Drawdown Máximo
     if max_dd == 0.0:
         calmar_ratio = 0.0
     else:
-        # Anualizar el retorno: (retorno por trade) * (trades por año)
         annualized_return = (total_ret / n_trades) * periods_per_year
         calmar_ratio = annualized_return / max_dd
     if calmar_ratio < calmar_floor:
-        return -1.0, -1.0, -1.0, -1.0, -1.0
-    # Normalización avanzada del Calmar Ratio usando función logística suave
-    # El centro de la transición es calmar_floor, la pendiente la controla el divisor
+        return -1.0, -1.0, -1.0, -1.0, -1.0, -1.0
     calmar_nl = 1.0 / (1.0 + np.exp(-(calmar_ratio - calmar_floor) / (calmar_floor * 65.0)))
 
     # ---------- linealidad y pendiente (normalizado) ---------------------------
@@ -191,10 +182,13 @@ def evaluate_report(
     y = equity_curve.astype(np.float64)
     r2, slope = manual_linear_regression(x, y)
     if slope < 0.0:
-        return -1.0, -1.0, -1.0, -1.0, -1.0
+        return -1.0, -1.0, -1.0, -1.0, -1.0, -1.0
     slope_nl = min(1.0, 1.0 / (1.0 + np.exp(-(np.log1p(slope / n) - 0.001) / 0.003)))
 
-    return trade_nl, rdd_nl, r2, slope_nl, calmar_nl
+    # Walk-Forward Analysis - consistencia temporal
+    wf_nl = _walk_forward_validation(equity_curve)
+
+    return trade_nl, rdd_nl, r2, slope_nl, calmar_nl, wf_nl
 
 @njit(cache=True, fastmath=True)
 def backtest_equivalent(close,
@@ -301,10 +295,45 @@ def backtest_equivalent(close,
 
 # ────────── helpers ──────────────────────────────────────────────────────────
 
+@njit(cache=True, fastmath=True)
+def _walk_forward_validation(eq):
+    """
+    Implementa Walk-Forward Analysis simplificado.
+    Evalúa la consistencia de performance en ventanas temporales NO solapadas.
+    """
+    n_periods = eq.size
+    window_size = n_periods // 252
+    if n_periods < window_size * 2 or window_size < 2:
+        return 0.0
+
+    n_windows = n_periods // window_size
+    if n_windows < 2:
+        return 0.0
+
+    window_returns = np.zeros(n_windows, dtype=np.float64)
+
+    for i in range(n_windows):
+        start_idx = i * window_size
+        end_idx = start_idx + window_size
+
+        if end_idx > n_periods:
+            break
+
+        window = eq[start_idx:end_idx]
+        if window.size > 1:
+            window_return = (window[-1] - window[0]) / max(abs(window[0]), 1e-8)
+            window_returns[i] = window_return
+
+    # Calcular consistencia: % de ventanas positivas
+    positive_windows = np.sum(window_returns > 0)
+    consistency = positive_windows / n_windows if n_windows > 0 else 0.0
+
+    return consistency
+
 def get_periods_per_year(timeframe: str) -> float:
     """
     Calcula períodos por año basado en el timeframe.
-    Adaptado para criptoactivos: 24/7 los 365 días del año.
+    Ajustado a 252 semanas, 22 horas por día, 5 días a la semana (horario de cotización del oro).
     
     Args:
         timeframe: 'M5', 'M15', 'M30', 'H1', 'H4', 'D1'
@@ -312,24 +341,28 @@ def get_periods_per_year(timeframe: str) -> float:
     Returns:
         float: Número de períodos por año para ese timeframe
     """
-    # 24 horas * 60 minutos = 1440 minutos por día
-    # 365 días por año
-    minutos_por_año = 1440 * 365  # 525,600
+    # Horario de cotización del oro: 22 horas al día, 5 días a la semana, 252 semanas al año
+    horas_por_dia = 22
+    dias_por_semana = 5
+    semanas_por_ano = 252
+
+    horas_por_ano = horas_por_dia * dias_por_semana * semanas_por_ano  # 22*5*252 = 27,720
+    minutos_por_ano = horas_por_ano * 60  # 1,663,200
 
     if timeframe == 'M5':
-        return minutos_por_año / 5      # 105,120
+        return minutos_por_ano / 5
     elif timeframe == 'M15':
-        return minutos_por_año / 15     # 35,040
+        return minutos_por_ano / 15
     elif timeframe == 'M30':
-        return minutos_por_año / 30     # 17,520
+        return minutos_por_ano / 30
     elif timeframe == 'H1':
-        return 24 * 365                 # 8,760
+        return horas_por_ano
     elif timeframe == 'H4':
-        return (24 / 4) * 365           # 2,190
+        return horas_por_ano / 4
     elif timeframe == 'D1':
-        return 365.0                    # 365
+        return dias_por_semana * semanas_por_ano
     else:
-        return 24 * 365                 # Default a H1 si timeframe no reconocido (8,760)
+        return horas_por_ano
     
 @njit(cache=True, fastmath=True)
 def manual_linear_regression(x, y):

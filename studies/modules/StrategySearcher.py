@@ -203,8 +203,9 @@ class StrategySearcher:
                                         if p and os.path.exists(p):
                                             os.remove(p)
                                     # Parar el algoritmo
-                                    if self.debug:
-                                        study.stop()
+                                    # if self.debug:
+                                    #     if trial.number > 5:
+                                    #         study.stop()
 
                             # Liberar memoria eliminando datos pesados del trial
                             if 'model_paths' in trial.user_attrs and trial.user_attrs['model_paths']:

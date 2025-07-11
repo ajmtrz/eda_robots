@@ -2778,7 +2778,8 @@ def generate_future_outcome_labels_for_patterns(
     correlation_threshold,
     min_future_horizon,
     max_future_horizon,
-    markup_points
+    markup_points,
+    direction_int=-1
 ):
     """
     Genera etiquetas basadas en resultados futuros para patrones fractales.
@@ -2792,11 +2793,15 @@ def generate_future_outcome_labels_for_patterns(
         min_future_horizon: Horizonte mínimo de predicción
         max_future_horizon: Horizonte máximo de predicción
         markup_points: Puntos de markup para determinar cambio significativo
+        direction_int: Dirección (-1=both, 0=buy, 1=sell)
     
     Returns:
-        labels: Array de etiquetas (0.0=compra, 1.0=venta, 2.0=neutral)
+        labels: Array de etiquetas (both: 0.0=compra, 1.0=venta, 2.0=neutral | single: 1.0=señal, 0.0=no señal)
     """
-    labels = np.full(close_data_len, 2.0, dtype=np.float64)  # 2.0: no signal/neutral
+    if direction_int == -1:  # both directions
+        labels = np.full(close_data_len, 2.0, dtype=np.float64)  # 2.0: no signal/neutral
+    else:  # single direction
+        labels = np.full(close_data_len, 0.0, dtype=np.float64)  # 0.0: no signal
     num_potential_windows = len(correlations_at_window_start)
 
     for idx_window_start in range(num_potential_windows):
@@ -2840,13 +2845,25 @@ def generate_future_outcome_labels_for_patterns(
             
             # Determinamos la etiqueta para el punto actual
             current_label = 2.0  # Neutral por defecto
-            if future_price > current_price + markup_points:
-                current_label = 0.0  # Precio subió
-            elif future_price < current_price - markup_points:
-                current_label = 1.0  # Precio bajó
-                
-            # Agregamos la etiqueta al array si no es neutral
-            if current_label != 2.0:
+            if direction_int == -1:  # both directions (comportamiento original)
+                if future_price > current_price + markup_points:
+                    current_label = 0.0  # Precio subió
+                elif future_price < current_price - markup_points:
+                    current_label = 1.0  # Precio bajó
+                # Agregamos la etiqueta al array si no es neutral
+                if current_label != 2.0:
+                    pattern_labels.append(current_label)
+            elif direction_int == 0:  # buy only
+                if future_price > current_price + markup_points:
+                    current_label = 1.0  # Señal válida
+                else:
+                    current_label = 0.0  # No señal
+                pattern_labels.append(current_label)
+            elif direction_int == 1:  # sell only
+                if future_price < current_price - markup_points:
+                    current_label = 1.0  # Señal válida
+                else:
+                    current_label = 0.0  # No señal
                 pattern_labels.append(current_label)
         
         # Si no hay etiquetas significativas en el patrón, pasamos al siguiente
@@ -2860,7 +2877,10 @@ def generate_future_outcome_labels_for_patterns(
         avg_label /= len(pattern_labels)
         
         # Determinamos la etiqueta general para todo el patrón
-        pattern_label = 0.0 if avg_label < 0.5 else 1.0
+        if direction_int == -1:  # both directions
+            pattern_label = 0.0 if avg_label < 0.5 else 1.0
+        else:  # single direction
+            pattern_label = 1.0 if avg_label >= 0.5 else 0.0
         
         # Asignamos esta etiqueta a todos los puntos del patrón
         for i in range(idx_window_start, signal_time_idx + 1):
@@ -2876,7 +2896,8 @@ def get_labels_fractal_patterns(
     correlation_threshold=0.7,
     min_future_horizon=5,
     max_future_horizon=5,
-    markup_points=0.00010
+    markup_points=0.00010,
+    direction='both'
 ) -> pd.DataFrame:
     """
     Genera etiquetas basadas en patrones fractales simétricos.
@@ -2889,9 +2910,10 @@ def get_labels_fractal_patterns(
         min_future_horizon: Horizonte mínimo de predicción en barras
         max_future_horizon: Horizonte máximo de predicción en barras
         markup_points: Puntos de markup para cambios significativos
+        direction: Dirección de las señales ('buy', 'sell', 'both')
     
     Returns:
-        DataFrame con columna 'labels' agregada
+        DataFrame con columna 'labels_main' agregada
     """
     if 'close' not in dataset.columns:
         raise ValueError("Dataset must contain a 'close' column.")
@@ -2914,17 +2936,41 @@ def get_labels_fractal_patterns(
         max_window_size,
     )
 
-    labels = generate_future_outcome_labels_for_patterns(
-        n_data,
-        correlations_at_start,
-        best_window_sizes_at_start,
-        close_data,
-        correlation_threshold,
-        min_future_horizon,
-        max_future_horizon,
-        markup_points
-    )
-
-    result_df = dataset.copy()
-    result_df['labels'] = pd.Series(labels, index=dataset.index)
-    return result_df
+    direction_map = {'buy': 0, 'sell': 1, 'both': -1}
+    direction_int = direction_map.get(direction, -1)
+    
+    if direction in {'buy', 'sell'}:
+        # Modo una dirección - etiquetas binarias
+        labels = generate_future_outcome_labels_for_patterns(
+            n_data,
+            correlations_at_start,
+            best_window_sizes_at_start,
+            close_data,
+            correlation_threshold,
+            min_future_horizon,
+            max_future_horizon,
+            markup_points,
+            direction_int
+        )
+        result_df = dataset.copy()
+        result_df['labels_main'] = pd.Series(labels, index=dataset.index)
+        return result_df
+        
+    elif direction == 'both':
+        # Modo bidireccional - etiquetas ternarias (comportamiento original)
+        labels = generate_future_outcome_labels_for_patterns(
+            n_data,
+            correlations_at_start,
+            best_window_sizes_at_start,
+            close_data,
+            correlation_threshold,
+            min_future_horizon,
+            max_future_horizon,
+            markup_points,
+            -1
+        )
+        result_df = dataset.copy()
+        result_df['labels_main'] = pd.Series(labels, index=dataset.index)
+        return result_df
+    else:
+        raise ValueError("direction must be 'buy', 'sell', or 'both'")

@@ -43,8 +43,6 @@ def tester(
         Puntuación de la estrategia según :func:`evaluate_report`.
     """
     try:
-        # Convertir timeframe a períodos por año fuera de funciones jiteadas
-        periods_per_year = get_periods_per_year(timeframe)
         
         # Preparación de datos
         ds_main = dataset[model_main_cols].to_numpy()
@@ -89,22 +87,23 @@ def tester(
             delay_bars = 1
         )
 
-        rdd_nl, pf_nl, lin_nl, trade_nl = evaluate_report(rpt)
-        if (rdd_nl < -1.0 and pf_nl < -1.0 and lin_nl < -1.0 and trade_nl < -1.0):
+        periods_per_year = get_periods_per_year(timeframe)
+        trade_nl, rdd_nl, r2, slope_nl, calmar_nl = evaluate_report(rpt, periods_per_year=periods_per_year)
+        if (trade_nl <= -1.0 and rdd_nl <= -1.0 and r2 <= -1.0 and slope_nl <= -1.0 and calmar_nl <= -1.0):
             return -1.0
-        score = rdd_nl + pf_nl + lin_nl + trade_nl
+        # Asignar pesos para promover sobre todo el ajuste de los datos a la recta (r2)
+        # Ejemplo de pesos: r2 0.5, pendiente 0.15, rdd 0.1, calmar 0.15, trade_nl 0.1
+        score = (
+            0.5 * r2 +
+            0.15 * slope_nl +
+            0.1 * rdd_nl +
+            0.15 * calmar_nl +
+            0.1 * trade_nl
+        )
+        if score < 0.0:
+            return -1.0
         if print_metrics:
-            print(f"🔍 DEBUG: main predictions shape: {main.shape}")
-            print(f"🔍 DEBUG: main predictions range: [{main.min():.6f}, {main.max():.6f}]")
-            print(f"🔍 DEBUG: main predictions mean: {main.mean():.6f}")
-            print(f"🔍 DEBUG: meta predictions range: [{meta.min():.6f}, {meta.max():.6f}]")
-            print(f"🔍 DEBUG: meta predictions mean: {meta.mean():.6f}")
-            print(f"🔍 DEBUG: direction: {direction}")
-            print(f"🔍 DEBUG: first 10 main values: {main[:10]}")
-            print(f"🔍 DEBUG: first 10 meta values: {meta[:10]}")
-            print(f"🔍 DEBUG: main has NaN: {np.isnan(main).any()}")
-            print(f"🔍 DEBUG: main has inf: {np.isinf(main).any()}")
-            print(f"🔍 DEBUG - Métricas de evaluación: rdd_nl: {rdd_nl}, pf_nl: {pf_nl}, lin_nl: {lin_nl}, trade_nl: {trade_nl}")
+            print(f"🔍 DEBUG - Métricas de evaluación: trade_nl: {trade_nl}, rdd_nl: {rdd_nl}, r2: {r2}, slope_nl: {slope_nl}, calmar_nl: {calmar_nl}")
             print(f"🔍 DEBUG - Trade stats: n_trades: {trade_stats[0]}, n_positivos: {trade_stats[1]}, n_negativos: {trade_stats[2]}")
             plt.figure(figsize=(10, 6))
             plt.plot(rpt, label='Equity Curve', linewidth=1.5)
@@ -121,6 +120,81 @@ def tester(
     except Exception as e:
         print(f"🔍 DEBUG: Error en tester: {e}")
         return -1.0
+
+@njit(cache=True, fastmath=True)
+def evaluate_report(
+    equity_curve: np.ndarray,
+    periods_per_year: float = 6240.0,
+    min_trades: int = 200,
+    rdd_floor: float = 1.0,
+    calmar_floor: float = 1.0
+) -> tuple[float, float, float, float, float]:
+    """
+    Devuelve un score escalar para Optuna.
+    Premia:
+        1. pendiente media positiva y estable
+        2. ratio retorno / drawdown alto
+        3. número suficiente de trades
+        4. buen ajuste lineal (R²)
+        5. Calmar Ratio anualizado alto
+    Penaliza curvas cortas, con drawdown cero o pendiente negativa.
+    """
+    n = equity_curve.size
+    if n < 2:
+        return -1.0, -1.0, -1.0, -1.0, -1.0
+
+    # ---------- nº de trades (normalizado) -----------------------------------
+    returns = np.diff(equity_curve)
+    n_trades = returns.size
+    if n_trades < min_trades:
+        return -1.0, -1.0, -1.0, -1.0, -1.0
+    # Normalización avanzada: escalar n_trades entre 0 y 1 usando una función logística suave
+    # El centro de la transición es min_trades, la pendiente la controla el divisor (ajustable)
+    trade_nl = 1.0 / (1.0 + np.exp(-(n_trades - min_trades) / (min_trades * 5.0)))
+
+    # ---------- return / drawdown (normalizado) ------------------------------
+    running_max = np.empty_like(equity_curve)
+    running_max[0] = equity_curve[0]
+    for i in range(1, n):
+        running_max[i] = running_max[i - 1] if running_max[i - 1] > equity_curve[i] else equity_curve[i]
+    max_dd = np.max(running_max - equity_curve)
+    total_ret = equity_curve[-1] - equity_curve[0]
+    # Protección contra división por cero en max_dd
+    if max_dd == 0.0:
+        rdd = 0.0
+    else:
+        rdd = total_ret / max_dd
+    if rdd < rdd_floor:
+        return -1.0, -1.0, -1.0, -1.0, -1.0
+
+    # Normalización avanzada de rdd entre 0 y 1 usando función logística suave
+    # El centro de la transición es rdd_floor, la pendiente la controla el divisor (ajustable)
+    # Esto penaliza valores bajos y suaviza la transición
+    rdd_nl = 1.0 / (1.0 + np.exp(-(rdd - rdd_floor) / (rdd_floor * 5.0)))
+
+    # ---------- Calmar Ratio anualizado (normalizado) -------------------------
+    # Calmar Ratio = Retorno Anualizado / Drawdown Máximo
+    if max_dd == 0.0:
+        calmar_ratio = 0.0
+    else:
+        # Anualizar el retorno: (retorno por trade) * (trades por año)
+        annualized_return = (total_ret / n_trades) * periods_per_year
+        calmar_ratio = annualized_return / max_dd
+    if calmar_ratio < calmar_floor:
+        return -1.0, -1.0, -1.0, -1.0, -1.0
+    # Normalización avanzada del Calmar Ratio usando función logística suave
+    # El centro de la transición es calmar_floor, la pendiente la controla el divisor
+    calmar_nl = 1.0 / (1.0 + np.exp(-(calmar_ratio - calmar_floor) / (calmar_floor * 65.0)))
+
+    # ---------- linealidad y pendiente (normalizado) ---------------------------
+    x = np.arange(n, dtype=np.float64)
+    y = equity_curve.astype(np.float64)
+    r2, slope = manual_linear_regression(x, y)
+    if slope < 0.0:
+        return -1.0, -1.0, -1.0, -1.0, -1.0
+    slope_nl = min(1.0, 1.0 / (1.0 + np.exp(-(np.log1p(slope / n) - 0.001) / 0.003)))
+
+    return trade_nl, rdd_nl, r2, slope_nl, calmar_nl
 
 @njit(cache=True, fastmath=True)
 def backtest_equivalent(close,
@@ -225,79 +299,12 @@ def backtest_equivalent(close,
            np.asarray(chart,  dtype=np.float64), \
            stats
 
-@njit(cache=True, fastmath=True)
-def evaluate_report(
-    equity_curve: np.ndarray,
-    min_trades: int = 200,
-    rdd_floor: float = 1.0,
-    pf_floor: float = 1.0
-) -> float:
-    """
-    Devuelve un score escalar para Optuna.
-    Premia:
-        1. pendiente media positiva y estable
-        2. ratio retorno / drawdown alto
-        3. número suficiente de trades
-        4. buen ajuste lineal (R²)
-    Penaliza curvas cortas, con drawdown cero o pendiente negativa.
-    """
-    n = equity_curve.size
-    if n < 2:
-        return -1.0, -1.0, -1.0, -1.0
-
-    # ---------- nº de trades (normalizado) -----------------------------------
-    returns = np.diff(equity_curve)
-    num_trades = returns.size
-    trade_nl = np.log1p(max(0, num_trades - min_trades))
-
-    # ---------- return / drawdown (normalizado) ------------------------------
-    running_max = np.empty_like(equity_curve)
-    running_max[0] = equity_curve[0]
-    for i in range(1, n):
-        running_max[i] = running_max[i - 1] if running_max[i - 1] > equity_curve[i] else equity_curve[i]
-    max_dd = np.max(running_max - equity_curve)
-    total_ret = equity_curve[-1] - equity_curve[0]
-    # Protección contra división por cero en max_dd
-    if max_dd == 0.0:
-        rdd = 0.0
-    else:
-        rdd = total_ret / max_dd
-    if rdd < rdd_floor:
-        rdd *= 0.8
-    rdd_nl = np.log1p(rdd)
-
-    # ---------- profit factor (normalizado) -----------------------------------
-    gross_profit = np.sum(returns[returns > 0])
-    gross_loss = -np.sum(returns[returns < 0])
-    # Protección contra división por cero en gross_loss
-    if gross_loss == 0.0:
-        profit_factor = 0.0
-    else:
-        profit_factor = gross_profit / gross_loss
-    if profit_factor < pf_floor:
-        profit_factor *= 0.8
-    pf_nl = np.log1p(profit_factor)
-
-    # ---------- linealidad y pendiente (normalizado) ---------------------------
-    x = np.arange(n, dtype=np.float64)
-    y = equity_curve.astype(np.float64)
-    r2, slope = manual_linear_regression(x, y)
-    lin_nl = r2 * np.log1p(slope / n)
-
-    # ---------- score final ---------------------------------------------------
-    # Ponderación para promover curvas lineales ascendentes, mínimo drawdown y máximo número de trades
-    # - rdd_nl (retorno/drawdown) se pondera alto para minimizar drawdown
-    # - lin_nl (linealidad y pendiente) se pondera más alto para promover ascenso lineal
-    # - trade_nl (número de trades) se pondera moderadamente para incentivar actividad
-    # - pf_nl (profit factor) se pondera bajo para no sobreoptimizar
-    return (2.0 * rdd_nl, 0.7 * pf_nl, 3.0 * lin_nl, 1.5 * trade_nl)
-
 # ────────── helpers ──────────────────────────────────────────────────────────
 
 def get_periods_per_year(timeframe: str) -> float:
     """
     Calcula períodos por año basado en el timeframe.
-    Asume mercado XAUUSD: ~120 horas de trading por semana, 52 semanas/año.
+    Adaptado para criptoactivos: 24/7 los 365 días del año.
     
     Args:
         timeframe: 'M5', 'M15', 'M30', 'H1', 'H4', 'D1'
@@ -305,21 +312,24 @@ def get_periods_per_year(timeframe: str) -> float:
     Returns:
         float: Número de períodos por año para ese timeframe
     """
-    # Mapeo de timeframes a períodos por año (ajustado para XAUUSD)
+    # 24 horas * 60 minutos = 1440 minutos por día
+    # 365 días por año
+    minutos_por_año = 1440 * 365  # 525,600
+
     if timeframe == 'M5':
-        return 74880.0    # 120h/sem * 60min/h / 5min * 52sem = 74,880
+        return minutos_por_año / 5      # 105,120
     elif timeframe == 'M15':
-        return 24960.0    # 120h/sem * 60min/h / 15min * 52sem = 24,960
+        return minutos_por_año / 15     # 35,040
     elif timeframe == 'M30':
-        return 12480.0    # 120h/sem * 60min/h / 30min * 52sem = 12,480
+        return minutos_por_año / 30     # 17,520
     elif timeframe == 'H1':
-        return 6240.0     # 120h/sem * 52sem = 6,240
+        return 24 * 365                 # 8,760
     elif timeframe == 'H4':
-        return 1560.0     # 30 períodos/sem * 52sem = 1,560
+        return (24 / 4) * 365           # 2,190
     elif timeframe == 'D1':
-        return 260.0      # 5 días/sem * 52sem = 260
+        return 365.0                    # 365
     else:
-        return 6240.0     # Default a H1 si timeframe no reconocido
+        return 24 * 365                 # Default a H1 si timeframe no reconocido (8,760)
     
 @njit(cache=True, fastmath=True)
 def manual_linear_regression(x, y):

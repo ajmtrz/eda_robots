@@ -2783,6 +2783,10 @@ def generate_future_outcome_labels_for_patterns(
 ):
     """
     Genera etiquetas basadas en resultados futuros para patrones fractales.
+    Siguiendo el enfoque del artículo MQL5:
+    - Etiqueta TODOS los patrones fractales encontrados
+    - 0.0/1.0: Patrones confiables (correlación >= threshold) con señal direccional clara
+    - 2.0: Patrones no confiables O confiables sin direccionalidad clara
     
     Args:
         close_data_len: Longitud total de los datos
@@ -2796,23 +2800,20 @@ def generate_future_outcome_labels_for_patterns(
         direction_int: Dirección (-1=both, 0=buy, 1=sell)
     
     Returns:
-        labels: Array de etiquetas (both: 0.0=compra, 1.0=venta, 2.0=neutral | single: 1.0=señal, 0.0=no señal)
+        labels: Array de etiquetas siguiendo el enfoque MQL5:
+                - both: 0.0=compra, 1.0=venta, 2.0=no confiable
+                - single: 1.0=éxito direccional, 0.0=fracaso direccional, 2.0=no confiable
     """
-    if direction_int == -1:  # both directions
-        labels = np.full(close_data_len, 2.0, dtype=np.float64)  # 2.0: no signal/neutral
-    else:  # single direction
-        labels = np.full(close_data_len, 0.0, dtype=np.float64)  # 0.0: no signal
+    # Inicialización: SIEMPRE empezar con 2.0 (no confiable) para cualquier dirección
+    # Siguiendo el enfoque del artículo MQL5: primero evaluar confiabilidad
+    labels = np.full(close_data_len, 2.0, dtype=np.float64)  # 2.0: no confiable
     num_potential_windows = len(correlations_at_window_start)
 
     for idx_window_start in range(num_potential_windows):
         corr_value = correlations_at_window_start[idx_window_start]
         w = window_sizes_at_window_start[idx_window_start]
 
-        # Condición 1: La correlación debe ser suficientemente fuerte
-        if abs(corr_value) < correlation_threshold:
-            continue
-
-        # Condición 2: Debe encontrarse una ventana válida
+        # Verificar que se encontró una ventana válida
         if w < 2:
             continue
 
@@ -2821,8 +2822,18 @@ def generate_future_outcome_labels_for_patterns(
 
         if signal_time_idx >= close_data_len:  # Teóricamente no debería ocurrir
             continue
+        
+        # ✅ ENFOQUE ARTÍCULO MQL5: Verificar confiabilidad del patrón
+        is_reliable_pattern = abs(corr_value) >= correlation_threshold
+        
+        if not is_reliable_pattern:
+            # Patrón no confiable - SIEMPRE etiquetar como 2.0 (no confiable)
+            # Esto aplica para cualquier dirección (buy, sell, both)
+            for i in range(idx_window_start, signal_time_idx + 1):
+                labels[i] = 2.0  # No confiable
+            continue
             
-        # Array para almacenar etiquetas de todo el patrón (tanto parte izquierda como derecha)
+        # Patrón confiable - evaluar direccionalidad basada en movimientos futuros
         pattern_labels = []
         
         # Calculamos etiquetas individuales para todos los puntos del patrón
@@ -2866,8 +2877,11 @@ def generate_future_outcome_labels_for_patterns(
                     current_label = 0.0  # No señal
                 pattern_labels.append(current_label)
         
-        # Si no hay etiquetas significativas en el patrón, pasamos al siguiente
+        # Si no hay etiquetas significativas en el patrón, etiquetar como no confiable
         if len(pattern_labels) == 0:
+            # Patrón confiable pero sin direccionalidad clara - etiquetar como 2.0
+            for i in range(idx_window_start, signal_time_idx + 1):
+                labels[i] = 2.0  # No confiable (sin direccionalidad clara)
             continue
             
         # Calculamos la etiqueta promedio de todos los puntos del patrón

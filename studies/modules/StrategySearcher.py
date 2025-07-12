@@ -122,6 +122,7 @@ class StrategySearcher:
             'mapie': self.search_mapie,
             'causal': self.search_causal,
             'wkmeans' : self.search_wkmeans,
+            'fractal_article': self.search_fractal_article,
         }
         
         if self.search_type not in search_funcs:
@@ -560,6 +561,84 @@ class StrategySearcher:
             print(f"Error en search_wkmeans: {str(e)}")
             return -1.0
 
+    def search_fractal_article(self, trial: optuna.Trial) -> float:
+        """Implementación fiel al artículo MQL5 de patrones fractales."""
+        try:
+            hp = self.suggest_all_params(trial)
+            
+            # 🔍 DEBUG: Supervisar parámetros específicos de fractales
+            if self.debug:
+                fractal_params = {k: v for k, v in hp.items() if k.startswith('label_')}
+                print(f"🔍 DEBUG search_fractal_article - Parámetros fractales: {fractal_params}")
+                
+            full_ds = self.get_labeled_full_data(hp)
+            if full_ds is None:
+                return -1.0
+                
+            # Separar datos EXACTAMENTE como en el artículo MQL5
+            feature_cols = [c for c in full_ds.columns if c.endswith('_main_feature')]
+            
+            if self.debug:
+                print(f"🔍 DEBUG search_fractal_article - Feature columns: {len(feature_cols)}")
+                labels_dist = full_ds['labels_main'].value_counts()
+                print(f"🔍   Labels distribution: {labels_dist}")
+            
+            # Meta: todas las muestras, etiquetas binarias (trading/no-trading)  
+            # 1 si hay señal (0 o 1), 0 si neutral (2)
+            meta_data = full_ds[feature_cols].copy()
+            meta_data['labels_meta'] = (full_ds['labels_main'].isin([0.0, 1.0])).astype(int)
+            
+            # Main: solo muestras con señales, etiquetas direccionales
+            trading_mask = full_ds['labels_main'].isin([0.0, 1.0])
+            if not trading_mask.any():
+                if self.debug:
+                    print(f"🔍 DEBUG search_fractal_article - No hay muestras de trading")
+                return -1.0
+                
+            main_data = full_ds.loc[trading_mask, feature_cols + ['labels_main']].copy()
+            
+            if self.debug:
+                print(f"🔍 DEBUG search_fractal_article - Main data shape: {main_data.shape}")
+                print(f"🔍   Meta data shape: {meta_data.shape}")
+                meta_dist = meta_data['labels_meta'].value_counts()
+                print(f"🔍   Meta labels distribution: {meta_dist}")
+            
+            # Verificar que tenemos suficientes muestras
+            if len(main_data) < 100:  # Mínimo razonable
+                if self.debug:
+                    print(f"🔍 DEBUG search_fractal_article - Insuficientes muestras main: {len(main_data)}")
+                return -1.0
+                
+            # Verificar distribución de clases
+            main_labels_dist = main_data['labels_main'].value_counts()
+            meta_labels_dist = meta_data['labels_meta'].value_counts()
+            
+            if len(main_labels_dist) < 2 or len(meta_labels_dist) < 2:
+                if self.debug:
+                    print(f"🔍 DEBUG search_fractal_article - Distribución insuficiente de clases")
+                return -1.0
+                
+            # Usar pipeline existente
+            score, model_paths, models_cols = self.fit_final_models(
+                trial=trial,
+                full_ds=full_ds,
+                model_main_train_data=main_data,
+                model_meta_train_data=meta_data,
+                hp=hp.copy()
+            )
+            
+            if score is None or model_paths is None or models_cols is None:
+                return -1.0
+                
+            trial.set_user_attr('score', score)
+            trial.set_user_attr('model_paths', model_paths)
+            trial.set_user_attr('model_cols', models_cols)
+            return trial.user_attrs.get('score', -1.0)
+            
+        except Exception as e:
+            print(f"Error en search_fractal_article: {str(e)}")
+            return -1.0
+
     # =========================================================================
     # Métodos auxiliares
     # =========================================================================
@@ -798,6 +877,9 @@ class StrategySearcher:
             p['mapie_cv']               = trial.suggest_int  ('mapie_cv',               3, 10)
         elif self.search_type == 'causal':
             p['causal_meta_learners']   = trial.suggest_int  ('causal_meta_learners',  10, 30)
+        elif self.search_type == 'fractal_article':
+            # Parámetros específicos para fractales según el artículo MQL5
+            p['fractal_direction']      = trial.suggest_categorical('fractal_direction', ['buy', 'sell', 'both'])
         return p
 
     # ========= main entry =========================================================

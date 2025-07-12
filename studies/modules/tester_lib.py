@@ -93,17 +93,17 @@ def tester(
             return -1.0
         # Pesos optimizados para promover consistencia temporal (in-sample similar a out-of-sample)
         score = (
-            0.25 * r2 +           # Aumentado: La linealidad es clave para consistencia
-            0.22 * slope_nl +     # Aumentado: Pendiente positiva constante
+            0.20 * r2 +           # Aumentado: La linealidad es clave para consistencia
+            0.17 * slope_nl +     # Aumentado: Pendiente positiva constante
             0.20 * rdd_nl +       # Aumentado: Eficiencia del crecimiento
             0.08 * calmar_nl +    # Reducido: Ya es excelente (0.99)
             0.10 * trade_nl +     # Reducido: Ya es bueno (0.82)
-            0.15 * wf_nl          # Reducido ligeramente: Consistencia walk-forward
+            0.25 * wf_nl          # Reducido ligeramente: Consistencia walk-forward
         )
         if score < 0.0:
             return -1.0
         if print_metrics:
-            print(f"🔍 DEBUG - Métricas de evaluación: trade_nl: {trade_nl}, rdd_nl: {rdd_nl}, r2: {r2}, slope_nl: {slope_nl}, calmar_nl: {calmar_nl}")
+            print(f"🔍 DEBUG - Métricas de evaluación: trade_nl: {trade_nl}, rdd_nl: {rdd_nl}, r2: {r2}, slope_nl: {slope_nl}, calmar_nl: {calmar_nl}, wf_nl: {wf_nl}")
             print(f"🔍 DEBUG - Trade stats: n_trades: {trade_stats[0]}, n_positivos: {trade_stats[1]}, n_negativos: {trade_stats[2]}")
             plt.figure(figsize=(10, 6))
             plt.plot(rpt, label='Equity Curve', linewidth=1.5)
@@ -175,7 +175,7 @@ def evaluate_report(
         calmar_ratio = annualized_return / max_dd
     if calmar_ratio < calmar_floor:
         return -1.0, -1.0, -1.0, -1.0, -1.0, -1.0
-    calmar_nl = 1.0 / (1.0 + np.exp(-(calmar_ratio - calmar_floor) / (calmar_floor * 65.0)))
+    calmar_nl = 1.0 / (1.0 + np.exp(-(calmar_ratio - calmar_floor) / (calmar_floor * 75.0)))
 
     # ---------- linealidad y pendiente (normalizado) ---------------------------
     x = np.arange(n, dtype=np.float64)
@@ -187,6 +187,8 @@ def evaluate_report(
 
     # Walk-Forward Analysis - consistencia temporal
     wf_nl = _walk_forward_validation(equity_curve)
+    if not np.isfinite(wf_nl):
+        return -1.0, -1.0, -1.0, -1.0, -1.0, -1.0
 
     return trade_nl, rdd_nl, r2, slope_nl, calmar_nl, wf_nl
 
@@ -298,37 +300,36 @@ def backtest_equivalent(close,
 @njit(cache=True, fastmath=True)
 def _walk_forward_validation(eq):
     """
-    Implementa Walk-Forward Analysis simplificado.
-    Evalúa la consistencia de performance en ventanas temporales NO solapadas.
+    Calcula la proporción de ventanas temporales (walk-forward windows) en las que la curva de equity es positiva.
+
+    Divide la curva de equity en ventanas de tamaño fijo (por defecto, 1/252 del total o al menos 20 puntos).
+    Para cada ventana, compara el valor inicial y final; si la diferencia es positiva, cuenta como éxito.
+    Devuelve la fracción de ventanas exitosas sobre el total, lo que mide la consistencia temporal del sistema.
+
+    Args:
+        eq (np.ndarray): Curva de equity (acumulada) como array 1D.
+
+    Returns:
+        float: Proporción de ventanas con resultado positivo (0.0 a 1.0).
     """
-    n_periods = eq.size
-    window_size = n_periods // 252
-    if n_periods < window_size * 2 or window_size < 2:
+    n = eq.size
+    window = max(20, n // 252)
+    if n < 2*window:
         return 0.0
 
-    n_windows = n_periods // window_size
-    if n_windows < 2:
-        return 0.0
+    wins = 0
+    total = 0
 
-    window_returns = np.zeros(n_windows, dtype=np.float64)
-
-    for i in range(n_windows):
-        start_idx = i * window_size
-        end_idx = start_idx + window_size
-
-        if end_idx > n_periods:
+    for start in range(0, n, window):
+        end = min(start + window, n)
+        if end - start < 2:
             break
+        r = eq[end-1] - eq[start]
+        if r > 0:
+            wins += 1
+        total += 1
 
-        window = eq[start_idx:end_idx]
-        if window.size > 1:
-            window_return = (window[-1] - window[0]) / max(abs(window[0]), 1e-8)
-            window_returns[i] = window_return
-
-    # Calcular consistencia: % de ventanas positivas
-    positive_windows = np.sum(window_returns > 0)
-    consistency = positive_windows / n_windows if n_windows > 0 else 0.0
-
-    return consistency
+    return wins / total if total else 0.0
 
 def get_periods_per_year(timeframe: str) -> float:
     """

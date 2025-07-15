@@ -83,6 +83,7 @@ class StrategySearcher:
         label_method: str = 'atr',
         tag: str = "",
         debug: bool = False,
+        decimal_precision: int = 6,
     ):
         self.symbol = symbol
         self.timeframe = timeframe
@@ -106,6 +107,7 @@ class StrategySearcher:
         self.tag = tag
         self.debug = debug
         self.base_df = get_prices(symbol, timeframe, history_path)
+        self.decimal_precision = decimal_precision  # NUEVO ATRIBUTO
 
         # Configuración de logging para optuna
         optuna.logging.set_verbosity(optuna.logging.WARNING)
@@ -204,6 +206,7 @@ class StrategySearcher:
                                         "model_meta_threshold": study.user_attrs["model_meta_threshold"],
                                         "model_max_orders": study.user_attrs["model_max_orders"],
                                         "model_delay_bars": study.user_attrs["model_delay_bars"],
+                                        "decimal_precision": self.decimal_precision,
                                     }
                                     export_to_mql5(**export_params)
 
@@ -1023,37 +1026,34 @@ class StrategySearcher:
         - prefijos consistentes ('feature_main_', 'feature_meta_')
         - espacio de hiperparámetros completamente fijo
         """
-        GROUPS: Dict[str, tuple] = {
-            "trend": (
-                "slope", "momentum", "hurst", "autocorr", "effratio", "fractal"
-            ),
-            "volatility": (
-                "std", "range", "mad", "var", "jumpvol", "volskew"
-            ),
-            "shape": (
-                "skew", "kurt", "entropy", "zscore", "corrskew", "fisher"
-            ),
-            "central": (
-                "mean", "median", "iqr", "cv"
-            ),
-            "performance": (
-                "sharpe", "chande", "maxdd"
-            ),
-            "other": (
-                "approxentropy",
-            ),
-        }
-        REMOVE_STATS = ("cv",
-                        "std",
-                        "sharpe",
-                        "mad",
-                        "entropy",
-                        "momentum",
-                        "fisher",
-                        "effratio",
-                        "chande",
-                        "mean")
-        ALL_STATS = tuple(sorted({s for g in GROUPS.values() for s in g if s not in REMOVE_STATS}))
+        ALL_STATS = (
+            "chande",
+            "var",
+            "hurst",
+            "std",
+            "approxentropy",
+            "range",
+            "mean",
+            "maxdd",
+            "jumpvol",
+            "fisher",
+            "momentum",
+            "volskew",
+            "entropy",
+            "iqr",
+            "effratio",
+            "fractal",
+            "mad",
+            "cv",
+            "slope",
+            "skew",
+            "zscore",
+            "median",
+            "autocorr",
+            "kurt",
+            "corrskew",
+            "sharpe",
+        )
         p: Dict[str, Any] = {}
 
         p["model_main_threshold"] = trial.suggest_float("model_main_threshold", 0.5, 0.9)
@@ -1720,6 +1720,10 @@ class StrategySearcher:
             if len(main_periods) == 0 or len(main_stats) == 0:
                 return None
             
+            # ✅ APLICAR LIMITACIÓN DE PRECISIÓN DECIMAL UNA SOLA VEZ
+            # Esto hará que todo el pipeline use datos con precisión limitada
+            full_ds = self._apply_decimal_precision(full_ds)
+
             # Guardar dataset completo a disco
             if self.debug:
                 if self.tag:
@@ -1727,7 +1731,7 @@ class StrategySearcher:
                     os.makedirs(data_dir, exist_ok=True)
                     dataset_filename = f"{self.tag}.csv"
                     dataset_path = os.path.join(data_dir, dataset_filename)
-                    full_ds.to_csv(dataset_path, index=True, float_format='%.6f', date_format='%Y.%m.%d %H:%M:%S')
+                    full_ds.to_csv(dataset_path, index=True, float_format='%.8f', date_format='%Y.%m.%d %H:%M:%S')
                     print(f"🔍 DEBUG: Dataset guardado en {dataset_path}")
 
             return full_ds
@@ -1790,6 +1794,33 @@ class StrategySearcher:
                 problematic_cols.append(col)
                 
         return problematic_cols
+
+    def _apply_decimal_precision(self, X: pd.DataFrame) -> pd.DataFrame:
+        """
+        Aplica limitación de precisión decimal SOLO a las columnas de features.
+        Hace los modelos más robustos a diferencias numéricas entre Python y MQL5.
+        
+        Args:
+            X: DataFrame completo (con features y otras columnas)
+            
+        Returns:
+            DataFrame con precisión limitada en features
+        """
+        if self.decimal_precision is None:
+            return X
+            
+        # Crear copia para no modificar el original
+        X_limited = X.copy()
+        
+        # Aplicar redondeo SOLO a columnas que contienen "_feature"
+        feature_cols = [col for col in X_limited.columns if "_feature" in col]
+        
+        if feature_cols:
+            X_limited[feature_cols] = X_limited[feature_cols].round(self.decimal_precision)
+            if self.debug:
+                print(f"🔍 DEBUG: Aplicada limitación de precisión decimal ({self.decimal_precision} decimales) a {len(feature_cols)} columnas de features")
+        
+        return X_limited
 
 
 # =========================================================================

@@ -223,16 +223,7 @@ def max_dd_manual(x):
 
 @njit(cache=True, fastmath=True)
 def sharpe_manual(x):
-    if x.size < 2:
-        return 0.0
-    ret_sum = 0.0
-    ret_sq  = 0.0
-    for i in range(1, x.size):
-        r = (x[i]/x[i-1] - 1)
-        ret_sum += r
-        ret_sq  += r*r
-    n = x.size - 1
-    mean = ret_sum / n
+    mean = mean_manual(x)
     std = std_manual(x)
     return mean / std if std != 0 else 0.0
 
@@ -389,7 +380,7 @@ def compute_returns(prices):
 @njit(cache=True, fastmath=True)
 def should_use_returns(stat_name):
     """Determina si un estadístico debe usar retornos en lugar de precios."""
-    return stat_name in ("mean", "median", "std", "iqr", "mad")
+    return stat_name in ("mean", "median", "std", "iqr", "mad", "sharpe", "autocorr")
 
 # Ingeniería de características
 @njit(cache=True, fastmath=True)
@@ -2099,7 +2090,7 @@ def calculate_future_outcome_labels_for_patterns(
     min_future_horizon,
     max_future_horizon,
     markup_points,
-    direction_int=-1
+    dir_flag=2
 ):
     """
     Genera etiquetas basadas en resultados futuros para patrones fractales.
@@ -2117,7 +2108,7 @@ def calculate_future_outcome_labels_for_patterns(
         min_future_horizon: Horizonte mínimo de predicción
         max_future_horizon: Horizonte máximo de predicción
         markup_points: Puntos de markup para determinar cambio significativo
-        direction_int: Dirección (-1=both, 0=buy, 1=sell)
+        dir_flag: Dirección (0=buy, 1=sell, 2=both)
     
     Returns:
         labels: Array de etiquetas siguiendo el enfoque MQL5:
@@ -2176,7 +2167,19 @@ def calculate_future_outcome_labels_for_patterns(
             
             # Determinamos la etiqueta para el punto actual
             current_label = 2.0  # Neutral por defecto
-            if direction_int == -1:  # both directions (comportamiento original)
+            if dir_flag == 0:  # buy only
+                if future_price > current_price + markup_points:
+                    current_label = 1.0  # Señal válida
+                else:
+                    current_label = 0.0  # No señal
+                pattern_labels.append(current_label)
+            elif dir_flag == 1:  # sell only
+                if future_price < current_price - markup_points:
+                    current_label = 1.0  # Señal válida
+                else:
+                    current_label = 0.0  # No señal
+                pattern_labels.append(current_label)
+            elif dir_flag == 2:  # both directions (comportamiento original)
                 if future_price > current_price + markup_points:
                     current_label = 0.0  # Precio subió
                 elif future_price < current_price - markup_points:
@@ -2184,19 +2187,6 @@ def calculate_future_outcome_labels_for_patterns(
                 # Agregamos la etiqueta al array si no es neutral
                 if current_label != 2.0:
                     pattern_labels.append(current_label)
-            elif direction_int == 0:  # buy only
-                if future_price > current_price + markup_points:
-                    current_label = 1.0  # Señal válida
-                else:
-                    current_label = 0.0  # No señal
-                pattern_labels.append(current_label)
-            elif direction_int == 1:  # sell only
-                if future_price < current_price - markup_points:
-                    current_label = 1.0  # Señal válida
-                else:
-                    current_label = 0.0  # No señal
-                pattern_labels.append(current_label)
-        
         # Si no hay etiquetas significativas en el patrón, etiquetar como no confiable
         if len(pattern_labels) == 0:
             # Patrón confiable pero sin direccionalidad clara - etiquetar como 2.0
@@ -2211,7 +2201,7 @@ def calculate_future_outcome_labels_for_patterns(
         avg_label /= len(pattern_labels)
         
         # Determinamos la etiqueta general para todo el patrón
-        if direction_int == -1:  # both directions
+        if dir_flag == 2:  # both directions
             pattern_label = 0.0 if avg_label < 0.5 else 1.0
         else:  # single direction
             pattern_label = 1.0 if avg_label >= 0.5 else 0.0
@@ -2270,45 +2260,23 @@ def get_labels_fractal_patterns(
         label_max_window,
     )
 
-    direction_map = {'buy': 0, 'sell': 1, 'both': -1}
-    direction_int = direction_map.get(direction, -1)
+    dir_flag = {"buy": 0, "sell": 1, "both": 2}[direction]
     
-    if direction in {'buy', 'sell'}:
-        # Modo una dirección - etiquetas binarias
-        labels = calculate_future_outcome_labels_for_patterns(
-            n_data,
-            correlations_at_start,
-            best_window_sizes_at_start,
-            close_data,
-            label_corr_threshold,
-            label_min_val,
-            label_max_val,
-            label_markup,
-            direction_int
-        )
-        result_df = dataset.copy()
-        result_df['labels_main'] = pd.Series(labels, index=dataset.index)
-        return result_df
-        
-    elif direction == 'both':
-        # Modo bidireccional - etiquetas ternarias (comportamiento original)
-        labels = calculate_future_outcome_labels_for_patterns(
-            n_data,
-            correlations_at_start,
-            best_window_sizes_at_start,
-            close_data,
-            label_corr_threshold,
-            label_min_val,
-            label_max_val,
-            label_markup,
-            -1
-        )
-        result_df = dataset.copy()
-        result_df['labels_main'] = pd.Series(labels, index=dataset.index)
-        return result_df
-    else:
-        raise ValueError("direction must be 'buy', 'sell', or 'both'")
-    
+    labels = calculate_future_outcome_labels_for_patterns(
+        n_data,
+        correlations_at_start,
+        best_window_sizes_at_start,
+        close_data,
+        label_corr_threshold,
+        label_min_val,
+        label_max_val,
+        label_markup,
+        dir_flag
+    )
+    result_df = dataset.copy()
+    result_df['labels_main'] = pd.Series(labels, index=dataset.index)
+    return result_df
+
 #### ------------------------------------------------------------------------------------------------
 #### ------------------------------------------------------------------------------------------------
 

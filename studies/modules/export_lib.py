@@ -81,10 +81,15 @@ def export_to_mql5(**kwargs):
     model_seed = kwargs.get('best_model_seed')
     models_export_path = kwargs.get('models_export_path')
     include_export_path = kwargs.get('include_export_path')
+    model_main_threshold = kwargs.get('model_main_threshold')
+    model_meta_threshold = kwargs.get('model_meta_threshold')
+    model_max_orders = kwargs.get('model_max_orders')
+    model_delay_bars = kwargs.get('model_delay_bars')
+    decimal_precision = kwargs.get('decimal_precision')  # NUEVO PARÁMETRO
 
     def _should_use_returns(stat_name):
         """Determina si un estadístico debe usar retornos en lugar de precios."""
-        return stat_name in ["mean", "median", "std", "iqr", "mad"]
+        return stat_name in ["mean", "median", "std", "iqr", "mad", "sharpe", "autocorr"]
 
     def _build_periods_funcs(cols: list[str]) -> tuple[list[str], list[str]]:
         """Devuelve dos listas: [periodos] y [punteros a stat_X]."""
@@ -148,14 +153,17 @@ def export_to_mql5(**kwargs):
                 {
                     int n = ArraySize(a);
                     if(n <= 1) return 0.0;
-                    double sum = 0.0, sum_sq = 0.0;
+                    
+                    // USAR LA MISMA FÓRMULA DIRECTA QUE PYTHON
+                    // Python: np.sqrt(np.sum((x - m) ** 2) / (x.size - 1))
+                    double mean = stat_mean(a);
+                    double sum_sq_diff = 0.0;
                     for(int i = 0; i < n; i++)
                     {
-                        sum += a[i];
-                        sum_sq += a[i] * a[i];
+                        double diff = a[i] - mean;
+                        sum_sq_diff += diff * diff;
                     }
-                    double mean = sum / n;
-                    return MathSqrt((sum_sq - n * mean * mean) / (n - 1));
+                    return MathSqrt(sum_sq_diff / (n - 1));
                 }
                 """,
             "skew": """
@@ -163,14 +171,25 @@ def export_to_mql5(**kwargs):
                 {
                     int n = ArraySize(a);
                     if(n <= 1) return 0.0;
-                    double sum = 0.0, m3 = 0.0;
-                    for(int i = 0; i < n; i++) sum += a[i];
-                    double mean = sum / n;
+                    
+                    // REPLICAR PYTHON EXACTO: std_manual() y mean_manual() consistentes
                     double std = stat_std(a);
                     if(std == 0.0) return 0.0;
-                    for(int i = 0; i < n; i++)
-                        m3 += MathPow((a[i] - mean) / std, 3);
-                    return m3 / n;
+                    
+                    double mean = stat_mean(a);
+                    
+                    // REPLICAR PYTHON EXACTO: mean_manual(((x - m) / s) ** 3)
+                    // Crear array temporal para valores estandarizados al cubo
+                    double standardized_cubed[];
+                    ArrayResize(standardized_cubed, n);
+                    for(int i = 0; i < n; i++) {
+                        double standardized = (a[i] - mean) / std;
+                        // USAR MULTIPLICACIÓN DIRECTA PARA MAYOR PRECISIÓN QUE MathPow
+                        standardized_cubed[i] = standardized * standardized * standardized;
+                    }
+                    
+                    // USAR stat_mean para consistencia exacta con Python mean_manual()
+                    return stat_mean(standardized_cubed);
                 }
                 """,
             "kurt": """
@@ -178,14 +197,26 @@ def export_to_mql5(**kwargs):
                 {
                     int n = ArraySize(a);
                     if(n <= 1) return 0.0;
-                    double sum = 0.0, m4 = 0.0;
-                    for(int i = 0; i < n; i++) sum += a[i];
-                    double mean = sum / n;
+                    
+                    // REPLICAR PYTHON EXACTO: std_manual() y mean_manual() consistentes
                     double std = stat_std(a);
                     if(std == 0.0) return 0.0;
-                    for(int i = 0; i < n; i++)
-                        m4 += MathPow((a[i] - mean) / std, 4);
-                    return m4 / n - 3.0;
+                    
+                    double mean = stat_mean(a);
+                    
+                    // REPLICAR PYTHON EXACTO: mean_manual(((x - m) / s) ** 4)
+                    // Crear array temporal para valores estandarizados a la 4ta potencia
+                    double standardized_fourth[];
+                    ArrayResize(standardized_fourth, n);
+                    for(int i = 0; i < n; i++) {
+                        double standardized = (a[i] - mean) / std;
+                        // USAR MULTIPLICACIÓN DIRECTA PARA MAYOR PRECISIÓN QUE MathPow
+                        double standardized_sq = standardized * standardized;
+                        standardized_fourth[i] = standardized_sq * standardized_sq;
+                    }
+                    
+                    // USAR stat_mean para consistencia exacta con Python mean_manual()
+                    return stat_mean(standardized_fourth) - 3.0;
                 }
                 """,
             "zscore": """
@@ -193,16 +224,19 @@ def export_to_mql5(**kwargs):
                 {
                     int n = ArraySize(a);
                     if(n <= 1) return 0.0;
-                    double sum = 0.0;
-                    for(int i = 0; i < n; i++) sum += a[i];
-                    double mean = sum / n;
+                    
+                    // REPLICAR PYTHON EXACTO: usar las funciones std y mean
                     double std = stat_std(a);
-                    return std == 0.0 ? 0.0 : (a[n-1] - mean) / std;
+                    if(std == 0.0) return 0.0;
+                    
+                    double mean = stat_mean(a);
+                    return (a[n-1] - mean) / std;
                 }
                 """,
             "mean": """
                 double stat_mean(const double &a[])
                 {
+                    if(ArraySize(a) == 0) return 0.0;
                     double sum = 0.0;
                     for(int i = 0; i < ArraySize(a); i++)
                         sum += a[i];
@@ -212,8 +246,12 @@ def export_to_mql5(**kwargs):
             "range": """
                 double stat_range(const double &a[])
                 {
+                    int n = ArraySize(a);
+                    if(n == 0) return 0.0;
+                    
+                    // REPLICAR PYTHON EXACTO: np.max(window_data) - np.min(window_data)
                     double minv = a[0], maxv = a[0];
-                    for(int i = 1; i < ArraySize(a); i++)
+                    for(int i = 1; i < n; i++)
                     {
                         if(a[i] < minv) minv = a[i];
                         if(a[i] > maxv) maxv = a[i];
@@ -224,46 +262,85 @@ def export_to_mql5(**kwargs):
             "median": """
                 double stat_median(const double &a[])
                 {
+                    int n = ArraySize(a);
+                    if(n == 0) return 0.0;  // Mantener 0.0 para consistencia con otros stats
+                    
+                    // REPLICAR PYTHON EXACTO: b = a.copy(); b.sort()
                     double tmp[];
-                    ArrayCopy(tmp, a);
+                    ArrayResize(tmp, n);
+                    
+                    // Copia manual exacta con máxima precisión
+                    for(int i = 0; i < n; i++) {
+                        tmp[i] = a[i];
+                    }
+                    
+                    // Ordenamiento con verificación de estabilidad
                     ArraySort(tmp);
-                    int n = ArraySize(tmp);
-                    if(n % 2 == 0)
-                        return (tmp[n/2 - 1] + tmp[n/2]) / 2.0;
-                    else
-                        return tmp[n/2];
+                    
+                    // Cálculo de mediana exacto como Python
+                    int mid = n / 2;
+                    if(n % 2 == 1) {
+                        // n impar: elemento del medio
+                        return tmp[mid];
+                    } else {
+                        // n par: promedio de los dos elementos del medio
+                        // REPLICAR PYTHON EXACTO: 0.5 * (b[mid-1] + b[mid])
+                        return 0.5 * (tmp[mid-1] + tmp[mid]);
+                    }
                 }
                 """,
             "iqr": """
                 double stat_iqr(const double &a[])
                 {
+                    int n = ArraySize(a);
+                    if(n == 0) return 0.0;
+                    
+                    // REPLICAR PYTHON EXACTO: b = a.copy(); b.sort()
                     double tmp[];
-                    ArrayCopy(tmp, a);
+                    ArrayResize(tmp, n);
+                    for(int i = 0; i < n; i++) tmp[i] = a[i];  // Copia manual exacta
                     ArraySort(tmp);
-                    int n = ArraySize(tmp);
-                    int q1 = int((n-1)*0.25);
-                    int q3 = int((n-1)*0.75);
-                    return tmp[q3] - tmp[q1];
+                    
+                    // REPLICAR PYTHON EXACTO: int(0.25 * (n - 1)) y int(0.75 * (n - 1))
+                    // Usar casting explícito para asegurar el mismo comportamiento que Python
+                    int q1_idx = (int)(0.25 * (double)(n - 1));
+                    int q3_idx = (int)(0.75 * (double)(n - 1));
+                    return tmp[q3_idx] - tmp[q1_idx];
                 }
                 """,
             "mad": """
                 double stat_mad(const double &a[])
                 {
+                    if(ArraySize(a) == 0) return 0.0;
+                    
+                    // REPLICAR PYTHON EXACTO: m = mean_manual(window_data)
                     double mean = stat_mean(a);
-                    double sum = 0.0;
-                    for(int i = 0; i < ArraySize(a); i++)
-                        sum += MathAbs(a[i] - mean);
-                    return sum / ArraySize(a);
+                    
+                    // REPLICAR PYTHON EXACTO: mean_manual(np.abs(window_data - m))
+                    // Crear array temporal para las desviaciones absolutas
+                    double abs_deviations[];
+                    ArrayResize(abs_deviations, ArraySize(a));
+                    
+                    for(int i = 0; i < ArraySize(a); i++) {
+                        abs_deviations[i] = MathAbs(a[i] - mean);
+                    }
+                    
+                    // Usar stat_mean para calcular la media de las desviaciones absolutas
+                    return stat_mean(abs_deviations);
                 }
                 """,
             "var": """
                 double stat_var(const double &a[])
                 {
-                    double mean = stat_mean(a);
-                    double sum = 0.0;
-                    for(int i = 0; i < ArraySize(a); i++)
-                        sum += (a[i] - mean) * (a[i] - mean);
-                    return sum / (ArraySize(a));
+                    int n = ArraySize(a);
+                    if(n == 0) return 0.0;
+                    
+                    // REPLICAR PYTHON EXACTO: std * std * (window_data.size - 1) / window_data.size
+                    double std = stat_std(a);
+                    double variance_sample = std * std;  // Varianza muestral
+                    
+                    // Convertir de varianza muestral a poblacional como en Python
+                    return variance_sample * ((double)(n - 1) / (double)n);
                 }
                 """,
             "cv": """
@@ -272,34 +349,42 @@ def export_to_mql5(**kwargs):
                     double mean = stat_mean(a);
                     if(mean == 0.0) return 0.0;
                     double sd = stat_std(a);
-                    return sd/mean;
+                    return sd / mean;
                 }
                 """,
             "entropy": """
                 double stat_entropy(const double &a[])
                 {
+                    int n = ArraySize(a);
+                    if(n == 0) return 0.0;
+                    
                     int bins = 10;
                     double minv = a[0], maxv = a[0];
-                    for(int i = 1; i < ArraySize(a); i++)
+                    for(int i = 1; i < n; i++)
                     {
                         if(a[i] < minv) minv = a[i];
                         if(a[i] > maxv) maxv = a[i];
                     }
                     double width = (maxv - minv) / bins;
                     if(width == 0) return 0.0;
+                    
                     double hist[10] = {0};
-                    for(int i = 0; i < ArraySize(a); i++)
+                    for(int i = 0; i < n; i++)
                     {
                         int idx = int((a[i] - minv) / width);
                         if(idx == bins) idx--; // borde superior
                         hist[idx]++;
                     }
-                    double total = ArraySize(a);
+                    
+                    double total = n;
                     double entropy = 0.0;
                     for(int i = 0; i < bins; i++)
                     {
                         if(hist[i] > 0)
-                            entropy -= (hist[i] / total) * MathLog(hist[i] / total);
+                        {
+                            double p = hist[i] / total;
+                            entropy -= p * MathLog(p);
+                        }
                     }
                     return entropy;
                 }
@@ -310,33 +395,37 @@ def export_to_mql5(**kwargs):
                     int n = ArraySize(a);
                     if(n <= 1) return 0.0;
                     
-                    // Crear el vector de índices x
-                    double x[];
-                    ArrayResize(x, n);
-                    for(int i = 0; i < n; i++) x[i] = i;
+                    // REPLICAR PYTHON EXACTO: x_idx = np.arange(n)
+                    double x_idx[];
+                    ArrayResize(x_idx, n);
+                    for(int i = 0; i < n; i++) x_idx[i] = (double)i;
                     
-                    // Calcular medias usando las funciones existentes
-                    double x_mean = stat_mean(x);
+                    // USAR FUNCIONES CONSISTENTES: mean_manual() y std_manual()
+                    double x_mean = stat_mean(x_idx);
                     double y_mean = stat_mean(a);
                     
-                    // Calcular covarianza
+                    // Calcular covarianza exactamente como Python
                     double cov = 0.0;
-                    for(int i = 0; i < n; i++)
-                        cov += (x[i] - x_mean) * (a[i] - y_mean);
-                    cov /= n;
+                    for(int i = 0; i < n; i++) {
+                        cov += (x_idx[i] - x_mean) * (a[i] - y_mean);
+                    }
+                    cov /= (double)n;
                     
-                    // Calcular varianza de x usando stat_std
-                    double x_std = stat_std(x);
-                    double var_x = x_std * x_std * (n - 1) / n;  // Convertir de varianza muestral a poblacional
+                    // Calcular varianza usando stat_std para máxima precisión
+                    double x_std = stat_std(x_idx);
+                    double var_x = x_std * x_std * ((double)(n - 1) / (double)n);
                     
-                    return var_x == 0.0 ? 0.0 : cov / var_x;
+                    return (var_x != 0.0) ? (cov / var_x) : 0.0;
                 }
                 """,
             "momentum": """
                 double stat_momentum(const double &a[])
                 {
                     int size = ArraySize(a);
-                    if(size == 0 || a[size-1] == 0) return 0.0;
+                    if(size < 2) return 0.0;
+                    if(a[size-1] == 0) return 0.0;
+                    
+                    // REPLICAR PYTHON: ratio = x[0]/x[-1]; return ratio - 1.0
                     return (a[0] / a[size-1]) - 1.0;
                 }
                 """,
@@ -346,13 +435,14 @@ def export_to_mql5(**kwargs):
                     int size = ArraySize(x);
                     if(size < 2) return 1.0;
                     
-                    double mean = stat_mean(x);
+                    // REPLICAR ALGORITMO PYTHON EXACTO
                     double std_dev = stat_std(x);
                     double eps = std_dev / 4.0;
-                    int count = 0;
+                    if(eps == 0.0) return 1.0;
                     
+                    int count = 0;
                     for(int i = 0; i < size-1; i++) {
-                        if(MathAbs(x[i] - x[i+1]) > eps) count++;
+                        if(MathAbs(x[i+1] - x[i]) > eps) count++;
                     }
                     
                     if(count == 0) return 1.0;
@@ -365,10 +455,10 @@ def export_to_mql5(**kwargs):
                     int n = ArraySize(x);
                     if(n < 2) return 0.5;
                     
-                    // Calcular rangos reescalados
+                    // REPLICAR ALGORITMO PYTHON EXACTO
                     double valid_rs[];
+                    int valid_count = 0;
                     ArrayResize(valid_rs, n-1);
-                    ArrayInitialize(valid_rs, 0.0);
                     
                     for(int i = 1; i < n; i++) {
                         // Calcular media y desviación estándar para cada subserie
@@ -383,27 +473,35 @@ def export_to_mql5(**kwargs):
                         // Calcular rango reescalado
                         double max_val = subseries[0];
                         double min_val = subseries[0];
-                        for(int j = 1; j < ArraySize(subseries); j++) {
+                        for(int j = 1; j < i+1; j++) {
                             if(subseries[j] > max_val) max_val = subseries[j];
                             if(subseries[j] < min_val) min_val = subseries[j];
                         }
                         double r = max_val - min_val;
-                        valid_rs[i-1] = r / s;
-                    }
-                    
-                    // Calcular media de los logaritmos
-                    double sum_log = 0.0;
-                    int count = 0;
-                    for(int i = 0; i < n-1; i++) {
-                        if(valid_rs[i] > 0) {
-                            sum_log += MathLog(valid_rs[i]);
-                            count++;
+                        double rs = r / s;
+                        if(rs > 0) {
+                            valid_rs[valid_count] = rs;
+                            valid_count++;
                         }
                     }
                     
-                    if(count == 0 || MathAbs(MathLog(n)) < 1e-10)
-                        return 0.5;
-                    return sum_log / count / MathLog(n);
+                    // Verificar si tenemos suficientes valores válidos
+                    if(valid_count == 0) return 0.5;
+                    
+                    // REPLICAR PYTHON EXACTO: log_rs = np.log(valid_rs[:valid_count])
+                    // mean_log_rs = mean_manual(log_rs)
+                    double log_rs[];
+                    ArrayResize(log_rs, valid_count);
+                    for(int i = 0; i < valid_count; i++) {
+                        log_rs[i] = MathLog(valid_rs[i]);
+                    }
+                    double mean_log_rs = stat_mean(log_rs);
+                    double log_n = MathLog(n);
+                    
+                    // Evitar división por valores cercanos a cero
+                    if(MathAbs(log_n) < 1e-10) return 0.5;
+                    
+                    return mean_log_rs / log_n;
                 }
                 """,
             "autocorr": """
@@ -411,26 +509,31 @@ def export_to_mql5(**kwargs):
                 {
                     int n = ArraySize(a);
                     if(n < 2) return 0.0;
+                    
+                    // REPLICAR PYTHON EXACTO: mean_manual(x) con precisión máxima
                     double mean = stat_mean(a);
-                    double num=0.0, den=0.0;
-                    for(int i=0;i<n-1;i++)
+                    double num = 0.0, den = 0.0;
+                    
+                    for(int i = 0; i < n-1; i++)
                     {
                         double d0 = a[i]   - mean;
                         double d1 = a[i+1] - mean;
                         num += d0 * d1;
                         den += d0 * d0;
                     }
-                    return den==0.0 ? 0.0 : num/den;
+                    
+                    // USAR MISMA CONDICIÓN Y RETORNO QUE PYTHON
+                    return (den != 0.0) ? (num / den) : 0.0;
                 }
                 """,
-            "maxdd":"""
+            "maxdd": """
                 double stat_maxdd(const double &a[])
                 {
                     int n = ArraySize(a);
-                    if(n==0) return 0.0;
+                    if(n == 0) return 0.0;
                     double peak = a[0];
                     double maxdd = 0.0;
-                    for(int i=0;i<n;i++)
+                    for(int i = 0; i < n; i++)
                     {
                         if(a[i] > peak) peak = a[i];
                         double dd = (peak - a[i]) / peak;
@@ -442,19 +545,9 @@ def export_to_mql5(**kwargs):
             "sharpe": """
                 double stat_sharpe(const double &a[])
                 {
-                    int n = ArraySize(a);
-                    if(n < 2) return 0.0;
-                    double sum=0.0, sum2=0.0;
-                    for(int i=1;i<n;i++)
-                    {
-                        double r = a[i]/a[i-1] - 1.0;
-                        sum  += r;
-                        sum2 += r*r;
-                    }
-                    int m = n-1;
-                    double mean = sum / m;
+                    double mean = stat_mean(a);
                     double std = stat_std(a);
-                    return std==0.0 ? 0.0 : mean/std;
+                    return std == 0.0 ? 0.0 : mean / std;
                 }
             """,
             "fisher": """
@@ -466,9 +559,9 @@ def export_to_mql5(**kwargs):
                     // Usar la función stat_momentum ya definida
                     double momentum = stat_momentum(a);
                     
-                    // Aplicar transformación de Fisher
+                    // Aplicar transformación de Fisher - REPLICAR PYTHON EXACTO
                     double x = MathMax(-0.9999, MathMin(0.9999, momentum));
-                    return 0.5 * MathLog((1.0 + x)/(1.0 - x));
+                    return 0.5 * MathLog((1.0 + x) / (1.0 - x));
                 }
                 """,
             "chande": """
@@ -476,15 +569,17 @@ def export_to_mql5(**kwargs):
                 {
                     int n = ArraySize(a);
                     if(n < 2) return 0.0;
-                    double up=0.0, down=0.0;
-                    for(int i=1;i<n;i++)
+                    
+                    // REPLICAR ALGORITMO PYTHON
+                    double up = 0.0, down = 0.0;
+                    for(int i = 1; i < n; i++)
                     {
                         double diff = a[i] - a[i-1];
                         if(diff > 0) up += diff;
-                        else         down -= diff;  // diff es negativo
+                        else down += MathAbs(diff);  // down -= diff where diff is negative
                     }
                     double sum = up + down;
-                    return sum==0.0 ? 0.0 : (up - down)/sum;
+                    return sum == 0.0 ? 0.0 : (up - down) / sum;
                 }
             """,
             "approxentropy": """
@@ -494,11 +589,13 @@ def export_to_mql5(**kwargs):
                     int m = 2;
                     if(n <= m + 1) return 0.0;
                     
+                    // REPLICAR PYTHON EXACTO: usar misma función std que Python
                     double sd = stat_std(a);
                     double r = 0.2 * sd;
                     
-                    // Para m = 2
-                    int count_m = 0;
+                    // REPLICAR ALGORITMO PYTHON EXACTO
+                    // Para m = 2 - mejorar precisión con double desde el inicio
+                    double count_m = 0.0;  // Cambio: usar double para mayor precisión
                     for(int i = 0; i < n - 1; i++) {
                         for(int j = 0; j < n - 1; j++) {
                             if(i != j) {  // Excluir i == j como en Python
@@ -509,14 +606,14 @@ def export_to_mql5(**kwargs):
                                         break;
                                     }
                                 }
-                                if(match_m) count_m++;
+                                if(match_m) count_m += 1.0;
                             }
                         }
                     }
-                    double phi1 = count_m > 0 ? MathLog((double)count_m / (n - 1)) : 0.0;
+                    double phi1 = count_m > 0.0 ? MathLog(count_m / (double)(n - 1)) : 0.0;
                     
-                    // Para m = 3
-                    int count_m1 = 0;
+                    // Para m = 3 - mejorar precisión con double desde el inicio
+                    double count_m1 = 0.0;  // Cambio: usar double para mayor precisión
                     for(int i = 0; i < n - 2; i++) {
                         for(int j = 0; j < n - 2; j++) {
                             if(i != j) {  // Excluir i == j como en Python
@@ -527,11 +624,11 @@ def export_to_mql5(**kwargs):
                                         break;
                                     }
                                 }
-                                if(match_m1) count_m1++;
+                                if(match_m1) count_m1 += 1.0;
                             }
                         }
                     }
-                    double phi2 = count_m1 > 0 ? MathLog((double)count_m1 / (n - 2)) : 0.0;
+                    double phi2 = count_m1 > 0.0 ? MathLog(count_m1 / (double)(n - 2)) : 0.0;
                     
                     return phi1 - phi2;
                 }
@@ -541,10 +638,17 @@ def export_to_mql5(**kwargs):
                 {
                     int n = ArraySize(a);
                     if(n < 2) return 0.0;
-                    double directio = a[n-1] - a[0];
+                    
+                    // REPLICAR PYTHON EXACTO: _direction = x[-1] - x[0]
+                    double _direction = a[n-1] - a[0];
+                    
+                    // REPLICAR PYTHON EXACTO: volatility = np.sum(np.abs(np.diff(x)))
+                    // np.diff(x) calcula x[i+1] - x[i] (diferencias hacia adelante)
                     double volatility = 0.0;
-                    for(int i=1;i<n;i++) volatility += MathAbs(a[i]-a[i-1]);
-                    return volatility==0.0 ? 0.0 : directio/volatility;
+                    for(int i = 0; i < n-1; i++)  // Cambio: i=0 to n-2, calcular a[i+1] - a[i]
+                        volatility += MathAbs(a[i+1] - a[i]);
+                    
+                    return volatility == 0.0 ? 0.0 : _direction / volatility;
                 }
             """,
             "corr": """
@@ -553,13 +657,13 @@ def export_to_mql5(**kwargs):
                 int n = ArraySize(a);
                 if(n != ArraySize(b) || n < 2) return 0.0;
                 
-                // Calcular medias usando stat_mean
+                    // REPLICAR ALGORITMO PYTHON EXACTO
                 double mean_a = stat_mean(a);
                 double mean_b = stat_mean(b);
                 
                 // Calcular covarianza
                 double cov = 0.0;
-                for(int i=0; i<n; i++) {
+                    for(int i = 0; i < n; i++) {
                     cov += (a[i] - mean_a) * (b[i] - mean_b);
                 }
                 
@@ -576,29 +680,66 @@ def export_to_mql5(**kwargs):
             double stat_corrskew(const double &a[])
             {
                 int n = ArraySize(a);
-                int lag = MathMin(5, n/2);
-                if(n < lag+1) return 0.0;
                 
-                // Preparar arrays para correlación positiva
-                double x1[], y1[];
-                ArrayResize(x1, n-lag);
-                ArrayResize(y1, n-lag);
-                for(int i=0; i<n-lag; i++) {
-                    x1[i] = a[i];
-                    y1[i] = a[i+lag];
+                // REPLICAR PYTHON EXACTO: lag = min(5, x.size // 2)
+                int lag = MathMin(5, n / 2);
+                if(n < lag + 1) return 0.0;
+                
+                int size = n - lag;
+                if(size < 2) return 0.0;  // Necesitamos al menos 2 puntos para correlación
+                
+                // CÁLCULO DIRECTO DE CORRELACIONES SIN ARRAYS INTERMEDIOS
+                // Para mayor precisión y consistencia exacta con Python
+                
+                // Calcular medias de las secuencias x[:-lag] y x[lag:]
+                double mean_x1 = 0.0, mean_y = 0.0;
+                for(int i = 0; i < size; i++) {
+                    mean_x1 += a[i];           // x[:-lag]
+                    mean_y += a[i + lag];      // x[lag:]
+                }
+                mean_x1 /= (double)size;
+                mean_y /= (double)size;
+                
+                // Calcular correlación positiva: corr(x[:-lag], x[lag:])
+                double cov_pos = 0.0, var_x1 = 0.0, var_y = 0.0;
+                for(int i = 0; i < size; i++) {
+                    double dx1 = a[i] - mean_x1;           // x[:-lag] - media
+                    double dy = a[i + lag] - mean_y;       // x[lag:] - media
+                    
+                    cov_pos += dx1 * dy;
+                    var_x1 += dx1 * dx1;
+                    var_y += dy * dy;
                 }
                 
-                // Preparar arrays para correlación negativa
-                double x2[], y2[];
-                ArrayResize(x2, n-lag);
-                ArrayResize(y2, n-lag);
-                for(int i=0; i<n-lag; i++) {
-                    x2[i] = -a[i];
-                    y2[i] = a[i+lag];
+                // Calcular std de forma consistente con stat_std
+                double std_x1 = MathSqrt(var_x1 / (double)(size - 1));
+                double std_y = MathSqrt(var_y / (double)(size - 1));
+                
+                double corr_pos = 0.0;
+                if(std_x1 > 0.0 && std_y > 0.0) {
+                    corr_pos = cov_pos / ((double)size * std_x1 * std_y);
                 }
                 
-                double corr_pos = stat_corr(x1, y1);
-                double corr_neg = stat_corr(x2, y2);
+                // Calcular correlación negativa: corr(-x[:-lag], x[lag:])
+                // Media de -x[:-lag] es simplemente -mean_x1
+                double mean_neg_x1 = -mean_x1;
+                
+                double cov_neg = 0.0, var_neg_x1 = 0.0;
+                for(int i = 0; i < size; i++) {
+                    double dneg_x1 = (-a[i]) - mean_neg_x1;   // -x[:-lag] - media_neg
+                    double dy = a[i + lag] - mean_y;          // x[lag:] - media (mismo que antes)
+                    
+                    cov_neg += dneg_x1 * dy;
+                    var_neg_x1 += dneg_x1 * dneg_x1;
+                }
+                
+                // std de -x[:-lag] debería ser igual a std de x[:-lag]
+                double std_neg_x1 = MathSqrt(var_neg_x1 / (double)(size - 1));
+                
+                double corr_neg = 0.0;
+                if(std_neg_x1 > 0.0 && std_y > 0.0) {
+                    corr_neg = cov_neg / ((double)size * std_neg_x1 * std_y);
+                }
                 
                 return corr_pos - corr_neg;
             }
@@ -609,11 +750,14 @@ def export_to_mql5(**kwargs):
                     int n = ArraySize(a);
                     if(n < 2) return 0.0;
                     
+                    // REPLICAR ALGORITMO PYTHON EXACTO
                     // Calcular log returns
                     double logret[];
                     ArrayResize(logret, n-1);
-                    for(int i = 1; i < n; i++) 
-                        logret[i-1] = MathLog(a[i-1]/a[i]);
+                    for(int i = 1; i < n; i++) {
+                        if(a[i-1] <= 0) logret[i-1] = 0.0;
+                        else logret[i-1] = MathLog(a[i-1] / a[i]);
+                    }
                     
                     // Calcular mediana usando stat_median
                     double med = stat_median(logret);
@@ -633,34 +777,40 @@ def export_to_mql5(**kwargs):
                     for(int i = 0; i < n-1; i++)
                         if(dev[i] > thresh) jumps++;
                     
-                    return (double)jumps/(n-1);
+                    return (double)jumps / (n-1);
                 }
                 """,
             "volskew": """
                 double stat_volskew(const double &a[])
                 {
                     int n = ArraySize(a);
-                    if(n<2) return 0.0;
+                    if(n < 2) return 0.0;
                     
-                    // Calcular movimientos positivos y negativos
+                    // REPLICAR PYTHON EXACTO: np.maximum(x[1:] - x[:-1], 0) y np.maximum(x[:-1] - x[1:], 0)
                     double up_moves[], down_moves[];
                     ArrayResize(up_moves, n-1);
                     ArrayResize(down_moves, n-1);
                     
-                    for(int i=1; i<n; i++)
+                    // Calcular movimientos directamente como Python con máxima precisión
+                    for(int i = 0; i < n-1; i++)
                     {
-                        double diff = a[i] - a[i-1];
-                        up_moves[i-1] = MathMax(diff, 0.0);
-                        down_moves[i-1] = MathMax(-diff, 0.0);
+                        double forward_diff = a[i+1] - a[i];    // x[1:] - x[:-1]
+                        double backward_diff = a[i] - a[i+1];   // x[:-1] - x[1:]
+                        
+                        // REPLICAR PYTHON EXACTO: np.maximum(..., 0)
+                        up_moves[i] = (forward_diff > 0.0) ? forward_diff : 0.0;
+                        down_moves[i] = (backward_diff > 0.0) ? backward_diff : 0.0;
                     }
                     
-                    // Calcular desviación estándar usando stat_std
+                    // Usar stat_std para máxima precisión y consistencia
                     double up_vol = stat_std(up_moves);
                     double down_vol = stat_std(down_moves);
                     
-                    // Calcular skew
+                    // REPLICAR RETORNO PYTHON EXACTO con verificación de precisión
                     double sum = up_vol + down_vol;
-                    return sum==0.0 ? 0.0 : (up_vol - down_vol)/sum;
+                    if(sum == 0.0) return 0.0;
+                    
+                    return (up_vol - down_vol) / sum;
                 }
             """,
         }
@@ -677,6 +827,11 @@ def export_to_mql5(**kwargs):
         code += '\n\n'
         code += f'#define DIRECTION            "{str(direction)}"\n'
         code += f'#define MAGIC_NUMBER         {str(model_seed)}\n'
+        code += f'#define MAIN_THRESHOLD       {str(model_main_threshold)}\n'
+        code += f'#define META_THRESHOLD       {str(model_meta_threshold)}\n'
+        code += f'#define MAX_ORDERS          {str(model_max_orders)}\n'
+        code += f'#define DELAY_BARS          {str(model_delay_bars)}\n'
+        code += f'#define DECIMAL_PRECISION   {str(decimal_precision)}\n'
         
         # ───── AGREGAR FUNCIÓN DE RETORNOS ─────
         code += """
@@ -691,10 +846,17 @@ void compute_returns(const double &prices[], double &returns[])
     
     ArrayResize(returns, n - 1);
     for(int i = 0; i < n - 1; i++) {
-        if(prices[i] <= 0) {
+        if(prices[i] <= 0.0 || prices[i + 1] <= 0.0) {
             returns[i] = 0.0;  // Evitar log(0) o log(negativo)
         } else {
-            returns[i] = MathLog(prices[i + 1] / prices[i]);
+            // REPLICAR PYTHON EXACTO con máxima precisión: np.log(prices[i + 1] / prices[i])
+            double ratio = prices[i + 1] / prices[i];
+            // Verificar que el ratio sea válido antes de calcular log
+            if(ratio > 0.0) {
+                returns[i] = MathLog(ratio);
+            } else {
+                returns[i] = 0.0;
+            }
         }
     }
 }
@@ -702,8 +864,8 @@ void compute_returns(const double &prices[], double &returns[])
 // ───── FUNCIÓN PARA DETERMINAR SI UN ESTADÍSTICO USA RETORNOS ─────
 bool should_use_returns(string stat_name)
 {
-    return (stat_name == "mean" || stat_name == "median" || 
-            stat_name == "std" || stat_name == "iqr" || stat_name == "mad");
+    return (stat_name == "mean" || stat_name == "median" || stat_name == "std" || 
+            stat_name == "iqr" || stat_name == "mad" || stat_name == "sharpe" || stat_name == "autocorr");
 }
 
 """
@@ -756,10 +918,10 @@ void fill_arays_main(double &dst[])
             if(ArraySize(returns) == 0) {
                 dst[k] = 0.0;  // Valor por defecto si no se pueden calcular retornos
             } else {
-                dst[k] = FUNCS_MAIN[k](returns);
+                dst[k] = NormalizeDouble(FUNCS_MAIN[k](returns), DECIMAL_PRECISION);
             }
         } else {
-            dst[k] = FUNCS_MAIN[k](pr);
+            dst[k] = NormalizeDouble(FUNCS_MAIN[k](pr), DECIMAL_PRECISION);
         }
     }
 }
@@ -782,10 +944,10 @@ void fill_arays_meta(double &dst[])
             if(ArraySize(returns) == 0) {
                 dst[k] = 0.0;  // Valor por defecto si no se pueden calcular retornos
             } else {
-                dst[k] = FUNCS_META[k](returns);
+                dst[k] = NormalizeDouble(FUNCS_META[k](returns), DECIMAL_PRECISION);
             }
         } else {
-            dst[k] = FUNCS_META[k](pr);
+            dst[k] = NormalizeDouble(FUNCS_META[k](pr), DECIMAL_PRECISION);
         }
     }
 }

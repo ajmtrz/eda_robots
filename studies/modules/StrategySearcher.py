@@ -122,7 +122,7 @@ class StrategySearcher:
             'mapie': self.search_mapie,
             'causal': self.search_causal,
             'wkmeans' : self.search_wkmeans,
-            'fractal_article': self.search_fractal,
+            'fractal': self.search_fractal,
         }
         
         if self.search_type not in search_funcs:
@@ -179,6 +179,10 @@ class StrategySearcher:
                                     study.set_user_attr("best_periods_main", trial.user_attrs.get('feature_main_periods'))
                                     study.set_user_attr("best_stats_main", trial.user_attrs.get('feature_main_stats'))
                                     study.set_user_attr("best_model_cols", trial.user_attrs['model_cols'])
+                                    study.set_user_attr("model_main_threshold", trial.user_attrs['model_main_threshold'])
+                                    study.set_user_attr("model_meta_threshold", trial.user_attrs['model_meta_threshold'])
+                                    study.set_user_attr("model_max_orders", trial.user_attrs['model_max_orders'])
+                                    study.set_user_attr("model_delay_bars", trial.user_attrs['model_delay_bars'])
                                     # Cambiar acceso directo por .get para evitar error si no existe
                                     study.set_user_attr("best_periods_meta", trial.user_attrs.get('feature_meta_periods'))
                                     study.set_user_attr("best_stats_meta", trial.user_attrs.get('feature_meta_stats'))
@@ -196,6 +200,10 @@ class StrategySearcher:
                                         "best_periods_meta": study.user_attrs["best_periods_meta"],
                                         "best_stats_main": study.user_attrs["best_stats_main"],
                                         "best_stats_meta": study.user_attrs["best_stats_meta"],
+                                        "model_main_threshold": study.user_attrs["model_main_threshold"],
+                                        "model_meta_threshold": study.user_attrs["model_meta_threshold"],
+                                        "model_max_orders": study.user_attrs["model_max_orders"],
+                                        "model_delay_bars": study.user_attrs["model_delay_bars"],
                                     }
                                     export_to_mql5(**export_params)
 
@@ -204,9 +212,8 @@ class StrategySearcher:
                                         if p and os.path.exists(p):
                                             os.remove(p)
                                     # Parar el algoritmo
-                                    # if self.debug:
-                                    #     if trial.number > 5:
-                                    #         study.stop()
+                                    if self.debug:
+                                        study.stop()
 
                             # Liberar memoria eliminando datos pesados del trial
                             if 'model_paths' in trial.user_attrs and trial.user_attrs['model_paths']:
@@ -306,10 +313,6 @@ class StrategySearcher:
                 # Propagar clusters a dataset completo
                 full_ds.loc[reliable_mask, 'labels_meta'] = reliable_data['labels_meta']
                 full_ds.loc[~reliable_mask, 'labels_meta'] = -1  # Muestras no confiables sin cluster
-                
-                if self.debug:
-                    cluster_dist = full_ds['labels_meta'].value_counts()
-                    print(f"🔍   Distribución clusters híbridos: {cluster_dist}")
 
             else:
                 # Esquema tradicional: aplicar clustering a todo
@@ -388,10 +391,6 @@ class StrategySearcher:
                 # Propagar clusters a dataset completo
                 full_ds.loc[reliable_mask, 'labels_meta'] = reliable_data['labels_meta']
                 full_ds.loc[~reliable_mask, 'labels_meta'] = -1  # Muestras no confiables sin cluster
-                
-                if self.debug:
-                    cluster_dist = full_ds['labels_meta'].value_counts()
-                    print(f"🔍   Distribución clusters Markov híbridos: {cluster_dist}")
                     
             else:
                 # Esquema tradicional: aplicar clustering Markov a todo
@@ -463,10 +462,6 @@ class StrategySearcher:
                 # Propagar clusters a dataset completo
                 full_ds.loc[reliable_mask, 'labels_meta'] = reliable_data['labels_meta']
                 full_ds.loc[~reliable_mask, 'labels_meta'] = -1  # Muestras no confiables sin cluster
-                
-                if self.debug:
-                    cluster_dist = full_ds['labels_meta'].value_counts()
-                    print(f"🔍   Distribución clusters LGMM híbridos: {cluster_dist}")
                     
             else:
                 # Esquema tradicional: aplicar clustering a todo
@@ -555,7 +550,11 @@ class StrategySearcher:
                 full_ds.loc[predicted == y, 'meta_labels'] = 1.0
                 
             model_main_train_data = full_ds[full_ds['meta_labels'] == 1][feature_cols + ['labels_main']].copy()
-            model_meta_train_data = full_ds[feature_cols].copy()
+            # Meta model debe usar meta features, no main features
+            meta_feature_cols = [col for col in full_ds.columns if col.endswith('_meta_feature')]
+            if not meta_feature_cols:  # Fallback: usar main features si no hay meta features
+                meta_feature_cols = feature_cols
+            model_meta_train_data = full_ds[meta_feature_cols].copy()
             model_meta_train_data['labels_meta'] = full_ds['conformal_labels']
             score, model_paths, models_cols = self.fit_final_models(
                 trial=trial,
@@ -685,7 +684,11 @@ class StrategySearcher:
                 full_ds.loc[full_ds.index.isin(all_bad), 'meta_labels'] = 0.0
                 
             model_main_train_data = full_ds[full_ds['meta_labels'] == 1.0][feature_cols + ['labels_main']].copy()
-            model_meta_train_data = full_ds[feature_cols].copy()
+            # Meta model debe usar meta features, no main features
+            meta_feature_cols = [col for col in full_ds.columns if col.endswith('_meta_feature')]
+            if not meta_feature_cols:  # Fallback: usar main features si no hay meta features
+                meta_feature_cols = feature_cols
+            model_meta_train_data = full_ds[meta_feature_cols].copy()
             model_meta_train_data['labels_meta'] = full_ds['meta_labels']
             score, model_paths, models_cols = self.fit_final_models(
                 trial=trial,
@@ -752,10 +755,6 @@ class StrategySearcher:
                 # Propagar clusters a dataset completo
                 full_ds.loc[reliable_mask, 'labels_meta'] = reliable_data['labels_meta']
                 full_ds.loc[~reliable_mask, 'labels_meta'] = -1  # Muestras no confiables sin cluster
-                
-                if self.debug:
-                    cluster_dist = full_ds['labels_meta'].value_counts()
-                    print(f"🔍   Distribución clusters WKmeans híbridos: {cluster_dist}")
                     
             else:
                 # Esquema tradicional: aplicar clustering a todo
@@ -814,7 +813,10 @@ class StrategySearcher:
             
             # Meta: todas las muestras, etiquetas binarias (trading/no-trading)  
             # 1 si hay señal (0 o 1), 0 si neutral (2)
-            meta_data = full_ds[feature_cols].copy()
+            meta_feature_cols = [c for c in full_ds.columns if c.endswith('_meta_feature')]
+            if not meta_feature_cols:  # Fallback: usar main features si no hay meta features
+                meta_feature_cols = feature_cols
+            meta_data = full_ds[meta_feature_cols].copy()
             meta_data['labels_meta'] = (full_ds['labels_main'].isin([0.0, 1.0])).astype(int)
             
             # Main: solo muestras con señales, etiquetas direccionales
@@ -910,8 +912,8 @@ class StrategySearcher:
                         continue
                     
                     # Main data: solo muestras del cluster que sean confiables
-                    feature_cols = [c for c in full_ds.columns if c.endswith('_main_feature')]
-                    model_main_train_data = full_ds.loc[hybrid_mask, feature_cols + ['labels_main']].copy()
+                    main_feature_cols = [c for c in full_ds.columns if c.endswith('_main_feature')]
+                    model_main_train_data = full_ds.loc[hybrid_mask, main_feature_cols + ['labels_main']].copy()
                     
                     # Verificar tamaño mínimo
                     if 'label_max_val' in hp and len(model_main_train_data) <= hp["label_max_val"]:
@@ -925,8 +927,9 @@ class StrategySearcher:
                             print(f"🔍   Cluster {clust} descartado: labels_main insuficientes")
                         continue
                     
-                    # Meta data: todas las muestras, etiquetas híbridas
-                    model_meta_train_data = full_ds[feature_cols].copy()
+                    # Meta data: todas las muestras, etiquetas híbridas - ¡USANDO META FEATURES!
+                    meta_feature_cols = [c for c in full_ds.columns if c.endswith('_meta_feature')]
+                    model_meta_train_data = full_ds[meta_feature_cols].copy()
                     model_meta_train_data['labels_meta'] = hybrid_mask.astype('int8')  # 1 = cluster bueno + confiable
                     
                     # Verificar distribución de clases meta
@@ -1009,29 +1012,6 @@ class StrategySearcher:
         p[f'{group}_early_stopping']  = trial.suggest_int (f'{group}_early_stopping',  20,  200,  step=20)
         return p
 
-    # ─────────────────────────  CONSTANTES INMUTABLES  ──────────────────────────
-    GROUPS: Dict[str, tuple] = {
-        "trend": (
-            "slope", "momentum", "hurst", "autocorr", "effratio", "fractal"
-        ),
-        "volatility": (
-            "std", "range", "mad", "var", "jumpvol", "volskew"
-        ),
-        "shape": (
-            "skew", "kurt", "entropy", "zscore", "corrskew", "fisher"
-        ),
-        "central": (
-            "mean", "median", "iqr", "cv"
-        ),
-        "performance": (
-            "sharpe", "chande", "maxdd"
-        ),
-        "other": (
-            "approxentropy",
-        ),
-    }
-    ALL_STATS: tuple = tuple(sorted({s for g in GROUPS.values() for s in g}))  # ᴜɴɪǫᴜᴇ & sorted
-
     # ─────────────────────────  FUNCIÓN PRINCIPAL  ──────────────────────────────
     def _suggest_feature(self, trial: optuna.Trial) -> Dict[str, Any]:
         """
@@ -1043,7 +1023,43 @@ class StrategySearcher:
         - prefijos consistentes ('feature_main_', 'feature_meta_')
         - espacio de hiperparámetros completamente fijo
         """
+        GROUPS: Dict[str, tuple] = {
+            "trend": (
+                "slope", "momentum", "hurst", "autocorr", "effratio", "fractal"
+            ),
+            "volatility": (
+                "std", "range", "mad", "var", "jumpvol", "volskew"
+            ),
+            "shape": (
+                "skew", "kurt", "entropy", "zscore", "corrskew", "fisher"
+            ),
+            "central": (
+                "mean", "median", "iqr", "cv"
+            ),
+            "performance": (
+                "sharpe", "chande", "maxdd"
+            ),
+            "other": (
+                "approxentropy",
+            ),
+        }
+        REMOVE_STATS = ("cv",
+                        "std",
+                        "sharpe",
+                        "mad",
+                        "entropy",
+                        "momentum",
+                        "fisher",
+                        "effratio",
+                        "chande",
+                        "mean")
+        ALL_STATS = tuple(sorted({s for g in GROUPS.values() for s in g if s not in REMOVE_STATS}))
         p: Dict[str, Any] = {}
+
+        p["model_main_threshold"] = trial.suggest_float("model_main_threshold", 0.5, 0.9)
+        p["model_meta_threshold"] = trial.suggest_float("model_meta_threshold", 0.5, 0.9)
+        p["model_max_orders"] = trial.suggest_int("model_max_orders", 1, 5)
+        p["model_delay_bars"] = trial.suggest_int("model_delay_bars", 1, 5)
 
         # ─── FEATURE MAIN - PERÍODOS ────────────────────────────────────────────────
         n_periods = trial.suggest_int("feature_main_n_periods", 1, 12)
@@ -1056,7 +1072,7 @@ class StrategySearcher:
         # ─── FEATURE MAIN - ESTADÍSTICAS ───────────────────────────────────────────
         n_stats = trial.suggest_int("feature_main_n_stats", 1, 6)
         feature_stats = [
-            trial.suggest_categorical(f"feature_main_stat_{i}", self.ALL_STATS)
+            trial.suggest_categorical(f"feature_main_stat_{i}", ALL_STATS)
             for i in range(n_stats)
         ]
         # mantener orden de aparición sin duplicados
@@ -1069,7 +1085,7 @@ class StrategySearcher:
         )
 
         # ─── FEATURE META (solo ciertos search_type) ──────────────────────────
-        if self.search_type in {"markov", "clusters", "lgmm", "wkmeans"}:
+        if self.search_type in {"markov", "clusters", "lgmm", "wkmeans", "fractal"}:
             # períodos meta
             n_meta_periods = trial.suggest_int("feature_meta_n_periods", 1, 3)
             meta_periods = [
@@ -1081,7 +1097,7 @@ class StrategySearcher:
             # estadísticas meta
             n_meta_stats = trial.suggest_int("feature_meta_n_stats", 1, 3)
             meta_stats = [
-                trial.suggest_categorical(f"feature_meta_stat_{i}", self.ALL_STATS)
+                trial.suggest_categorical(f"feature_meta_stat_{i}", ALL_STATS)
                 for i in range(n_meta_stats)
             ]
             p["feature_meta_stats"] = tuple(dict.fromkeys(meta_stats))
@@ -1103,7 +1119,7 @@ class StrategySearcher:
     def _suggest_label(self, trial: optuna.Trial) -> Dict[str, float]:
         """Hiperparámetros de etiquetado dependientes de la función label_method."""
         label_search_space = {
-            'label_markup':     lambda t: t.suggest_float('label_markup',     0.2, 2.0, log=True),
+            'label_markup':     lambda t: t.suggest_float('label_markup',     0.0001, 0.01, log=True),
             'label_n_clusters': lambda t: t.suggest_int('label_n_clusters', 5, 30, log=True),
             'label_polyorder':  lambda t: t.suggest_int('label_polyorder',    2, 10, log=True),
             'label_threshold':  lambda t: t.suggest_float('label_threshold',  0.2, 0.8),
@@ -1114,8 +1130,8 @@ class StrategySearcher:
             'label_rolling_periods_small': lambda t: [t.suggest_int(f'label_rolling_periods_small_{i}', 4, 60, log=True) for i in range(3)],
             'label_rolling_periods_big': lambda t: [t.suggest_int(f'label_rolling_periods_big_{i}', 200, 600, log=True) for i in range(3)],
             'label_atr_period': lambda t: t.suggest_int  ('label_atr_period', 10, 50, log=True),
-            'label_min_val':    lambda t: t.suggest_int  ('label_min_val',    1,  4),
-            'label_max_val':    lambda t: t.suggest_int  ('label_max_val',    5, 15),
+            'label_min_val':    lambda t: t.suggest_int  ('label_min_val',    1,  4, log=True),
+            'label_max_val':    lambda t: t.suggest_int  ('label_max_val',    5, 15, log=True),
             'label_method':     lambda t: t.suggest_categorical('label_method', ['first', 'last', 'mean', 'max', 'min']),
             'label_filter':     lambda t: t.suggest_categorical('label_filter', ['savgol', 'spline', 'sma', 'ema']),
             'label_window_size': lambda t: t.suggest_int('label_window_size', 4, 60, log=True),
@@ -1336,13 +1352,16 @@ class StrategySearcher:
                     model_meta_cols=meta_feature_cols,
                     direction=self.direction,
                     timeframe=self.timeframe,
-                    print_metrics=self.debug,  # Simplificado
+                    model_main_threshold=hp['model_main_threshold'],
+                    model_meta_threshold=hp['model_meta_threshold'],
+                    model_max_orders=hp['model_max_orders'],
+                    model_delay_bars=hp['model_delay_bars'],
+                    print_metrics=self.debug
                 )
             except Exception as tester_error:
                 if self.debug:
                     print(f"🔍 DEBUG: Error en tester: {tester_error}")
                 score = -1.0
-                
             test_train_time_end = time.time()
             if self.debug:
                 print(f"🔍 DEBUG: Tiempo de test in-sample: {test_train_time_end - test_train_time_start:.2f} segundos")
@@ -1350,7 +1369,7 @@ class StrategySearcher:
             
             if not np.isfinite(score):
                 score = -1.0
-                
+
             if self.debug:
                 print(f"🔍 DEBUG: Modelos guardados en {model_main_path} y {model_meta_path}")
             return score, (model_main_path, model_meta_path), (main_feature_cols, meta_feature_cols)
@@ -1700,7 +1719,7 @@ class StrategySearcher:
             main_stats = hp.get('feature_main_stats', ())
             if len(main_periods) == 0 or len(main_stats) == 0:
                 return None
-                
+            
             # Guardar dataset completo a disco
             if self.debug:
                 if self.tag:
@@ -1708,7 +1727,7 @@ class StrategySearcher:
                     os.makedirs(data_dir, exist_ok=True)
                     dataset_filename = f"{self.tag}.csv"
                     dataset_path = os.path.join(data_dir, dataset_filename)
-                    full_ds.to_csv(dataset_path, index=True, float_format='%.4f')
+                    full_ds.to_csv(dataset_path, index=True, float_format='%.6f', date_format='%Y.%m.%d %H:%M:%S')
                     print(f"🔍 DEBUG: Dataset guardado en {dataset_path}")
 
             return full_ds
@@ -1786,7 +1805,7 @@ ESQUEMAS DISPONIBLES:
 
 1. ESQUEMA PURO DE CONFIABILIDAD (fractal original):
    searcher = StrategySearcher(
-       search_type='fractal_article',  # ← Método original
+       search_type='fractal',  # ← Método original
        label_method='fractal'
    )
    - Meta model: "¿es confiable el patrón?" (1=confiable, 0=no confiable)

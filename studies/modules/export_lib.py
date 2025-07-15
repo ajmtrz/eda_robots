@@ -61,7 +61,7 @@ def export_models_to_ONNX(models):
         onnx_model = convert_sklearn(
             model,
             initial_types=[('input', FloatTensorType([None, len(model.feature_names_)]))],
-            target_opset={"": 18, "ai.onnx.ml": 2},
+            target_opset={"": 17, "ai.onnx.ml": 2},
             options={"nocl": False, "zipmap": False}
         )
         tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".onnx")
@@ -81,11 +81,7 @@ def export_to_mql5(**kwargs):
     model_seed = kwargs.get('best_model_seed')
     models_export_path = kwargs.get('models_export_path')
     include_export_path = kwargs.get('include_export_path')
-    model_main_threshold = kwargs.get('model_main_threshold')
-    model_meta_threshold = kwargs.get('model_meta_threshold')
-    model_max_orders = kwargs.get('model_max_orders')
-    model_delay_bars = kwargs.get('model_delay_bars')
-    decimal_precision = kwargs.get('decimal_precision')  # NUEVO PARÁMETRO
+    decimal_precision = kwargs.get('decimal_precision')
 
     def _should_use_returns(stat_name):
         """Determina si un estadístico debe usar retornos en lugar de precios."""
@@ -817,9 +813,9 @@ def export_to_mql5(**kwargs):
         
         code = r"#include <Math\Stat\Math.mqh>"
         code += '\n'
-        code += rf'#resource "\\Files\\{filename_model_main}" as uchar ExtModel_[]'
+        code += rf'#resource "\\Files\\{filename_model_main}" as uchar ExtModel_main[]'
         code += '\n'
-        code += rf'#resource "\\Files\\{filename_model_meta}" as uchar ExtModel_m_[]'
+        code += rf'#resource "\\Files\\{filename_model_meta}" as uchar ExtModel_meta[]'
         code += '\n\n'
         code += '//+------------------------------------------------------------------+\n'
         code += f'//| SCORE: {best_score}                       |\n'
@@ -827,10 +823,6 @@ def export_to_mql5(**kwargs):
         code += '\n\n'
         code += f'#define DIRECTION            "{str(direction)}"\n'
         code += f'#define MAGIC_NUMBER         {str(model_seed)}\n'
-        code += f'#define MAIN_THRESHOLD       {str(model_main_threshold)}\n'
-        code += f'#define META_THRESHOLD       {str(model_meta_threshold)}\n'
-        code += f'#define MAX_ORDERS          {str(model_max_orders)}\n'
-        code += f'#define DELAY_BARS          {str(model_delay_bars)}\n'
         code += f'#define DECIMAL_PRECISION   {str(decimal_precision)}\n'
         
         # ───── AGREGAR FUNCIÓN DE RETORNOS ─────

@@ -181,10 +181,6 @@ class StrategySearcher:
                                     study.set_user_attr("best_periods_main", trial.user_attrs.get('feature_main_periods'))
                                     study.set_user_attr("best_stats_main", trial.user_attrs.get('feature_main_stats'))
                                     study.set_user_attr("best_model_cols", trial.user_attrs['model_cols'])
-                                    study.set_user_attr("model_main_threshold", trial.user_attrs['model_main_threshold'])
-                                    study.set_user_attr("model_meta_threshold", trial.user_attrs['model_meta_threshold'])
-                                    study.set_user_attr("model_max_orders", trial.user_attrs['model_max_orders'])
-                                    study.set_user_attr("model_delay_bars", trial.user_attrs['model_delay_bars'])
                                     # Cambiar acceso directo por .get para evitar error si no existe
                                     study.set_user_attr("best_periods_meta", trial.user_attrs.get('feature_meta_periods'))
                                     study.set_user_attr("best_stats_meta", trial.user_attrs.get('feature_meta_stats'))
@@ -202,10 +198,6 @@ class StrategySearcher:
                                         "best_periods_meta": study.user_attrs["best_periods_meta"],
                                         "best_stats_main": study.user_attrs["best_stats_main"],
                                         "best_stats_meta": study.user_attrs["best_stats_meta"],
-                                        "model_main_threshold": study.user_attrs["model_main_threshold"],
-                                        "model_meta_threshold": study.user_attrs["model_meta_threshold"],
-                                        "model_max_orders": study.user_attrs["model_max_orders"],
-                                        "model_delay_bars": study.user_attrs["model_delay_bars"],
                                         "decimal_precision": self.decimal_precision,
                                     }
                                     export_to_mql5(**export_params)
@@ -1056,11 +1048,6 @@ class StrategySearcher:
         )
         p: Dict[str, Any] = {}
 
-        p["model_main_threshold"] = trial.suggest_float("model_main_threshold", 0.5, 0.9)
-        p["model_meta_threshold"] = trial.suggest_float("model_meta_threshold", 0.5, 0.9)
-        p["model_max_orders"] = trial.suggest_int("model_max_orders", 1, 5)
-        p["model_delay_bars"] = trial.suggest_int("model_delay_bars", 1, 5)
-
         # ─── FEATURE MAIN - PERÍODOS ────────────────────────────────────────────────
         n_periods = trial.suggest_int("feature_main_n_periods", 1, 12)
         feature_periods = [
@@ -1352,10 +1339,6 @@ class StrategySearcher:
                     model_meta_cols=meta_feature_cols,
                     direction=self.direction,
                     timeframe=self.timeframe,
-                    model_main_threshold=hp['model_main_threshold'],
-                    model_meta_threshold=hp['model_meta_threshold'],
-                    model_max_orders=hp['model_max_orders'],
-                    model_delay_bars=hp['model_delay_bars'],
                     print_metrics=self.debug
                 )
             except Exception as tester_error:

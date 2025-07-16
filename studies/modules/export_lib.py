@@ -1,6 +1,6 @@
 import os
-import re
 import tempfile
+import hashlib
 from catboost import CatBoostClassifier
 from skl2onnx import convert_sklearn, update_registered_converter
 from skl2onnx.common.shape_calculator import calculate_linear_classifier_output_shapes
@@ -78,7 +78,6 @@ def export_to_mql5(**kwargs):
     stats_main = kwargs.get('best_stats_main')
     stats_meta = kwargs.get('best_stats_meta')
     direction = kwargs.get('direction')
-    model_seed = kwargs.get('best_model_seed')
     models_export_path = kwargs.get('models_export_path')
     include_export_path = kwargs.get('include_export_path')
     decimal_precision = kwargs.get('decimal_precision')
@@ -110,15 +109,10 @@ def export_to_mql5(**kwargs):
     
     try:
         main_cols, meta_cols = model_cols
+        hash_str = main_cols + meta_cols
+        model_seed = int.from_bytes(hashlib.sha3_224(str(hash_str).encode('utf-8')).digest()[:5], 'big')
         main_periods, main_funcs = _build_periods_funcs(main_cols)
         meta_periods, meta_funcs = _build_periods_funcs(meta_cols)
-        
-        # Determinar qué estadísticos usan retornos
-        main_stats_set = set([func.replace("stat_", "") for func in main_funcs])
-        meta_stats_set = set([func.replace("stat_", "") for func in meta_funcs]) if meta_funcs else set()
-        all_stats = main_stats_set | meta_stats_set
-        
-        uses_returns = any(_should_use_returns(stat) for stat in all_stats)
         
         # Copia los modelos ONNX desde los archivos temporales a la ruta de destino
         filename_model_main = f"{tag}_main.onnx"
@@ -818,12 +812,11 @@ def export_to_mql5(**kwargs):
         code += rf'#resource "\\Files\\{filename_model_meta}" as uchar ExtModel_meta[]'
         code += '\n\n'
         code += '//+------------------------------------------------------------------+\n'
-        code += f'//| SCORE: {best_score}                       |\n'
+        code += f'//| SCORE: {best_score}                                        |\n'
         code += '//+------------------------------------------------------------------+\n'
         code += '\n\n'
         code += f'#define DIRECTION            "{str(direction)}"\n'
         code += f'#define MAGIC_NUMBER         {str(model_seed)}\n'
-        code += f'#define DECIMAL_PRECISION   {str(decimal_precision)}\n'
         
         # ───── AGREGAR FUNCIÓN DE RETORNOS ─────
         code += """
@@ -894,56 +887,56 @@ bool should_use_returns(string stat_name)
         # ──────────────────────────────────────────────────────────────────
         # 2)  Rutinas compactas de cálculo (una pasada, con soporte para retornos)
         # ──────────────────────────────────────────────────────────────────
-        code += R"""
-void fill_arays_main(double &dst[])
-{
+        code += """
+void fill_arays_main(float &dst[])
+{{
     double pr[], returns[];
     for(int k=0; k<ArraySize(PERIODS_MAIN); ++k)
-    {
+    {{
         int per = PERIODS_MAIN[k];
         CopyClose(_Symbol, _Period, 1, per, pr);
         ArraySetAsSeries(pr, false);
         
         // ───── USAR RETORNOS SI EL ESTADÍSTICO LO REQUIERE ─────
-        if(USES_RETURNS_MAIN[k]) {
+        if(USES_RETURNS_MAIN[k]) {{
             compute_returns(pr, returns);
-            if(ArraySize(returns) == 0) {
+            if(ArraySize(returns) == 0) {{
                 dst[k] = 0.0;  // Valor por defecto si no se pueden calcular retornos
-            } else {
-                dst[k] = NormalizeDouble(FUNCS_MAIN[k](returns), DECIMAL_PRECISION);
-            }
-        } else {
-            dst[k] = NormalizeDouble(FUNCS_MAIN[k](pr), DECIMAL_PRECISION);
-        }
-    }
-}
-"""
+            }} else {{
+                dst[k] = float(NormalizeDouble(FUNCS_MAIN[k](returns), {decimal_precision}));
+            }}
+        }} else {{
+            dst[k] = float(NormalizeDouble(FUNCS_MAIN[k](pr), {decimal_precision}));
+        }}
+    }}
+}}
+""".format(decimal_precision=str(decimal_precision))
 
         if meta_periods:  # Solo agregar si hay features meta
-            code += R"""
-void fill_arays_meta(double &dst[])
-{
+            code += """
+void fill_arays_meta(float &dst[])
+{{
     double pr[], returns[];
     for(int k=0; k<ArraySize(PERIODS_META); ++k)
-    {
+    {{
         int per = PERIODS_META[k];
         CopyClose(_Symbol, _Period, 1, per, pr);
         ArraySetAsSeries(pr, false);
         
         // ───── USAR RETORNOS SI EL ESTADÍSTICO LO REQUIERE ─────
-        if(USES_RETURNS_META[k]) {
+        if(USES_RETURNS_META[k]) {{
             compute_returns(pr, returns);
-            if(ArraySize(returns) == 0) {
+            if(ArraySize(returns) == 0) {{
                 dst[k] = 0.0;  // Valor por defecto si no se pueden calcular retornos
-            } else {
-                dst[k] = NormalizeDouble(FUNCS_META[k](returns), DECIMAL_PRECISION);
-            }
-        } else {
-            dst[k] = NormalizeDouble(FUNCS_META[k](pr), DECIMAL_PRECISION);
-        }
-    }
-}
-"""
+            }} else {{
+                dst[k] = float(NormalizeDouble(FUNCS_META[k](returns), {decimal_precision}));
+            }}
+        }} else {{
+            dst[k] = float(NormalizeDouble(FUNCS_META[k](pr), {decimal_precision}));
+        }}
+    }}
+}}
+""".format(decimal_precision=str(decimal_precision))
 
         file_name = os.path.join(include_export_path, f"{tag}.mqh")
         with open(file_name, "w") as file:
@@ -952,20 +945,3 @@ void fill_arays_meta(double &dst[])
     except Exception as e:
         print(f"ERROR EN EXPORTACIÓN: {e}")
         raise
-
-def remove_inner_braces_and_second_bracket(text):
-    # Регулярное выражение для поиска структуры double LeafValues[N][1] = { ... };
-    pattern = re.compile(r'(double LeafValues\[\d+\]\[1\] = \{)(.*?)(\};)', re.DOTALL)
-
-    # Функция для замены внутренних фигурных скобок и удаления второй квадратной скобки
-    def replace_inner_braces_and_second_bracket(match):
-        inner_content = match.group(2)
-        # Удаление внутренних фигурных скобок
-        inner_content = re.sub(r'\{([^{}]*)\}', r'\1', inner_content)
-        # Удаление второй квадратной скобки
-        return match.group(1).replace('[1]', '') + inner_content + match.group(3)
-
-    # Замена внутренних фигурных скобок и удаление второй квадратной скобки
-    result = pattern.sub(replace_inner_braces_and_second_bracket, text)
-
-    return result

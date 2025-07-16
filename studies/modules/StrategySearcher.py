@@ -80,7 +80,7 @@ class StrategySearcher:
         history_path: str = r"/mnt/c/Users/Administrador/AppData/Roaming/MetaQuotes/Terminal/Common/Files/",
         search_type: str = 'clusters',
         search_subtype: str = 'simple',
-        label_method: str = 'atr',
+        label_method: str = 'random',
         tag: str = "",
         debug: bool = False,
         decimal_precision: int = 6,
@@ -121,9 +121,9 @@ class StrategySearcher:
             'clusters': self.search_clusters,
             'markov': self.search_markov,
             'lgmm': self.search_lgmm,
+            'wkmeans' : self.search_wkmeans,
             'mapie': self.search_mapie,
             'causal': self.search_causal,
-            'wkmeans' : self.search_wkmeans,
             'fractal': self.search_fractal,
         }
         
@@ -134,8 +134,6 @@ class StrategySearcher:
         
         for i in range(self.n_models):
             try:
-                # Generar un seed único para este modelo
-                model_seed = int(time.time() * 1000) + np.random.randint(10, 100)
 
                 # Inicializar estudio de Optuna con objetivo único
                 pruners = {
@@ -149,7 +147,7 @@ class StrategySearcher:
                     load_if_exists=True,
                     pruner=pruners[self.pruner_type],
                     sampler=optuna.samplers.TPESampler(
-                        n_startup_trials=int(np.sqrt(self.n_trials)),
+                        n_startup_trials=int(np.sqrt(self.n_trials)*1.5),
                         multivariate=True, group=True,
                         warn_independent_sampling=False
                     )
@@ -188,7 +186,6 @@ class StrategySearcher:
                                     export_params = {
                                         "tag": self.tag,
                                         "direction": self.direction,
-                                        "best_model_seed": model_seed,
                                         "models_export_path": self.models_export_path,
                                         "include_export_path": self.include_export_path,
                                         "best_score": study.user_attrs["best_score"],
@@ -1075,12 +1072,6 @@ class StrategySearcher:
         # mantener orden de aparición sin duplicados
         p["feature_main_stats"] = tuple(dict.fromkeys(feature_stats))
 
-        # Estrategia de sampling (información adicional para análisis)
-        p["feature_main_strategy"] = trial.suggest_categorical(
-            "feature_main_strategy",
-            ("balanced", "trend", "volatility", "shape", "central", "performance"),
-        )
-
         # ─── FEATURE META (solo ciertos search_type) ──────────────────────────
         if self.search_type in {"markov", "clusters", "lgmm", "wkmeans", "fractal"}:
             # períodos meta
@@ -1098,17 +1089,6 @@ class StrategySearcher:
                 for i in range(n_meta_stats)
             ]
             p["feature_meta_stats"] = tuple(dict.fromkeys(meta_stats))
-            
-            # Estrategia meta
-            p["feature_meta_strategy"] = trial.suggest_categorical(
-                "feature_meta_strategy",
-                ("balanced", "trend", "volatility", "shape", "central", "performance"),
-            )
-        else:
-            # para evitar claves ausentes en el resto del código
-            p["feature_meta_periods"] = tuple()
-            p["feature_meta_stats"] = tuple()
-            p["feature_meta_strategy"] = "balanced"
 
         return p
 
@@ -1605,7 +1585,7 @@ class StrategySearcher:
                 print(f"🔍   feature_meta_periods: {hp.get('feature_meta_periods', 'N/A')}")
                 print(f"🔍   feature_meta_stats: {hp.get('feature_meta_stats', 'N/A')}")
             
-            full_ds = get_features(full_ds, hp)
+            full_ds = get_features(data=full_ds, hp=hp, decimal_precision=self.decimal_precision)
             if self.debug:
                 print(f"🔍 DEBUG: full_ds.shape después de get_features = {full_ds.shape}")
                 feature_cols = [c for c in full_ds.columns if 'feature' in c]
@@ -1712,10 +1692,6 @@ class StrategySearcher:
             main_stats = hp.get('feature_main_stats', ())
             if len(main_periods) == 0 or len(main_stats) == 0:
                 return None
-            
-            # ✅ APLICAR LIMITACIÓN DE PRECISIÓN DECIMAL UNA SOLA VEZ
-            # Esto hará que todo el pipeline use datos con precisión limitada
-            full_ds = self._apply_decimal_precision(full_ds)
 
             # Guardar dataset completo a disco
             if self.debug:
@@ -1724,7 +1700,7 @@ class StrategySearcher:
                     os.makedirs(data_dir, exist_ok=True)
                     dataset_filename = f"{self.tag}.csv"
                     dataset_path = os.path.join(data_dir, dataset_filename)
-                    full_ds.to_csv(dataset_path, index=True, float_format='%.8f', date_format='%Y.%m.%d %H:%M:%S')
+                    full_ds.to_csv(dataset_path, index=True, float_format=f'%.{self.decimal_precision+2}f', date_format='%Y.%m.%d %H:%M:%S')
                     print(f"🔍 DEBUG: Dataset guardado en {dataset_path}")
 
             return full_ds
@@ -1787,34 +1763,6 @@ class StrategySearcher:
                 problematic_cols.append(col)
                 
         return problematic_cols
-
-    def _apply_decimal_precision(self, X: pd.DataFrame) -> pd.DataFrame:
-        """
-        Aplica limitación de precisión decimal SOLO a las columnas de features.
-        Hace los modelos más robustos a diferencias numéricas entre Python y MQL5.
-        
-        Args:
-            X: DataFrame completo (con features y otras columnas)
-            
-        Returns:
-            DataFrame con precisión limitada en features
-        """
-        if self.decimal_precision is None:
-            return X
-            
-        # Crear copia para no modificar el original
-        X_limited = X.copy()
-        
-        # Aplicar redondeo SOLO a columnas que contienen "_feature"
-        feature_cols = [col for col in X_limited.columns if "_feature" in col]
-        
-        if feature_cols:
-            X_limited[feature_cols] = X_limited[feature_cols].round(self.decimal_precision)
-            if self.debug:
-                print(f"🔍 DEBUG: Aplicada limitación de precisión decimal ({self.decimal_precision} decimales) a {len(feature_cols)} columnas de features")
-        
-        return X_limited
-
 
 # =========================================================================
 # DOCUMENTACIÓN: ENFOQUE 4 CORREGIDO - CONFIABILIDAD GENERALIZADA

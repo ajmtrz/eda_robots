@@ -13,16 +13,10 @@ from sklearn.covariance import empirical_covariance
 from hmmlearn import hmm, vhmm
 from scipy.optimize import linear_sum_assignment
 from scipy.signal import savgol_filter
-from scipy.stats import wasserstein_distance
-from scipy.spatial.distance import cdist
-from typing import Tuple
-import numpy.random as npr
 from scipy.interpolate import UnivariateSpline
 from scipy.signal import find_peaks
 from sklearn.mixture import GaussianMixture
 import matplotlib.pyplot as plt
-from joblib import Parallel, delayed
-from concurrent.futures import ProcessPoolExecutor, as_completed
 
 # Configuración de logging
 logging.getLogger('hmmlearn').setLevel(logging.ERROR)
@@ -570,7 +564,7 @@ def compute_features(close, periods_main, periods_meta, stats_main, stats_meta):
 
     return features
 
-def get_features(data: pd.DataFrame, hp):
+def get_features(data: pd.DataFrame, hp, decimal_precision=6):
     close = data['close'].values
     index = data.index
     periods_main = hp["feature_main_periods"]
@@ -596,7 +590,7 @@ def get_features(data: pd.DataFrame, hp):
     feats = compute_features(close, periods_main_t, periods_meta_t, stats_main_t, stats_meta_t)
     if np.isnan(feats).all():
         return pd.DataFrame(index=index)
-    
+    feats = np.round(feats, decimal_precision)
     # ───── OPTIMIZACIÓN: Generar nombres de columnas de forma más eficiente ─────
     colnames = []
     for p in periods_main:

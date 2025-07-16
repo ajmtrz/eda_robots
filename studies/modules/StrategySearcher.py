@@ -252,6 +252,16 @@ class StrategySearcher:
                     n_jobs=self.n_jobs,
                 )
                 
+                # 🔍 DEBUG: Verificar por qué se paró el estudio
+                print(f"🔍 DEBUG: Study terminado después de {len(study.trials)} trials")
+                print(f"🔍   n_trials configurado: {self.n_trials}")
+                print(f"🔍   best_trial: {study.best_trial}")
+                if study.best_trial:
+                    print(f"🔍   best_score: {study.best_trial.value}")
+                print(f"🔍   trials completados: {len([t for t in study.trials if t.state == optuna.trial.TrialState.COMPLETE])}")
+                print(f"🔍   trials pruned: {len([t for t in study.trials if t.state == optuna.trial.TrialState.PRUNED])}")
+                print(f"🔍   trials failed: {len([t for t in study.trials if t.state == optuna.trial.TrialState.FAIL])}")
+                
             except Exception as e:
                 print(f"\nError procesando modelo {i}:")
                 print(f"Error: {str(e)}")

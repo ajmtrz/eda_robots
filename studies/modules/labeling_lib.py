@@ -396,8 +396,10 @@ def compute_features(close, periods_main, periods_meta, stats_main, stats_meta):
     col = 0
     
     # Procesar períodos main
-    for win in periods_main:
-        for s in stats_main:
+    for i in range(len(periods_main)):
+        win = periods_main[i]
+        for j in range(len(stats_main)):
+            s = stats_main[j]
             # ───── AJUSTAR VENTANA PARA ESTADÍSTICOS CON RETORNOS ─────
             if should_use_returns(s):
                 window_size = win + 1  # +1 precio para obtener 'win' retornos
@@ -483,8 +485,10 @@ def compute_features(close, periods_main, periods_meta, stats_main, stats_meta):
 
     # Procesar períodos meta solo si existen
     if len(periods_meta) > 0 and len(stats_meta) > 0:
-        for win in periods_meta:
-            for s in stats_meta:
+        for i in range(len(periods_meta)):
+            win = periods_meta[i]
+            for j in range(len(stats_meta)):
+                s = stats_meta[j]
                 # ───── AJUSTAR VENTANA PARA ESTADÍSTICOS CON RETORNOS ─────
                 if should_use_returns(s):
                     window_size = win + 1  # +1 precio para obtener 'win' retornos
@@ -587,13 +591,13 @@ def get_features(data: pd.DataFrame, hp):
     if not close.flags.c_contiguous:
         close = np.ascontiguousarray(close)
     
-    # ───── OPTIMIZACIÓN: Convertir listas una sola vez ─────
-    periods_main_t = List(periods_main)
-    stats_main_t = List(stats_main)
-    periods_meta_t = List(periods_meta)
-    stats_meta_t = List(stats_meta)
+    # ───── OPTIMIZACIÓN: Usar arrays numpy en lugar de List de numba ─────
+    periods_main_arr = np.array(periods_main, dtype=np.int64)
+    stats_main_arr = np.array(stats_main, dtype=np.int64)
+    periods_meta_arr = np.array(periods_meta, dtype=np.int64)
+    stats_meta_arr = np.array(stats_meta, dtype=np.int64)
 
-    feats = compute_features(close, periods_main_t, periods_meta_t, stats_main_t, stats_meta_t)
+    feats = compute_features(close, periods_main_arr, periods_meta_arr, stats_main_arr, stats_meta_arr)
     if np.isnan(feats).all():
         return pd.DataFrame(index=index)
     
@@ -628,7 +632,6 @@ def get_features(data: pd.DataFrame, hp):
 
     return df
 
-@njit(cache=True, fastmath=True)
 def safe_savgol_filter(x, l_window_size: int, label_polyorder: int):
     """Apply Savitzky-Golay label_filter safely.
 
@@ -801,7 +804,7 @@ def calculate_labels_trend_with_profit(close, atr, normalized_trend, label_thres
         dyn_mk = label_markup * atr[i]
         if normalized_trend[i] > label_threshold:
             # Проверяем condición para Buy
-            rand = np.random.randint(label_min_val, label_max_val + 1)
+            rand = _numba_random_int(label_min_val, label_max_val, i)  # Usar i como semilla
             future_pr = close[i + rand]
             if future_pr >= close[i] + dyn_mk:
                 labels[i] = 0.0  # Buy (Profit reached)
@@ -809,7 +812,7 @@ def calculate_labels_trend_with_profit(close, atr, normalized_trend, label_thres
                 labels[i] = 2.0  # No profit
         elif normalized_trend[i] < -label_threshold:
             # Проверяем condición para Sell
-            rand = np.random.randint(label_min_val, label_max_val + 1)
+            rand = _numba_random_int(label_min_val, label_max_val, i)  # Usar i como semilla
             future_pr = close[i + rand]
             if future_pr <= close[i] - dyn_mk:
                 labels[i] = 1.0  # Sell (Profit reached)
@@ -857,7 +860,7 @@ def calculate_labels_trend_different_filters(close, atr, normalized_trend, label
         dyn_mk = label_markup * atr[i]
         if normalized_trend[i] > label_threshold:
             # Проверяем condición para Buy
-            rand = np.random.randint(label_min_val, label_max_val + 1)
+            rand = _numba_random_int(label_min_val, label_max_val, i)  # Usar i como semilla
             future_pr = close[i + rand]
             if future_pr >= close[i] + dyn_mk:
                 labels[i] = 0.0  # Buy (Profit reached)
@@ -865,7 +868,7 @@ def calculate_labels_trend_different_filters(close, atr, normalized_trend, label
                 labels[i] = 2.0  # No profit
         elif normalized_trend[i] < -label_threshold:
             # Проверяем condición para Sell
-            rand = np.random.randint(label_min_val, label_max_val + 1)
+            rand = _numba_random_int(label_min_val, label_max_val, i)  # Usar i como semilla
             future_pr = close[i + rand]
             if future_pr <= close[i] - dyn_mk:
                 labels[i] = 1.0  # Sell (Profit reached)
@@ -928,7 +931,7 @@ def calculate_labels_trend_multi(close, atr, normalized_trends, label_threshold,
     for i in range(len(close) - label_max_val):
         dyn_mk = label_markup * atr[i]
         # Select a random number of bars forward once for all periods
-        rand = np.random.randint(label_min_val, label_max_val + 1)
+        rand = _numba_random_int(label_min_val, label_max_val, i)  # Usar i como semilla
         buy_signals = 0
         sell_signals = 0
         # Check conditions for each period
@@ -1210,17 +1213,24 @@ def calculate_labels_mean_reversion(close, atr, lvl, label_markup, label_min_val
     labels = np.empty(len(close) - label_max_val, dtype=np.float64)
     for i in range(len(close) - label_max_val):
         dyn_mk = label_markup * atr[i]
-        rand = np.random.randint(label_min_val, label_max_val + 1)
-        curr_pr = close[i]
-        curr_lvl = lvl[i]
-        future_pr = close[i + rand]
-
-        if curr_lvl > q[1] and (future_pr + dyn_mk) < curr_pr:
-            labels[i] = 1.0
-        elif curr_lvl < q[0] and (future_pr - dyn_mk) > curr_pr:
-            labels[i] = 0.0
+        if close[i] < lvl[i] - q:
+            # Проверяем condición para Buy
+            rand = _numba_random_int(label_min_val, label_max_val, i)  # Usar i como semilla
+            future_pr = close[i + rand]
+            if future_pr >= close[i] + dyn_mk:
+                labels[i] = 0.0  # Buy (Profit reached)
+            else:
+                labels[i] = 2.0  # No profit
+        elif close[i] > lvl[i] + q:
+            # Проверяем condición para Sell
+            rand = _numba_random_int(label_min_val, label_max_val, i)  # Usar i como semilla
+            future_pr = close[i + rand]
+            if future_pr <= close[i] - dyn_mk:
+                labels[i] = 1.0  # Sell (Profit reached)
+            else:
+                labels[i] = 2.0  # No profit
         else:
-            labels[i] = 2.0
+            labels[i] = 2.0  # No signal
     return labels
 
 def get_labels_mean_reversion(dataset, label_markup, label_min_val=1, label_max_val=15, label_rolling=0.5, label_quantiles=[.45, .55], label_filter='spline', label_decay_factor=0.95, label_shift=0, label_atr_period=14) -> pd.DataFrame:
@@ -1305,34 +1315,28 @@ def get_labels_mean_reversion(dataset, label_markup, label_min_val=1, label_max_
 
 @njit(cache=True, fastmath=True)
 def calculate_labels_mean_reversion_multi(close_data, atr, lvl_data, q_list, label_markup, label_min_val, label_max_val, window_sizes):
-    labels = []
-    n_win = len(window_sizes)
+    labels = np.empty(len(close_data) - label_max_val, dtype=np.float64)
     for i in range(len(close_data) - label_max_val):
         dyn_mk = label_markup * atr[i]
-        rand = np.random.randint(label_min_val, label_max_val + 1)
-        curr_pr = close_data[i]
-        future_pr = close_data[i + rand]
-
-        buy_condition = True
-        sell_condition = True
-        for qq in range(n_win):
-            curr_lvl = lvl_data[i, qq]
-            q_low, q_high = q_list[qq]
-            if curr_lvl >= q_high:
-                pass
-            else:
-                sell_condition = False
-            if curr_lvl <= q_low:
-                pass
-            else:
-                buy_condition = False
-
-        if sell_condition and (future_pr + dyn_mk) < curr_pr:
-            labels.append(1.0)
-        elif buy_condition and (future_pr - dyn_mk) > curr_pr:
-            labels.append(0.0)
+        # Select a random number of bars forward once for all periods
+        rand = _numba_random_int(label_min_val, label_max_val, i)  # Usar i como semilla
+        buy_signals = 0
+        sell_signals = 0
+        # Check conditions for each period
+        for j in range(len(q_list)):
+            if close_data[i] < lvl_data[j, i] - q_list[j]:
+                if close_data[i + rand] >= close_data[i] + dyn_mk:
+                    buy_signals += 1
+            elif close_data[i] > lvl_data[j, i] + q_list[j]:
+                if close_data[i + rand] <= close_data[i] - dyn_mk:
+                    sell_signals += 1
+        # Combine signals
+        if buy_signals > 0 and sell_signals == 0:
+            labels[i] = 0.0  # Buy
+        elif sell_signals > 0 and buy_signals == 0:
+            labels[i] = 1.0  # Sell
         else:
-            labels.append(2.0)
+            labels[i] = 2.0  # No signal or conflict
     return labels
 
 def get_labels_mean_reversion_multi(dataset, label_markup, label_min_val=1, label_max_val=15, label_window_sizes_float=[0.2, 0.3, 0.5], label_quantiles=[.45, .55], label_atr_period=14) -> pd.DataFrame:
@@ -1373,25 +1377,33 @@ def get_labels_mean_reversion_multi(dataset, label_markup, label_min_val=1, labe
 
 @njit(cache=True, fastmath=True)
 def calculate_labels_mean_reversion_v(close_data, atr, lvl_data, volatility_group, quantile_groups_low, quantile_groups_high, label_markup, label_min_val, label_max_val):
-    labels = []
+    labels = np.empty(len(close_data) - label_max_val, dtype=np.float64)
     for i in range(len(close_data) - label_max_val):
         dyn_mk = label_markup * atr[i]
-        rand = np.random.randint(label_min_val, label_max_val + 1)
-        curr_pr = close_data[i]
-        curr_lvl = lvl_data[i]
-        curr_vol_group = volatility_group[i]
-        future_pr = close_data[i + rand]
-
-        # Access quantiles directly from arrays
-        low_q = quantile_groups_low[int(curr_vol_group)]
-        high_q = quantile_groups_high[int(curr_vol_group)]
-
-        if curr_lvl > high_q and (future_pr + dyn_mk) < curr_pr:
-            labels.append(1.0)
-        elif curr_lvl < low_q and (future_pr - dyn_mk) > curr_pr:
-            labels.append(0.0)
+        vol_group = int(volatility_group[i])
+        if vol_group < len(quantile_groups_low) and vol_group < len(quantile_groups_high):
+            q_low = quantile_groups_low[vol_group]
+            q_high = quantile_groups_high[vol_group]
+            if close_data[i] < lvl_data[i] - q_low:
+                # Проверяем condición para Buy
+                rand = _numba_random_int(label_min_val, label_max_val, i)  # Usar i como semilla
+                future_pr = close_data[i + rand]
+                if future_pr >= close_data[i] + dyn_mk:
+                    labels[i] = 0.0  # Buy (Profit reached)
+                else:
+                    labels[i] = 2.0  # No profit
+            elif close_data[i] > lvl_data[i] + q_high:
+                # Проверяем condición para Sell
+                rand = _numba_random_int(label_min_val, label_max_val, i)  # Usar i como semilla
+                future_pr = close_data[i + rand]
+                if future_pr <= close_data[i] - dyn_mk:
+                    labels[i] = 1.0  # Sell (Profit reached)
+                else:
+                    labels[i] = 2.0  # No profit
+            else:
+                labels[i] = 2.0  # No signal
         else:
-            labels.append(2.0)
+            labels[i] = 2.0  # No signal (invalid volatility group)
     return labels
 
 def get_labels_mean_reversion_v(dataset, label_markup, label_min_val=1, label_max_val=15, label_rolling=0.5, label_quantiles=[.45, .55], label_filter='spline', label_shift=1, label_vol_window=20, label_atr_period=14) -> pd.DataFrame:
@@ -1965,7 +1977,7 @@ def calculate_labels_one_direction(high, low, close, label_markup, label_min_val
         elif method_int == 4:  # min
             future_price = np.min(window)
         else:  # random/otro
-            rand = np.random.randint(label_min_val, label_max_val + 1)
+            rand = _numba_random_int(label_min_val, label_max_val, i)  # Usar i como semilla
             future_price = close[i + rand]
         dyn_mk = label_markup * atr[i]
         if direction_int == 0:  # buy
@@ -2155,7 +2167,7 @@ def calculate_future_outcome_labels_for_patterns(
             # Determinamos el horizonte para la predicción
             current_horizon = min_future_horizon
             if max_future_horizon > min_future_horizon:
-                current_horizon = np.random.randint(min_future_horizon, max_future_horizon + 1)
+                current_horizon = _numba_random_int(min_future_horizon, max_future_horizon, point_idx)  # Usar point_idx como semilla
             
             # Índice del precio futuro relativo al punto actual
             future_price_idx = point_idx + current_horizon
@@ -2675,7 +2687,10 @@ def _kmedoids_pam(
     """
     n = dist_mat.shape[0]
 
-    medoids = np.random.choice(n, k, replace=False)
+    # Inicializar medoids de forma determinística
+    medoids = np.empty(k, dtype=np.int64)
+    for i in range(k):
+        medoids[i] = i * n // k  # Distribuir uniformemente
     labels = np.empty(n, dtype=np.int64)
 
     for _ in range(max_iter):
@@ -2705,7 +2720,7 @@ def _kmedoids_pam(
                     idx[c] = ii
                     c += 1
             if count == 0:  # clúster vacío → re-seed
-                new_medoids[j] = np.random.randint(n)
+                new_medoids[j] = _numba_random_int(0, n-1, j)  # Usar j como semilla
             else:
                 # costs = dist_mat[np.ix_(idx, idx)].sum(axis=1)
                 min_cost = 1e20
@@ -2781,9 +2796,10 @@ def _sliced_wasserstein_numba(window_sizes, n_proj=50):
     vecs = np.empty((n_proj, d), dtype=np.float64)
     for k in range(n_proj):
         for dd in range(d):
-            # Box-Muller transform for standard normal
-            u1 = np.random.random()
-            u2 = np.random.random()
+            # Box-Muller transform for standard normal using deterministic seed
+            seed = k * 1000 + dd
+            u1 = _numba_random_float(seed)
+            u2 = _numba_random_float(seed + 1)
             z = np.sqrt(-2.0 * np.log(u1 + 1e-12)) * np.cos(2.0 * np.pi * u2)
             vecs[k, dd] = z
     for k in range(n_proj):
@@ -2959,3 +2975,29 @@ def wkmeans_clustering(
 
     res["labels_meta"] = res["labels_meta"].ffill()
     return res
+
+# Agregar funciones de generación de números aleatorios compatibles con Numba
+@njit(cache=True, fastmath=True)
+def _numba_random_int(min_val, max_val, seed=42):
+    """
+    Generador de números aleatorios enteros compatible con Numba.
+    Implementación simple basada en congruencia lineal.
+    """
+    # Usar una semilla fija para reproducibilidad
+    x = seed
+    for _ in range(10):  # Calentar el generador
+        x = (1103515245 * x + 12345) & 0x7fffffff
+    x = (1103515245 * x + 12345) & 0x7fffffff
+    return min_val + (x % (max_val - min_val + 1))
+
+@njit(cache=True, fastmath=True)
+def _numba_random_float(seed=42):
+    """
+    Generador de números aleatorios float entre 0 y 1 compatible con Numba.
+    Implementación simple basada en congruencia lineal.
+    """
+    x = seed
+    for _ in range(10):  # Calentar el generador
+        x = (1103515245 * x + 12345) & 0x7fffffff
+    x = (1103515245 * x + 12345) & 0x7fffffff
+    return (x & 0x7fffffff) / 2147483647.0  # Normalizar a [0, 1)

@@ -355,19 +355,19 @@ def volatility_skew(x):
 # ───── HELPER PARA RETORNOS ─────
 @njit(cache=True)
 def compute_returns(prices):
-    """
-    Calcula retornos logarítmicos de forma eficiente.
-    Retorna un array de size-1 con los retornos.
-    """
-    if prices.size <= 1:
+    n = len(prices)
+    if n <= 1:
         return np.empty(0, dtype=np.float64)
     
-    returns = np.empty(prices.size - 1, dtype=np.float64)
-    for i in range(prices.size - 1):
-        if prices[i] <= 0:
-            returns[i] = 0.0  # Evitar log(0) o log(negativo)
+    returns = np.empty(n - 1, dtype=np.float64)
+    for i in range(n - 1):
+        # Verificar AMBOS precios como en MQL5
+        if prices[i] <= 0 or prices[i + 1] <= 0:
+            returns[i] = 0.0
         else:
-            returns[i] = np.log(prices[i + 1] / prices[i])
+            ratio = prices[i + 1] / prices[i]
+            # Replicar exactamente MathLog de MQL5 (ln natural)
+            returns[i] = np.log(ratio)
     return returns
 
 # ───── ESTADÍSTICOS QUE USAN RETORNOS ─────

@@ -1026,32 +1026,32 @@ class StrategySearcher:
         - espacio de hiperparámetros completamente fijo
         """
         ALL_STATS = (
-            "chande",
-            "var",
-            "hurst",
+            # "chande",
+            # "var",
+            # "hurst",
             "std",
-            "approxentropy",
-            "range",
-            "mean",
-            "maxdd",
-            "jumpvol",
-            "fisher",
-            "momentum",
-            "volskew",
-            "entropy",
-            "iqr",
-            "effratio",
-            "fractal",
-            "mad",
-            "cv",
-            "slope",
-            "skew",
-            "zscore",
-            "median",
-            "autocorr",
-            "kurt",
-            "corrskew",
-            "sharpe",
+            # "approxentropy",
+            # "range",
+            # "mean",
+            # "maxdd",
+            # "jumpvol",
+            # "fisher",
+            # "momentum",
+            # "volskew",
+            # "entropy",
+            # "iqr",
+            # "effratio",
+            # "fractal",
+            # "mad",
+            # "cv",
+            # "slope",
+            # "skew",
+            # "zscore",
+            # "median",
+            # "autocorr",
+            # "kurt",
+            # "corrskew",
+            # "sharpe",
         )
         p: Dict[str, Any] = {}
 
@@ -1702,6 +1702,13 @@ class StrategySearcher:
                     dataset_path = os.path.join(data_dir, dataset_filename)
                     full_ds.to_csv(dataset_path, index=True, float_format=f'%.{self.decimal_precision+2}f', date_format='%Y.%m.%d %H:%M:%S')
                     print(f"🔍 DEBUG: Dataset guardado en {dataset_path}")
+
+            # 🔍 DEBUG: Mostrar primera fila del dataset con características
+            if self.debug and not full_ds.empty:
+                print(f"🔍 DEBUG: Primera fila del dataset con características:")
+                print(f"🔍   Índice: {full_ds.index[0]}")
+                print(f"🔍   Columnas: {list(full_ds.columns)}")
+                print(f"🔍   Valores: {full_ds.iloc[0].to_dict()}")
 
             return full_ds
 

@@ -128,7 +128,7 @@ def tester(
         print(f"🔍 DEBUG: Error en tester: {e}")
         return -1.0
 
-@njit(cache=True, fastmath=True)
+@njit(cache=True)
 def evaluate_report(
     equity_curve: np.ndarray,
     trade_profits: np.ndarray,
@@ -187,7 +187,7 @@ def evaluate_report(
 
     return trade_nl, rdd_nl, r2, slope_nl, wf_nl
 
-@njit(cache=True, fastmath=True)
+@njit(cache=True)
 def backtest(close,
             prob_buy,          # numpy[float] - P(buy) de la red MAIN
             prob_sell,         # numpy[float] - P(sell) idem
@@ -293,7 +293,7 @@ def backtest(close,
 
 # ────────── helpers ──────────────────────────────────────────────────────────
 
-@njit(cache=True, fastmath=True)
+@njit(cache=True)
 def _walk_forward_validation(eq, trade_profits):
     """
     Calcula un score de consistencia temporal combinando:
@@ -387,7 +387,7 @@ def get_periods_per_year(timeframe: str) -> float:
     else:
         return horas_por_ano
     
-@njit(cache=True, fastmath=True)
+@njit(cache=True)
 def manual_linear_regression(x, y):
     """
     Regresión lineal manual optimizada con numba.

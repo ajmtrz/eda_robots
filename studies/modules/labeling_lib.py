@@ -39,12 +39,12 @@ def get_prices(symbol, timeframe, history_path) -> pd.DataFrame:
     pFixed = pFixed.drop_duplicates().sort_index()
     return pFixed.dropna()
 
-@njit(cache=True, fastmath=True)
+@njit(cache=True)
 def std_manual(x):
     m = mean_manual(x)
     return np.sqrt(np.sum((x - m) ** 2) / (x.size - 1)) if x.size > 1 else 0.0
 
-@njit(cache=True, fastmath=True)
+@njit(cache=True)
 def skew_manual(x):
     s = std_manual(x)
     if s == 0:
@@ -52,7 +52,7 @@ def skew_manual(x):
     m = mean_manual(x)
     return mean_manual(((x - m) / s) ** 3)
 
-@njit(cache=True, fastmath=True)
+@njit(cache=True)
 def kurt_manual(x):
     s = std_manual(x)
     if s == 0:
@@ -60,7 +60,7 @@ def kurt_manual(x):
     m = mean_manual(x)
     return mean_manual(((x - m) / s) ** 4) - 3.0
 
-@njit(cache=True, fastmath=True)
+@njit(cache=True)
 def zscore_manual(x):
     s = std_manual(x)
     if s == 0:
@@ -68,7 +68,7 @@ def zscore_manual(x):
     m = mean_manual(x)
     return (x[-1] - m) / s
 
-@njit(cache=True, fastmath=True)
+@njit(cache=True)
 def entropy_manual(x):
     bins = 10
     minv = np.min(x)
@@ -90,7 +90,7 @@ def entropy_manual(x):
             entropy -= p * np.log(p)
     return entropy
 
-@njit(cache=True, fastmath=True)
+@njit(cache=True)
 def mean_manual(x):
     if x.size == 0:
         return 0.0
@@ -99,7 +99,7 @@ def mean_manual(x):
         sum_val += x[i]
     return sum_val / x.size
 
-@njit(cache=True, fastmath=True)
+@njit(cache=True)
 def slope_manual(x):
     n = x.size
     if n <= 1:
@@ -124,13 +124,13 @@ def slope_manual(x):
     
     return cov / var_x if var_x != 0 else 0.0
 
-@njit(cache=True, fastmath=True)
+@njit(cache=True)
 def momentum_roc(x):
     if len(x) < 2: return 0.0
     ratio = x[0]/x[-1]
     return ratio - 1.0
 
-@njit(cache=True, fastmath=True)
+@njit(cache=True)
 def fractal_dimension_manual(x):
     x = np.ascontiguousarray(x)
     eps = std_manual(x) / 4
@@ -141,7 +141,7 @@ def fractal_dimension_manual(x):
         return 1.0
     return 1.0 + np.log(count) / np.log(len(x))
 
-@njit(cache=True, fastmath=True)
+@njit(cache=True)
 def hurst_manual(x):
     n = x.size
     if n < 2:
@@ -188,7 +188,7 @@ def hurst_manual(x):
         
     return mean_log_rs / log_n
 
-@njit(cache=True, fastmath=True)
+@njit(cache=True)
 def autocorr1_manual(x):
     n = x.size
     if n < 2:
@@ -203,7 +203,7 @@ def autocorr1_manual(x):
         den += a * a
     return num / den if den != 0 else 0.0
 
-@njit(cache=True, fastmath=True)
+@njit(cache=True)
 def max_dd_manual(x):
     peak = x[0]
     max_dd = 0.0
@@ -215,24 +215,24 @@ def max_dd_manual(x):
             max_dd = dd
     return max_dd
 
-@njit(cache=True, fastmath=True)
+@njit(cache=True)
 def sharpe_manual(x):
     mean = mean_manual(x)
     std = std_manual(x)
     return mean / std if std != 0 else 0.0
 
-@njit(cache=True, fastmath=True)
+@njit(cache=True)
 def fisher_transform(x):
     return 0.5 * np.log((1 + x) / (1 - x))
 
-@njit(cache=True, fastmath=True)
+@njit(cache=True)
 def chande_momentum(x):
     returns = np.diff(x)
     up = np.sum(returns[returns > 0])
     down = np.abs(np.sum(returns[returns < 0]))
     return (up - down) / (up + down) if (up + down) != 0 else 0.0
 
-@njit(cache=True, fastmath=True)
+@njit(cache=True)
 def approximate_entropy(x):
     n = len(x)
     m = 2
@@ -254,13 +254,13 @@ def approximate_entropy(x):
     phi2 = np.log(count / (n - 2)) if count > 0 else 0.0
     return phi1 - phi2
 
-@njit(cache=True, fastmath=True)
+@njit(cache=True)
 def efficiency_ratio(x):
     direction = x[-1] - x[0]
     volatility = np.sum(np.abs(np.diff(x)))
     return direction/volatility if volatility != 0 else 0.0
 
-@njit(cache=True, fastmath=True)
+@njit(cache=True)
 def corr_manual(a, b):
     if a.size != b.size or a.size < 2:
         return 0.0
@@ -282,7 +282,7 @@ def corr_manual(a, b):
     
     return cov / (a.size * sa * sb)
 
-@njit(cache=True, fastmath=True)
+@njit(cache=True)
 def correlation_skew_manual(x):
     lag = min(5, x.size // 2)
     if x.size < lag + 1:
@@ -291,7 +291,7 @@ def correlation_skew_manual(x):
     corr_neg = corr_manual(-x[:-lag], x[lag:])
     return corr_pos - corr_neg
 
-@njit(cache=True, fastmath=True)
+@njit(cache=True)
 def median_manual(a):
     n = a.size
     if n == 0:
@@ -307,7 +307,7 @@ def median_manual(a):
     else:
         return 0.5 * (b[mid-1] + b[mid])
 
-@njit(cache=True, fastmath=True)
+@njit(cache=True)
 def iqr_manual(a):
     n = a.size
     if n == 0:
@@ -318,7 +318,7 @@ def iqr_manual(a):
     q3_idx = int(0.75 * (n - 1))
     return b[q3_idx] - b[q1_idx]
 
-@njit(cache=True, fastmath=True)
+@njit(cache=True)
 def coeff_var_manual(a):
     m = mean_manual(a)
     if m == 0:
@@ -326,7 +326,7 @@ def coeff_var_manual(a):
     s = std_manual(a)
     return s / m
 
-@njit(cache=True, fastmath=True)
+@njit(cache=True)
 def jump_volatility_manual(x):
     if x.size < 2:
         return 0.0
@@ -343,7 +343,7 @@ def jump_volatility_manual(x):
             jumps += 1
     return jumps / log_ret.size
 
-@njit(cache=True, fastmath=True)
+@njit(cache=True)
 def volatility_skew(x):
     n = len(x)
     if n < 2:
@@ -353,7 +353,7 @@ def volatility_skew(x):
     return (up_vol - down_vol)/(up_vol + down_vol) if (up_vol + down_vol) != 0 else 0.0
 
 # ───── HELPER PARA RETORNOS ─────
-@njit(cache=True, fastmath=True)
+@njit(cache=True)
 def compute_returns(prices):
     """
     Calcula retornos logarítmicos de forma eficiente.
@@ -371,13 +371,13 @@ def compute_returns(prices):
     return returns
 
 # ───── ESTADÍSTICOS QUE USAN RETORNOS ─────
-@njit(cache=True, fastmath=True)
+@njit(cache=True)
 def should_use_returns(stat_name):
     """Determina si un estadístico debe usar retornos en lugar de precios."""
     return stat_name in ("mean", "median", "std", "iqr", "mad", "sharpe", "autocorr")
 
 # Ingeniería de características
-@njit(cache=True, fastmath=True)
+@njit(cache=True)
 def compute_features(close, periods_main, periods_meta, stats_main, stats_meta):
     n = len(close)
     # Calcular total de features considerando si hay meta o no
@@ -486,7 +486,7 @@ def compute_features(close, periods_main, periods_meta, stats_main, stats_meta):
                 else:
                     window_size = win
                     start_idx = win
-                    
+
                 for i in range(start_idx, n):
                     # ───── OPTIMIZACIÓN: Usar slice directo ─────
                     window = close[i - window_size:i]
@@ -622,7 +622,7 @@ def get_features(data: pd.DataFrame, hp, decimal_precision=6):
 
     return df
 
-@njit(cache=True, fastmath=True)
+@njit(cache=True)
 def safe_savgol_filter(x, l_window_size: int, label_polyorder: int):
     """Apply Savitzky-Golay label_filter safely.
 
@@ -660,7 +660,7 @@ def safe_savgol_filter(x, l_window_size: int, label_polyorder: int):
 
     return savgol_filter(x, window_length=wl, label_polyorder=label_polyorder)
 
-@njit(cache=True, fastmath=True)
+@njit(cache=True)
 def calculate_labels_trend(normalized_trend, label_threshold):
     labels = np.empty(len(normalized_trend), dtype=np.float64)
     for i in range(len(normalized_trend)):
@@ -788,7 +788,7 @@ def plot_trading_signals(
     plt.tight_layout()
     plt.show()
 
-@njit(cache=True, fastmath=True)
+@njit(cache=True)
 def calculate_labels_trend_with_profit(close, atr, normalized_trend, label_threshold, label_markup, label_min_val, label_max_val):
     labels = np.empty(len(normalized_trend) - label_max_val, dtype=np.float64)
     for i in range(len(normalized_trend) - label_max_val):
@@ -844,7 +844,7 @@ def get_labels_trend_with_profit(dataset, label_rolling=200, label_polyorder=3, 
     dataset_clean = dataset_clean.dropna()    
     return dataset_clean
 
-@njit(cache=True, fastmath=True)
+@njit(cache=True)
 def calculate_labels_trend_different_filters(close, atr, normalized_trend, label_threshold, label_markup, label_min_val, label_max_val):
     labels = np.empty(len(normalized_trend) - label_max_val, dtype=np.float64)
     for i in range(len(normalized_trend) - label_max_val):
@@ -915,7 +915,7 @@ def get_labels_trend_with_profit_different_filters(dataset, label_filter='savgol
     dataset_clean = dataset_clean.dropna()    
     return dataset_clean
 
-@njit(cache=True, fastmath=True)
+@njit(cache=True)
 def calculate_labels_trend_multi(close, atr, normalized_trends, label_threshold, label_markup, label_min_val, label_max_val):
     num_periods = normalized_trends.shape[0]  # Number of periods
     labels = np.empty(len(close) - label_max_val, dtype=np.float64)
@@ -1014,7 +1014,7 @@ def get_labels_trend_with_profit_multi(dataset, label_filter='savgol', label_rol
     dataset_clean = dataset_clean.dropna()
     return dataset_clean
 
-@njit(cache=True, fastmath=True)
+@njit(cache=True)
 def calculate_labels_clusters(close_data, atr, clusters, label_markup):
     labels = []
     current_cluster = clusters[0]
@@ -1052,7 +1052,7 @@ def get_labels_clusters(dataset, label_markup, label_n_clusters=20, label_atr_pe
     dataset = dataset.drop(columns=['cluster'])
     return dataset
 
-@njit(cache=True, fastmath=True)
+@njit(cache=True)
 def calculate_signals(prices, window_sizes, threshold_pct):
     max_window = max(window_sizes)
     signals = []
@@ -1085,7 +1085,7 @@ def get_labels_multi_window(dataset, label_window_sizes_int=[20, 50, 100], label
     dataset['labels_main'] = signals[: len(dataset)]
     return dataset
 
-@njit(cache=True, fastmath=True)
+@njit(cache=True)
 def calculate_labels_validated_levels(prices, l_window_size, threshold_pct, min_touches):
     resistance_touches = {}
     support_touches = {}
@@ -1131,7 +1131,7 @@ def get_labels_validated_levels(dataset, label_window_size=20, label_threshold_p
     dataset['labels_main'] = labels
     return dataset
 
-@njit(cache=True, fastmath=True)
+@njit(cache=True)
 def calculate_labels_zigzag(peaks, troughs, len_close):
     """
     Generates labels based on the occurrence of peaks and troughs in the data.
@@ -1199,7 +1199,7 @@ def get_labels_filter_ZZ(dataset, label_peak_prominence=0.1) -> pd.DataFrame:
     return dataset
 
 # MEAN REVERSION WITH RESTRICTIONS BASED LABELING
-@njit(cache=True, fastmath=True)
+@njit(cache=True)
 def calculate_labels_mean_reversion(close, atr, lvl, label_markup, label_min_val, label_max_val, q):
     labels = np.empty(len(close) - label_max_val, dtype=np.float64)
     for i in range(len(close) - label_max_val):
@@ -1297,7 +1297,7 @@ def get_labels_mean_reversion(dataset, label_markup, label_min_val=1, label_max_
     dataset = dataset.dropna()
     return dataset.drop(columns=['lvl'])  # Remove the temporary 'lvl' column 
 
-@njit(cache=True, fastmath=True)
+@njit(cache=True)
 def calculate_labels_mean_reversion_multi(close_data, atr, lvl_data, q_list, label_markup, label_min_val, label_max_val, window_sizes):
     labels = []
     n_win = len(window_sizes)
@@ -1365,7 +1365,7 @@ def get_labels_mean_reversion_multi(dataset, label_markup, label_min_val=1, labe
     
     return dataset
 
-@njit(cache=True, fastmath=True)
+@njit(cache=True)
 def calculate_labels_mean_reversion_v(close_data, atr, lvl_data, volatility_group, quantile_groups_low, quantile_groups_high, label_markup, label_min_val, label_max_val):
     labels = []
     for i in range(len(close_data) - label_max_val):
@@ -1490,7 +1490,7 @@ def get_labels_mean_reversion_v(dataset, label_markup, label_min_val=1, label_ma
     return dataset.drop(columns=['lvl', 'volatility', 'volatility_group'])
 
 # FILTERING BASED LABELING W/O RESTRICTIONS
-@njit(cache=True, fastmath=True)
+@njit(cache=True)
 def calculate_labels_filter(close, lvl, q):
     labels = np.empty(len(close), dtype=np.float64)
     for i in range(len(close)):
@@ -1567,7 +1567,7 @@ def get_labels_filter(dataset, label_rolling=200, label_quantiles=[.45, .55], la
     # Return the modified DataFrame with the 'lvl' column removed
     return dataset.drop(columns=['lvl']) 
 
-@njit(cache=True, fastmath=True)
+@njit(cache=True)
 def calc_labels_multiple_filters(close, lvls, qs):
     labels = np.empty(len(close), dtype=np.float64)
     for i in range(len(close)):
@@ -1663,7 +1663,7 @@ def get_labels_multiple_filters(dataset, label_rolling_periods_big=[200, 400, 60
     # Return the DataFrame with the new 'labels_main' column
     return dataset
 
-@njit(cache=True, fastmath=True)
+@njit(cache=True)
 def calc_labels_bidirectional(close, lvl1, lvl2, q1, q2):
     labels = np.empty(len(close), dtype=np.float64)
     for i in range(len(close)):
@@ -1740,7 +1740,7 @@ def get_labels_filter_bidirectional(dataset, label_rolling=200, label_rolling2=2
     # Return the DataFrame with temporary columns removed
     return dataset.drop(columns=['lvl1', 'lvl2']) 
 
-@njit(cache=True, fastmath=True)
+@njit(cache=True)
 def calculate_labels_filter_one_direction(close, lvl, q, direction_int):
     labels = np.empty(len(close), dtype=np.float64)
     for i in range(len(close)):
@@ -1788,7 +1788,7 @@ def get_labels_filter_one_direction(dataset, label_rolling=200, label_quantiles=
         return dataset.drop(columns=['lvl'])
     raise ValueError("direction must be 'buy', 'sell', or 'both'")
 
-@njit(cache=True, fastmath=True)
+@njit(cache=True)
 def calculate_labels_trend_one_direction(normalized_trend, label_threshold, direction_int):
     labels = np.empty(len(normalized_trend), dtype=np.float64)
     for i in range(len(normalized_trend)):
@@ -1832,7 +1832,7 @@ def get_labels_trend_one_direction(dataset, label_rolling=50, label_polyorder=3,
         return dataset
     raise ValueError("direction must be 'buy', 'sell', or 'both'")
 
-@njit(cache=True, fastmath=True)
+@njit(cache=True)
 def calculate_labels_filter_flat(close, lvl, q):
     labels = np.empty(len(close), dtype=np.float64)
     for i in range(len(close)):
@@ -1909,7 +1909,7 @@ def get_labels_filter_flat(dataset, label_rolling=200, label_quantiles=[.45, .55
     # Return the modified DataFrame with the 'lvl' column removed
     return dataset.drop(columns=['lvl'])
 
-@njit(cache=True, fastmath=True)
+@njit(cache=True)
 def calculate_atr_simple(high, low, close, period=14):
     n   = len(close)
     tr  = np.empty(n)
@@ -1937,7 +1937,7 @@ def calculate_atr_simple(high, low, close, period=14):
     return atr
 
 # ONE DIRECTION LABELING
-@njit(cache=True, fastmath=True)
+@njit(cache=True)
 def calculate_labels_one_direction(high, low, close, label_markup, label_min_val, label_max_val, direction_int, label_atr_period=14, method_int=5):
     n = len(close)
     if n <= label_max_val:
@@ -2013,7 +2013,7 @@ def get_labels_one_direction(dataset, label_markup=0.5, label_min_val=1, label_m
         return dataset
     raise ValueError("direction must be 'buy', 'sell', or 'both'")
 
-@njit(cache=True, fastmath=True)
+@njit(cache=True)
 def calculate_symmetric_correlation_dynamic(data, min_window_size, max_window_size):
     """
     Calcula correlación simétrica dinámica para detectar patrones fractales.
@@ -2074,7 +2074,7 @@ def calculate_symmetric_correlation_dynamic(data, min_window_size, max_window_si
     return correlations, best_window_sizes
 
 
-@njit(cache=True, fastmath=True)
+@njit(cache=True)
 def calculate_future_outcome_labels_for_patterns(
     close_data_len,
     correlations_at_window_start,
@@ -2659,7 +2659,7 @@ def _wasserstein2_cpu(x: np.ndarray, y: np.ndarray) -> float:
     cost = ot.emd2(a, b, M, numItermax=10_000)   # W2²
     return float(np.sqrt(cost))
 
-@njit(cache=True, fastmath=True)
+@njit(cache=True)
 def _kmedoids_pam(
     dist_mat: np.ndarray, k: int, max_iter: int = 100
 ) -> tuple:
@@ -2736,7 +2736,7 @@ def _kmedoids_pam(
 
     return labels, medoids
 
-@njit(parallel=True, fastmath=True)
+@njit(parallel=True)
 def _euclidean_matrix_numba(window_sizes):
     n = window_sizes.shape[0]
     dist_mat = np.zeros((n, n), dtype=np.float64)
@@ -2746,13 +2746,13 @@ def _euclidean_matrix_numba(window_sizes):
             dist_mat[i, j] = dist_mat[j, i] = d
     return dist_mat
 
-@njit(fastmath=True)
+@njit
 def _wasserstein1d_numba(x, y):
     x = np.sort(x)
     y = np.sort(y)
     return np.mean(np.abs(x - y))
 
-@njit(parallel=True, fastmath=True)
+@njit(parallel=True)
 def _wasserstein1d_matrix(window_sizes):
     n = window_sizes.shape[0]
     dist_mat = np.zeros((n, n), dtype=np.float64)
@@ -2765,7 +2765,7 @@ def _wasserstein1d_matrix(window_sizes):
             dist_mat[i, j] = dist_mat[j, i] = d
     return dist_mat
 
-@njit(parallel=True, fastmath=True)
+@njit(parallel=True)
 def _sliced_wasserstein_numba(window_sizes, n_proj=50):
     n = window_sizes.shape[0]
     d = window_sizes.shape[2] if window_sizes.ndim == 3 else 1
@@ -2799,7 +2799,7 @@ def _sliced_wasserstein_numba(window_sizes, n_proj=50):
     dist_mat /= n_proj
     return dist_mat
 
-@njit(fastmath=True)
+@njit
 def _mmd_rbf_numba(x, y, gamma):
     n = x.shape[0]
     m = y.shape[0]
@@ -2829,7 +2829,7 @@ def _mmd_rbf_numba(x, y, gamma):
     mmd2 = (k_xx / (n * (n - 1) + 1e-12)) + (k_yy / (m * (m - 1) + 1e-12)) - 2.0 * (k_xy / (n * m))
     return np.sqrt(max(mmd2, 0.0))
 
-@njit(parallel=True, fastmath=True)
+@njit(parallel=True)
 def _mmd_matrix_numba(window_sizes, bandwidth):
     n = window_sizes.shape[0]
     dist_mat = np.zeros((n, n), dtype=np.float64)

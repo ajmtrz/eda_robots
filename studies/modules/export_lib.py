@@ -888,7 +888,7 @@ bool should_use_returns(string stat_name)
         # 2)  Rutinas compactas de cálculo (una pasada, con soporte para retornos)
         # ──────────────────────────────────────────────────────────────────
         code += """
-void fill_arays_main(float &dst[])
+void fill_arays_main(double &dst[])
 {{
     double pr[], returns[];
     for(int k=0; k<ArraySize(PERIODS_MAIN); ++k)
@@ -903,10 +903,10 @@ void fill_arays_main(float &dst[])
             if(ArraySize(returns) == 0) {{
                 dst[k] = 0.0;  // Valor por defecto si no se pueden calcular retornos
             }} else {{
-                dst[k] = float(NormalizeDouble(FUNCS_MAIN[k](returns), {decimal_precision}));
+                dst[k] = NormalizeDouble(FUNCS_MAIN[k](returns), {decimal_precision});
             }}
         }} else {{
-            dst[k] = float(NormalizeDouble(FUNCS_MAIN[k](pr), {decimal_precision}));
+            dst[k] = NormalizeDouble(FUNCS_MAIN[k](pr), {decimal_precision});
         }}
     }}
 }}
@@ -914,7 +914,7 @@ void fill_arays_main(float &dst[])
 
         if meta_periods:  # Solo agregar si hay features meta
             code += """
-void fill_arays_meta(float &dst[])
+void fill_arays_meta(double &dst[])
 {{
     double pr[], returns[];
     for(int k=0; k<ArraySize(PERIODS_META); ++k)
@@ -929,10 +929,10 @@ void fill_arays_meta(float &dst[])
             if(ArraySize(returns) == 0) {{
                 dst[k] = 0.0;  // Valor por defecto si no se pueden calcular retornos
             }} else {{
-                dst[k] = float(NormalizeDouble(FUNCS_META[k](returns), {decimal_precision}));
+                dst[k] = NormalizeDouble(FUNCS_META[k](returns), {decimal_precision});
             }}
         }} else {{
-            dst[k] = float(NormalizeDouble(FUNCS_META[k](pr), {decimal_precision}));
+            dst[k] = NormalizeDouble(FUNCS_META[k](pr), {decimal_precision});
         }}
     }}
 }}

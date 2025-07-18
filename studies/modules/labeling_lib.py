@@ -1406,14 +1406,15 @@ def get_labels_validated_levels(
     return dataset
 
 @njit(cache=True)
-def calculate_labels_zigzag(peaks, troughs, len_close):
+def calculate_labels_zigzag(peaks, troughs, len_close, direction=2):
     """
-    Generates labels based on the occurrence of peaks and troughs in the data.
+    Generates labels based on the occurrence of peaks and troughs in the data, with unidirectional support.
 
     Args:
         peaks (np.array): Indices of the peaks in the data.
         troughs (np.array): Indices of the troughs in the data.
         len_close (int): The length of the close prices.
+        direction (int): 0=solo buy, 1=solo sell, 2=ambas
 
     Returns:
         np.array: An array of labels.
@@ -1424,39 +1425,64 @@ def calculate_labels_zigzag(peaks, troughs, len_close):
     last_peak_type = None  # None for the start, 'up' for peak, 'down' for trough
     
     for i in range(len_close):
-        if i in peaks:
-            labels[i] = 1.0  # Sell signal at peaks
-            last_peak_type = 'up'
-        elif i in troughs:
-            labels[i] = 0.0  # Buy signal at troughs
-            last_peak_type = 'down'
-        else:
-            # If we already have a peak established, use it for labeling
-            if last_peak_type == 'up':
-                labels[i] = 1.0
-            elif last_peak_type == 'down':
-                labels[i] = 0.0 
+        is_peak = False
+        is_trough = False
+        for j in range(len(peaks)):
+            if i == peaks[j]:
+                is_peak = True
+                break
+        for j in range(len(troughs)):
+            if i == troughs[j]:
+                is_trough = True
+                break
+
+        if direction == 2:  # both
+            if is_peak:
+                labels[i] = 1.0  # Sell signal at peaks
+                last_peak_type = 'up'
+            elif is_trough:
+                labels[i] = 0.0  # Buy signal at troughs
+                last_peak_type = 'down'
+            else:
+                if last_peak_type == 'up':
+                    labels[i] = 1.0
+                elif last_peak_type == 'down':
+                    labels[i] = 0.0
+        elif direction == 0:  # solo buy
+            if is_trough:
+                labels[i] = 1.0  # Éxito direccional (señal de compra)
+                last_peak_type = 'down'
+            elif is_peak:
+                labels[i] = 0.0  # Fracaso direccional (señal de venta)
+                last_peak_type = 'up'
+            else:
+                if last_peak_type == 'down':
+                    labels[i] = 1.0
+                elif last_peak_type == 'up':
+                    labels[i] = 0.0
+                else:
+                    labels[i] = 2.0  # Patrón no confiable
+        elif direction == 1:  # solo sell
+            if is_peak:
+                labels[i] = 1.0  # Éxito direccional (señal de venta)
+                last_peak_type = 'up'
+            elif is_trough:
+                labels[i] = 0.0  # Fracaso direccional (señal de compra)
+                last_peak_type = 'down'
+            else:
+                if last_peak_type == 'up':
+                    labels[i] = 1.0
+                elif last_peak_type == 'down':
+                    labels[i] = 0.0
+                else:
+                    labels[i] = 2.0  # Patrón no confiable
     return labels
 
-def get_labels_filter_ZZ(dataset, label_peak_prominence=0.1) -> pd.DataFrame:
+def get_labels_filter_zigzag(dataset, label_peak_prominence=0.1, direction=2) -> pd.DataFrame:
     """
-    Generates labels for a financial dataset based on zigzag peaks and troughs.
-
+    Generates labels for a financial dataset based on zigzag peaks and troughs, with unidirectional support.
     This function identifies peaks and troughs in the closing prices using the 'find_peaks' 
     function from scipy.signal. It generates buy signals at troughs and sell signals at peaks.
-
-    Args:
-        dataset (pd.DataFrame): DataFrame containing financial data with a 'close' column.
-        peak_prominence (float, optional): Minimum prominence of peaks and troughs, 
-                                           used to label_filter out insignificant fluctuations. 
-                                           Defaults to 0.1.
-
-    Returns:
-        pd.DataFrame: The original DataFrame with a new 'labels_main' column and filtered rows:
-                       - 'labels_main' column: 
-                            - 0: Buy
-                            - 1: Sell
-                       - Rows with missing values (NaN) are removed.
     """
 
     # Find peaks and troughs in the closing prices
@@ -1464,7 +1490,7 @@ def get_labels_filter_ZZ(dataset, label_peak_prominence=0.1) -> pd.DataFrame:
     troughs, _ = find_peaks(-dataset['close'], prominence=label_peak_prominence)
     
     # Calculate buy/sell labels using the new zigzag-based labeling function
-    labels = calculate_labels_zigzag(peaks, troughs, len(dataset)) 
+    labels = calculate_labels_zigzag(peaks, troughs, len(dataset), direction) 
 
     # Add the calculated labels as a new 'labels_main' column to the DataFrame
     dataset['labels_main'] = labels

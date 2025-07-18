@@ -893,7 +893,7 @@ class StrategySearcher:
                 validation_params = {k: v for k, v in hp.items() if k.startswith('label_')}
                 print(f"🔍 DEBUG evaluate_clusters - Parámetros de validación: {validation_params}")
 
-            cluster_sizes = full_ds['labels_meta'].value_counts()
+            cluster_sizes = full_ds['labels_meta'].value_counts().sort_index()
             if self.debug:
                 print(f"🔍 DEBUG: Cluster sizes:\n{cluster_sizes}")
             if -1 in cluster_sizes.index:

@@ -380,13 +380,15 @@ def should_use_returns(stat_name):
 @njit(cache=True)
 def compute_features(close, periods_main, periods_meta, stats_main, stats_meta):
     n = len(close)
-    # Calcular total de features considerando si hay meta o no
+    # Calcular total de features
     total_features = len(periods_main) * len(stats_main)
-    if len(periods_meta) > 0 and len(stats_meta) > 0:
+    
+    # Solo añadir meta features si existen
+    has_meta = len(periods_meta) > 0 and len(stats_meta) > 0
+    if has_meta:
         total_features += len(periods_meta) * len(stats_meta)
+    
     features = np.full((n, total_features), np.nan)
-
-    # ───── OPTIMIZACIÓN: Pre-calcular ventanas para evitar recálculos ─────
     col = 0
     
     # Procesar períodos main
@@ -476,7 +478,7 @@ def compute_features(close, periods_main, periods_meta, stats_main, stats_meta):
             col += 1
 
     # Procesar períodos meta solo si existen
-    if len(periods_meta) > 0 and len(stats_meta) > 0:
+    if has_meta:
         for win in periods_meta:
             for s in stats_meta:
                 # ───── AJUSTAR VENTANA PARA ESTADÍSTICOS CON RETORNOS ─────
@@ -567,27 +569,50 @@ def compute_features(close, periods_main, periods_meta, stats_main, stats_meta):
 def get_features(data: pd.DataFrame, hp, decimal_precision=6):
     close = data['close'].values
     index = data.index
+    
+    # Verificar datos vacíos
+    if len(close) == 0:
+        return pd.DataFrame(index=index)
+    
     periods_main = hp["feature_main_periods"]
     stats_main = hp["feature_main_stats"]
     
-    # Obtener períodos y estadísticas meta, siempre como listas (vacías si no existen)
+    # Manejar meta features
     periods_meta = hp.get("feature_meta_periods", [])
     stats_meta = hp.get("feature_meta_stats", [])
     
     if len(stats_main) == 0:
         raise ValueError("La lista de estadísticas MAIN está vacía.")
     
-    # ───── OPTIMIZACIÓN: Asegurar contigüidad y evitar conversiones ─────
-    if not close.flags.c_contiguous:
-        close = np.ascontiguousarray(close)
-    
-    # ───── OPTIMIZACIÓN: Convertir listas una sola vez ─────
+    # Crear listas tipadas para MAIN
     periods_main_t = List(periods_main)
     stats_main_t = List(stats_main)
-    periods_meta_t = List(periods_meta)
-    stats_meta_t = List(stats_meta)
+    
+    # SOLUCIÓN CRÍTICA: Crear listas tipadas para META con tipo específico
+    if periods_meta and stats_meta:
+        periods_meta_t = List(periods_meta)
+        stats_meta_t = List(stats_meta)
+    else:
+        # Crear listas vacías con tipos explícitos
+        periods_meta_t = List()
+        stats_meta_t = List()
+        
+        # Forzar tipado añadiendo y removiendo elementos ficticios
+        if len(periods_main) > 0:
+            periods_meta_t.append(periods_main[0])
+            periods_meta_t.pop()
+        if len(stats_main) > 0:
+            stats_meta_t.append(stats_main[0])
+            stats_meta_t.pop()
 
-    feats = compute_features(close, periods_main_t, periods_meta_t, stats_main_t, stats_meta_t)
+    # Calcular features
+    feats = compute_features(
+        close,
+        periods_main_t,
+        periods_meta_t,
+        stats_main_t,
+        stats_meta_t
+    )
     if np.isnan(feats).all():
         return pd.DataFrame(index=index)
     feats = np.round(feats, decimal_precision)
@@ -598,7 +623,7 @@ def get_features(data: pd.DataFrame, hp, decimal_precision=6):
             colnames.append(f"{p}_{s}_main_feature")
     
     # Agregar nombres de columnas meta solo si existen
-    if len(periods_meta) > 0 and len(stats_meta) > 0:
+    if periods_meta and stats_meta:
         for p in periods_meta:
             for s in stats_meta:
                 colnames.append(f"{p}_{s}_meta_feature")

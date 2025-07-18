@@ -1584,7 +1584,14 @@ class StrategySearcher:
                 print(f"🔍   feature_main_stats: {hp.get('feature_main_stats', 'N/A')}")
                 print(f"🔍   feature_meta_periods: {hp.get('feature_meta_periods', 'N/A')}")
                 print(f"🔍   feature_meta_stats: {hp.get('feature_meta_stats', 'N/A')}")
-            
+            if not isinstance(hp.get('feature_main_periods', []), (list, tuple)):
+                hp['feature_main_periods'] = tuple(hp['feature_main_periods'])
+            if not isinstance(hp.get('feature_main_stats', []), (list, tuple)):
+                hp['feature_main_stats'] = tuple(hp['feature_main_stats'])
+            if not isinstance(hp.get('feature_meta_periods', []), (list, tuple)):
+                hp['feature_meta_periods'] = tuple(hp['feature_meta_periods'])
+            if not isinstance(hp.get('feature_meta_stats', []), (list, tuple)):
+                hp['feature_meta_stats'] = tuple(hp['feature_meta_stats'])
             full_ds = get_features(data=full_ds, hp=hp, decimal_precision=self.decimal_precision)
             if self.debug:
                 print(f"🔍 DEBUG: full_ds.shape después de get_features = {full_ds.shape}")

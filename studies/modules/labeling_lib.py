@@ -1319,7 +1319,14 @@ def get_labels_multi_window(
     return dataset
 
 @njit(cache=True)
-def calculate_labels_validated_levels(prices, l_window_size, threshold_pct, min_touches):
+def calculate_labels_validated_levels(prices, l_window_size, threshold_pct, min_touches, direction=2):
+    """
+    Etiquetado de rupturas de niveles validados por toques, con soporte para direcciones únicas o ambas.
+    direction: 0=solo buy, 1=solo sell, 2=ambas
+    Etiquetas:
+      - Direccional único: 1.0=éxito direccional, 0.0=fracaso direccional, 2.0=patrón no confiable
+      - Ambas: 0.0=buy, 1.0=sell, 2.0=sin señal
+    """
     resistance_touches = {}
     support_touches = {}
     labels = []
@@ -1346,22 +1353,56 @@ def calculate_labels_validated_levels(prices, l_window_size, threshold_pct, min_
         valid_resistance = [level for level, touches in resistance_touches.items() if touches >= min_touches]
         valid_support = [level for level, touches in support_touches.items() if touches >= min_touches]
 
-        if valid_resistance and current_price > min(valid_resistance) * (1 + threshold_pct):
-            labels.append(0.0)
-        elif valid_support and current_price < max(valid_support) * (1 - threshold_pct):
-            labels.append(1.0) 
-        else:
-            labels.append(2.0)
+        # Señales
+        broke_resistance = valid_resistance and current_price > min(valid_resistance) * (1 + threshold_pct)
+        broke_support = valid_support and current_price < max(valid_support) * (1 - threshold_pct)
+
+        if direction == 2:  # both
+            if broke_resistance:
+                labels.append(0.0)  # buy
+            elif broke_support:
+                labels.append(1.0)  # sell
+            else:
+                labels.append(2.0)  # sin señal
+        elif direction == 0:  # solo buy
+            if broke_resistance:
+                labels.append(1.0)  # éxito direccional (señal de compra)
+            elif broke_support:
+                labels.append(0.0)  # fracaso direccional (señal de venta)
+            else:
+                labels.append(2.0)  # patrón no confiable
+        elif direction == 1:  # solo sell
+            if broke_support:
+                labels.append(1.0)  # éxito direccional (señal de venta)
+            elif broke_resistance:
+                labels.append(0.0)  # fracaso direccional (señal de compra)
+            else:
+                labels.append(2.0)  # patrón no confiable
 
     return labels
 
-def get_labels_validated_levels(dataset, label_window_size=20, label_threshold_pct=0.02, label_min_touches=2) -> pd.DataFrame:
+def get_labels_validated_levels(
+    dataset, 
+    label_window_size=20, 
+    label_threshold_pct=0.02, 
+    label_min_touches=2, 
+    direction=2
+) -> pd.DataFrame:
+    """
+    Etiquetado de rupturas de niveles validados por toques, con soporte para direcciones únicas o ambas.
+    direction: 0=solo buy, 1=solo sell, 2=ambas
+    """
     prices = dataset['close'].values
-    
-    labels = calculate_labels_validated_levels(prices, label_window_size, label_threshold_pct, label_min_touches)
-    
+    labels = calculate_labels_validated_levels(
+        prices, 
+        label_window_size, 
+        label_threshold_pct, 
+        label_min_touches, 
+        direction
+    )
     labels = [2.0] * label_window_size + labels
-    dataset['labels_main'] = labels
+    dataset = dataset.iloc[:len(labels)].copy()
+    dataset['labels_main'] = labels[:len(dataset)]
     return dataset
 
 @njit(cache=True)

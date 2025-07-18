@@ -1617,7 +1617,9 @@ def get_labels_mean_reversion(
     return dataset.drop(columns=['lvl'])  # Remove the temporary 'lvl' column 
 
 @njit(cache=True)
-def calculate_labels_mean_reversion_multi(close_data, atr, lvl_data, q_list, label_markup, label_min_val, label_max_val, window_sizes):
+def calculate_labels_mean_reversion_multi(
+    close_data, atr, lvl_data, q_list, label_markup, label_min_val, label_max_val, window_sizes, direction=2
+):
     labels = []
     n_win = len(window_sizes)
     for i in range(len(close_data) - label_max_val):
@@ -1640,15 +1642,41 @@ def calculate_labels_mean_reversion_multi(close_data, atr, lvl_data, q_list, lab
             else:
                 buy_condition = False
 
-        if sell_condition and (future_pr + dyn_mk) < curr_pr:
-            labels.append(1.0)
-        elif buy_condition and (future_pr - dyn_mk) > curr_pr:
-            labels.append(0.0)
-        else:
-            labels.append(2.0)
+        # direction: buy=0, sell=1, both=2
+        if direction == 0:  # buy
+            if buy_condition and (future_pr - dyn_mk) > curr_pr:
+                labels.append(1.0)  # éxito direccional
+            elif buy_condition:
+                labels.append(0.0)  # fracaso direccional
+            else:
+                labels.append(2.0)  # patrón no confiable
+        elif direction == 1:  # sell
+            if sell_condition and (future_pr + dyn_mk) < curr_pr:
+                labels.append(1.0)  # éxito direccional
+            elif sell_condition:
+                labels.append(0.0)  # fracaso direccional
+            else:
+                labels.append(2.0)  # patrón no confiable
+        else:  # both
+            if sell_condition and (future_pr + dyn_mk) < curr_pr:
+                labels.append(1.0)
+            elif buy_condition and (future_pr - dyn_mk) > curr_pr:
+                labels.append(0.0)
+            else:
+                labels.append(2.0)
     return labels
 
-def get_labels_mean_reversion_multi(dataset, label_markup, label_min_val=1, label_max_val=15, label_window_sizes_float=[0.2, 0.3, 0.5], label_quantiles=[.45, .55], label_atr_period=14) -> pd.DataFrame:
+def get_labels_mean_reversion_multi(
+    dataset, 
+    label_markup, 
+    label_min_val=1, 
+    label_max_val=15, 
+    label_window_sizes_float=[0.2, 0.3, 0.5], 
+    label_quantiles=[.45, .55], 
+    label_atr_period=14, 
+    direction=2
+) -> pd.DataFrame:
+
     q = np.empty((len(label_window_sizes_float), 2))  # Initialize as 2D NumPy array
     lvl_data = np.empty((dataset.shape[0], len(label_window_sizes_float)))
 
@@ -1676,7 +1704,10 @@ def get_labels_mean_reversion_multi(dataset, label_markup, label_min_val=1, labe
     # Convert parameters to Numba typed.List to avoid repeated JIT compilations
     windows_t = List(label_window_sizes_float)
     q_t = List([(float(q[i,0]), float(q[i,1])) for i in range(len(label_window_sizes_float))])
-    labels = calculate_labels_mean_reversion_multi(close_data, atr, lvl_data, q_t, label_markup, label_min_val, label_max_val, windows_t)
+    # Pass direction to the Numba function
+    labels = calculate_labels_mean_reversion_multi(
+        close_data, atr, lvl_data, q_t, label_markup, label_min_val, label_max_val, windows_t, direction
+    )
 
     dataset = dataset.iloc[:len(labels)].copy()
     dataset['labels_main'] = labels

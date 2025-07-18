@@ -778,7 +778,7 @@ def plot_trading_signals(
     trend = np.gradient(smoothed)
     
     # 3. Compute volatility (label_rolling std)
-    vol = df['close'].label_rolling(label_vol_window).std().values
+    vol = df['close'].rolling(label_vol_window).std().values
     
     # 4. Normalize trend by volatility
     normalized_trend = np.zeros_like(trend)
@@ -923,7 +923,7 @@ def get_labels_trend_with_profit(
     trend = np.gradient(smoothed_prices)
 
     # Normalizing the trend by volatility
-    vol = dataset['close'].label_rolling(label_vol_window).std().values
+    vol = dataset['close'].rolling(label_vol_window).std().values
     normalized_trend = np.where(vol != 0, trend / vol, np.nan)
 
     # Removing NaN and synchronizing data
@@ -992,7 +992,7 @@ def get_labels_trend_with_profit_different_filters(dataset, label_filter='savgol
         spline = UnivariateSpline(x, close_prices, k=label_polyorder, s=label_rolling)
         smoothed_prices = spline(x)
     elif label_filter == 'sma':
-        smoothed_series = pd.Series(close_prices).label_rolling(window=label_rolling).mean()
+        smoothed_series = pd.Series(close_prices).rolling(window=label_rolling).mean()
         smoothed_prices = smoothed_series.values
     elif label_filter == 'ema':
         smoothed_series = pd.Series(close_prices).ewm(span=label_rolling, adjust=False).mean()
@@ -1003,7 +1003,7 @@ def get_labels_trend_with_profit_different_filters(dataset, label_filter='savgol
     trend = np.gradient(smoothed_prices)
     
     # Normalizing the trend by volatility
-    vol = dataset['close'].label_rolling(label_vol_window).std().values
+    vol = dataset['close'].rolling(label_vol_window).std().values
     normalized_trend = np.where(vol != 0, trend / vol, np.nan)
     
     # Removing NaN and synchronizing data
@@ -1028,7 +1028,13 @@ def get_labels_trend_with_profit_different_filters(dataset, label_filter='savgol
     return dataset_clean
 
 @njit(cache=True)
-def calculate_labels_trend_multi(close, atr, normalized_trends, label_threshold, label_markup, label_min_val, label_max_val):
+def calculate_labels_trend_multi(
+    close, atr, normalized_trends, label_threshold, label_markup, label_min_val, label_max_val, direction=2
+):
+    """
+    Etiquetado multi-período con soporte para direcciones únicas o ambas.
+    direction: 0=solo buy, 1=solo sell, 2=ambas
+    """
     num_periods = normalized_trends.shape[0]  # Number of periods
     labels = np.empty(len(close) - label_max_val, dtype=np.float64)
     for i in range(len(close) - label_max_val):
@@ -1045,37 +1051,68 @@ def calculate_labels_trend_multi(close, atr, normalized_trends, label_threshold,
             elif normalized_trends[j, i] < -label_threshold:
                 if close[i + rand] <= close[i] - dyn_mk:
                     sell_signals += 1
-        # Combine signals
-        if buy_signals > 0 and sell_signals == 0:
-            labels[i] = 0.0  # Buy
-        elif sell_signals > 0 and buy_signals == 0:
-            labels[i] = 1.0  # Sell
+        # Etiquetado según dirección
+        if direction == 2:
+            # Esquema clásico: 0.0=buy, 1.0=sell, 2.0=no señal/conflicto
+            if buy_signals > 0 and sell_signals == 0:
+                labels[i] = 0.0  # Buy
+            elif sell_signals > 0 and buy_signals == 0:
+                labels[i] = 1.0  # Sell
+            else:
+                labels[i] = 2.0  # No signal or conflict
+        elif direction == 0:
+            # Solo buy: 1.0=éxito, 0.0=fracaso, 2.0=no confiable
+            if buy_signals > 0 and sell_signals == 0:
+                labels[i] = 1.0  # Éxito direccional (buy)
+            elif sell_signals > 0 and buy_signals == 0:
+                labels[i] = 0.0  # Fracaso direccional (no buy, sino sell)
+            else:
+                labels[i] = 2.0  # Patrón no confiable
+        elif direction == 1:
+            # Solo sell: 1.0=éxito, 0.0=fracaso, 2.0=no confiable
+            if sell_signals > 0 and buy_signals == 0:
+                labels[i] = 1.0  # Éxito direccional (sell)
+            elif buy_signals > 0 and sell_signals == 0:
+                labels[i] = 0.0  # Fracaso direccional (no sell, sino buy)
+            else:
+                labels[i] = 2.0  # Patrón no confiable
         else:
-            labels[i] = 2.0  # No signal or conflict
+            labels[i] = 2.0  # fallback
     return labels
 
-def get_labels_trend_with_profit_multi(dataset, label_filter='savgol', label_rolling_periods_small=[10, 20, 30], label_polyorder=3, label_threshold=0.5, 
-                                       label_vol_window=50, label_markup=0.5, label_min_val=1, label_max_val=15, label_atr_period=14) -> pd.DataFrame:
+def get_labels_trend_with_profit_multi(
+    dataset,
+    label_filter='savgol',
+    label_rolling_periods_small=[10, 20, 30],
+    label_polyorder=3,
+    label_threshold=0.5,
+    label_vol_window=50,
+    label_markup=0.5,
+    label_min_val=1,
+    label_max_val=15,
+    label_atr_period=14,
+    direction=2
+) -> pd.DataFrame:
     """
     Generates labels for trading signals (Buy/Sell) based on the normalized trend,
-    calculated for multiple smoothing periods.
+    calculated for multiple smoothing periods, con soporte para direcciones únicas o ambas.
 
     Args:
         dataset (pd.DataFrame): DataFrame with data, containing the 'close' column.
         label_filter (str): Smoothing label_filter ('savgol', 'spline', 'sma', 'ema').
-        rolling_periods (list): List of smoothing window sizes. Default is [200].
+        label_rolling_periods_small (list): List of smoothing window sizes. Default is [10, 20, 30].
         label_polyorder (int): Polynomial order for 'savgol' and 'spline' methods.
         label_threshold (float): Threshold for the normalized trend.
         label_vol_window (int): Window for volatility calculation.
         label_markup (float): Minimum profit to confirm the signal.
         label_min_val (int): Minimum number of bars forward.
         label_max_val (int): Maximum number of bars forward.
+        label_atr_period (int): ATR period.
+        direction (int): 0=solo buy, 1=solo sell, 2=ambas (default).
 
     Returns:
         pd.DataFrame: DataFrame with added 'labels_main' column:
-                      - 0.0: Buy
-                      - 1.0: Sell
-                      - 2.0: No signal
+                      - 0.0/1.0/2.0 según esquema fractal MQL5.
     """
     close_prices = dataset['close'].values
     normalized_trends = []
@@ -1089,7 +1126,7 @@ def get_labels_trend_with_profit_multi(dataset, label_filter='savgol', label_rol
             spline = UnivariateSpline(x, close_prices, k=label_polyorder, s=label_rolling)
             smoothed_prices = spline(x)
         elif label_filter == 'sma':
-            smoothed_series = pd.Series(close_prices).label_rolling(window=label_rolling).mean()
+            smoothed_series = pd.Series(close_prices).rolling(window=label_rolling).mean()
             smoothed_prices = smoothed_series.values
         elif label_filter == 'ema':
             smoothed_series = pd.Series(close_prices).ewm(span=label_rolling, adjust=False).mean()
@@ -1098,7 +1135,7 @@ def get_labels_trend_with_profit_multi(dataset, label_filter='savgol', label_rol
             raise ValueError(f"Unknown smoothing label_filter: {label_filter}")
         
         trend = np.gradient(smoothed_prices)
-        vol = pd.Series(close_prices).label_rolling(label_vol_window).std().values
+        vol = pd.Series(close_prices).rolling(label_vol_window).std().values
         normalized_trend = np.where(vol != 0, trend / vol, np.nan)
         normalized_trends.append(normalized_trend)
 
@@ -1116,7 +1153,16 @@ def get_labels_trend_with_profit_multi(dataset, label_filter='savgol', label_rol
     atr = calculate_atr_simple(high, low, dataset["close"].values, period=label_atr_period)
     atr_clean = atr[valid_mask]
     # Generate labels
-    labels = calculate_labels_trend_multi(close_clean, atr_clean, normalized_trends_clean, label_threshold, label_markup, label_min_val, label_max_val)
+    labels = calculate_labels_trend_multi(
+        close_clean,
+        atr_clean,
+        normalized_trends_clean,
+        label_threshold,
+        label_markup,
+        label_min_val,
+        label_max_val,
+        direction=direction
+    )
 
     # Trim data and add labels
     dataset_clean = dataset_clean.iloc[:len(labels)].copy()
@@ -1366,7 +1412,7 @@ def get_labels_mean_reversion(dataset, label_markup, label_min_val=1, label_max_
 
     # Calculate the price deviation ('lvl') based on the chosen label_filter
     if label_filter == 'mean':
-        diff = (dataset['close'] - dataset['close'].label_rolling(label_rolling).mean())
+        diff = (dataset['close'] - dataset['close'].rolling(label_rolling).mean())
         weighted_diff = diff * np.exp(np.arange(len(diff)) * label_decay_factor / len(diff)) 
         dataset['lvl'] = weighted_diff # Add the weighted difference as 'lvl'
     elif label_filter == 'spline':
@@ -1537,7 +1583,7 @@ def get_labels_mean_reversion_v(dataset, label_markup, label_min_val=1, label_ma
     """
 
     # Calculate Volatility
-    dataset['volatility'] = dataset['close'].pct_change().label_rolling(window=label_vol_window).std()
+    dataset['volatility'] = dataset['close'].pct_change().rolling(window=label_vol_window).std()
     vol = dataset['volatility'].dropna()
     if vol.nunique() < 2:
         # No se puede hacer qcut, todos los valores son iguales
@@ -1547,7 +1593,7 @@ def get_labels_mean_reversion_v(dataset, label_markup, label_min_val=1, label_ma
     
     # Calculate price deviation ('lvl') based on the chosen label_filter
     if label_filter == 'mean':
-        dataset['lvl'] = (dataset['close'] - dataset['close'].label_rolling(label_rolling).mean())
+        dataset['lvl'] = (dataset['close'] - dataset['close'].rolling(label_rolling).mean())
     elif label_filter == 'spline':
         x = np.array(range(dataset.shape[0]))
         y = dataset['close'].values
@@ -1752,8 +1798,8 @@ def get_labels_multiple_filters(dataset, label_rolling_periods_big=[200, 400, 60
         temp_df = pd.DataFrame({'diff': diff})
         
         # Calculate label_rolling quantiles for the price deviation
-        q_low = temp_df['diff'].label_rolling(window=label_window_size).quantile(label_quantiles[0])
-        q_high = temp_df['diff'].label_rolling(window=label_window_size).quantile(label_quantiles[1])
+        q_low = temp_df['diff'].rolling(window=label_window_size).quantile(label_quantiles[0])
+        q_high = temp_df['diff'].rolling(window=label_window_size).quantile(label_quantiles[1])
         
         # Store the price deviation and quantiles for the current label_rolling period
         all_levels.append(diff)
@@ -1919,7 +1965,7 @@ def calculate_labels_trend_one_direction(normalized_trend, label_threshold, dire
 def get_labels_trend_one_direction(dataset, label_rolling=50, label_polyorder=3, label_threshold=0.001, label_vol_window=50, direction='buy') -> pd.DataFrame:
     smoothed_prices = safe_savgol_filter(dataset['close'].values, window_length=label_rolling, label_polyorder=label_polyorder)
     trend = np.gradient(smoothed_prices)
-    vol = dataset['close'].label_rolling(label_vol_window).std().values
+    vol = dataset['close'].rolling(label_vol_window).std().values
     normalized_trend = np.where(vol != 0, trend / vol, np.nan)
     direction_map = {'buy': 0, 'sell': 1}
     if direction in {'buy', 'sell'}:

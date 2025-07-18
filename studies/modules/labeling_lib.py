@@ -1498,9 +1498,15 @@ def get_labels_filter_zigzag(dataset, label_peak_prominence=0.1, direction=2) ->
     # Return the modified DataFrame 
     return dataset
 
-# MEAN REVERSION WITH RESTRICTIONS BASED LABELING
+# MEAN REVERSION WITH RESTRICTIONS BASED LABELING (with unidirectional support)
 @njit(cache=True)
-def calculate_labels_mean_reversion(close, atr, lvl, label_markup, label_min_val, label_max_val, q):
+def calculate_labels_mean_reversion(close, atr, lvl, label_markup, label_min_val, label_max_val, q, direction=2):
+    """
+    direction: 0=buy only, 1=sell only, 2=both
+    For buy: 1.0=éxito direccional, 0.0=fracaso, 2.0=no confiable
+    For sell: 1.0=éxito direccional, 0.0=fracaso, 2.0=no confiable
+    For both: 0.0=buy, 1.0=sell, 2.0=no confiable
+    """
     labels = np.empty(len(close) - label_max_val, dtype=np.float64)
     for i in range(len(close) - label_max_val):
         dyn_mk = label_markup * atr[i]
@@ -1509,47 +1515,60 @@ def calculate_labels_mean_reversion(close, atr, lvl, label_markup, label_min_val
         curr_lvl = lvl[i]
         future_pr = close[i + rand]
 
-        if curr_lvl > q[1] and (future_pr + dyn_mk) < curr_pr:
-            labels[i] = 1.0
-        elif curr_lvl < q[0] and (future_pr - dyn_mk) > curr_pr:
-            labels[i] = 0.0
-        else:
-            labels[i] = 2.0
+        if direction == 0:  # buy only
+            if curr_lvl < q[0] and (future_pr - dyn_mk) > curr_pr:
+                labels[i] = 1.0  # éxito direccional (compra)
+            elif curr_lvl < q[0]:
+                labels[i] = 0.0  # fracaso direccional (compra fallida)
+            else:
+                labels[i] = 2.0  # patrón no confiable
+        elif direction == 1:  # sell only
+            if curr_lvl > q[1] and (future_pr + dyn_mk) < curr_pr:
+                labels[i] = 1.0  # éxito direccional (venta)
+            elif curr_lvl > q[1]:
+                labels[i] = 0.0  # fracaso direccional (venta fallida)
+            else:
+                labels[i] = 2.0  # patrón no confiable
+        else:  # both directions
+            if curr_lvl > q[1] and (future_pr + dyn_mk) < curr_pr:
+                labels[i] = 1.0  # sell
+            elif curr_lvl < q[0] and (future_pr - dyn_mk) > curr_pr:
+                labels[i] = 0.0  # buy
+            else:
+                labels[i] = 2.0  # no confiable
     return labels
 
-def get_labels_mean_reversion(dataset, label_markup, label_min_val=1, label_max_val=15, label_rolling=0.5, label_quantiles=[.45, .55], label_filter='spline', label_decay_factor=0.95, label_shift=0, label_atr_period=14) -> pd.DataFrame:
+def get_labels_mean_reversion(
+    dataset,
+    label_markup,
+    label_min_val=1,
+    label_max_val=15,
+    label_rolling=0.5,
+    label_quantiles=[.45, .55],
+    label_filter='spline',
+    label_decay_factor=0.95,
+    label_shift=0,
+    label_atr_period=14,
+    direction=2
+) -> pd.DataFrame:
     """
-    Generates labels for a financial dataset based on mean reversion principles.
-
-    This function calculates trading signals (buy/sell) based on the deviation of
-    the price from a chosen moving average or smoothing label_filter. It identifies
-    potential buy opportunities when the price deviates significantly below its 
-    smoothed trend, anticipating a reversion to the mean.
+    Generates labels for a financial dataset based on mean reversion principles, with unidirectional support.
 
     Args:
         dataset (pd.DataFrame): DataFrame containing financial data with a 'close' column.
-        label_markup (float): The percentage label_markup used to determine buy signals.
+        label_markup (float): The percentage label_markup used to determine buy/sell signals.
         label_min_val (int, optional): Minimum number of consecutive days the label_markup must hold. Defaults to 1.
         label_max_val (int, optional): Maximum number of consecutive days the label_markup is considered. Defaults to 15.
         label_rolling (float, optional): Rolling window size for smoothing/averaging. 
-                                     If label_filter='spline', this controls the spline smoothing factor.
-                                     Defaults to 0.5.
-        quantiles (list, optional): Quantiles to define the "reversion zone". Defaults to [.45, .55].
-        label_filter (str, optional): Method for calculating the price deviation:
-                                 - 'mean': Deviation from the label_rolling mean.
-                                 - 'spline': Deviation from a smoothed spline.
-                                 - 'savgol': Deviation from a Savitzky-Golay label_filter.
-                                 Defaults to 'spline'.
-        shift (int, optional): Shift the smoothed price data forward (positive) or backward (negative).
-                                 Useful for creating a lag/lead effect. Defaults to 0.
+        label_quantiles (list, optional): Quantiles to define the "reversion zone". Defaults to [.45, .55].
+        label_filter (str, optional): Method for calculating the price deviation.
+        label_decay_factor (float, optional): Exponential decay factor for weighting past data.
+        label_shift (int, optional): Shift the smoothed price data forward/backward.
+        label_atr_period (int, optional): ATR period.
+        direction (int, optional): 0=buy only, 1=sell only, 2=both. Defaults to 2.
 
     Returns:
-        pd.DataFrame: The original DataFrame with a new 'labels_main' column and filtered rows:
-                       - 'labels_main' column: 
-                            - 0: Buy
-                            - 1: Sell
-                       - Rows with missing values (NaN) are removed.
-                       - The temporary 'lvl' column is removed. 
+        pd.DataFrame: The original DataFrame with a new 'labels_main' column and filtered rows.
     """
 
     # Calculate the price deviation ('lvl') based on the chosen label_filter
@@ -1585,11 +1604,11 @@ def get_labels_mean_reversion(dataset, label_markup, label_min_val=1, label_max_
     close = dataset['close'].values
     lvl = dataset['lvl'].values
     
-    # Calculate buy/sell labels 
+    # Calculate buy/sell labels with unidirectional support
     high = dataset["high"].values if "high" in dataset else close
     low = dataset["low"].values if "low" in dataset else close
     atr = calculate_atr_simple(high, low, close, period=label_atr_period)
-    labels = calculate_labels_mean_reversion(close, atr, lvl, label_markup, label_min_val, label_max_val, q)
+    labels = calculate_labels_mean_reversion(close, atr, lvl, label_markup, label_min_val, label_max_val, q, direction=direction)
 
     # Process the dataset and labels
     dataset = dataset.iloc[:len(labels)].copy()

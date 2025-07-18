@@ -21,7 +21,7 @@ from modules.labeling_lib import (
     get_labels_trend, get_labels_trend_with_profit,
     get_labels_trend_with_profit_multi, get_labels_clusters,
     get_labels_multi_window, get_labels_validated_levels,
-    get_labels_filter_ZZ, get_labels_mean_reversion,
+    get_labels_filter_zigzag, get_labels_mean_reversion,
     get_labels_mean_reversion_multi, get_labels_mean_reversion_v,
     get_labels_filter, get_labels_multiple_filters,
     get_labels_filter_bidirectional, get_labels_filter_one_direction,
@@ -42,7 +42,7 @@ class StrategySearcher:
         "clusters": get_labels_clusters,
         "multi_window": get_labels_multi_window,
         "validated_levels": get_labels_validated_levels,
-        "zigzag": get_labels_filter_ZZ,
+        "zigzag": get_labels_filter_zigzag,
         "mean_rev": get_labels_mean_reversion,
         "mean_rev_multi": get_labels_mean_reversion_multi,
         "mean_rev_vol": get_labels_mean_reversion_v,
@@ -1781,77 +1781,3 @@ class StrategySearcher:
                 problematic_cols.append(col)
                 
         return problematic_cols
-
-# =========================================================================
-# DOCUMENTACIÓN: ENFOQUE 4 CORREGIDO - CONFIABILIDAD GENERALIZADA
-# =========================================================================
-"""
-ENFOQUE 4 IMPLEMENTADO Y CORREGIDO: Generalización del concepto de confiabilidad
-
-Con esta implementación, TODOS los métodos de búsqueda pueden usar automáticamente
-etiquetado fractal u otros métodos que incluyan muestras "no confiables" (valor 2.0).
-
-ESQUEMAS DISPONIBLES:
-
-1. ESQUEMA PURO DE CONFIABILIDAD (reliability original):
-   searcher = StrategySearcher(
-       search_type='reliability',  # ← Método original
-       label_method='fractal'
-   )
-   - Meta model: "¿es confiable el patrón?" (1=confiable, 0=no confiable)
-   - Main model: "¿buy o sell?" (solo en muestras confiables)
-
-2. ESQUEMA HÍBRIDO (clustering + confiabilidad):
-   searcher = StrategySearcher(
-       search_type='clusters',    # ← Clustering + fractales
-       label_method='fractal'
-   )
-   - Clustering se hace SOLO en muestras confiables (≠ 2.0)
-   - Meta model: "¿pertenece al cluster bueno Y es confiable?"
-   - Main model: direccionalidad en intersección (cluster bueno + confiable)
-
-3. ESQUEMA DIRECTO (MAPIE/causal + confiabilidad):
-   searcher = StrategySearcher(
-       search_type='mapie',       # ← MAPIE usa confiabilidad directamente  
-       label_method='fractal'
-   )
-   - Salta la lógica específica de MAPIE
-   - Usa directamente el esquema de confiabilidad fractal
-
-4. ESQUEMA TRADICIONAL (sin confiabilidad):
-   searcher = StrategySearcher(
-       search_type='clusters',    
-       label_method='trend'       # ← Etiquetado binario (0/1)
-   )
-   - Funciona como siempre, sin cambios
-
-ARQUITECTURA HÍBRIDA (LA NOVEDAD):
-Cuando se combina clustering + confiabilidad:
-
-1. CLUSTERING INTELIGENTE:
-   - Se hace clustering solo en muestras confiables
-   - Muestras no confiables (2.0) se marcan como cluster -1
-   
-2. EVALUACIÓN POR INTERSECCIÓN:
-   - Para cada cluster: intersección = (cluster_i + confiable)
-   - Meta model aprende: "¿está en el cluster bueno Y es confiable?"
-   - Main model aprende: direccionalidad en esa intersección
-
-3. SEÑAL ENRIQUECIDA:
-   - Clustering solo: "¿régimen favorable?"
-   - Confiabilidad solo: "¿patrón confiable?"  
-   - Híbrido: "¿régimen favorable Y patrón confiable?"
-
-BENEFICIOS CORREGIDOS:
-✅ Clustering funcional: Ya no se "salta" cuando hay confiabilidad
-✅ Señal enriquecida: Combina información de régimen + patrón
-✅ Flexibilidad total: Cualquier combinación método/etiquetado funciona
-✅ Lógica consistente: Respeta la intención del usuario de usar clustering
-✅ Retrocompatibilidad: Métodos tradicionales inalterados
-
-FUNCIONAMIENTO TÉCNICO CORREGIDO:
-- Métodos de clustering detectan confiabilidad y hacen clustering híbrido
-- _evaluate_hybrid_clusters() maneja la evaluación por intersecciones
-- Solo MAPIE/causal usan confiabilidad directamente (sin clustering)
-- Pipeline fit_final_models() maneja todos los esquemas transparentemente
-"""

@@ -22,7 +22,7 @@ from modules.labeling_lib import (
     get_labels_trend_with_profit_multi, get_labels_clusters,
     get_labels_multi_window, get_labels_validated_levels,
     get_labels_filter_zigzag, get_labels_mean_reversion,
-    get_labels_mean_reversion_multi, get_labels_mean_reversion_v,
+    get_labels_mean_reversion_multi, get_labels_mean_reversion_vol,
     get_labels_filter, get_labels_multiple_filters,
     get_labels_filter_bidirectional, get_labels_filter_one_direction,
     get_labels_trend_one_direction, get_labels_filter_flat,
@@ -45,7 +45,7 @@ class StrategySearcher:
         "zigzag": get_labels_filter_zigzag,
         "mean_rev": get_labels_mean_reversion,
         "mean_rev_multi": get_labels_mean_reversion_multi,
-        "mean_rev_vol": get_labels_mean_reversion_v,
+        "mean_rev_vol": get_labels_mean_reversion_vol,
         "filter": get_labels_filter,
         "multi_filter": get_labels_multiple_filters,
         "filter_bidirectional": get_labels_filter_bidirectional,
@@ -1146,8 +1146,8 @@ class StrategySearcher:
             p['markov_mix']      = trial.suggest_int ('markov_mix',     2, 5)
         elif self.search_type == 'clusters':
             p['clust_n_clusters'] = trial.suggest_int ('clust_n_clusters', 8, 30, log=True)
-            p['clust_window']     = trial.suggest_int ('clust_window',     40, 250, log=True)
             if self.search_subtype == 'advanced':
+                p['clust_window']     = trial.suggest_int ('clust_window',     40, 250, log=True)
                 p['clust_step']       = trial.suggest_int ('clust_step',       10, 50, log=True)
         elif self.search_type == 'lgmm':
             p['lgmm_components']  = trial.suggest_int ('lgmm_components',  3, 15, log=True)

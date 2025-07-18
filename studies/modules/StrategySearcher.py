@@ -302,7 +302,7 @@ class StrategySearcher:
                 if self.search_subtype == 'simple':
                     reliable_data = clustering_simple(
                         reliable_data,
-                        min_cluster_size=hp['clust_n_clusters']
+                        n_clusters=hp['clust_n_clusters']
                     )
                 elif self.search_subtype == 'advanced':
                     reliable_data = sliding_window_clustering(
@@ -324,7 +324,7 @@ class StrategySearcher:
                 if self.search_subtype == 'simple':
                     full_ds = clustering_simple(
                         full_ds,
-                        min_cluster_size=hp['clust_n_clusters']
+                        n_clusters=hp['clust_n_clusters']
                     )
                 elif self.search_subtype == 'advanced':
                     full_ds = sliding_window_clustering(
@@ -1139,16 +1139,16 @@ class StrategySearcher:
     def _suggest_algo_specific(self, trial: optuna.Trial) -> Dict[str, float]:
         """Parámetros exclusivos según self.search_type."""
         p = {}
-        if self.search_type == 'markov':
+        if self.search_type == 'clusters':
+            p['clust_n_clusters'] = trial.suggest_int ('clust_n_clusters', 5, 30, log=True)
+            if self.search_subtype == 'advanced':
+                p['clust_window']     = trial.suggest_int ('clust_window',     40, 250, log=True)
+                p['clust_step']       = trial.suggest_int ('clust_step',       10, 50, log=True)
+        elif self.search_type == 'markov':
             p['markov_model']    = trial.suggest_categorical('markov_model', ['GMMHMM', 'HMM'])
             p['markov_regimes']  = trial.suggest_int ('markov_regimes', 3, 8, log=True)
             p['markov_iter']     = trial.suggest_int ('markov_iter',    50, 200, log=True)
             p['markov_mix']      = trial.suggest_int ('markov_mix',     2, 5)
-        elif self.search_type == 'clusters':
-            p['clust_n_clusters'] = trial.suggest_int ('clust_n_clusters', 8, 30, log=True)
-            if self.search_subtype == 'advanced':
-                p['clust_window']     = trial.suggest_int ('clust_window',     40, 250, log=True)
-                p['clust_step']       = trial.suggest_int ('clust_step',       10, 50, log=True)
         elif self.search_type == 'lgmm':
             p['lgmm_components']  = trial.suggest_int ('lgmm_components',  3, 15, log=True)
             p['lgmm_covariance']  = trial.suggest_categorical('lgmm_covariance', ['full', 'tied', 'diag', 'spherical'])

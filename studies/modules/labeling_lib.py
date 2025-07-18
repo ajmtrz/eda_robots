@@ -6,7 +6,6 @@ import cupy as cp
 #import ot
 from numba import njit, prange
 from numba.typed import List
-from hdbscan import HDBSCAN
 from sklearn.cluster import KMeans
 from sklearn.preprocessing import StandardScaler
 from sklearn.covariance import empirical_covariance
@@ -2715,10 +2714,15 @@ def sliding_window_clustering(
     ds_out["labels_meta"] = clusters
     return ds_out
 
-def clustering_simple(dataset: pd.DataFrame,
-               min_cluster_size: int = 20,
-               min_samples: int | None = None) -> pd.DataFrame:
-    # Si el dataset está vacío, devuelve un dataset con -1 en la columna labels_meta
+def clustering_simple(
+    dataset: pd.DataFrame,
+    n_clusters: int = 5,
+    random_state: int = 42
+) -> pd.DataFrame:
+    """
+    Clustering simple usando KMeans
+    Si el dataset está vacío o no hay meta features, asigna -1 a labels_meta.
+    """
     if dataset.empty:
         dataset["labels_meta"] = -1
         return dataset
@@ -2727,12 +2731,14 @@ def clustering_simple(dataset: pd.DataFrame,
         dataset["labels_meta"] = -1
         return dataset
     meta_X_np = meta_X.to_numpy(np.float32)
-    clusterer = HDBSCAN(
-        min_cluster_size=min_cluster_size,
-        min_samples=min_samples
-    ).fit(meta_X_np)
-
-    dataset["labels_meta"] = clusterer.labels_.astype(int)
+    try:
+        clusterer = KMeans(
+            n_clusters=n_clusters,
+            n_init="auto"
+        ).fit(meta_X_np)
+        dataset["labels_meta"] = clusterer.labels_.astype(int)
+    except Exception as e:
+        dataset["labels_meta"] = -1
     return dataset
 
 def markov_regime_switching_simple(dataset, n_regimes: int, model_type="GMMHMM", n_iter = 10, n_mix = 3) -> pd.DataFrame:

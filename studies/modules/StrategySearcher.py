@@ -1073,7 +1073,7 @@ class StrategySearcher:
         p["feature_main_stats"] = tuple(dict.fromkeys(feature_stats))
 
         # ─── FEATURE META (solo ciertos search_type) ──────────────────────────
-        if self.search_type in {"markov", "clusters", "lgmm", "wkmeans", "fractal"}:
+        if self.search_type in {"clusters", "markov", "lgmm", "wkmeans"}:
             # períodos meta
             n_meta_periods = trial.suggest_int("feature_meta_n_periods", 1, 3)
             meta_periods = [

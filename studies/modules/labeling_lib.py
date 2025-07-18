@@ -854,40 +854,78 @@ def plot_trading_signals(
     plt.show()
 
 @njit(cache=True)
-def calculate_labels_trend_with_profit(close, atr, normalized_trend, label_threshold, label_markup, label_min_val, label_max_val):
+def calculate_labels_trend_with_profit(
+    close, atr, normalized_trend, label_threshold, label_markup, label_min_val, label_max_val, direction
+):
+    """
+    Etiquetado de tendencia con profit, soportando dirección:
+    direction: 0=solo buy, 1=solo sell, 2=both
+    Usa ATR como filtro de profit.
+    """
     labels = np.empty(len(normalized_trend) - label_max_val, dtype=np.float64)
     for i in range(len(normalized_trend) - label_max_val):
         dyn_mk = label_markup * atr[i]
-        if normalized_trend[i] > label_threshold:
-            # Проверяем condición para Buy
-            rand = np.random.randint(label_min_val, label_max_val + 1)
-            future_pr = close[i + rand]
-            if future_pr >= close[i] + dyn_mk:
-                labels[i] = 0.0  # Buy (Profit reached)
+        if direction == 0:  # solo buy
+            if normalized_trend[i] > label_threshold:
+                rand = np.random.randint(label_min_val, label_max_val + 1)
+                future_pr = close[i + rand]
+                if future_pr >= close[i] + dyn_mk:
+                    labels[i] = 1.0  # Éxito direccional (buy)
+                else:
+                    labels[i] = 0.0  # Fracaso direccional (buy)
             else:
-                labels[i] = 2.0  # No profit
-        elif normalized_trend[i] < -label_threshold:
-            # Проверяем condición para Sell
-            rand = np.random.randint(label_min_val, label_max_val + 1)
-            future_pr = close[i + rand]
-            if future_pr <= close[i] - dyn_mk:
-                labels[i] = 1.0  # Sell (Profit reached)
+                labels[i] = 2.0  # Patrón no confiable
+        elif direction == 1:  # solo sell
+            if normalized_trend[i] < -label_threshold:
+                rand = np.random.randint(label_min_val, label_max_val + 1)
+                future_pr = close[i + rand]
+                if future_pr <= close[i] - dyn_mk:
+                    labels[i] = 1.0  # Éxito direccional (sell)
+                else:
+                    labels[i] = 0.0  # Fracaso direccional (sell)
             else:
-                labels[i] = 2.0  # No profit
-        else:
-            labels[i] = 2.0  # No signal
+                labels[i] = 2.0  # Patrón no confiable
+        else:  # both
+            if normalized_trend[i] > label_threshold:
+                rand = np.random.randint(label_min_val, label_max_val + 1)
+                future_pr = close[i + rand]
+                if future_pr >= close[i] + dyn_mk:
+                    labels[i] = 0.0  # Buy (Profit reached)
+                else:
+                    labels[i] = 2.0  # No profit
+            elif normalized_trend[i] < -label_threshold:
+                rand = np.random.randint(label_min_val, label_max_val + 1)
+                future_pr = close[i + rand]
+                if future_pr <= close[i] - dyn_mk:
+                    labels[i] = 1.0  # Sell (Profit reached)
+                else:
+                    labels[i] = 2.0  # No profit
+            else:
+                labels[i] = 2.0  # No signal
     return labels
 
-def get_labels_trend_with_profit(dataset, label_rolling=200, label_polyorder=3, label_threshold=0.5, 
-                    label_vol_window=50, label_markup=0.5, label_min_val=1, label_max_val=15, label_atr_period=14) -> pd.DataFrame:
+def get_labels_trend_with_profit(
+    dataset,
+    label_rolling=200,
+    label_polyorder=3,
+    label_threshold=0.5,
+    label_vol_window=50,
+    label_markup=0.5,
+    label_min_val=1,
+    label_max_val=15,
+    label_atr_period=14,
+    direction=2,  # 0=buy, 1=sell, 2=both
+) -> pd.DataFrame:
     # Smoothing and trend calculation
-    smoothed_prices = safe_savgol_filter(dataset['close'].values, window_length=label_rolling, label_polyorder=label_polyorder)
+    smoothed_prices = safe_savgol_filter(
+        dataset['close'].values, window_length=label_rolling, label_polyorder=label_polyorder
+    )
     trend = np.gradient(smoothed_prices)
-    
+
     # Normalizing the trend by volatility
     vol = dataset['close'].label_rolling(label_vol_window).std().values
     normalized_trend = np.where(vol != 0, trend / vol, np.nan)
-    
+
     # Removing NaN and synchronizing data
     valid_mask = ~np.isnan(normalized_trend)
     normalized_trend_clean = normalized_trend[valid_mask]
@@ -897,16 +935,25 @@ def get_labels_trend_with_profit(dataset, label_rolling=200, label_polyorder=3, 
     atr = calculate_atr_simple(high, low, dataset["close"].values, period=label_atr_period)
     atr_clean = atr[valid_mask]
     dataset_clean = dataset[valid_mask].copy()
-    
+
     # Generating labels
-    labels = calculate_labels_trend_with_profit(close_clean, atr_clean, normalized_trend_clean, label_threshold, label_markup, label_min_val, label_max_val)
-    
+    labels = calculate_labels_trend_with_profit(
+        close_clean,
+        atr_clean,
+        normalized_trend_clean,
+        label_threshold,
+        label_markup,
+        label_min_val,
+        label_max_val,
+        direction,
+    )
+
     # Trimming the dataset and adding labels
     dataset_clean = dataset_clean.iloc[:len(labels)].copy()
     dataset_clean['labels_main'] = labels[: len(dataset_clean)]
-    
+
     # Filtering the results
-    dataset_clean = dataset_clean.dropna()    
+    dataset_clean = dataset_clean.dropna()
     return dataset_clean
 
 @njit(cache=True)

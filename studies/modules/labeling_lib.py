@@ -1173,29 +1173,70 @@ def get_labels_trend_with_profit_multi(
     return dataset_clean
 
 @njit(cache=True)
-def calculate_labels_clusters(close_data, atr, clusters, label_markup):
+def calculate_labels_clusters(close_data, atr, clusters, label_markup, direction=2):
+    """
+    Etiquetado de saltos de cluster con soporte para direcciones únicas o ambas.
+    direction: 0=solo buy, 1=solo sell, 2=ambas
+    Etiquetas:
+      - Direccional único: 1.0=éxito direccional, 0.0=fracaso direccional, 2.0=patrón no confiable
+      - Ambas: 0.0=salto alcista, 1.0=salto bajista, 2.0=sin señal
+    """
     labels = []
     current_cluster = clusters[0]
     last_price = close_data[0]
     for i in range(1, len(close_data)):
         next_cluster = clusters[i]
         dyn_mk = label_markup * atr[i]
-        if next_cluster != current_cluster and (abs(close_data[i] - last_price) > dyn_mk):
-            if close_data[i] > last_price:
-                labels.append(0.0)
+        price_diff = close_data[i] - last_price
+        jump = (next_cluster != current_cluster) and (abs(price_diff) > dyn_mk)
+        if direction == 0:  # solo buy
+            if jump:
+                if price_diff > 0:
+                    labels.append(1.0)  # Éxito direccional (sube tras salto)
+                else:
+                    labels.append(0.0)  # Fracaso direccional (baja tras salto)
+                current_cluster = next_cluster
+                last_price = close_data[i]
             else:
-                labels.append(1.0)
-            current_cluster = next_cluster
-            last_price = close_data[i]
-        else:
-            labels.append(2.0)
-
+                labels.append(2.0)  # Patrón no confiable
+        elif direction == 1:  # solo sell
+            if jump:
+                if price_diff < 0:
+                    labels.append(1.0)  # Éxito direccional (baja tras salto)
+                else:
+                    labels.append(0.0)  # Fracaso direccional (sube tras salto)
+                current_cluster = next_cluster
+                last_price = close_data[i]
+            else:
+                labels.append(2.0)  # Patrón no confiable
+        else:  # both
+            if jump:
+                if price_diff > 0:
+                    labels.append(0.0)  # Salto alcista
+                else:
+                    labels.append(1.0)  # Salto bajista
+                current_cluster = next_cluster
+                last_price = close_data[i]
+            else:
+                labels.append(2.0)  # Sin señal
+    # Asegura longitud igual a close_data
     if len(labels) < len(close_data):
         labels.append(2.0)
-    return labels
+    return np.array(labels, dtype=np.float64)
 
-def get_labels_clusters(dataset, label_markup, label_n_clusters=20, label_atr_period=14) -> pd.DataFrame:
+def get_labels_clusters(
+    dataset, 
+    label_markup, 
+    label_n_clusters=20, 
+    label_atr_period=14, 
+    direction=2  # 0=buy, 1=sell, 2=both
+) -> pd.DataFrame:
+    """
+    Etiquetado de saltos de cluster con soporte para direcciones únicas o ambas.
+    direction: 0=solo buy, 1=solo sell, 2=ambas
+    """
     kmeans = KMeans(n_clusters=label_n_clusters, n_init='auto')
+    dataset = dataset.copy()
     dataset['cluster'] = kmeans.fit_predict(dataset[['close']])
 
     close_data = dataset['close'].values
@@ -1204,14 +1245,23 @@ def get_labels_clusters(dataset, label_markup, label_n_clusters=20, label_atr_pe
     high = dataset["high"].values if "high" in dataset else dataset["close"].values
     low = dataset["low"].values if "low" in dataset else dataset["close"].values
     atr = calculate_atr_simple(high, low, dataset["close"].values, period=label_atr_period)
-    labels = calculate_labels_clusters(close_data, atr, clusters, label_markup)
+    labels = calculate_labels_clusters(close_data, atr, clusters, label_markup, direction=direction)
 
-    dataset['labels_main'] = labels
+    dataset = dataset.iloc[:len(labels)].copy()
+    dataset['labels_main'] = labels[:len(dataset)]
     dataset = dataset.drop(columns=['cluster'])
+    dataset = dataset.dropna()
     return dataset
 
 @njit(cache=True)
-def calculate_signals(prices, window_sizes, threshold_pct):
+def calculate_labels_multi_window(prices, window_sizes, threshold_pct, direction=2):
+    """
+    Etiquetado multi-ventana con soporte para direcciones únicas o ambas.
+    direction: 0=solo buy, 1=solo sell, 2=ambas
+    Etiquetas:
+      - Direccional único: 1.0=éxito direccional, 0.0=fracaso direccional, 2.0=patrón no confiable
+      - Ambas: 0.0=buy, 1.0=sell, 2.0=sin señal
+    """
     max_window = max(window_sizes)
     signals = []
     for i in range(max_window, len(prices)):
@@ -1219,25 +1269,50 @@ def calculate_signals(prices, window_sizes, threshold_pct):
         short_signals = 0
         for l_window_size in window_sizes:
             window = prices[i-l_window_size:i]
-            resistance = max(window)
-            support = min(window)
+            resistance = np.max(window)
+            support = np.min(window)
             current_price = prices[i]
             if current_price > resistance * (1 + threshold_pct):
                 long_signals += 1
             elif current_price < support * (1 - threshold_pct):
                 short_signals += 1
-        if long_signals > short_signals:
-            signals.append(0.0) 
-        elif short_signals > long_signals:
-            signals.append(1.0)
-        else:
-            signals.append(2.0)
+
+        if direction == 2:  # both
+            if long_signals > short_signals:
+                signals.append(0.0)
+            elif short_signals > long_signals:
+                signals.append(1.0)
+            else:
+                signals.append(2.0)
+        elif direction == 0:  # solo buy
+            if long_signals > 0:
+                signals.append(1.0)  # éxito direccional (señal de compra)
+            elif short_signals > 0:
+                signals.append(0.0)  # fracaso direccional (señal de venta)
+            else:
+                signals.append(2.0)  # patrón no confiable
+        elif direction == 1:  # solo sell
+            if short_signals > 0:
+                signals.append(1.0)  # éxito direccional (señal de venta)
+            elif long_signals > 0:
+                signals.append(0.0)  # fracaso direccional (señal de compra)
+            else:
+                signals.append(2.0)  # patrón no confiable
     return signals
 
-def get_labels_multi_window(dataset, label_window_sizes_int=[20, 50, 100], label_threshold_pct=0.02) -> pd.DataFrame:
+def get_labels_multi_window(
+    dataset, 
+    label_window_sizes_int=[20, 50, 100], 
+    label_threshold_pct=0.02, 
+    direction=2
+) -> pd.DataFrame:
+    """
+    Etiquetado multi-ventana con soporte para direcciones únicas o ambas.
+    direction: 0=solo buy, 1=solo sell, 2=ambas
+    """
     prices = dataset['close'].values
     window_sizes_t = List(label_window_sizes_int)
-    signals = calculate_signals(prices, window_sizes_t, label_threshold_pct)
+    signals = calculate_labels_multi_window(prices, window_sizes_t, label_threshold_pct, direction)
     signals = [2.0] * max(label_window_sizes_int) + signals
     dataset = dataset.iloc[: len(signals)].copy()
     dataset['labels_main'] = signals[: len(dataset)]

@@ -124,7 +124,7 @@ class StrategySearcher:
             'wkmeans' : self.search_wkmeans,
             'mapie': self.search_mapie,
             'causal': self.search_causal,
-            'fractal': self.search_fractal,
+            'reliability': self.search_reliability,
         }
         
         if self.search_type not in search_funcs:
@@ -784,9 +784,13 @@ class StrategySearcher:
             print(f"Error en search_wkmeans: {str(e)}")
             return -1.0
 
-    def search_fractal(self, trial: optuna.Trial) -> float:
+    def search_reliability(self, trial: optuna.Trial) -> float:
         """
-        Implementación específica del artículo MQL5 de patrones fractales.
+        Búsqueda basada en confiabilidad de patrones (esquema puro de confiabilidad).
+        
+        Este método implementa el esquema original del artículo MQL5 donde:
+        - Meta model: "¿es confiable el patrón?" (1=confiable, 0=no confiable)
+        - Main model: "¿buy o sell?" (solo en muestras confiables)
         
         NOTA: Con el Enfoque 4 de confiabilidad implementado, ahora cualquier 
         método de búsqueda (clusters, mapie, causal, etc.) puede usar automáticamente
@@ -796,10 +800,10 @@ class StrategySearcher:
         try:
             hp = self.suggest_all_params(trial)
             
-            # 🔍 DEBUG: Supervisar parámetros específicos de fractales
+            # 🔍 DEBUG: Supervisar parámetros específicos de confiabilidad
             if self.debug:
-                fractal_params = {k: v for k, v in hp.items() if k.startswith('label_')}
-                print(f"🔍 DEBUG search_fractal - Parámetros fractales: {fractal_params}")
+                reliability_params = {k: v for k, v in hp.items() if k.startswith('label_')}
+                print(f"🔍 DEBUG search_reliability - Parámetros de confiabilidad: {reliability_params}")
                 
             full_ds = self.get_labeled_full_data(hp)
             if full_ds is None:
@@ -809,7 +813,7 @@ class StrategySearcher:
             feature_cols = [c for c in full_ds.columns if c.endswith('_main_feature')]
             
             if self.debug:
-                print(f"🔍 DEBUG search_fractal - Feature columns: {len(feature_cols)}")
+                print(f"🔍 DEBUG search_reliability - Feature columns: {len(feature_cols)}")
                 labels_dist = full_ds['labels_main'].value_counts()
                 print(f"🔍   Labels distribution: {labels_dist}")
             
@@ -825,13 +829,13 @@ class StrategySearcher:
             trading_mask = full_ds['labels_main'].isin([0.0, 1.0])
             if not trading_mask.any():
                 if self.debug:
-                    print(f"🔍 DEBUG search_fractal - No hay muestras de trading")
+                    print(f"🔍 DEBUG search_reliability - No hay muestras de trading")
                 return -1.0
                 
             main_data = full_ds.loc[trading_mask, feature_cols + ['labels_main']].copy()
             
             if self.debug:
-                print(f"🔍 DEBUG search_fractal - Main data shape: {main_data.shape}")
+                print(f"🔍 DEBUG search_reliability - Main data shape: {main_data.shape}")
                 print(f"🔍   Meta data shape: {meta_data.shape}")
                 meta_dist = meta_data['labels_meta'].value_counts()
                 print(f"🔍   Meta labels distribution: {meta_dist}")
@@ -839,7 +843,7 @@ class StrategySearcher:
             # Verificar que tenemos suficientes muestras
             if len(main_data) < 100:  # Mínimo razonable
                 if self.debug:
-                    print(f"🔍 DEBUG search_fractal - Insuficientes muestras main: {len(main_data)}")
+                    print(f"🔍 DEBUG search_reliability - Insuficientes muestras main: {len(main_data)}")
                 return -1.0
                 
             # Verificar distribución de clases
@@ -848,7 +852,7 @@ class StrategySearcher:
             
             if len(main_labels_dist) < 2 or len(meta_labels_dist) < 2:
                 if self.debug:
-                    print(f"🔍 DEBUG search_fractal - Distribución insuficiente de clases")
+                    print(f"🔍 DEBUG search_reliability - Distribución insuficiente de clases")
                 return -1.0
                 
             # Usar pipeline existente
@@ -869,7 +873,7 @@ class StrategySearcher:
             return trial.user_attrs.get('score', -1.0)
             
         except Exception as e:
-            print(f"Error en search_fractal: {str(e)}")
+            print(f"Error en search_reliability: {str(e)}")
             return -1.0
 
     # =========================================================================
@@ -1789,9 +1793,9 @@ etiquetado fractal u otros métodos que incluyan muestras "no confiables" (valor
 
 ESQUEMAS DISPONIBLES:
 
-1. ESQUEMA PURO DE CONFIABILIDAD (fractal original):
+1. ESQUEMA PURO DE CONFIABILIDAD (reliability original):
    searcher = StrategySearcher(
-       search_type='fractal',  # ← Método original
+       search_type='reliability',  # ← Método original
        label_method='fractal'
    )
    - Meta model: "¿es confiable el patrón?" (1=confiable, 0=no confiable)

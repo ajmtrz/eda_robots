@@ -1716,7 +1716,17 @@ def get_labels_mean_reversion_multi(
     return dataset
 
 @njit(cache=True)
-def calculate_labels_mean_reversion_v(close_data, atr, lvl_data, volatility_group, quantile_groups_low, quantile_groups_high, label_markup, label_min_val, label_max_val):
+def calculate_labels_mean_reversion_vol(
+    close_data, atr, lvl_data, volatility_group, quantile_groups_low, quantile_groups_high,
+    label_markup, label_min_val, label_max_val, direction=2
+):
+    """
+    direction: 2=both, 0=buy only, 1=sell only
+    Etiquetado compatible con la metodología de direcciones únicas:
+      - 2.0: patrón no confiable (correlación baja o sin direccionalidad)
+      - 1.0: éxito direccional (buy/sell según dirección)
+      - 0.0: fracaso direccional (buy/sell según dirección)
+    """
     labels = []
     for i in range(len(close_data) - label_max_val):
         dyn_mk = label_markup * atr[i]
@@ -1726,31 +1736,45 @@ def calculate_labels_mean_reversion_v(close_data, atr, lvl_data, volatility_grou
         curr_vol_group = volatility_group[i]
         future_pr = close_data[i + rand]
 
-        # Access quantiles directly from arrays
         low_q = quantile_groups_low[int(curr_vol_group)]
         high_q = quantile_groups_high[int(curr_vol_group)]
 
-        if curr_lvl > high_q and (future_pr + dyn_mk) < curr_pr:
-            labels.append(1.0)
-        elif curr_lvl < low_q and (future_pr - dyn_mk) > curr_pr:
-            labels.append(0.0)
-        else:
-            labels.append(2.0)
+        if direction == 0:  # solo buy
+            if curr_lvl < low_q and (future_pr - dyn_mk) > curr_pr:
+                labels.append(1.0)  # éxito direccional (compra)
+            elif curr_lvl < low_q:
+                labels.append(0.0)  # fracaso direccional (compra fallida)
+            else:
+                labels.append(2.0)  # patrón no confiable
+        elif direction == 1:  # solo sell
+            if curr_lvl > high_q and (future_pr + dyn_mk) < curr_pr:
+                labels.append(1.0)  # éxito direccional (venta)
+            elif curr_lvl > high_q:
+                labels.append(0.0)  # fracaso direccional (venta fallida)
+            else:
+                labels.append(2.0)  # patrón no confiable
+        else:  # both directions
+            if curr_lvl > high_q and (future_pr + dyn_mk) < curr_pr:
+                labels.append(1.0)  # sell
+            elif curr_lvl < low_q and (future_pr - dyn_mk) > curr_pr:
+                labels.append(0.0)  # buy
+            else:
+                labels.append(2.0)  # no confiable
     return labels
 
-def get_labels_mean_reversion_v(dataset, label_markup, label_min_val=1, label_max_val=15, label_rolling=0.5, label_quantiles=[.45, .55], label_filter='spline', label_shift=1, label_vol_window=20, label_atr_period=14) -> pd.DataFrame:
+def get_labels_mean_reversion_vol(
+    dataset, label_markup, label_min_val=1, label_max_val=15, label_rolling=0.5,
+    label_quantiles=[.45, .55], label_filter='spline', label_shift=1,
+    label_vol_window=20, label_atr_period=14, direction=2
+) -> pd.DataFrame:
     """
     Generates trading labels based on mean reversion principles, incorporating
-    volatility-based adjustments to identify buy opportunities.
-
-    This function calculates trading signals (buy/sell), taking into account the 
-    volatility of the asset. It groups the data into volatility bands and calculates 
-    quantiles for each band. This allows for more dynamic "reversion zones" that 
-    adjust to changing market conditions.
+    volatility-based adjustments to identify buy/sell opportunities.
+    Now supports unidirectional trading (buy-only, sell-only) following the meta/main methodology.
 
     Args:
         dataset (pd.DataFrame): DataFrame containing financial data with a 'close' column.
-        label_markup (float): The percentage label_markup used to determine buy signals.
+        label_markup (float): The percentage label_markup used to determine buy/sell signals.
         label_min_val (int, optional): Minimum number of consecutive days the label_markup must hold. Defaults to 1.
         label_max_val (int, optional): Maximum number of consecutive days the label_markup is considered. Defaults to 15.
         label_rolling (float, optional): Rolling window size or spline smoothing factor (see 'label_filter'). 
@@ -1764,12 +1788,14 @@ def get_labels_mean_reversion_v(dataset, label_markup, label_min_val=1, label_ma
         shift (int, optional): Shift the smoothed price data forward (positive) or backward (negative).
                                  Useful for creating a lag/lead effect. Defaults to 1.
         label_vol_window (int, optional): Window size for calculating volatility. Defaults to 20.
+        direction (int, optional): 2=both, 0=buy only, 1=sell only. Defaults to 2.
 
     Returns:
         pd.DataFrame: The original DataFrame with a new 'labels_main' column and filtered rows:
                        - 'labels_main' column: 
-                            - 0: Buy
-                            - 1: Sell
+                            - 0: Buy (or éxito direccional en buy-only)
+                            - 1: Sell (o éxito direccional en sell-only)
+                            - 2: Patrón no confiable
                        - Rows with missing values (NaN) are removed.
                        - Temporary 'lvl', 'volatility', 'volatility_group' columns are removed.
     """
@@ -1828,8 +1854,11 @@ def get_labels_mean_reversion_v(dataset, label_markup, label_min_val=1, label_ma
     atr = calculate_atr_simple(high, low, close_data, period=label_atr_period)
     quantile_groups_high = np.array(quantile_groups_high)
 
-    # Calculate buy/sell labels
-    labels = calculate_labels_mean_reversion_v(close_data, atr, lvl_data, volatility_group, quantile_groups_low, quantile_groups_high, label_markup, label_min_val, label_max_val)
+    # Calculate buy/sell labels with direction support
+    labels = calculate_labels_mean_reversion_vol(
+        close_data, atr, lvl_data, volatility_group, quantile_groups_low, quantile_groups_high,
+        label_markup, label_min_val, label_max_val, direction
+    )
     
     # Process dataset and labels
     dataset = dataset.iloc[:len(labels)].copy()

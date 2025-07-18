@@ -686,23 +686,63 @@ def safe_savgol_filter(x, l_window_size: int, label_polyorder: int):
     return savgol_filter(x, window_length=wl, label_polyorder=label_polyorder)
 
 @njit(cache=True)
-def calculate_labels_trend(normalized_trend, label_threshold):
+def calculate_labels_trend(normalized_trend, label_threshold, direction=2):
+    """
+    Etiquetado de tendencia normalizada, compatible con direcciones únicas o ambas.
+    direction: 0=solo buy, 1=solo sell, 2=both
+    """
     labels = np.empty(len(normalized_trend), dtype=np.float64)
     for i in range(len(normalized_trend)):
-        if normalized_trend[i] > label_threshold:
-            labels[i] = 0.0  # Buy (Up trend)
-        elif normalized_trend[i] < -label_threshold:
-            labels[i] = 1.0  # Sell (Down trend)
+        val = normalized_trend[i]
+        if direction == 2:
+            # Esquema clásico: 0.0=buy, 1.0=sell, 2.0=no señal
+            if val > label_threshold:
+                labels[i] = 0.0  # Buy (Up trend)
+            elif val < -label_threshold:
+                labels[i] = 1.0  # Sell (Down trend)
+            else:
+                labels[i] = 2.0  # No signal
+        elif direction == 0:
+            # Solo buy: 1.0=éxito, 0.0=fracaso, 2.0=no confiable
+            if val > label_threshold:
+                labels[i] = 1.0  # Éxito direccional (buy)
+            elif val < -label_threshold:
+                labels[i] = 0.0  # Fracaso direccional (no buy, sino sell)
+            else:
+                labels[i] = 2.0  # Patrón no confiable
+        elif direction == 1:
+            # Solo sell: 1.0=éxito, 0.0=fracaso, 2.0=no confiable
+            if val < -label_threshold:
+                labels[i] = 1.0  # Éxito direccional (sell)
+            elif val > label_threshold:
+                labels[i] = 0.0  # Fracaso direccional (no sell, sino buy)
+            else:
+                labels[i] = 2.0  # Patrón no confiable
         else:
-            labels[i] = 2.0  # No signal
+            labels[i] = 2.0  # fallback
     return labels
 
-def get_labels_trend(dataset, label_rolling=200, label_polyorder=3, label_threshold=0.5, label_vol_window=50) -> pd.DataFrame:
-    smoothed_prices = safe_savgol_filter(dataset['close'].values, window_length=label_rolling, label_polyorder=label_polyorder)
+def get_labels_trend(
+    dataset,
+    label_rolling=200,
+    label_polyorder=3,
+    label_threshold=0.5,
+    label_vol_window=50,
+    direction=2
+) -> pd.DataFrame:
+    """
+    Etiquetado de tendencia normalizada, compatible con direcciones únicas o ambas.
+    direction: 0=solo buy, 1=solo sell, 2=both
+    """
+    smoothed_prices = safe_savgol_filter(
+        dataset['close'].values,
+        window_length=label_rolling,
+        label_polyorder=label_polyorder
+    )
     trend = np.gradient(smoothed_prices)
-    vol = dataset['close'].label_rolling(label_vol_window).std().values
+    vol = dataset['close'].rolling(label_vol_window).std().values
     normalized_trend = np.where(vol != 0, trend / vol, np.nan)  # Set NaN where vol is 0
-    labels = calculate_labels_trend(normalized_trend, label_threshold)
+    labels = calculate_labels_trend(normalized_trend, label_threshold, direction=direction)
     dataset = dataset.iloc[:len(labels)].copy()
     dataset['labels_main'] = labels
     dataset = dataset.dropna()  # Remove rows with NaN

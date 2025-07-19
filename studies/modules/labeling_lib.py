@@ -1867,22 +1867,51 @@ def get_labels_mean_reversion_vol(
     # Remove temporary columns and return
     return dataset.drop(columns=['lvl', 'volatility', 'volatility_group'])
 
-# FILTERING BASED LABELING W/O RESTRICTIONS
+# FILTERING BASED LABELING WITH UNIDIRECTIONAL SUPPORT
 @njit(cache=True)
-def calculate_labels_filter(close, lvl, q):
+def calculate_labels_filter(close, lvl, q, direction=2):
+    """
+    direction: 0=buy only, 1=sell only, 2=both
+    For buy: 1.0=éxito direccional, 0.0=fracaso, 2.0=no confiable
+    For sell: 1.0=éxito direccional, 0.0=fracaso, 2.0=no confiable
+    For both: 0.0=buy, 1.0=sell, 2.0=no confiable
+    """
     labels = np.empty(len(close), dtype=np.float64)
     for i in range(len(close)):
         curr_lvl = lvl[i]
-
-        if curr_lvl > q[1]:
-            labels[i] = 1.0
-        elif curr_lvl < q[0]:
-            labels[i] = 0.0
+        if direction == 2:  # both
+            if curr_lvl > q[1]:
+                labels[i] = 1.0  # Sell
+            elif curr_lvl < q[0]:
+                labels[i] = 0.0  # Buy
+            else:
+                labels[i] = 2.0  # No confiable
+        elif direction == 0:  # solo buy
+            if curr_lvl < q[0]:
+                labels[i] = 1.0  # Éxito direccional (compra)
+            elif curr_lvl > q[1]:
+                labels[i] = 0.0  # Fracaso direccional (venta)
+            else:
+                labels[i] = 2.0  # Patrón no confiable
+        elif direction == 1:  # solo sell
+            if curr_lvl > q[1]:
+                labels[i] = 1.0  # Éxito direccional (venta)
+            elif curr_lvl < q[0]:
+                labels[i] = 0.0  # Fracaso direccional (compra)
+            else:
+                labels[i] = 2.0  # Patrón no confiable
         else:
-            labels[i] = 2.0
+            labels[i] = 2.0  # fallback
     return labels
 
-def get_labels_filter(dataset, label_rolling=200, label_quantiles=[.45, .55], label_polyorder=3, label_decay_factor=0.95) -> pd.DataFrame:
+def get_labels_filter(
+    dataset, 
+    label_rolling=200, 
+    label_quantiles=[.45, .55], 
+    label_polyorder=3, 
+    label_decay_factor=0.95, 
+    direction=2
+) -> pd.DataFrame:
     """
     Generates labels for a financial dataset based on price deviation from a Savitzky-Golay label_filter,
     with exponential weighting applied to prioritize recent data. Optionally incorporates a 
@@ -1895,16 +1924,14 @@ def get_labels_filter(dataset, label_rolling=200, label_quantiles=[.45, .55], la
         label_polyorder (int, optional): Polynomial order for the Savitzky-Golay label_filter. Defaults to 3.
         label_decay_factor (float, optional): Exponential decay factor for weighting past data. 
                                         Lower values prioritize recent data more. Defaults to 0.95.
-        cycle_period (int, optional): Period of the cycle in number of data points. If None, 
-                                     no cycle is applied. Defaults to None.
-        cycle_amplitude (float, optional): Amplitude of the cycle. If None, no cycle is applied. 
-                                          Defaults to None.
+        direction (int, optional): 0=buy only, 1=sell only, 2=both. Defaults to 2.
 
     Returns:
         pd.DataFrame: The original DataFrame with a new 'labels_main' column and filtered rows:
                        - 'labels_main' column: 
-                            - 0: Buy
-                            - 1: Sell
+                            - 0: Buy (or fracaso direccional en modo unidireccional)
+                            - 1: Sell (o éxito direccional en modo unidireccional)
+                            - 2: Patrón no confiable
                        - Rows with missing values (NaN) are removed.
                        - The temporary 'lvl' column is removed. 
     """
@@ -1931,7 +1958,7 @@ def get_labels_filter(dataset, label_rolling=200, label_quantiles=[.45, .55], la
     lvl = dataset['lvl'].values
     
     # Calculate buy/sell labels using the 'calculate_labels_filter' function 
-    labels = calculate_labels_filter(close, lvl, q) 
+    labels = calculate_labels_filter(close, lvl, q, direction=direction) 
 
     # Trim the dataset to match the length of the calculated labels
     dataset = dataset.iloc[:len(labels)].copy()

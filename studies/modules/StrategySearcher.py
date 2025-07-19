@@ -1375,7 +1375,11 @@ class StrategySearcher:
             if name == 'dataset':
                 continue
             if name == 'direction':
-                kwargs['direction'] = self.direction if self.direction != 'both' else 'both'
+                # Mapeo consistente de string a int para todas las funciones de etiquetado
+                direction_map = {"buy": 0, "sell": 1, "both": 2}
+                kwargs['direction'] = direction_map.get(self.direction, 2)
+                if self.debug:
+                    print(f"🔍   Mapeando direction: '{self.direction}' -> {kwargs['direction']}")
             # ✅ SIMPLIFICADO: Pasar parámetros directamente sin conversiones
             elif name in hp:
                 kwargs[name] = hp[name]

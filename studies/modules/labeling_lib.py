@@ -685,10 +685,11 @@ def safe_savgol_filter(x, l_window_size: int, label_polyorder: int):
     return savgol_filter(x, window_length=wl, label_polyorder=label_polyorder)
 
 @njit(cache=True)
-def calculate_labels_trend(close, atr, normalized_trend, label_threshold, label_markup, label_min_val, label_max_val, direction=2):
+def calculate_labels_trend(close, atr, normalized_trend, label_threshold, label_markup, label_min_val, label_max_val, direction=2, method_int=5):
     """
     Etiquetado de tendencia normalizada con profit target basado en ATR * markup.
     direction: 0=solo buy, 1=solo sell, 2=both
+    method_int: 0=first, 1=last, 2=mean, 3=max, 4=min, 5=random
     """
     labels = np.empty(len(normalized_trend) - label_max_val, dtype=np.float64)
     for i in range(len(normalized_trend) - label_max_val):
@@ -699,16 +700,44 @@ def calculate_labels_trend(close, atr, normalized_trend, label_threshold, label_
             # Esquema clásico: 0.0=buy, 1.0=sell, 2.0=no señal
             if val > label_threshold:
                 # Verificar si la tendencia alcista se materializa con profit
-                rand = np.random.randint(label_min_val, label_max_val + 1)
-                future_pr = close[i + rand]
+                window = close[i + label_min_val : i + label_max_val + 1]
+                if window.size == 0:
+                    future_pr = close[i + label_min_val] if i + label_min_val < len(close) else close[i]
+                elif method_int == 0:  # first
+                    future_pr = close[i + label_min_val]
+                elif method_int == 1:  # last
+                    future_pr = close[i + label_max_val]
+                elif method_int == 2:  # mean
+                    future_pr = np.mean(window)
+                elif method_int == 3:  # max
+                    future_pr = np.max(window)
+                elif method_int == 4:  # min
+                    future_pr = np.min(window)
+                else:  # random
+                    rand = np.random.randint(label_min_val, label_max_val + 1)
+                    future_pr = close[i + rand]
                 if future_pr >= close[i] + dyn_mk:
                     labels[i] = 0.0  # Buy (Up trend with profit)
                 else:
                     labels[i] = 2.0  # No profit
             elif val < -label_threshold:
                 # Verificar si la tendencia bajista se materializa con profit
-                rand = np.random.randint(label_min_val, label_max_val + 1)
-                future_pr = close[i + rand]
+                window = close[i + label_min_val : i + label_max_val + 1]
+                if window.size == 0:
+                    future_pr = close[i + label_min_val] if i + label_min_val < len(close) else close[i]
+                elif method_int == 0:  # first
+                    future_pr = close[i + label_min_val]
+                elif method_int == 1:  # last
+                    future_pr = close[i + label_max_val]
+                elif method_int == 2:  # mean
+                    future_pr = np.mean(window)
+                elif method_int == 3:  # max
+                    future_pr = np.max(window)
+                elif method_int == 4:  # min
+                    future_pr = np.min(window)
+                else:  # random
+                    rand = np.random.randint(label_min_val, label_max_val + 1)
+                    future_pr = close[i + rand]
                 if future_pr <= close[i] - dyn_mk:
                     labels[i] = 1.0  # Sell (Down trend with profit)
                 else:
@@ -718,8 +747,22 @@ def calculate_labels_trend(close, atr, normalized_trend, label_threshold, label_
         elif direction == 0:
             # Solo buy: 1.0=éxito, 0.0=fracaso, 2.0=no confiable
             if val > label_threshold:
-                rand = np.random.randint(label_min_val, label_max_val + 1)
-                future_pr = close[i + rand]
+                window = close[i + label_min_val : i + label_max_val + 1]
+                if window.size == 0:
+                    future_pr = close[i + label_min_val] if i + label_min_val < len(close) else close[i]
+                elif method_int == 0:  # first
+                    future_pr = close[i + label_min_val]
+                elif method_int == 1:  # last
+                    future_pr = close[i + label_max_val]
+                elif method_int == 2:  # mean
+                    future_pr = np.mean(window)
+                elif method_int == 3:  # max
+                    future_pr = np.max(window)
+                elif method_int == 4:  # min
+                    future_pr = np.min(window)
+                else:  # random
+                    rand = np.random.randint(label_min_val, label_max_val + 1)
+                    future_pr = close[i + rand]
                 if future_pr >= close[i] + dyn_mk:
                     labels[i] = 1.0  # Éxito direccional (buy)
                 else:
@@ -729,8 +772,22 @@ def calculate_labels_trend(close, atr, normalized_trend, label_threshold, label_
         elif direction == 1:
             # Solo sell: 1.0=éxito, 0.0=fracaso, 2.0=no confiable
             if val < -label_threshold:
-                rand = np.random.randint(label_min_val, label_max_val + 1)
-                future_pr = close[i + rand]
+                window = close[i + label_min_val : i + label_max_val + 1]
+                if window.size == 0:
+                    future_pr = close[i + label_min_val] if i + label_min_val < len(close) else close[i]
+                elif method_int == 0:  # first
+                    future_pr = close[i + label_min_val]
+                elif method_int == 1:  # last
+                    future_pr = close[i + label_max_val]
+                elif method_int == 2:  # mean
+                    future_pr = np.mean(window)
+                elif method_int == 3:  # max
+                    future_pr = np.max(window)
+                elif method_int == 4:  # min
+                    future_pr = np.min(window)
+                else:  # random
+                    rand = np.random.randint(label_min_val, label_max_val + 1)
+                    future_pr = close[i + rand]
                 if future_pr <= close[i] - dyn_mk:
                     labels[i] = 1.0  # Éxito direccional (sell)
                 else:
@@ -751,11 +808,13 @@ def get_labels_trend(
     label_min_val=1,
     label_max_val=15,
     label_atr_period=14,
-    direction=2
+    direction=2,
+    label_method='random'
 ) -> pd.DataFrame:
     """
     Etiquetado de tendencia normalizada con profit target basado en ATR * markup.
     direction: 0=solo buy, 1=solo sell, 2=both
+    label_method: 'first', 'last', 'mean', 'max', 'min', 'random' - método de selección del precio objetivo
     """
     smoothed_prices = safe_savgol_filter(
         dataset['close'].values,
@@ -779,9 +838,11 @@ def get_labels_trend(
     atr_clean = atr[valid_mask]
     
     # Generate labels with profit validation
+    method_map = {'first': 0, 'last': 1, 'mean': 2, 'max': 3, 'min': 4, 'random': 5}
+    method_int = method_map.get(label_method, 5)
     labels = calculate_labels_trend(
         close_clean, atr_clean, normalized_trend_clean, 
-        label_threshold, label_markup, label_min_val, label_max_val, direction
+        label_threshold, label_markup, label_min_val, label_max_val, direction, method_int
     )
     
     # Trimming the dataset and adding labels
@@ -897,11 +958,12 @@ def plot_trading_signals(
 
 @njit(cache=True)
 def calculate_labels_trend_with_profit(
-    close, atr, normalized_trend, label_threshold, label_markup, label_min_val, label_max_val, direction
+    close, atr, normalized_trend, label_threshold, label_markup, label_min_val, label_max_val, direction, method_int=5
 ):
     """
     Etiquetado de tendencia con profit, soportando dirección:
     direction: 0=solo buy, 1=solo sell, 2=both
+    method_int: 0=first, 1=last, 2=mean, 3=max, 4=min, 5=random
     Usa ATR como filtro de profit.
     """
     labels = np.empty(len(normalized_trend) - label_max_val, dtype=np.float64)
@@ -909,8 +971,22 @@ def calculate_labels_trend_with_profit(
         dyn_mk = label_markup * atr[i]
         if direction == 0:  # solo buy
             if normalized_trend[i] > label_threshold:
-                rand = np.random.randint(label_min_val, label_max_val + 1)
-                future_pr = close[i + rand]
+                window = close[i + label_min_val : i + label_max_val + 1]
+                if window.size == 0:
+                    future_pr = close[i + label_min_val] if i + label_min_val < len(close) else close[i]
+                elif method_int == 0:  # first
+                    future_pr = close[i + label_min_val]
+                elif method_int == 1:  # last
+                    future_pr = close[i + label_max_val]
+                elif method_int == 2:  # mean
+                    future_pr = np.mean(window)
+                elif method_int == 3:  # max
+                    future_pr = np.max(window)
+                elif method_int == 4:  # min
+                    future_pr = np.min(window)
+                else:  # random
+                    rand = np.random.randint(label_min_val, label_max_val + 1)
+                    future_pr = close[i + rand]
                 if future_pr >= close[i] + dyn_mk:
                     labels[i] = 1.0  # Éxito direccional (buy)
                 else:
@@ -919,8 +995,22 @@ def calculate_labels_trend_with_profit(
                 labels[i] = 2.0  # Patrón no confiable
         elif direction == 1:  # solo sell
             if normalized_trend[i] < -label_threshold:
-                rand = np.random.randint(label_min_val, label_max_val + 1)
-                future_pr = close[i + rand]
+                window = close[i + label_min_val : i + label_max_val + 1]
+                if window.size == 0:
+                    future_pr = close[i + label_min_val] if i + label_min_val < len(close) else close[i]
+                elif method_int == 0:  # first
+                    future_pr = close[i + label_min_val]
+                elif method_int == 1:  # last
+                    future_pr = close[i + label_max_val]
+                elif method_int == 2:  # mean
+                    future_pr = np.mean(window)
+                elif method_int == 3:  # max
+                    future_pr = np.max(window)
+                elif method_int == 4:  # min
+                    future_pr = np.min(window)
+                else:  # random
+                    rand = np.random.randint(label_min_val, label_max_val + 1)
+                    future_pr = close[i + rand]
                 if future_pr <= close[i] - dyn_mk:
                     labels[i] = 1.0  # Éxito direccional (sell)
                 else:
@@ -929,15 +1019,43 @@ def calculate_labels_trend_with_profit(
                 labels[i] = 2.0  # Patrón no confiable
         else:  # both
             if normalized_trend[i] > label_threshold:
-                rand = np.random.randint(label_min_val, label_max_val + 1)
-                future_pr = close[i + rand]
+                window = close[i + label_min_val : i + label_max_val + 1]
+                if window.size == 0:
+                    future_pr = close[i + label_min_val] if i + label_min_val < len(close) else close[i]
+                elif method_int == 0:  # first
+                    future_pr = close[i + label_min_val]
+                elif method_int == 1:  # last
+                    future_pr = close[i + label_max_val]
+                elif method_int == 2:  # mean
+                    future_pr = np.mean(window)
+                elif method_int == 3:  # max
+                    future_pr = np.max(window)
+                elif method_int == 4:  # min
+                    future_pr = np.min(window)
+                else:  # random
+                    rand = np.random.randint(label_min_val, label_max_val + 1)
+                    future_pr = close[i + rand]
                 if future_pr >= close[i] + dyn_mk:
                     labels[i] = 0.0  # Buy (Profit reached)
                 else:
                     labels[i] = 2.0  # No profit
             elif normalized_trend[i] < -label_threshold:
-                rand = np.random.randint(label_min_val, label_max_val + 1)
-                future_pr = close[i + rand]
+                window = close[i + label_min_val : i + label_max_val + 1]
+                if window.size == 0:
+                    future_pr = close[i + label_min_val] if i + label_min_val < len(close) else close[i]
+                elif method_int == 0:  # first
+                    future_pr = close[i + label_min_val]
+                elif method_int == 1:  # last
+                    future_pr = close[i + label_max_val]
+                elif method_int == 2:  # mean
+                    future_pr = np.mean(window)
+                elif method_int == 3:  # max
+                    future_pr = np.max(window)
+                elif method_int == 4:  # min
+                    future_pr = np.min(window)
+                else:  # random
+                    rand = np.random.randint(label_min_val, label_max_val + 1)
+                    future_pr = close[i + rand]
                 if future_pr <= close[i] - dyn_mk:
                     labels[i] = 1.0  # Sell (Profit reached)
                 else:
@@ -957,6 +1075,7 @@ def get_labels_trend_with_profit(
     label_max_val=15,
     label_atr_period=14,
     direction=2,  # 0=buy, 1=sell, 2=both
+    label_method='random'
 ) -> pd.DataFrame:
     # Smoothing and trend calculation
     smoothed_prices = safe_savgol_filter(
@@ -979,6 +1098,8 @@ def get_labels_trend_with_profit(
     dataset_clean = dataset[valid_mask].copy()
 
     # Generating labels
+    method_map = {'first': 0, 'last': 1, 'mean': 2, 'max': 3, 'min': 4, 'random': 5}
+    method_int = method_map.get(label_method, 5)
     labels = calculate_labels_trend_with_profit(
         close_clean,
         atr_clean,
@@ -988,6 +1109,7 @@ def get_labels_trend_with_profit(
         label_min_val,
         label_max_val,
         direction,
+        method_int
     )
 
     # Trimming the dataset and adding labels
@@ -999,22 +1121,53 @@ def get_labels_trend_with_profit(
     return dataset_clean
 
 @njit(cache=True)
-def calculate_labels_trend_different_filters(close, atr, normalized_trend, label_threshold, label_markup, label_min_val, label_max_val):
+def calculate_labels_trend_different_filters(close, atr, normalized_trend, label_threshold, label_markup, label_min_val, label_max_val, method_int=5):
+    """
+    method_int: 0=first, 1=last, 2=mean, 3=max, 4=min, 5=random
+    """
     labels = np.empty(len(normalized_trend) - label_max_val, dtype=np.float64)
     for i in range(len(normalized_trend) - label_max_val):
         dyn_mk = label_markup * atr[i]
         if normalized_trend[i] > label_threshold:
             # Проверяем condición para Buy
-            rand = np.random.randint(label_min_val, label_max_val + 1)
-            future_pr = close[i + rand]
+            window = close[i + label_min_val : i + label_max_val + 1]
+            if window.size == 0:
+                future_pr = close[i + label_min_val] if i + label_min_val < len(close) else close[i]
+            elif method_int == 0:  # first
+                future_pr = close[i + label_min_val]
+            elif method_int == 1:  # last
+                future_pr = close[i + label_max_val]
+            elif method_int == 2:  # mean
+                future_pr = np.mean(window)
+            elif method_int == 3:  # max
+                future_pr = np.max(window)
+            elif method_int == 4:  # min
+                future_pr = np.min(window)
+            else:  # random
+                rand = np.random.randint(label_min_val, label_max_val + 1)
+                future_pr = close[i + rand]
             if future_pr >= close[i] + dyn_mk:
                 labels[i] = 0.0  # Buy (Profit reached)
             else:
                 labels[i] = 2.0  # No profit
         elif normalized_trend[i] < -label_threshold:
             # Проверяем condición para Sell
-            rand = np.random.randint(label_min_val, label_max_val + 1)
-            future_pr = close[i + rand]
+            window = close[i + label_min_val : i + label_max_val + 1]
+            if window.size == 0:
+                future_pr = close[i + label_min_val] if i + label_min_val < len(close) else close[i]
+            elif method_int == 0:  # first
+                future_pr = close[i + label_min_val]
+            elif method_int == 1:  # last
+                future_pr = close[i + label_max_val]
+            elif method_int == 2:  # mean
+                future_pr = np.mean(window)
+            elif method_int == 3:  # max
+                future_pr = np.max(window)
+            elif method_int == 4:  # min
+                future_pr = np.min(window)
+            else:  # random
+                rand = np.random.randint(label_min_val, label_max_val + 1)
+                future_pr = close[i + rand]
             if future_pr <= close[i] - dyn_mk:
                 labels[i] = 1.0  # Sell (Profit reached)
             else:
@@ -1024,7 +1177,7 @@ def calculate_labels_trend_different_filters(close, atr, normalized_trend, label
     return labels
 
 def get_labels_trend_with_profit_different_filters(dataset, label_filter='savgol', label_rolling=200, label_polyorder=3, label_threshold=0.5, 
-                    label_vol_window=50, label_markup=0.5, label_min_val=1, label_max_val=15, label_atr_period=14) -> pd.DataFrame:
+                    label_vol_window=50, label_markup=0.5, label_min_val=1, label_max_val=15, label_atr_period=14, label_method='random') -> pd.DataFrame:
     # Smoothing and trend calculation
     close_prices = dataset['close'].values
     if label_filter == 'savgol':
@@ -1059,7 +1212,9 @@ def get_labels_trend_with_profit_different_filters(dataset, label_filter='savgol
     atr_clean = atr[valid_mask]
     
     # Generating labels
-    labels = calculate_labels_trend_different_filters(close_clean, atr_clean, normalized_trend_clean, label_threshold, label_markup, label_min_val, label_max_val)
+    method_map = {'first': 0, 'last': 1, 'mean': 2, 'max': 3, 'min': 4, 'random': 5}
+    method_int = method_map.get(label_method, 5)
+    labels = calculate_labels_trend_different_filters(close_clean, atr_clean, normalized_trend_clean, label_threshold, label_markup, label_min_val, label_max_val, method_int)
     
     # Trimming the dataset and adding labels
     dataset_clean = dataset_clean.iloc[:len(labels)].copy()
@@ -1071,27 +1226,43 @@ def get_labels_trend_with_profit_different_filters(dataset, label_filter='savgol
 
 @njit(cache=True)
 def calculate_labels_trend_multi(
-    close, atr, normalized_trends, label_threshold, label_markup, label_min_val, label_max_val, direction=2
+    close, atr, normalized_trends, label_threshold, label_markup, label_min_val, label_max_val, direction=2, method_int=5
 ):
     """
     Etiquetado multi-período con soporte para direcciones únicas o ambas.
     direction: 0=solo buy, 1=solo sell, 2=ambas
+    method_int: 0=first, 1=last, 2=mean, 3=max, 4=min, 5=random
     """
     num_periods = normalized_trends.shape[0]  # Number of periods
     labels = np.empty(len(close) - label_max_val, dtype=np.float64)
     for i in range(len(close) - label_max_val):
         dyn_mk = label_markup * atr[i]
-        # Select a random number of bars forward once for all periods
-        rand = np.random.randint(label_min_val, label_max_val + 1)
+        # Select the target price using the specified method
+        window = close[i + label_min_val : i + label_max_val + 1]
+        if window.size == 0:
+            future_price = close[i + label_min_val] if i + label_min_val < len(close) else close[i]
+        elif method_int == 0:  # first
+            future_price = close[i + label_min_val]
+        elif method_int == 1:  # last
+            future_price = close[i + label_max_val]
+        elif method_int == 2:  # mean
+            future_price = np.mean(window)
+        elif method_int == 3:  # max
+            future_price = np.max(window)
+        elif method_int == 4:  # min
+            future_price = np.min(window)
+        else:  # random
+            rand = np.random.randint(label_min_val, label_max_val + 1)
+            future_price = close[i + rand]
         buy_signals = 0
         sell_signals = 0
         # Check conditions for each period
         for j in range(num_periods):
             if normalized_trends[j, i] > label_threshold:
-                if close[i + rand] >= close[i] + dyn_mk:
+                if future_price >= close[i] + dyn_mk:
                     buy_signals += 1
             elif normalized_trends[j, i] < -label_threshold:
-                if close[i + rand] <= close[i] - dyn_mk:
+                if future_price <= close[i] - dyn_mk:
                     sell_signals += 1
         # Etiquetado según dirección
         if direction == 2:
@@ -1133,7 +1304,8 @@ def get_labels_trend_with_profit_multi(
     label_min_val=1,
     label_max_val=15,
     label_atr_period=14,
-    direction=2
+    direction=2,
+    label_method='random'
 ) -> pd.DataFrame:
     """
     Generates labels for trading signals (Buy/Sell) based on the normalized trend,
@@ -1195,6 +1367,8 @@ def get_labels_trend_with_profit_multi(
     atr = calculate_atr_simple(high, low, dataset["close"].values, period=label_atr_period)
     atr_clean = atr[valid_mask]
     # Generate labels
+    method_map = {'first': 0, 'last': 1, 'mean': 2, 'max': 3, 'min': 4, 'random': 5}
+    method_int = method_map.get(label_method, 5)
     labels = calculate_labels_trend_multi(
         close_clean,
         atr_clean,
@@ -1203,7 +1377,8 @@ def get_labels_trend_with_profit_multi(
         label_markup,
         label_min_val,
         label_max_val,
-        direction=direction
+        direction=direction,
+        method_int=method_int
     )
 
     # Trim data and add labels
@@ -1296,10 +1471,11 @@ def get_labels_clusters(
     return dataset
 
 @njit(cache=True)
-def calculate_labels_multi_window(prices, atr, window_sizes, label_markup, label_min_val, label_max_val, direction=2):
+def calculate_labels_multi_window(prices, atr, window_sizes, label_markup, label_min_val, label_max_val, direction=2, method_int=5):
     """
     Etiquetado multi-ventana con profit target basado en ATR * markup.
     direction: 0=solo buy, 1=solo sell, 2=ambas
+    method_int: 0=first, 1=last, 2=mean, 3=max, 4=min, 5=random
     Etiquetas:
       - Direccional único: 1.0=éxito direccional, 0.0=fracaso direccional, 2.0=patrón no confiable
       - Ambas: 0.0=buy, 1.0=sell, 2.0=sin señal
@@ -1324,8 +1500,22 @@ def calculate_labels_multi_window(prices, atr, window_sizes, label_markup, label
                 short_signals += 1
 
         # Validar con profit futuro
-        rand = np.random.randint(label_min_val, label_max_val + 1)
-        future_price = prices[i + rand]
+        window = prices[i + label_min_val : i + label_max_val + 1]
+        if window.size == 0:
+            future_price = prices[i + label_min_val] if i + label_min_val < len(prices) else prices[i]
+        elif method_int == 0:  # first
+            future_price = prices[i + label_min_val]
+        elif method_int == 1:  # last
+            future_price = prices[i + label_max_val]
+        elif method_int == 2:  # mean
+            future_price = np.mean(window)
+        elif method_int == 3:  # max
+            future_price = np.max(window)
+        elif method_int == 4:  # min
+            future_price = np.min(window)
+        else:  # random
+            rand = np.random.randint(label_min_val, label_max_val + 1)
+            future_price = prices[i + rand]
         
         if direction == 2:  # both
             if long_signals > short_signals and future_price >= current_price + dyn_mk:
@@ -1357,7 +1547,8 @@ def get_labels_multi_window(
     label_min_val=1,
     label_max_val=15,
     label_atr_period=14,
-    direction=2
+    direction=2,
+    label_method='random'
 ) -> pd.DataFrame:
     """
     Etiquetado multi-ventana con profit target basado en ATR * markup.
@@ -1371,8 +1562,10 @@ def get_labels_multi_window(
     atr = calculate_atr_simple(high, low, prices, period=label_atr_period)
     
     window_sizes_t = List(label_window_sizes_int)
+    method_map = {'first': 0, 'last': 1, 'mean': 2, 'max': 3, 'min': 4, 'random': 5}
+    method_int = method_map.get(label_method, 5)
     signals = calculate_labels_multi_window(
-        prices, atr, window_sizes_t, label_markup, label_min_val, label_max_val, direction
+        prices, atr, window_sizes_t, label_markup, label_min_val, label_max_val, direction, method_int
     )
     
     # Ajustar padding inicial considerando label_max_val
@@ -2769,7 +2962,7 @@ def get_labels_fractal_patterns(
     label_max_val=5,
     label_markup=0.5,
     label_atr_period=14,
-    direction='both'
+    direction=2
 ) -> pd.DataFrame:
     """
     Genera etiquetas basadas en patrones fractales simétricos con profit target escalado por ATR.
@@ -2783,7 +2976,7 @@ def get_labels_fractal_patterns(
         label_max_val: Horizonte máximo de predicción en barras
         label_markup: Multiplicador de ATR para profit target
         label_atr_period: Período para cálculo de ATR
-        direction: Dirección de las señales ('buy', 'sell', 'both')
+        direction: Dirección de las señales (0=buy, 1=sell, 2=both)
     
     Returns:
         DataFrame con columna 'labels_main' agregada
@@ -2813,8 +3006,6 @@ def get_labels_fractal_patterns(
         label_min_window,
         label_max_window,
     )
-
-    dir_flag = {"buy": 0, "sell": 1, "both": 2}[direction]
     
     labels = calculate_future_outcome_labels_for_patterns_atr(
         n_data,
@@ -2826,7 +3017,7 @@ def get_labels_fractal_patterns(
         label_min_val,
         label_max_val,
         label_markup,
-        dir_flag
+        direction
     )
     result_df = dataset.copy()
     result_df['labels_main'] = pd.Series(labels, index=dataset.index)

@@ -647,32 +647,32 @@ def get_features(data: pd.DataFrame, hp, decimal_precision=6):
 
     return df
 
-@njit(cache=True)
-def safe_savgol_filter(x, label_window_size: int, label_polyorder: int):
+def safe_savgol_filter(x, label_rolling: int, label_polyorder: int):
     """Apply Savitzky-Golay label_filter safely.
 
     Parameters
     ----------
     x : array-like
         Input array.
-    label_window_size : int
+    label_rolling : int
         Desired window size.
     label_polyorder : int
         Polynomial order.
 
     Returns
     -------
-    np.ndarray
-        Smoothed array. If the input is too short, the original array is
-        returned without filtering.
+    tuple
+        (filtered_array, filtering_successful)
+        - filtered_array: Smoothed array or original array if filtering failed
+        - filtering_successful: Boolean indicating if Savitzky-Golay was applied successfully
     """
 
     x = np.asarray(x)
     n = len(x)
     if n <= label_polyorder:
-        return x
+        return x, False  # Datos insuficientes
 
-    wl = int(label_window_size)
+    wl = int(label_rolling)
     if wl % 2 == 0:
         wl += 1
     max_wl = n if n % 2 == 1 else n - 1
@@ -681,9 +681,10 @@ def safe_savgol_filter(x, label_window_size: int, label_polyorder: int):
         wl = label_polyorder + 1 if (label_polyorder + 1) % 2 == 1 else label_polyorder + 2
         wl = min(wl, max_wl)
         if wl <= label_polyorder:
-            return x
+            return x, False  # Ventana muy pequeña
 
-    return savgol_filter(x, window_length=wl, label_polyorder=label_polyorder)
+    filtered_data = savgol_filter(x, window_length=wl, polyorder=label_polyorder)
+    return filtered_data, True  # Filtrado exitoso
 
 @njit(cache=True)
 def calculate_labels_trend(close, atr, normalized_trend, label_threshold, label_markup, label_min_val, label_max_val, direction=2, method_int=5):
@@ -817,11 +818,14 @@ def get_labels_trend(
     direction: 0=solo buy, 1=solo sell, 2=both
     label_method_random: 'first', 'last', 'mean', 'max', 'min', 'random' - método de selección del precio objetivo
     """
-    smoothed_prices = safe_savgol_filter(
+    smoothed_prices, filtering_successful = safe_savgol_filter(
         dataset['close'].values,
-        window_length=label_rolling,
+        label_rolling=label_rolling,
         label_polyorder=label_polyorder
     )
+    if not filtering_successful:
+        print(f"🔍 DEBUG: Savitzky-Golay filtering failed in get_labels_trend, returning empty dataset")
+        return pd.DataFrame()
     trend = np.gradient(smoothed_prices)
     vol = dataset['close'].rolling(label_vol_window).std().values
     normalized_trend = np.where(vol != 0, trend / vol, np.nan)  # Set NaN where vol is 0
@@ -876,7 +880,10 @@ def plot_trading_signals(
     close_prices = df['close'].values
     
     # 1. Smooth prices using Savitzky-Golay label_filter
-    smoothed = safe_savgol_filter(close_prices, window_length=label_rolling, label_polyorder=label_polyorder)
+    smoothed, filtering_successful = safe_savgol_filter(close_prices, label_rolling=label_rolling, label_polyorder=label_polyorder)
+    if not filtering_successful:
+        print(f"🔍 DEBUG: Savitzky-Golay filtering failed in plot_trading_signals, cannot proceed")
+        return
     
     # 2. Calculate trend gradient
     trend = np.gradient(smoothed)
@@ -1083,9 +1090,12 @@ def get_labels_trend_with_profit(
     """
 
     # Smoothing and trend calculation
-    smoothed_prices = safe_savgol_filter(
-        dataset['close'].values, window_length=label_rolling, label_polyorder=label_polyorder
+    smoothed_prices, filtering_successful = safe_savgol_filter(
+        dataset['close'].values, label_rolling=label_rolling, label_polyorder=label_polyorder
     )
+    if not filtering_successful:
+        print(f"🔍 DEBUG: Savitzky-Golay filtering failed in get_labels_trend_with_profit, returning empty dataset")
+        return pd.DataFrame()
     trend = np.gradient(smoothed_prices)
 
     # Normalizing the trend by volatility (usando bottleneck para acelerar)
@@ -1186,7 +1196,10 @@ def get_labels_trend_with_profit_different_filters(dataset, label_filter='savgol
     # Smoothing and trend calculation
     close_prices = dataset['close'].values
     if label_filter == 'savgol':
-        smoothed_prices = safe_savgol_filter(close_prices, window_length=label_rolling, label_polyorder=label_polyorder)
+        smoothed_prices, filtering_successful = safe_savgol_filter(close_prices, label_rolling=label_rolling, label_polyorder=label_polyorder)
+        if not filtering_successful:
+            print(f"🔍 DEBUG: Savitzky-Golay filtering failed in get_labels_trend_with_profit_different_filters, returning empty dataset")
+            return pd.DataFrame()
     elif label_filter == 'spline':
         x = np.arange(len(close_prices))
         spline = UnivariateSpline(x, close_prices, k=label_polyorder, s=label_rolling)
@@ -1338,7 +1351,10 @@ def get_labels_trend_with_profit_multi(
     # Calculate normalized trend for each period
     for label_rolling in label_rolling_periods_small:
         if label_filter == 'savgol':
-            smoothed_prices = safe_savgol_filter(close_prices, window_length=label_rolling, label_polyorder=label_polyorder)
+            smoothed_prices, filtering_successful = safe_savgol_filter(close_prices, label_rolling=label_rolling, label_polyorder=label_polyorder)
+            if not filtering_successful:
+                print(f"🔍 DEBUG: Savitzky-Golay filtering failed in get_labels_trend_with_profit_multi, returning empty dataset")
+                return pd.DataFrame()
         elif label_filter == 'spline':
             x = np.arange(len(close_prices))
             spline = UnivariateSpline(x, close_prices, k=label_polyorder, s=label_rolling)
@@ -1887,7 +1903,10 @@ def get_labels_mean_reversion(
         dataset['lvl'] = dataset['close'] - yHat_shifted
         dataset = dataset.dropna() 
     elif label_filter == 'savgol':
-        smoothed_prices = safe_savgol_filter(dataset['close'].values, window_length=label_rolling, label_polyorder=5)
+        smoothed_prices, filtering_successful = safe_savgol_filter(dataset['close'].values, label_rolling=label_rolling, label_polyorder=5)
+        if not filtering_successful:
+            print(f"🔍 DEBUG: Savitzky-Golay filtering failed in get_labels_mean_reversion, returning empty dataset")
+            return pd.DataFrame()
         dataset['lvl'] = dataset['close'] - smoothed_prices
 
     dataset = dataset.dropna()  # Remove NaN values before proceeding
@@ -2119,7 +2138,10 @@ def get_labels_mean_reversion_vol(
         dataset['lvl'] = dataset['close'] - yHat_shifted
         dataset = dataset.dropna() 
     elif label_filter == 'savgol':
-        smoothed_prices = safe_savgol_filter(dataset['close'].values, window_length=label_rolling, label_polyorder=5)
+        smoothed_prices, filtering_successful = safe_savgol_filter(dataset['close'].values, label_rolling=label_rolling, label_polyorder=5)
+        if not filtering_successful:
+            print(f"🔍 DEBUG: Savitzky-Golay filtering failed in get_labels_mean_reversion_vol, returning empty dataset")
+            return pd.DataFrame()
         dataset['lvl'] = dataset['close'] - smoothed_prices
 
     dataset = dataset.dropna()
@@ -2237,7 +2259,10 @@ def get_labels_filter(
     """
 
     # Calculate smoothed prices using the Savitzky-Golay label_filter
-    smoothed_prices = safe_savgol_filter(dataset['close'].values, window_length=label_rolling, label_polyorder=label_polyorder)
+    smoothed_prices, filtering_successful = safe_savgol_filter(dataset['close'].values, label_rolling=label_rolling, label_polyorder=label_polyorder)
+    if not filtering_successful:
+        print(f"🔍 DEBUG: Savitzky-Golay filtering failed in get_labels_filter, returning empty dataset")
+        return pd.DataFrame()
     
     # Calculate the difference between the actual closing prices and the smoothed prices
     diff = dataset['close'] - smoothed_prices
@@ -2370,10 +2395,13 @@ def get_labels_multiple_filters(
     
     # Calculate smoothed price trends and label_rolling quantiles for each label_rolling period
     for label_rolling in label_rolling_periods_big:
-        # Calculate smoothed prices using the Savitzky-Golay label_filter
-        smoothed_prices = safe_savgol_filter(dataset['close'].values,
-                                      window_length=label_rolling,
-                                      label_polyorder=label_polyorder)
+                # Calculate smoothed prices using the Savitzky-Golay label_filter
+        smoothed_prices, filtering_successful = safe_savgol_filter(dataset['close'].values,
+                                       label_rolling=label_rolling,
+                                       label_polyorder=label_polyorder)
+        if not filtering_successful:
+            print(f"🔍 DEBUG: Savitzky-Golay filtering failed in get_labels_multiple_filters, returning empty dataset")
+            return pd.DataFrame()
         # Calculate the price deviation from the smoothed prices
         diff = dataset['close'] - smoothed_prices
         
@@ -2478,9 +2506,12 @@ def get_labels_filter_bidirectional(
     """
 
     # Apply the first Savitzky-Golay label_filter (forward direction)
-    smoothed_prices = safe_savgol_filter(dataset['close'].values, window_length=label_rolling, label_polyorder=label_polyorder)
+    smoothed_prices, filtering_successful1 = safe_savgol_filter(dataset['close'].values, label_rolling=label_rolling, label_polyorder=label_polyorder)
     # Apply the second Savitzky-Golay label_filter (could be in reverse direction if rolling2 is negative)
-    smoothed_prices2 = safe_savgol_filter(dataset['close'].values, window_length=label_rolling2, label_polyorder=label_polyorder)
+    smoothed_prices2, filtering_successful2 = safe_savgol_filter(dataset['close'].values, label_rolling=label_rolling2, label_polyorder=label_polyorder)
+    if not filtering_successful1 or not filtering_successful2:
+        print(f"🔍 DEBUG: Savitzky-Golay filtering failed in get_labels_filter_bidirectional, returning empty dataset")
+        return pd.DataFrame()
 
     # Calculate price deviations from both smoothed price series
     diff1 = dataset['close'] - smoothed_prices

@@ -48,6 +48,11 @@ class StrategySearcher:
         "filter_bidirectional": get_labels_filter_bidirectional,
         "fractal": get_labels_fractal_patterns,
     }
+    RELIABILITY_METHODS = {
+        'fractal', 'trend_profit', 'trend_multi', 'clusters', 
+        'multi_window', 'validated_levels', 'zigzag', 
+        'mean_rev', 'mean_rev_multi', 'mean_rev_vol'
+    }
     # Allowed smoothing methods for label functions that support a 'filter' kwarg
     ALLOWED_FILTERS = {
         "trend_profit": {"savgol", "spline", "sma", "ema"},
@@ -279,7 +284,7 @@ class StrategySearcher:
             if full_ds is None:
                 return -1.0
                 
-            if self.label_method in ['fractal']:
+            if self.label_method in self.RELIABILITY_METHODS:
                 # Esquema híbrido: clustering + confiabilidad
                 if self.debug:
                     print(f"🔍 DEBUG search_clusters - Aplicando clustering híbrido (solo en muestras confiables)")
@@ -353,7 +358,7 @@ class StrategySearcher:
             if full_ds is None:
                 return -1.0
                 
-            if self.label_method in ['fractal']:
+            if self.label_method in self.RELIABILITY_METHODS:
                 # Esquema híbrido: clustering + confiabilidad
                 if self.debug:
                     print(f"🔍 DEBUG search_markov - Aplicando clustering Markov híbrido (solo en muestras confiables)")
@@ -434,7 +439,7 @@ class StrategySearcher:
             if full_ds is None:
                 return -1.0
                 
-            if self.label_method in ['fractal']:
+            if self.label_method in self.RELIABILITY_METHODS:
                 # Esquema híbrido: clustering + confiabilidad
                 if self.debug:
                     print(f"🔍 DEBUG search_lgmm - Aplicando clustering LGMM híbrido (solo en muestras confiables)")
@@ -490,7 +495,7 @@ class StrategySearcher:
             if full_ds is None:
                 return -1.0
                 
-            if self.label_method in ['fractal']:
+            if self.label_method in self.RELIABILITY_METHODS:
                 # Usar esquema de confiabilidad directamente
                 if self.debug:
                     print(f"🔍 DEBUG search_mapie - Usando esquema de confiabilidad")
@@ -536,7 +541,7 @@ class StrategySearcher:
             full_ds['conformal_labels'] = 0.0
             full_ds['meta_labels'] = 0.0
             
-            if self.label_method in ['fractal']:
+            if self.label_method in self.RELIABILITY_METHODS:
                 # Mapear resultados de reliable_data a full_ds usando índices originales
                 full_ds.loc[reliable_data.index[set_sizes == 1], 'conformal_labels'] = 1.0
                 full_ds.loc[reliable_data.index[predicted == y], 'meta_labels'] = 1.0
@@ -637,7 +642,7 @@ class StrategySearcher:
             if full_ds is None:
                 return -1.0
                 
-            if self.label_method in ['fractal']:
+            if self.label_method in self.RELIABILITY_METHODS:
                 # Usar esquema de confiabilidad directamente
                 if self.debug:
                     print(f"🔍 DEBUG search_causal - Usando esquema de confiabilidad")
@@ -669,7 +674,7 @@ class StrategySearcher:
             all_bad = pd.Index(marked0).union(marked1)
             full_ds['meta_labels'] = 1.0
             
-            if self.label_method in ['fractal']:
+            if self.label_method in self.RELIABILITY_METHODS:
                 # En esquema fractal: muestras unreliable automáticamente son "malas"
                 reliable_mask = full_ds['labels_main'] != 2.0
                 full_ds.loc[~reliable_mask, 'meta_labels'] = 0.0
@@ -723,7 +728,7 @@ class StrategySearcher:
             if full_ds is None:
                 return -1.0
                 
-            if self.label_method in ['fractal']:
+            if self.label_method in self.RELIABILITY_METHODS:
                 # Esquema híbrido: clustering + confiabilidad
                 if self.debug:
                     print(f"🔍 DEBUG search_wkmeans - Aplicando clustering WKmeans híbrido (solo en muestras confiables)")
@@ -898,7 +903,7 @@ class StrategySearcher:
                 return None, None, None
             
             for clust in cluster_sizes.index:
-                if self.label_method in ['fractal']:
+                if self.label_method in self.RELIABILITY_METHODS:
                     if self.debug:
                         print(f"🔍 DEBUG evaluate_clusters - Evaluando clusters híbridos")
                     # Intersección: cluster + confiabilidad
@@ -1098,7 +1103,6 @@ class StrategySearcher:
             'label_n_clusters': lambda t: t.suggest_int('label_n_clusters', 5, 30, log=True),
             'label_polyorder':  lambda t: t.suggest_int('label_polyorder',    2, 10, log=True),
             'label_threshold':  lambda t: t.suggest_float('label_threshold',  0.2, 0.8),
-            'label_threshold_pct': lambda t: t.suggest_float('label_threshold_pct', 0.005, 0.05),
             'label_corr_threshold': lambda t: t.suggest_float('label_corr_threshold', 0.6, 0.9),
             'label_rolling':    lambda t: t.suggest_int  ('label_rolling',    50, 300, log=True),
             'label_rolling2':  lambda t: t.suggest_int  ('label_rolling2',   50, 300, log=True),
@@ -1123,7 +1127,7 @@ class StrategySearcher:
             'label_shift': lambda t: t.suggest_int('label_shift', 0, 10),
         }
         p = {}
-        label_func = self.LABEL_FUNCS.get(self.label_method, get_labels_one_direction)
+        label_func = self.LABEL_FUNCS[self.label_method]
         params_sig = inspect.signature(label_func).parameters
         for name in params_sig:
             if name in label_search_space:

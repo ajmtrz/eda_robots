@@ -647,14 +647,14 @@ def get_features(data: pd.DataFrame, hp, decimal_precision=6):
     return df
 
 @njit(cache=True)
-def safe_savgol_filter(x, l_window_size: int, label_polyorder: int):
+def safe_savgol_filter(x, label_window_size: int, label_polyorder: int):
     """Apply Savitzky-Golay label_filter safely.
 
     Parameters
     ----------
     x : array-like
         Input array.
-    l_window_size : int
+    label_window_size : int
         Desired window size.
     label_polyorder : int
         Polynomial order.
@@ -671,7 +671,7 @@ def safe_savgol_filter(x, l_window_size: int, label_polyorder: int):
     if n <= label_polyorder:
         return x
 
-    wl = int(l_window_size)
+    wl = int(label_window_size)
     if wl % 2 == 0:
         wl += 1
     max_wl = n if n % 2 == 1 else n - 1
@@ -809,12 +809,12 @@ def get_labels_trend(
     label_max_val=15,
     label_atr_period=14,
     direction=2,
-    label_method='random'
+    label_method_random='random'
 ) -> pd.DataFrame:
     """
     Etiquetado de tendencia normalizada con profit target basado en ATR * markup.
     direction: 0=solo buy, 1=solo sell, 2=both
-    label_method: 'first', 'last', 'mean', 'max', 'min', 'random' - método de selección del precio objetivo
+    label_method_random: 'first', 'last', 'mean', 'max', 'min', 'random' - método de selección del precio objetivo
     """
     smoothed_prices = safe_savgol_filter(
         dataset['close'].values,
@@ -839,7 +839,7 @@ def get_labels_trend(
     
     # Generate labels with profit validation
     method_map = {'first': 0, 'last': 1, 'mean': 2, 'max': 3, 'min': 4, 'random': 5}
-    method_int = method_map.get(label_method, 5)
+    method_int = method_map.get(label_method_random, 5)
     labels = calculate_labels_trend(
         close_clean, atr_clean, normalized_trend_clean, 
         label_threshold, label_markup, label_min_val, label_max_val, direction, method_int
@@ -1075,7 +1075,7 @@ def get_labels_trend_with_profit(
     label_max_val=15,
     label_atr_period=14,
     direction=2,  # 0=buy, 1=sell, 2=both
-    label_method='random'
+    label_method_random='random'
 ) -> pd.DataFrame:
     # Smoothing and trend calculation
     smoothed_prices = safe_savgol_filter(
@@ -1099,7 +1099,7 @@ def get_labels_trend_with_profit(
 
     # Generating labels
     method_map = {'first': 0, 'last': 1, 'mean': 2, 'max': 3, 'min': 4, 'random': 5}
-    method_int = method_map.get(label_method, 5)
+    method_int = method_map.get(label_method_random, 5)
     labels = calculate_labels_trend_with_profit(
         close_clean,
         atr_clean,
@@ -1177,7 +1177,7 @@ def calculate_labels_trend_different_filters(close, atr, normalized_trend, label
     return labels
 
 def get_labels_trend_with_profit_different_filters(dataset, label_filter='savgol', label_rolling=200, label_polyorder=3, label_threshold=0.5, 
-                    label_vol_window=50, label_markup=0.5, label_min_val=1, label_max_val=15, label_atr_period=14, label_method='random') -> pd.DataFrame:
+                    label_vol_window=50, label_markup=0.5, label_min_val=1, label_max_val=15, label_atr_period=14, label_method_random='random') -> pd.DataFrame:
     # Smoothing and trend calculation
     close_prices = dataset['close'].values
     if label_filter == 'savgol':
@@ -1213,7 +1213,7 @@ def get_labels_trend_with_profit_different_filters(dataset, label_filter='savgol
     
     # Generating labels
     method_map = {'first': 0, 'last': 1, 'mean': 2, 'max': 3, 'min': 4, 'random': 5}
-    method_int = method_map.get(label_method, 5)
+    method_int = method_map.get(label_method_random, 5)
     labels = calculate_labels_trend_different_filters(close_clean, atr_clean, normalized_trend_clean, label_threshold, label_markup, label_min_val, label_max_val, method_int)
     
     # Trimming the dataset and adding labels
@@ -1305,7 +1305,7 @@ def get_labels_trend_with_profit_multi(
     label_max_val=15,
     label_atr_period=14,
     direction=2,
-    label_method='random'
+    label_method_random='random'
 ) -> pd.DataFrame:
     """
     Generates labels for trading signals (Buy/Sell) based on the normalized trend,
@@ -1368,7 +1368,7 @@ def get_labels_trend_with_profit_multi(
     atr_clean = atr[valid_mask]
     # Generate labels
     method_map = {'first': 0, 'last': 1, 'mean': 2, 'max': 3, 'min': 4, 'random': 5}
-    method_int = method_map.get(label_method, 5)
+    method_int = method_map.get(label_method_random, 5)
     labels = calculate_labels_trend_multi(
         close_clean,
         atr_clean,
@@ -1487,8 +1487,8 @@ def calculate_labels_multi_window(prices, atr, window_sizes, label_markup, label
         long_signals = 0
         short_signals = 0
         
-        for l_window_size in window_sizes:
-            window = prices[i-l_window_size:i]
+        for window_size in window_sizes:
+            window = prices[i-window_size:i]
             resistance = np.max(window)
             support = np.min(window)
             current_price = prices[i]
@@ -1548,7 +1548,7 @@ def get_labels_multi_window(
     label_max_val=15,
     label_atr_period=14,
     direction=2,
-    label_method='random'
+    label_method_random='random'
 ) -> pd.DataFrame:
     """
     Etiquetado multi-ventana con profit target basado en ATR * markup.
@@ -1563,7 +1563,7 @@ def get_labels_multi_window(
     
     window_sizes_t = List(label_window_sizes_int)
     method_map = {'first': 0, 'last': 1, 'mean': 2, 'max': 3, 'min': 4, 'random': 5}
-    method_int = method_map.get(label_method, 5)
+    method_int = method_map.get(label_method_random, 5)
     signals = calculate_labels_multi_window(
         prices, atr, window_sizes_t, label_markup, label_min_val, label_max_val, direction, method_int
     )
@@ -1574,10 +1574,11 @@ def get_labels_multi_window(
     
     dataset = dataset.iloc[:len(signals)].copy()
     dataset['labels_main'] = signals[:len(dataset)]
+    dataset = dataset.dropna()  # Remove rows with NaN
     return dataset
 
 @njit(cache=True)
-def calculate_labels_validated_levels(prices, atr, l_window_size, label_markup, min_touches, label_min_val, label_max_val, direction=2):
+def calculate_labels_validated_levels(prices, atr, window_size, label_markup, min_touches, label_min_val, label_max_val, direction=2):
     """
     Etiquetado de rupturas de niveles validados con profit target basado en ATR * markup.
     direction: 0=solo buy, 1=solo sell, 2=ambas
@@ -1589,8 +1590,8 @@ def calculate_labels_validated_levels(prices, atr, l_window_size, label_markup, 
     support_touches = {}
     labels = []
     
-    for i in range(l_window_size, len(prices) - label_max_val):
-        window = prices[i-l_window_size:i]
+    for i in range(window_size, len(prices) - label_max_val):
+        window = prices[i-window_size:i]
         current_price = prices[i]
         dyn_mk = label_markup * atr[i]
 
@@ -1676,6 +1677,7 @@ def get_labels_validated_levels(
     labels = [2.0] * label_window_size + labels
     dataset = dataset.iloc[:len(labels)].copy()
     dataset['labels_main'] = labels[:len(dataset)]
+    dataset = dataset.dropna()  # Remove rows with NaN
     return dataset
 
 @njit(cache=True)
@@ -1791,6 +1793,7 @@ def get_labels_filter_zigzag(
     # Trimming the dataset and adding labels
     dataset_trimmed = dataset.iloc[:len(labels)].copy()
     dataset_trimmed['labels_main'] = labels[:len(dataset_trimmed)]
+    dataset_trimmed = dataset_trimmed.dropna()  # Remove rows with NaN
         
     # Return the modified DataFrame 
     return dataset_trimmed
@@ -2344,10 +2347,10 @@ def get_labels_multiple_filters(
 
     Args:
         dataset (pd.DataFrame): DataFrame containing financial data with a 'close' column.
-        label_rolling_periods_big (list, optional): List of label_rolling l_window_size sizes for the Savitzky-Golay label_filter. 
+        label_rolling_periods_big (list, optional): List of label_rolling window_size sizes for the Savitzky-Golay label_filter. 
                                            Defaults to [200, 400, 600].
         quantiles (list, optional): Quantiles to define the "reversion zone". Defaults to [.45, .55].
-        l_window_size (int, optional): Window size for calculating label_rolling quantiles. Defaults to 100.
+        window_size (int, optional): Window size for calculating label_rolling quantiles. Defaults to 100.
         label_polyorder (int, optional): Polynomial order for the Savitzky-Golay label_filter. Defaults to 3.
         direction (int, optional): 0=buy only, 1=sell only, 2=both. Defaults to 2.
 
@@ -2694,7 +2697,7 @@ def calculate_future_outcome_labels_for_patterns_atr(
     min_future_horizon,
     max_future_horizon,
     markup_multiplier,
-    dir_flag=2
+    direction=2
 ):
     """
     Genera etiquetas basadas en resultados futuros para patrones fractales usando ATR * markup.
@@ -2713,7 +2716,7 @@ def calculate_future_outcome_labels_for_patterns_atr(
         min_future_horizon: Horizonte mínimo de predicción
         max_future_horizon: Horizonte máximo de predicción
         markup_multiplier: Multiplicador de ATR para determinar cambio significativo
-        dir_flag: Dirección (0=buy, 1=sell, 2=both)
+        direction: Dirección (0=buy, 1=sell, 2=both)
     
     Returns:
         labels: Array de etiquetas siguiendo el enfoque MQL5:
@@ -2775,19 +2778,19 @@ def calculate_future_outcome_labels_for_patterns_atr(
             
             # Determinamos la etiqueta para el punto actual
             current_label = 2.0  # Neutral por defecto
-            if dir_flag == 0:  # buy only
+            if direction == 0:  # buy only
                 if future_price > current_price + dynamic_markup:
                     current_label = 1.0  # Señal válida
                 else:
                     current_label = 0.0  # No señal
                 pattern_labels.append(current_label)
-            elif dir_flag == 1:  # sell only
+            elif direction == 1:  # sell only
                 if future_price < current_price - dynamic_markup:
                     current_label = 1.0  # Señal válida
                 else:
                     current_label = 0.0  # No señal
                 pattern_labels.append(current_label)
-            elif dir_flag == 2:  # both directions (comportamiento original)
+            elif direction == 2:  # both directions (comportamiento original)
                 if future_price > current_price + dynamic_markup:
                     current_label = 0.0  # Precio subió
                 elif future_price < current_price - dynamic_markup:
@@ -2809,7 +2812,7 @@ def calculate_future_outcome_labels_for_patterns_atr(
         avg_label /= len(pattern_labels)
         
         # Determinamos la etiqueta general para todo el patrón
-        if dir_flag == 2:  # both directions
+        if direction == 2:  # both directions
             pattern_label = 0.0 if avg_label < 0.5 else 1.0
         else:  # single direction
             pattern_label = 1.0 if avg_label >= 0.5 else 0.0
@@ -2830,7 +2833,7 @@ def calculate_future_outcome_labels_for_patterns(
     min_future_horizon,
     max_future_horizon,
     markup_points,
-    dir_flag=2
+    direction=2
 ):
     """
     Genera etiquetas basadas en resultados futuros para patrones fractales.
@@ -2848,7 +2851,7 @@ def calculate_future_outcome_labels_for_patterns(
         min_future_horizon: Horizonte mínimo de predicción
         max_future_horizon: Horizonte máximo de predicción
         markup_points: Puntos de markup para determinar cambio significativo
-        dir_flag: Dirección (0=buy, 1=sell, 2=both)
+        direction: Dirección (0=buy, 1=sell, 2=both)
     
     Returns:
         labels: Array de etiquetas siguiendo el enfoque MQL5:
@@ -2907,19 +2910,19 @@ def calculate_future_outcome_labels_for_patterns(
             
             # Determinamos la etiqueta para el punto actual
             current_label = 2.0  # Neutral por defecto
-            if dir_flag == 0:  # buy only
+            if direction == 0:  # buy only
                 if future_price > current_price + markup_points:
                     current_label = 1.0  # Señal válida
                 else:
                     current_label = 0.0  # No señal
                 pattern_labels.append(current_label)
-            elif dir_flag == 1:  # sell only
+            elif direction == 1:  # sell only
                 if future_price < current_price - markup_points:
                     current_label = 1.0  # Señal válida
                 else:
                     current_label = 0.0  # No señal
                 pattern_labels.append(current_label)
-            elif dir_flag == 2:  # both directions (comportamiento original)
+            elif direction == 2:  # both directions (comportamiento original)
                 if future_price > current_price + markup_points:
                     current_label = 0.0  # Precio subió
                 elif future_price < current_price - markup_points:
@@ -2941,7 +2944,7 @@ def calculate_future_outcome_labels_for_patterns(
         avg_label /= len(pattern_labels)
         
         # Determinamos la etiqueta general para todo el patrón
-        if dir_flag == 2:  # both directions
+        if direction == 2:  # both directions
             pattern_label = 0.0 if avg_label < 0.5 else 1.0
         else:  # single direction
             pattern_label = 1.0 if avg_label >= 0.5 else 0.0
@@ -3021,6 +3024,7 @@ def get_labels_fractal_patterns(
     )
     result_df = dataset.copy()
     result_df['labels_main'] = pd.Series(labels, index=dataset.index)
+    result_df = result_df.dropna()  # Remove rows with NaN
     return result_df
 
 #### ------------------------------------------------------------------------------------------------

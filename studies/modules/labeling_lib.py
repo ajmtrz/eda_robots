@@ -4,6 +4,7 @@ import numpy as np
 import pandas as pd
 import cupy as cp
 #import ot
+import bottleneck as bn
 from numba import njit, prange
 from numba.typed import List
 from sklearn.cluster import KMeans
@@ -880,8 +881,8 @@ def plot_trading_signals(
     # 2. Calculate trend gradient
     trend = np.gradient(smoothed)
     
-    # 3. Compute volatility (label_rolling std)
-    vol = df['close'].rolling(label_vol_window).std().values
+    # 3. Compute volatility (label_rolling std) - usando bottleneck para acelerar
+    vol = bn.move_std(df['close'].values, window=label_vol_window, min_count=1)
     
     # 4. Normalize trend by volatility
     normalized_trend = np.zeros_like(trend)
@@ -1077,14 +1078,18 @@ def get_labels_trend_with_profit(
     direction=2,  # 0=buy, 1=sell, 2=both
     label_method_random='random'
 ) -> pd.DataFrame:
+    """
+    Igual que antes, pero usando bottleneck.move_std para el cálculo de la volatilidad (rolling std).
+    """
+
     # Smoothing and trend calculation
     smoothed_prices = safe_savgol_filter(
         dataset['close'].values, window_length=label_rolling, label_polyorder=label_polyorder
     )
     trend = np.gradient(smoothed_prices)
 
-    # Normalizing the trend by volatility
-    vol = dataset['close'].rolling(label_vol_window).std().values
+    # Normalizing the trend by volatility (usando bottleneck para acelerar)
+    vol = bn.move_std(dataset['close'].values, window=label_vol_window, min_count=1)
     normalized_trend = np.where(vol != 0, trend / vol, np.nan)
 
     # Removing NaN and synchronizing data
@@ -1187,8 +1192,7 @@ def get_labels_trend_with_profit_different_filters(dataset, label_filter='savgol
         spline = UnivariateSpline(x, close_prices, k=label_polyorder, s=label_rolling)
         smoothed_prices = spline(x)
     elif label_filter == 'sma':
-        smoothed_series = pd.Series(close_prices).rolling(window=label_rolling).mean()
-        smoothed_prices = smoothed_series.values
+        smoothed_prices = bn.move_mean(close_prices, window=label_rolling, min_count=1)
     elif label_filter == 'ema':
         smoothed_series = pd.Series(close_prices).ewm(span=label_rolling, adjust=False).mean()
         smoothed_prices = smoothed_series.values
@@ -1197,8 +1201,8 @@ def get_labels_trend_with_profit_different_filters(dataset, label_filter='savgol
     
     trend = np.gradient(smoothed_prices)
     
-    # Normalizing the trend by volatility
-    vol = dataset['close'].rolling(label_vol_window).std().values
+    # Normalizing the trend by volatility (usando bottleneck para acelerar)
+    vol = bn.move_std(dataset['close'].values, window=label_vol_window, min_count=1)
     normalized_trend = np.where(vol != 0, trend / vol, np.nan)
     
     # Removing NaN and synchronizing data
@@ -1340,16 +1344,14 @@ def get_labels_trend_with_profit_multi(
             spline = UnivariateSpline(x, close_prices, k=label_polyorder, s=label_rolling)
             smoothed_prices = spline(x)
         elif label_filter == 'sma':
-            smoothed_series = pd.Series(close_prices).rolling(window=label_rolling).mean()
-            smoothed_prices = smoothed_series.values
+            smoothed_prices = bn.move_mean(close_prices, window=label_rolling, min_count=1)
         elif label_filter == 'ema':
-            smoothed_series = pd.Series(close_prices).ewm(span=label_rolling, adjust=False).mean()
-            smoothed_prices = smoothed_series.values
+            smoothed_prices = bn.move_exp_mean(close_prices, window=label_rolling, min_count=1)
         else:
             raise ValueError(f"Unknown smoothing label_filter: {label_filter}")
         
         trend = np.gradient(smoothed_prices)
-        vol = pd.Series(close_prices).rolling(label_vol_window).std().values
+        vol = bn.move_std(close_prices, window=label_vol_window, min_count=1)
         normalized_trend = np.where(vol != 0, trend / vol, np.nan)
         normalized_trends.append(normalized_trend)
 
@@ -1873,24 +1875,20 @@ def get_labels_mean_reversion(
 
     # Calculate the price deviation ('lvl') based on the chosen label_filter
     if label_filter == 'mean':
-        diff = (dataset['close'] - dataset['close'].rolling(label_rolling).mean())
-        weighted_diff = diff * np.exp(np.arange(len(diff)) * label_decay_factor / len(diff)) 
-        dataset['lvl'] = weighted_diff # Add the weighted difference as 'lvl'
+        # Usando bottleneck para acelerar el cálculo de media móvil
+        rolling_mean = bn.move_mean(dataset['close'].values, window=label_rolling, min_count=1)
+        dataset['lvl'] = dataset['close'].values - rolling_mean
     elif label_filter == 'spline':
         x = np.array(range(dataset.shape[0]))
         y = dataset['close'].values
-        spl = UnivariateSpline(x, y, k=3, s=label_rolling) 
+        spl = UnivariateSpline(x, y, k=3, s=label_rolling)
         yHat = spl(np.linspace(min(x), max(x), num=x.shape[0]))
-        yHat_shifted = np.roll(yHat, shift=label_shift) # Apply the shift
-        diff = dataset['close'] - yHat_shifted
-        weighted_diff = diff * np.exp(np.arange(len(diff)) * label_decay_factor / len(diff)) 
-        dataset['lvl'] = weighted_diff # Add the weighted difference as 'lvl'
-        dataset = dataset.dropna()  # Remove NaN values potentially introduced by spline/shift
+        yHat_shifted = np.roll(yHat, shift=label_shift) # Apply the shift 
+        dataset['lvl'] = dataset['close'] - yHat_shifted
+        dataset = dataset.dropna() 
     elif label_filter == 'savgol':
-        smoothed_prices = safe_savgol_filter(dataset['close'].values, window_length=int(label_rolling), label_polyorder=3)
-        diff = dataset['close'] - smoothed_prices
-        weighted_diff = diff * np.exp(np.arange(len(diff)) * label_decay_factor / len(diff)) 
-        dataset['lvl'] = weighted_diff # Add the weighted difference as 'lvl'
+        smoothed_prices = safe_savgol_filter(dataset['close'].values, window_length=label_rolling, label_polyorder=5)
+        dataset['lvl'] = dataset['close'] - smoothed_prices
 
     dataset = dataset.dropna()  # Remove NaN values before proceeding
 
@@ -2382,9 +2380,11 @@ def get_labels_multiple_filters(
         # Create a temporary DataFrame to calculate label_rolling quantiles
         temp_df = pd.DataFrame({'diff': diff})
         
-        # Calculate label_rolling quantiles for the price deviation
-        q_low = temp_df['diff'].rolling(window=label_window_size).quantile(label_quantiles[0])
-        q_high = temp_df['diff'].rolling(window=label_window_size).quantile(label_quantiles[1])
+        # Calculate quantiles using bottleneck for better performance
+        q_low = bn.move_quantile(temp_df['diff'].values, window=label_window_size, 
+                                min_count=1, q=label_quantiles[0])
+        q_high = bn.move_quantile(temp_df['diff'].values, window=label_window_size, 
+                                 min_count=1, q=label_quantiles[1])
         
         # Store the price deviation and quantiles for the current label_rolling period
         all_levels.append(diff)

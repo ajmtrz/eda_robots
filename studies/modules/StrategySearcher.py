@@ -16,17 +16,14 @@ from optuna.integration import CatBoostPruningCallback
 from catboost import CatBoostClassifier
 from mapie.classification import CrossConformalClassifier
 from modules.labeling_lib import (
-    get_prices, get_features,
-    get_labels_one_direction,
+    get_prices, get_features, get_labels_random,
     get_labels_trend, get_labels_trend_with_profit,
     get_labels_trend_with_profit_multi, get_labels_clusters,
     get_labels_multi_window, get_labels_validated_levels,
     get_labels_filter_zigzag, get_labels_mean_reversion,
     get_labels_mean_reversion_multi, get_labels_mean_reversion_vol,
-    get_labels_filter, get_labels_multiple_filters,
-    get_labels_filter_bidirectional, get_labels_filter_one_direction,
-    get_labels_trend_one_direction, get_labels_filter_flat,
-    sliding_window_clustering, clustering_simple,
+    get_labels_filter, get_labels_multiple_filters, clustering_simple,
+    get_labels_filter_bidirectional, sliding_window_clustering, 
     markov_regime_switching_simple, markov_regime_switching_advanced,
     lgmm_clustering, wkmeans_clustering, get_labels_fractal_patterns
 )
@@ -35,7 +32,7 @@ from modules.export_lib import export_models_to_ONNX, export_to_mql5
 
 class StrategySearcher:
     LABEL_FUNCS = {
-        "random": get_labels_one_direction,
+        "random": get_labels_random,
         "trend": get_labels_trend,
         "trend_profit": get_labels_trend_with_profit,
         "trend_multi": get_labels_trend_with_profit_multi,
@@ -49,9 +46,6 @@ class StrategySearcher:
         "filter": get_labels_filter,
         "multi_filter": get_labels_multiple_filters,
         "filter_bidirectional": get_labels_filter_bidirectional,
-        "filter_one": get_labels_filter_one_direction,
-        "trend_one": get_labels_trend_one_direction,
-        "filter_flat": get_labels_filter_flat,
         "fractal": get_labels_fractal_patterns,
     }
     # Allowed smoothing methods for label functions that support a 'filter' kwarg
@@ -1113,7 +1107,8 @@ class StrategySearcher:
             'label_atr_period': lambda t: t.suggest_int  ('label_atr_period', 10, 50, log=True),
             'label_min_val':    lambda t: t.suggest_int  ('label_min_val',    1,  4, log=True),
             'label_max_val':    lambda t: t.suggest_int  ('label_max_val',    5, 15, log=True),
-            'label_method':     lambda t: t.suggest_categorical('label_method', ['first', 'last', 'mean', 'max', 'min']),
+            'label_method_trend':     lambda t: t.suggest_categorical('label_method_trend', ['normal', 'inverse']),
+            'label_method_random':     lambda t: t.suggest_categorical('label_method_random', ['first', 'last', 'mean', 'max', 'min', 'random']),
             'label_filter':     lambda t: t.suggest_categorical('label_filter', ['savgol', 'spline', 'sma', 'ema']),
             'label_window_size': lambda t: t.suggest_int('label_window_size', 4, 60, log=True),
             'label_window_sizes_int': lambda t: [t.suggest_int(f'label_window_sizes_{i}', 4, 60, log=True) for i in range(3)],

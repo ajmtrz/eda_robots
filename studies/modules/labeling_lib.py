@@ -1973,31 +1973,61 @@ def get_labels_filter(
     return dataset.drop(columns=['lvl']) 
 
 @njit(cache=True)
-def calc_labels_multiple_filters(close, lvls, qs):
+def calc_labels_multiple_filters(close, lvls, qs, direction=2):
+    """
+    direction: 0=solo buy, 1=solo sell, 2=ambas
+    Para direcciones únicas: 1.0=éxito direccional, 0.0=fracaso, 2.0=no confiable
+    Para ambas: 0.0=buy, 1.0=sell, 2.0=no confiable
+    """
     labels = np.empty(len(close), dtype=np.float64)
     for i in range(len(close)):
-        label_found = False
-        
+        buy_signals = 0
+        sell_signals = 0
         for j in range(len(lvls)):
             curr_lvl = lvls[j][i]
             curr_q_low = qs[j][0][i]
             curr_q_high = qs[j][1][i]
-            
             if curr_lvl > curr_q_high:
-                labels[i] = 1.0
-                label_found = True
-                break
+                sell_signals += 1
             elif curr_lvl < curr_q_low:
+                buy_signals += 1
+
+        if direction == 2:
+            # Esquema clásico: 0.0=buy, 1.0=sell, 2.0=no confiable
+            if buy_signals > 0 and sell_signals == 0:
                 labels[i] = 0.0
-                label_found = True
-                break
-                
-        if not label_found:
-            labels[i] = 2.0
-            
+            elif sell_signals > 0 and buy_signals == 0:
+                labels[i] = 1.0
+            else:
+                labels[i] = 2.0
+        elif direction == 0:
+            # Solo buy: 1.0=éxito, 0.0=fracaso, 2.0=no confiable
+            if buy_signals > 0 and sell_signals == 0:
+                labels[i] = 1.0  # Éxito direccional (buy)
+            elif sell_signals > 0 and buy_signals == 0:
+                labels[i] = 0.0  # Fracaso direccional (no buy, sino sell)
+            else:
+                labels[i] = 2.0  # Patrón no confiable
+        elif direction == 1:
+            # Solo sell: 1.0=éxito, 0.0=fracaso, 2.0=no confiable
+            if sell_signals > 0 and buy_signals == 0:
+                labels[i] = 1.0  # Éxito direccional (sell)
+            elif buy_signals > 0 and sell_signals == 0:
+                labels[i] = 0.0  # Fracaso direccional (no sell, sino buy)
+            else:
+                labels[i] = 2.0  # Patrón no confiable
+        else:
+            labels[i] = 2.0  # fallback
     return labels
 
-def get_labels_multiple_filters(dataset, label_rolling_periods_big=[200, 400, 600], label_quantiles=[.45, .55], label_window_size=100, label_polyorder=3) -> pd.DataFrame:
+def get_labels_multiple_filters(
+    dataset,
+    label_rolling_periods_big=[200, 400, 600],
+    label_quantiles=[.45, .55],
+    label_window_size=100,
+    label_polyorder=3,
+    direction=2
+) -> pd.DataFrame:
     """
     Generates trading signals (buy/sell) based on price deviation from multiple 
     smoothed price trends calculated using a Savitzky-Golay label_filter with different
@@ -2016,12 +2046,14 @@ def get_labels_multiple_filters(dataset, label_rolling_periods_big=[200, 400, 60
         quantiles (list, optional): Quantiles to define the "reversion zone". Defaults to [.45, .55].
         l_window_size (int, optional): Window size for calculating label_rolling quantiles. Defaults to 100.
         label_polyorder (int, optional): Polynomial order for the Savitzky-Golay label_filter. Defaults to 3.
+        direction (int, optional): 0=buy only, 1=sell only, 2=both. Defaults to 2.
 
     Returns:
         pd.DataFrame: The original DataFrame with a new 'labels_main' column and filtered rows:
                        - 'labels_main' column: 
-                            - 0: Buy
-                            - 1: Sell
+                            - 0: Buy (o fracaso direccional en modo unidireccional)
+                            - 1: Sell (o éxito direccional en modo unidireccional)
+                            - 2: Patrón no confiable
                        - Rows with missing values (NaN) are removed. 
     """
     
@@ -2057,7 +2089,7 @@ def get_labels_multiple_filters(dataset, label_rolling_periods_big=[200, 400, 60
     qs_array = np.array(all_quantiles)
 
     # Calculate buy/sell labels using the 'calc_labels_multiple_filters' function 
-    labels = calc_labels_multiple_filters(dataset['close'].values, lvls_array, qs_array)
+    labels = calc_labels_multiple_filters(dataset['close'].values, lvls_array, qs_array, direction=direction)
     
     # Add the calculated labels to the DataFrame
     dataset['labels_main'] = labels

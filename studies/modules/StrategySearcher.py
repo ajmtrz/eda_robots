@@ -22,17 +22,24 @@ from modules.labeling_lib import (
     get_labels_multi_window, get_labels_validated_levels,
     get_labels_filter_zigzag, get_labels_mean_reversion,
     get_labels_mean_reversion_multi, get_labels_mean_reversion_vol,
-    get_labels_filter, get_labels_multiple_filters, clustering_simple,
-    get_labels_filter_bidirectional, sliding_window_clustering, 
-    markov_regime_switching_simple, markov_regime_switching_advanced,
-    lgmm_clustering, wkmeans_clustering, get_labels_fractal_patterns
+    get_labels_filter, get_labels_multiple_filters,
+    get_labels_filter_bidirectional, get_labels_fractal_patterns,
+    clustering_kmeans, clustering_hdbscan,
+    clustering_markov, clustering_lgmm,
+    wkmeans_clustering,
 )
 from modules.tester_lib import tester, clear_onnx_session_cache
 from modules.export_lib import export_models_to_ONNX, export_to_mql5
 
 class StrategySearcher:
     LABEL_FUNCS = {
+        # No usan confiabilidad
         "random": get_labels_random,
+        "filter": get_labels_filter,
+        "multi_filter": get_labels_multiple_filters,
+        "filter_bidirectional": get_labels_filter_bidirectional,
+        # Usan confiabilidad
+        "fractal": get_labels_fractal_patterns,
         "trend": get_labels_trend,
         "trend_profit": get_labels_trend_with_profit,
         "trend_multi": get_labels_trend_with_profit_multi,
@@ -43,13 +50,9 @@ class StrategySearcher:
         "mean_rev": get_labels_mean_reversion,
         "mean_rev_multi": get_labels_mean_reversion_multi,
         "mean_rev_vol": get_labels_mean_reversion_vol,
-        "filter": get_labels_filter,
-        "multi_filter": get_labels_multiple_filters,
-        "filter_bidirectional": get_labels_filter_bidirectional,
-        "fractal": get_labels_fractal_patterns,
     }
     RELIABILITY_METHODS = {
-        'fractal', 'trend_profit', 'trend_multi', 'clusters', 
+        'fractal', 'trend','trend_profit', 'trend_multi', 'clusters', 
         'multi_window', 'validated_levels', 'zigzag', 
         'mean_rev', 'mean_rev_multi', 'mean_rev_vol'
     }
@@ -78,7 +81,7 @@ class StrategySearcher:
         include_export_path: str = r'/mnt/c/Users/Administrador/AppData/Roaming/MetaQuotes/Terminal/6C3C6A11D1C3791DD4DBF45421BF8028/MQL5/Include/ajmtrz/include/Dmitrievsky',
         history_path: str = r"/mnt/c/Users/Administrador/AppData/Roaming/MetaQuotes/Terminal/Common/Files/",
         search_type: str = 'clusters',
-        search_subtype: str = 'simple',
+        search_subtype: str = 'kmeans',
         label_method: str = 'random',
         tag: str = "",
         debug: bool = False,
@@ -118,9 +121,6 @@ class StrategySearcher:
     def run_search(self) -> None:
         search_funcs = {
             'clusters': self.search_clusters,
-            'markov': self.search_markov,
-            'lgmm': self.search_lgmm,
-            'wkmeans' : self.search_wkmeans,
             'mapie': self.search_mapie,
             'causal': self.search_causal,
             'reliability': self.search_reliability,
@@ -271,14 +271,60 @@ class StrategySearcher:
 
     def search_clusters(self, trial: optuna.Trial) -> float:
         """Implementa la búsqueda de estrategias usando clustering."""
+        def _clustering_method(data, hp):
+            try:
+                if self.search_subtype == 'kmeans':
+                    reliable_data = clustering_kmeans(
+                        data,
+                        n_clusters=hp['kmeans_n_clusters'],
+                        window_size=hp['kmeans_window'],
+                        step=hp.get('kmeans_step', None)
+                    )
+                elif self.search_subtype == 'hdbscan':
+                    reliable_data = clustering_hdbscan(
+                        data,
+                        n_clusters=hp['hdbscan_min_cluster_size']
+                    )
+                elif self.search_subtype == 'markov':
+                    reliable_data = clustering_markov(
+                        data,
+                        model_type=hp['markov_model'],
+                        n_regimes=hp['markov_regimes'],
+                        n_iter=hp.get('markov_iter', 100),
+                        n_mix=hp.get('markov_mix', 3)
+                    )
+                elif self.search_subtype == 'lgmm':
+                    reliable_data = clustering_lgmm(
+                        data,
+                        n_components=hp['lgmm_components'],
+                        covariance_type=hp.get('lgmm_covariance', 'full'),
+                        max_iter=hp.get('lgmm_iter', 100),
+                    )
+                elif self.search_subtype == 'wkmeans':
+                    reliable_data = wkmeans_clustering(
+                        data,
+                        n_clusters=hp["wk_n_clusters"],
+                        window_size=hp["wk_window"],
+                        metric=self.search_subtype,
+                        step=hp.get("wk_step", 1),
+                        bandwidth=hp.get("wk_bandwidth", 1.0),
+                        n_proj=hp.get("wk_proj", 100),
+                        max_iter=hp.get("wk_iter", 300),
+                    )
+
+                return reliable_data
+            
+            except Exception as e:
+                print(f"Error en _clustering_method: {str(e)}")
+                return pd.DataFrame()
+        
         try:
             hp = self.suggest_all_params(trial)
             
             # 🔍 DEBUG: Supervisar parámetros específicos de clusters
             if self.debug:
                 clust_params = {k: v for k, v in hp.items() if k.startswith('clust_')}
-                print(f"🔍 DEBUG search_clusters - Parámetros clusters: {clust_params}")
-                print(f"🔍   search_subtype: {self.search_subtype}")
+                print(f"🔍 DEBUG search_clusters {self.search_subtype} - Parámetros clusters: {clust_params}")
                 
             full_ds = self.get_labeled_full_data(hp)
             if full_ds is None:
@@ -287,52 +333,31 @@ class StrategySearcher:
             if self.label_method in self.RELIABILITY_METHODS:
                 # Esquema híbrido: clustering + confiabilidad
                 if self.debug:
-                    print(f"🔍 DEBUG search_clusters - Aplicando clustering híbrido (solo en muestras confiables)")
+                    print(f"🔍 DEBUG search_clusters {self.search_subtype} - Aplicando clustering híbrido")
                 
                 # Hacer clustering solo en muestras confiables
                 reliable_mask = full_ds['labels_main'] != 2.0
                 reliable_data = full_ds[reliable_mask].copy()
                 
-                if len(reliable_data) < hp['clust_n_clusters']:
+                if len(reliable_data) < 200:
                     if self.debug:
-                        print(f"🔍 DEBUG search_clusters - Insuficientes muestras confiables para clustering")
+                        print(f"🔍 DEBUG search_clusters {self.search_subtype} - Insuficientes muestras confiables para clustering")
                     return -1.0
                 
-                if self.search_subtype == 'simple':
-                    reliable_data = clustering_simple(
-                        reliable_data,
-                        n_clusters=hp['clust_n_clusters']
-                    )
-                elif self.search_subtype == 'advanced':
-                    reliable_data = sliding_window_clustering(
-                        reliable_data,
-                        n_clusters=hp['clust_n_clusters'],
-                        window_size=hp['clust_window'],
-                        step=hp.get('clust_step', None),
-                    )
-                
+                # Aplicar clustering
+                reliable_data_clustered = _clustering_method(reliable_data, hp)
                 # Propagar clusters a dataset completo
-                full_ds.loc[reliable_mask, 'labels_meta'] = reliable_data['labels_meta']
+                full_ds.loc[reliable_mask, 'labels_meta'] = reliable_data_clustered['labels_meta']
                 full_ds.loc[~reliable_mask, 'labels_meta'] = -1  # Muestras no confiables sin cluster
 
             else:
                 # Esquema tradicional: aplicar clustering a todo
                 if self.debug:
-                    print(f"🔍 DEBUG search_clusters - Aplicando clustering tradicional")
+                    print(f"🔍 DEBUG search_clusters {self.search_subtype} - Aplicando clustering tradicional")
 
-                if self.search_subtype == 'simple':
-                    full_ds = clustering_simple(
-                        full_ds,
-                        n_clusters=hp['clust_n_clusters']
-                    )
-                elif self.search_subtype == 'advanced':
-                    full_ds = sliding_window_clustering(
-                        full_ds,
-                        n_clusters=hp['clust_n_clusters'],
-                        window_size=hp['clust_window'],
-                        step=hp.get('clust_step', None),
-                    )
-                    
+                # Aplicar clustering
+                full_ds = _clustering_method(full_ds, hp)
+
             score, model_paths, models_cols = self.evaluate_clusters(trial, full_ds, hp)
             if score is None or model_paths is None or models_cols is None:
                 return -1.0
@@ -343,150 +368,7 @@ class StrategySearcher:
         except Exception as e:
             print(f"Error en search_clusters: {str(e)}")
             return -1.0
-
-    def search_markov(self, trial: optuna.Trial) -> float:
-        """Implementa la búsqueda de estrategias usando modelos markovianos."""
-        try:
-            hp = self.suggest_all_params(trial)
-            
-            # 🔍 DEBUG: Supervisar parámetros específicos de markov
-            if self.debug:
-                markov_params = {k: v for k, v in hp.items() if k.startswith('markov_')}
-                print(f"🔍 DEBUG search_markov - Parámetros markov: {markov_params}")
-                
-            full_ds = self.get_labeled_full_data(hp)
-            if full_ds is None:
-                return -1.0
-                
-            if self.label_method in self.RELIABILITY_METHODS:
-                # Esquema híbrido: clustering + confiabilidad
-                if self.debug:
-                    print(f"🔍 DEBUG search_markov - Aplicando clustering Markov híbrido (solo en muestras confiables)")
-                
-                # Hacer clustering solo en muestras confiables
-                reliable_mask = full_ds['labels_main'] != 2.0
-                reliable_data = full_ds[reliable_mask].copy()
-                
-                if len(reliable_data) < hp['markov_regimes']:
-                    if self.debug:
-                        print(f"🔍 DEBUG search_markov - Insuficientes muestras confiables para clustering")
-                    return -1.0
-                
-                if self.search_subtype == 'simple':
-                    reliable_data = markov_regime_switching_simple(
-                        reliable_data,
-                        model_type=hp['markov_model'],
-                        n_regimes=hp['markov_regimes'],
-                        n_iter=hp.get('markov_iter', 100),
-                        n_mix=hp.get('markov_mix', 3)
-                    )
-                elif self.search_subtype == 'advanced':
-                    reliable_data = markov_regime_switching_advanced(
-                        reliable_data,
-                        model_type=hp['markov_model'],
-                        n_regimes=hp['markov_regimes'],
-                        n_iter=hp.get('markov_iter', 100),
-                        n_mix=hp.get('markov_mix', 3)
-                    )
-                
-                # Propagar clusters a dataset completo
-                full_ds.loc[reliable_mask, 'labels_meta'] = reliable_data['labels_meta']
-                full_ds.loc[~reliable_mask, 'labels_meta'] = -1  # Muestras no confiables sin cluster
-                    
-            else:
-                # Esquema tradicional: aplicar clustering Markov a todo
-                if self.debug:
-                    print(f"🔍 DEBUG search_markov - Aplicando clustering Markov tradicional")
-                if self.search_subtype == 'simple':
-                    full_ds = markov_regime_switching_simple(
-                        full_ds,
-                        model_type=hp['markov_model'],
-                        n_regimes=hp['markov_regimes'],
-                        n_iter=hp.get('markov_iter', 100),
-                        n_mix=hp.get('markov_mix', 3)
-                    )
-                elif self.search_subtype == 'advanced':
-                    full_ds = markov_regime_switching_advanced(
-                        full_ds,
-                        model_type=hp['markov_model'],
-                        n_regimes=hp['markov_regimes'],
-                        n_iter=hp.get('markov_iter', 100),
-                        n_mix=hp.get('markov_mix', 3)
-                    )
-                    
-            score, model_paths, models_cols = self.evaluate_clusters(trial, full_ds, hp)
-            if score is None or model_paths is None or models_cols is None:
-                return -1.0
-            trial.set_user_attr('score', score)
-            trial.set_user_attr('model_paths', model_paths)
-            trial.set_user_attr('model_cols', models_cols)
-            return trial.user_attrs.get('score', -1.0)
-        except Exception as e:
-            print(f"Error en search_markov: {str(e)}")
-            return -1.0
-
-    def search_lgmm(self, trial: optuna.Trial) -> float:
-        """Búsqueda basada en GaussianMixture para etiquetar clusters."""
-        try:
-            hp = self.suggest_all_params(trial)
-            
-            # 🔍 DEBUG: Supervisar parámetros específicos de lgmm
-            if self.debug:
-                lgmm_params = {k: v for k, v in hp.items() if k.startswith('lgmm_')}
-                print(f"🔍 DEBUG search_lgmm - Parámetros lgmm: {lgmm_params}")
-                
-            full_ds = self.get_labeled_full_data(hp)
-            if full_ds is None:
-                return -1.0
-                
-            if self.label_method in self.RELIABILITY_METHODS:
-                # Esquema híbrido: clustering + confiabilidad
-                if self.debug:
-                    print(f"🔍 DEBUG search_lgmm - Aplicando clustering LGMM híbrido (solo en muestras confiables)")
-                
-                # Hacer clustering solo en muestras confiables
-                reliable_mask = full_ds['labels_main'] != 2.0
-                reliable_data = full_ds[reliable_mask].copy()
-                
-                if len(reliable_data) < hp['lgmm_components']:
-                    if self.debug:
-                        print(f"🔍 DEBUG search_lgmm - Insuficientes muestras confiables para clustering")
-                    return -1.0
-                
-                reliable_data = lgmm_clustering(
-                    reliable_data,
-                    n_components=hp['lgmm_components'],
-                    covariance_type=hp.get('lgmm_covariance', 'full'),
-                    max_iter=hp.get('lgmm_iter', 100),
-                )
-                
-                # Propagar clusters a dataset completo
-                full_ds.loc[reliable_mask, 'labels_meta'] = reliable_data['labels_meta']
-                full_ds.loc[~reliable_mask, 'labels_meta'] = -1  # Muestras no confiables sin cluster
-                    
-            else:
-                # Esquema tradicional: aplicar clustering a todo
-                if self.debug:
-                    print(f"🔍 DEBUG search_lgmm - Aplicando clustering LGMM tradicional")
-                full_ds = lgmm_clustering(
-                    full_ds,
-                    n_components=hp['lgmm_components'],
-                    covariance_type=hp.get('lgmm_covariance', 'full'),
-                    max_iter=hp.get('lgmm_iter', 100),
-                )
-                    
-            score, model_paths, models_cols = self.evaluate_clusters(trial, full_ds, hp)
-            if score is None or model_paths is None or models_cols is None:
-                return -1.0
-            trial.set_user_attr('score', score)
-            trial.set_user_attr('model_paths', model_paths)
-            trial.set_user_attr('model_cols', models_cols)
-            return trial.user_attrs.get('score', -1.0)
-
-        except Exception as e:
-            print(f"Error en search_lgmm: {str(e)}")
-            return -1.0
-
+        
     def search_mapie(self, trial) -> float:
         """Implementa la búsqueda de estrategias usando conformal prediction (MAPIE) con CatBoost, usando el mismo conjunto de features para ambos modelos."""
         try:
@@ -551,6 +433,10 @@ class StrategySearcher:
                 full_ds.loc[predicted == y, 'meta_labels'] = 1.0
                 
             model_main_train_data = full_ds[full_ds['meta_labels'] == 1][feature_cols + ['labels_main']].copy()
+            if len(model_main_train_data) < 200:  # Mínimo razonable
+                if self.debug:
+                    print(f"🔍 DEBUG search_mapie - Insuficientes muestras main: {len(model_main_train_data)}")
+                return -1.0
             # Meta model debe usar meta features, no main features
             meta_feature_cols = [col for col in full_ds.columns if col.endswith('_meta_feature')]
             if not meta_feature_cols:  # Fallback: usar main features si no hay meta features
@@ -685,6 +571,10 @@ class StrategySearcher:
                 full_ds.loc[full_ds.index.isin(all_bad), 'meta_labels'] = 0.0
                 
             model_main_train_data = full_ds[full_ds['meta_labels'] == 1.0][feature_cols + ['labels_main']].copy()
+            if len(model_main_train_data) < 200:  # Mínimo razonable
+                if self.debug:
+                    print(f"🔍 DEBUG search_causal - Insuficientes muestras main: {len(model_main_train_data)}")
+                return -1.0
             # Meta model debe usar meta features, no main features
             meta_feature_cols = [col for col in full_ds.columns if col.endswith('_meta_feature')]
             if not meta_feature_cols:  # Fallback: usar main features si no hay meta features
@@ -707,80 +597,6 @@ class StrategySearcher:
             return trial.user_attrs.get('score', -1.0)
         except Exception as e:
             print(f"Error en search_causal: {str(e)}")
-            return -1.0
-
-    def search_wkmeans(self, trial: optuna.Trial) -> float:
-        """
-        Implementa la búsqueda de estrategias utilizando WK-means / MMDK-means
-        para detectar y etiquetar regímenes de mercado desde labeling_lib.wkmeans_clustering.
-        Se apoya en evaluate_clusters exactamente igual que el resto de métodos.
-        """
-        try:
-            hp = self.suggest_all_params(trial)
-            
-            # 🔍 DEBUG: Supervisar parámetros específicos de wkmeans
-            if self.debug:
-                wk_params = {k: v for k, v in hp.items() if k.startswith('wk_')}
-                print(f"🔍 DEBUG search_wkmeans - Parámetros wkmeans: {wk_params}")
-                print(f"🔍   search_subtype: {self.search_subtype}")
-                
-            full_ds = self.get_labeled_full_data(hp)
-            if full_ds is None:
-                return -1.0
-                
-            if self.label_method in self.RELIABILITY_METHODS:
-                # Esquema híbrido: clustering + confiabilidad
-                if self.debug:
-                    print(f"🔍 DEBUG search_wkmeans - Aplicando clustering WKmeans híbrido (solo en muestras confiables)")
-                
-                # Hacer clustering solo en muestras confiables
-                reliable_mask = full_ds['labels_main'] != 2.0
-                reliable_data = full_ds[reliable_mask].copy()
-                
-                if len(reliable_data) < hp["wk_n_clusters"]:
-                    if self.debug:
-                        print(f"🔍 DEBUG search_wkmeans - Insuficientes muestras confiables para clustering")
-                    return -1.0
-                
-                reliable_data = wkmeans_clustering(
-                    reliable_data,
-                    n_clusters=hp["wk_n_clusters"],
-                    window_size=hp["wk_window"],
-                    metric=self.search_subtype,
-                    step=hp.get("wk_step", 1),
-                    bandwidth=hp.get("wk_bandwidth", 1.0),
-                    n_proj=hp.get("wk_proj", 100),
-                    max_iter=hp.get("wk_iter", 300),
-                )
-                
-                # Propagar clusters a dataset completo
-                full_ds.loc[reliable_mask, 'labels_meta'] = reliable_data['labels_meta']
-                full_ds.loc[~reliable_mask, 'labels_meta'] = -1  # Muestras no confiables sin cluster
-                    
-            else:
-                # Esquema tradicional: aplicar clustering a todo
-                if self.debug:
-                    print(f"🔍 DEBUG search_wkmeans - Aplicando clustering WKmeans tradicional")
-                full_ds = wkmeans_clustering(
-                    full_ds,
-                    n_clusters=hp["wk_n_clusters"],
-                    window_size=hp["wk_window"],
-                    metric=self.search_subtype,
-                    step=hp.get("wk_step", 1),
-                    bandwidth=hp.get("wk_bandwidth", 1.0),
-                    n_proj=hp.get("wk_proj", 100),
-                    max_iter=hp.get("wk_iter", 300),
-                )
-                    
-            score, model_paths, model_cols = self.evaluate_clusters(trial, full_ds, hp)
-            if score is None or model_paths is None or model_cols is None:
-                return -1.0
-            trial.set_user_attr("score", score)
-            trial.set_user_attr("model_paths", model_paths)
-            trial.set_user_attr("model_cols", model_cols)
-            return trial.user_attrs.get("score", -1.0)
-        except Exception as e:
-            print(f"Error en search_wkmeans: {str(e)}")
             return -1.0
 
     def search_reliability(self, trial: optuna.Trial) -> float:
@@ -815,39 +631,36 @@ class StrategySearcher:
                 print(f"🔍 DEBUG search_reliability - Feature columns: {len(feature_cols)}")
                 labels_dist = full_ds['labels_main'].value_counts()
                 print(f"🔍   Labels distribution: {labels_dist}")
+            # Main: solo muestras con señales, etiquetas direccionales
+            trading_mask = full_ds['labels_main'].isin([0.0, 1.0])
+            if not trading_mask.any():
+                if self.debug:
+                    print(f"🔍 DEBUG search_reliability - No hay muestras de trading")
+                return -1.0    
+            model_main_train_data = full_ds.loc[trading_mask, feature_cols + ['labels_main']].copy()
+            # Verificar que tenemos suficientes muestras
+            if len(model_main_train_data) < 200:  # Mínimo razonable
+                if self.debug:
+                    print(f"🔍 DEBUG search_reliability - Insuficientes muestras main: {len(model_main_train_data)}")
+                return -1.0
             
             # Meta: todas las muestras, etiquetas binarias (trading/no-trading)  
             # 1 si hay señal (0 o 1), 0 si neutral (2)
             meta_feature_cols = [c for c in full_ds.columns if c.endswith('_meta_feature')]
             if not meta_feature_cols:  # Fallback: usar main features si no hay meta features
                 meta_feature_cols = feature_cols
-            meta_data = full_ds[meta_feature_cols].copy()
-            meta_data['labels_meta'] = (full_ds['labels_main'].isin([0.0, 1.0])).astype(int)
-            
-            # Main: solo muestras con señales, etiquetas direccionales
-            trading_mask = full_ds['labels_main'].isin([0.0, 1.0])
-            if not trading_mask.any():
-                if self.debug:
-                    print(f"🔍 DEBUG search_reliability - No hay muestras de trading")
-                return -1.0
-                
-            main_data = full_ds.loc[trading_mask, feature_cols + ['labels_main']].copy()
+            model_meta_train_data = full_ds[meta_feature_cols].copy()
+            model_meta_train_data['labels_meta'] = (full_ds['labels_main'].isin([0.0, 1.0])).astype(int)
             
             if self.debug:
-                print(f"🔍 DEBUG search_reliability - Main data shape: {main_data.shape}")
-                print(f"🔍   Meta data shape: {meta_data.shape}")
-                meta_dist = meta_data['labels_meta'].value_counts()
+                print(f"🔍 DEBUG search_reliability - Main data shape: {model_main_train_data.shape}")
+                print(f"🔍   Meta data shape: {model_meta_train_data.shape}")
+                meta_dist = model_meta_train_data['labels_meta'].value_counts()
                 print(f"🔍   Meta labels distribution: {meta_dist}")
             
-            # Verificar que tenemos suficientes muestras
-            if len(main_data) < 100:  # Mínimo razonable
-                if self.debug:
-                    print(f"🔍 DEBUG search_reliability - Insuficientes muestras main: {len(main_data)}")
-                return -1.0
-                
             # Verificar distribución de clases
-            main_labels_dist = main_data['labels_main'].value_counts()
-            meta_labels_dist = meta_data['labels_meta'].value_counts()
+            main_labels_dist = model_main_train_data['labels_main'].value_counts()
+            meta_labels_dist = model_meta_train_data['labels_meta'].value_counts()
             
             if len(main_labels_dist) < 2 or len(meta_labels_dist) < 2:
                 if self.debug:
@@ -858,8 +671,8 @@ class StrategySearcher:
             score, model_paths, models_cols = self.fit_final_models(
                 trial=trial,
                 full_ds=full_ds,
-                model_main_train_data=main_data,
-                model_meta_train_data=meta_data,
+                model_main_train_data=model_main_train_data,
+                model_meta_train_data=model_meta_train_data,
                 hp=hp.copy()
             )
             
@@ -887,11 +700,12 @@ class StrategySearcher:
             best_model_paths = (None, None)
             best_models_cols = (None, None)
 
-            # 🔍 DEBUG: Supervisar parámetros en evaluate_clusters
+            # 🔍 DEBUG: Supervisar parámetros
             if self.debug:
                 validation_params = {k: v for k, v in hp.items() if k.startswith('label_')}
                 print(f"🔍 DEBUG evaluate_clusters - Parámetros de validación: {validation_params}")
 
+            # Extraer clusters
             cluster_sizes = full_ds['labels_meta'].value_counts().sort_index()
             if self.debug:
                 print(f"🔍 DEBUG: Cluster sizes:\n{cluster_sizes}")
@@ -902,81 +716,58 @@ class StrategySearcher:
                     print("⚠️ ERROR: No hay clusters")
                 return None, None, None
             
+            # Evaluar cada cluster
             for clust in cluster_sizes.index:
-                if self.label_method in self.RELIABILITY_METHODS:
+                cluster_mask = full_ds['labels_meta'] == clust
+                reliable_mask = full_ds['labels_main'] != 2.0
+                hybrid_mask = cluster_mask & reliable_mask
+                if not hybrid_mask.any():
                     if self.debug:
-                        print(f"🔍 DEBUG evaluate_clusters - Evaluando clusters híbridos")
+                        print(f"🔍   Cluster {clust} descartado: sin muestras confiables")
+                    continue
+                main_feature_cols = [c for c in full_ds.columns if c.endswith('_main_feature')]
+                model_main_train_data = full_ds.loc[hybrid_mask, main_feature_cols + ['labels_main']].copy()
+                if self.label_method in self.RELIABILITY_METHODS:
                     # Intersección: cluster + confiabilidad
-                    cluster_mask = full_ds['labels_meta'] == clust
-                    reliable_mask = full_ds['labels_main'] != 2.0
-                    hybrid_mask = cluster_mask & reliable_mask
-                    
-                    if not hybrid_mask.any():
-                        if self.debug:
-                            print(f"🔍   Cluster {clust} descartado: sin muestras confiables")
-                        continue
-                    
-                    # Main data: solo muestras del cluster que sean confiables
-                    main_feature_cols = [c for c in full_ds.columns if c.endswith('_main_feature')]
-                    model_main_train_data = full_ds.loc[hybrid_mask, main_feature_cols + ['labels_main']].copy()
-                    
-                    # Verificar tamaño mínimo
-                    if 'label_max_val' in hp and len(model_main_train_data) <= hp["label_max_val"]:
-                        if self.debug:
-                            print(f"🔍   Cluster {clust} descartado: {len(model_main_train_data)} <= label_max_val({hp['label_max_val']})")
-                        continue
-                    
-                    # Verificar distribución de clases main
-                    if (model_main_train_data['labels_main'].value_counts() < 2).any():
-                        if self.debug:
-                            print(f"🔍   Cluster {clust} descartado: labels_main insuficientes")
-                        continue
-                    
-                    # Meta data: todas las muestras, etiquetas híbridas - ¡USANDO META FEATURES!
                     meta_feature_cols = [c for c in full_ds.columns if c.endswith('_meta_feature')]
                     model_meta_train_data = full_ds[meta_feature_cols].copy()
                     model_meta_train_data['labels_meta'] = hybrid_mask.astype('int8')  # 1 = cluster bueno + confiable
                     
-                    # Verificar distribución de clases meta
-                    if (model_meta_train_data['labels_meta'].value_counts() < 2).any():
-                        if self.debug:
-                            print(f"🔍   Cluster {clust} descartado: labels_meta híbridas insuficientes")
-                        continue
-                    
+                else:
+                    # Esquema tradicional de clusters
+                    meta_feature_cols = full_ds.columns[full_ds.columns.str.contains('_meta_feature')]
+                    model_meta_train_data = full_ds.loc[:, meta_feature_cols].copy()
+                    model_meta_train_data['labels_meta'] = cluster_mask.astype('int8') # 1 = cluster bueno
+
+                # Verificar que tenemos suficientes muestras
+                if model_main_train_data is None or model_main_train_data.empty:
+                    continue
+                if 'label_max_val' in hp and len(model_main_train_data) <= hp["label_max_val"]:
                     if self.debug:
-                        print(f"🔍   Evaluando cluster híbrido {clust}: {len(model_main_train_data)} filas main, {len(model_meta_train_data)} filas meta")
+                        print(f"🔍   Cluster {clust} descartado: {len(model_main_train_data)} <= label_max_val({hp['label_max_val']})")
+                    continue
+                if len(model_main_train_data) < 200:
+                    if self.debug:
+                        print(f"🔍 DEBUG evaluate_clusters - Insuficientes muestras main: {len(model_main_train_data)}")
+                    continue
+                if (model_main_train_data['labels_main'].value_counts() < 2).any():
+                    if self.debug:
+                        print(f"🔍   Cluster {clust} descartado: labels_main insuficientes")
+                    continue
+                if (model_meta_train_data['labels_meta'].value_counts() < 2).any():
+                    if self.debug:
+                        print(f"🔍   Cluster {clust} descartado: labels_meta insuficientes")
+                    continue
+
+                # Información de debug
+                if self.debug:
+                        print(f"🔍   Evaluando cluster {clust}: {len(model_main_train_data)} filas main, {len(model_meta_train_data)} filas meta")
                         main_dist = model_main_train_data['labels_main'].value_counts()
                         meta_dist = model_meta_train_data['labels_meta'].value_counts()
                         print(f"🔍     Main labels: {main_dist}")
-                        print(f"🔍     Meta labels (híbrido): {meta_dist}")
-                else:
-                    # Esquema tradicional de clusters
-                    model_main_train_data = full_ds.loc[full_ds["labels_meta"] == clust].copy()
-                    main_feature_cols = full_ds.columns[full_ds.columns.str.contains('_main_feature')]
-                    model_main_train_data = model_main_train_data[main_feature_cols.tolist() + ['labels_main']]
-                    if model_main_train_data is None or model_main_train_data.empty:
-                        continue
-
-                    if 'label_max_val' in hp and len(model_main_train_data) <= hp["label_max_val"]:
-                        if self.debug:
-                            print(f"🔍   Cluster {clust} descartado: {len(model_main_train_data)} <= label_max_val({hp['label_max_val']})")
-                        continue
-                    if (model_main_train_data['labels_main'].value_counts() < 2).any():
-                        if self.debug:
-                            print(f"🔍   Cluster {clust} descartado: labels_main insuficientes")
-                        continue
-
-                    meta_feature_cols = full_ds.columns[full_ds.columns.str.contains('_meta_feature')]
-                    model_meta_train_data = full_ds.loc[:, meta_feature_cols].copy()
-                    model_meta_train_data['labels_meta'] = (full_ds['labels_meta'] == clust).astype('int8')
-                    if (model_meta_train_data['labels_meta'].value_counts() < 2).any():
-                        if self.debug:
-                            print(f"🔍   Cluster {clust} descartado: labels_meta insuficientes")
-                        continue
-                        
-                    if self.debug:
-                        print(f"🔍   Evaluando cluster {clust}: {len(model_main_train_data)} filas main, {len(model_meta_train_data)} filas meta")
+                        print(f"🔍     Meta labels: {meta_dist}")
                     
+                # Entrenar modelos
                 score, model_paths, models_cols = self.fit_final_models(
                     trial=trial,
                     full_ds=full_ds,
@@ -1064,7 +855,7 @@ class StrategySearcher:
             trial.suggest_int(f"feature_main_period_{i}", 5, 200, log=True)
             for i in range(n_periods)
         ]
-        p["feature_main_periods"] = tuple(sorted(set(feature_periods)))  # únicos y ordenados
+        p["feature_main_periods"] = tuple(sorted(set(feature_periods)))
 
         # ─── FEATURE MAIN - ESTADÍSTICAS ───────────────────────────────────────────
         n_stats = trial.suggest_int("feature_main_n_stats", 1, 6)
@@ -1073,7 +864,7 @@ class StrategySearcher:
             for i in range(n_stats)
         ]
         # mantener orden de aparición sin duplicados
-        p["feature_main_stats"] = tuple(dict.fromkeys(feature_stats))
+        p["feature_main_stats"] = tuple(sorted(dict.fromkeys(feature_stats)))
 
         # ─── FEATURE META (solo ciertos search_type) ──────────────────────────
         if self.search_type in {"clusters", "markov", "lgmm", "wkmeans"}:
@@ -1091,7 +882,7 @@ class StrategySearcher:
                 trial.suggest_categorical(f"feature_meta_stat_{i}", ALL_STATS)
                 for i in range(n_meta_stats)
             ]
-            p["feature_meta_stats"] = tuple(dict.fromkeys(meta_stats))
+            p["feature_meta_stats"] = tuple(sorted(dict.fromkeys(meta_stats)))
 
         return p
 
@@ -1139,26 +930,28 @@ class StrategySearcher:
         """Parámetros exclusivos según self.search_type."""
         p = {}
         if self.search_type == 'clusters':
-            p['clust_n_clusters'] = trial.suggest_int ('clust_n_clusters', 5, 30, log=True)
-            if self.search_subtype == 'advanced':
-                p['clust_window']     = trial.suggest_int ('clust_window',     40, 250, log=True)
-                p['clust_step']       = trial.suggest_int ('clust_step',       10, 50, log=True)
-        elif self.search_type == 'markov':
-            p['markov_model']    = trial.suggest_categorical('markov_model', ['GMMHMM', 'HMM'])
-            p['markov_regimes']  = trial.suggest_int ('markov_regimes', 3, 8, log=True)
-            p['markov_iter']     = trial.suggest_int ('markov_iter',    50, 200, log=True)
-            p['markov_mix']      = trial.suggest_int ('markov_mix',     2, 5)
-        elif self.search_type == 'lgmm':
-            p['lgmm_components']  = trial.suggest_int ('lgmm_components',  3, 15, log=True)
-            p['lgmm_covariance']  = trial.suggest_categorical('lgmm_covariance', ['full', 'tied', 'diag', 'spherical'])
-            p['lgmm_iter']        = trial.suggest_int ('lgmm_iter',        50, 200, log=True)
-        elif self.search_type == 'wkmeans':
-            p['wk_n_clusters']    = trial.suggest_int ('wk_n_clusters',    6, 20, log=True)
-            p['wk_bandwidth']     = trial.suggest_float('wk_bandwidth',    0.1, 5.0, log=True)
-            p['wk_window']        = trial.suggest_int ('wk_window',        30, 120, log=True)
-            p['wk_step']          = trial.suggest_int ('wk_step',          1, 10)
-            p['wk_proj']          = trial.suggest_int ('wk_proj',          50, 200, log=True)
-            p['wk_iter']          = trial.suggest_int ('wk_iter',          100, 500, log=True)
+            if self.search_subtype == 'kmeans':
+                p['kmeans_n_clusters'] = trial.suggest_int ('kmeans_n_clusters', 5, 30, log=True)
+                p['kmeans_window']     = trial.suggest_int ('kmeans_window',     40, 250, log=True)
+                p['kmeans_step']       = trial.suggest_int ('kmeans_step',       10, 50, log=True)
+            elif self.search_subtype == 'hdbscan':
+                p['hdbscan_min_cluster_size'] = trial.suggest_int ('hdbscan_min_cluster_size', 5, 30, log=True)
+            elif self.search_subtype == 'markov':
+                p['markov_model']    = trial.suggest_categorical('markov_model', ['GMMHMM', 'HMM'])
+                p['markov_regimes']  = trial.suggest_int ('markov_regimes', 3, 8, log=True)
+                p['markov_iter']     = trial.suggest_int ('markov_iter',    50, 200, log=True)
+                p['markov_mix']      = trial.suggest_int ('markov_mix',     2, 5)
+            elif self.search_subtype == 'lgmm':
+                p['lgmm_components']  = trial.suggest_int ('lgmm_components',  3, 15, log=True)
+                p['lgmm_covariance']  = trial.suggest_categorical('lgmm_covariance', ['full', 'tied', 'diag', 'spherical'])
+                p['lgmm_iter']        = trial.suggest_int ('lgmm_iter',        50, 200, log=True)
+            elif self.search_subtype == 'wkmeans':
+                p['wk_n_clusters']    = trial.suggest_int ('wk_n_clusters',    6, 20, log=True)
+                p['wk_bandwidth']     = trial.suggest_float('wk_bandwidth',    0.1, 5.0, log=True)
+                p['wk_window']        = trial.suggest_int ('wk_window',        30, 120, log=True)
+                p['wk_step']          = trial.suggest_int ('wk_step',          1, 10)
+                p['wk_proj']          = trial.suggest_int ('wk_proj',          50, 200, log=True)
+                p['wk_iter']          = trial.suggest_int ('wk_iter',          100, 500, log=True)
         elif self.search_type == 'mapie':
             p['mapie_confidence_level'] = trial.suggest_float('mapie_confidence_level', 0.8, 0.95)
             p['mapie_cv']               = trial.suggest_int  ('mapie_cv',               3, 10)
@@ -1640,7 +1433,7 @@ class StrategySearcher:
             if problematic:
                 if self.debug:
                     print(f"🔍 DEBUG: Columnas problemáticas eliminadas: {len(problematic)}")
-                full_ds.drop(columns=problematic, inplace=True)
+                full_ds = full_ds.drop(columns=problematic)
                 feature_cols = [c for c in feature_cols if c not in problematic]
                 if not feature_cols:
                     return None
@@ -1657,31 +1450,13 @@ class StrategySearcher:
             seen_meta_stats   = set()
 
             for col in feature_cols:
-                if col.endswith('_meta_feature'):
-                    # Remover '_meta_feature'
-                    col_parts = col[:-13]
-                    # Dividir en período y estadística
-                    parts = col_parts.split('_')
-                    p = int(parts[0])
-                    stat = '_'.join(parts[1:])  # Reunir el resto como estadística
-
-                    # periodo meta
-                    if p not in seen_meta_periods:
-                        meta_periods_ordered.append(p)
-                        seen_meta_periods.add(p)
-
-                    # estadístico meta
-                    if stat not in seen_meta_stats:
-                        meta_stats_ordered.append(stat)
-                        seen_meta_stats.add(stat)
-
-                elif col.endswith('_main_feature'):
+                if col.endswith('_main_feature'):
                     # Remover '_main_feature'
                     col_parts = col[:-13]
                     # Dividir en período y estadística
                     parts = col_parts.split('_')
                     p = int(parts[0])
-                    stat = '_'.join(parts[1:])  # Reunir el resto como estadística
+                    stat = '_'.join(parts[1:])
 
                     # periodo main
                     if p not in seen_main_periods:
@@ -1692,6 +1467,24 @@ class StrategySearcher:
                     if stat not in seen_main_stats:
                         main_stats_ordered.append(stat)
                         seen_main_stats.add(stat)
+
+                elif col.endswith('_meta_feature'):
+                    # Remover '_meta_feature'
+                    col_parts = col[:-13]
+                    # Dividir en período y estadística
+                    parts = col_parts.split('_')
+                    p = int(parts[0])
+                    stat = '_'.join(parts[1:])
+
+                    # periodo meta
+                    if p not in seen_meta_periods:
+                        meta_periods_ordered.append(p)
+                        seen_meta_periods.add(p)
+
+                    # estadístico meta
+                    if stat not in seen_meta_stats:
+                        meta_stats_ordered.append(stat)
+                        seen_meta_stats.add(stat)
 
             # -------- aplicar a hp con los nombres nuevos ----------------
             hp['feature_main_periods'] = tuple(main_periods_ordered)

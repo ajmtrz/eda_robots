@@ -2408,11 +2408,9 @@ def get_labels_multiple_filters(
         # Create a temporary DataFrame to calculate label_rolling quantiles
         temp_df = pd.DataFrame({'diff': diff})
         
-        # Calculate quantiles using bottleneck for better performance
-        q_low = bn.move_quantile(temp_df['diff'].values, window=label_window_size, 
-                                min_count=1, q=label_quantiles[0])
-        q_high = bn.move_quantile(temp_df['diff'].values, window=label_window_size, 
-                                 min_count=1, q=label_quantiles[1])
+        # Calculate quantiles using pandas rolling for better compatibility
+        q_low = temp_df['diff'].rolling(window=label_window_size, min_periods=1).quantile(label_quantiles[0])
+        q_high = temp_df['diff'].rolling(window=label_window_size, min_periods=1).quantile(label_quantiles[1])
         
         # Store the price deviation and quantiles for the current label_rolling period
         all_levels.append(diff)
@@ -3061,7 +3059,7 @@ def get_labels_fractal_patterns(
 #### ------------------------------------------------------------------------------------------------
 #### ------------------------------------------------------------------------------------------------
 
-def sliding_window_clustering(
+def clustering_kmeans(
         dataset: pd.DataFrame,
         n_clusters: int,
         window_size: int = 100,
@@ -3123,15 +3121,21 @@ def sliding_window_clustering(
     ds_out["labels_meta"] = clusters
     return ds_out
 
-def clustering_simple(
+def clustering_hdbscan(
     dataset: pd.DataFrame,
     n_clusters: int = 5,
-    random_state: int = 42
 ) -> pd.DataFrame:
     """
-    Clustering simple usando KMeans
+    Clustering simple usando HDBSCAN.
     Si el dataset está vacío o no hay meta features, asigna -1 a labels_meta.
     """
+    try:
+        import hdbscan
+    except ImportError:
+        print(f"🔍 DEBUG: HDBSCAN no está instalado, asignando -1 a labels_meta")
+        dataset["labels_meta"] = -1
+        return dataset
+
     if dataset.empty:
         dataset["labels_meta"] = -1
         return dataset
@@ -3141,16 +3145,17 @@ def clustering_simple(
         return dataset
     meta_X_np = meta_X.to_numpy(np.float32)
     try:
-        clusterer = KMeans(
-            n_clusters=n_clusters,
-            n_init="auto"
+        clusterer = hdbscan.HDBSCAN(
+            min_cluster_size=n_clusters,
+            core_dist_n_jobs=-1
         ).fit(meta_X_np)
         dataset["labels_meta"] = clusterer.labels_.astype(int)
     except Exception as e:
+        print(f"🔍 DEBUG: Error en clustering_simple con HDBSCAN: {e}")
         dataset["labels_meta"] = -1
     return dataset
 
-def markov_regime_switching_simple(dataset, n_regimes: int, model_type="GMMHMM", n_iter = 10, n_mix = 3) -> pd.DataFrame:
+def clustering_markov(dataset, n_regimes: int, model_type="GMMHMM", n_iter = 10, n_mix = 3) -> pd.DataFrame:
     # Si el dataset está vacío, devuelve un dataset con -1 en la columna labels_meta
     if dataset.empty:
         dataset["labels_meta"] = -1
@@ -3376,7 +3381,7 @@ def markov_regime_switching_advanced(dataset, n_regimes: int, model_type="HMM", 
     return dataset
 
 
-def lgmm_clustering(dataset: pd.DataFrame, n_components: int,
+def clustering_lgmm(dataset: pd.DataFrame, n_components: int,
                     covariance_type: str = "full",
                     max_iter: int = 100) -> pd.DataFrame:
     """Cluster meta features using a GaussianMixture model.

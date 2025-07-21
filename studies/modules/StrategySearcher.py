@@ -204,7 +204,8 @@ class StrategySearcher:
                                             os.remove(p)
                                     # Parar el algoritmo
                                     if self.debug:
-                                        study.stop()
+                                        #if trial.number > 1:
+                                            study.stop()
 
                             # Liberar memoria eliminando datos pesados del trial
                             if 'model_paths' in trial.user_attrs and trial.user_attrs['model_paths']:
@@ -1492,7 +1493,10 @@ class StrategySearcher:
             hp['feature_meta_periods'] = tuple(meta_periods_ordered)
             hp['feature_meta_stats']   = tuple(meta_stats_ordered)
             if self.debug:
-                print(f"🔍 DEBUG: hp actualizado = {hp}")
+                print(f"🔍 DEBUG: feature_main_periods después de reconstruir: {hp['feature_main_periods']}")
+                print(f"🔍 DEBUG: feature_main_stats después de reconstruir: {hp['feature_main_stats']}")
+                print(f"🔍 DEBUG: feature_meta_periods después de reconstruir: {hp['feature_meta_periods']}")
+                print(f"🔍 DEBUG: feature_meta_stats después de reconstruir: {hp['feature_meta_stats']}")
 
             # Verificar que tenemos al menos períodos y stats main
             main_periods = hp.get('feature_main_periods', ())

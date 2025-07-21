@@ -61,7 +61,7 @@ def export_models_to_ONNX(models):
         onnx_model = convert_sklearn(
             model,
             initial_types=[('input', FloatTensorType([None, len(model.feature_names_)]))],
-            target_opset={"": 17, "ai.onnx.ml": 2},
+            target_opset={"": 18, "ai.onnx.ml": 2},
             options={"nocl": False, "zipmap": False}
         )
         tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".onnx")

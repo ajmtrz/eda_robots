@@ -96,7 +96,7 @@ def tester(
         )
 
         trade_nl, rdd_nl, r2, slope_nl, wf_nl = evaluate_report(rpt, trade_profits=trade_profits)
-        if (trade_nl <= -1.0 and rdd_nl <= -1.0 and r2 <= -1.0 and slope_nl <= -1.0 and wf_nl <= -1.0):
+        if (trade_nl < 0.0 or rdd_nl < 0.0 or r2 < 0.0 or slope_nl < 0.0 or wf_nl < 0.0):
             return -1.0
         # Pesos optimizados para promover consistencia temporal (in-sample similar a out-of-sample)
         score = (
@@ -146,15 +146,11 @@ def evaluate_report(
     Penaliza curvas cortas, con drawdown cero o pendiente negativa.
     """
     n = equity_curve.size
-    if n < 2:
-        # Siempre devolver 6 valores para evitar error de tipado en Numba
+    n_trades = len(trade_profits)
+    if n < 5 or n_trades < 5:
         return -1.0, -1.0, -1.0, -1.0, -1.0
 
     # ---------- nº de trades (normalizado) -----------------------------------
-    returns = np.diff(equity_curve)
-    n_trades = returns.size
-    if n_trades < min_trades:
-        return -1.0, -1.0, -1.0, -1.0, -1.0
     trade_nl = 1.0 / (1.0 + np.exp(-(n_trades - min_trades) / (min_trades * 5.0)))
 
     # ---------- return / drawdown (normalizado) ------------------------------
@@ -164,12 +160,7 @@ def evaluate_report(
         running_max[i] = running_max[i - 1] if running_max[i - 1] > equity_curve[i] else equity_curve[i]
     max_dd = np.max(running_max - equity_curve)
     total_ret = equity_curve[-1] - equity_curve[0]
-    if max_dd == 0.0:
-        rdd = 0.0
-    else:
-        rdd = total_ret / max_dd
-    if rdd < rdd_floor:
-        return -1.0, -1.0, -1.0, -1.0, -1.0
+    rdd = total_ret / (max_dd + 1e-12)
     rdd_nl = 1.0 / (1.0 + np.exp(-(rdd - rdd_floor) / (rdd_floor * 5.0)))
 
     # ---------- linealidad y pendiente (normalizado) ---------------------------
@@ -182,8 +173,6 @@ def evaluate_report(
 
     # Walk-Forward Analysis - consistencia temporal
     wf_nl = _walk_forward_validation(equity_curve, trade_profits)
-    if not np.isfinite(wf_nl):
-        return -1.0, -1.0, -1.0, -1.0, -1.0
 
     return trade_nl, rdd_nl, r2, slope_nl, wf_nl
 
@@ -295,62 +284,53 @@ def backtest(close,
 
 @njit(cache=True)
 def _walk_forward_validation(eq, trade_profits):
-    """
-    Calcula un score de consistencia temporal combinando:
-    - Proporción de ventanas (walk-forward windows) con equity final > inicial
-    - Promedio del ratio de trades ganadores en cada ventana
-
-    El score final es el producto de ambas métricas.
-
-    Args:
-        eq (np.ndarray): Curva de equity (acumulada) como array 1D.
-        periods_per_year (float): Periodos por año (para tamaño de ventana).
-        trade_profits (np.ndarray or None): Array 1D de profits por trade (opcional).
-
-    Returns:
-        float: Score combinado (0.0 a 1.0).
-    """
     n = eq.size
+    n_trades = len(trade_profits)
     
-    # Ventanas de 5 trades con step=1 para máximo solapamiento
     window = 5
     step = 1
     
-    if n < 2*window:
+    if n < window or n_trades < window:
         return 0.0
 
     wins = 0
-    total = 0
+    total_windows = 0
     win_ratios_sum = 0.0
-    win_ratios_count = 0
 
-    for start in range(0, n - window + 1, step):
-        end = start + window
-        if end > n:
-            break
-        r = eq[end-1] - eq[start]
+    for start in range(0, n_trades, step):
+        actual_window = min(window, n_trades - start)
+        if actual_window < 1:  # Asegurar al menos 1 trade
+            continue
+            
+        end_idx = start + actual_window  # Índice final en trade_profits
+        end_equity = start + actual_window  # Índice en eq
+        
+        # Verificar límites de eq
+        if end_equity >= n:
+            continue
+            
+        # 1) Rentabilidad de la ventana (equity)
+        r = eq[end_equity] - eq[start]
         if r > 0:
             wins += 1
-        total += 1
+        total_windows += 1
+        
+        # 2) Ratio de trades ganadores en la ventana
+        n_winners = 0
+        for j in range(start, end_idx):  # j: start hasta end_idx-1
+            if j >= n_trades:
+                break
+            if trade_profits[j] > 0:
+                n_winners += 1
+                
+        win_ratio = n_winners / actual_window
+        win_ratios_sum += win_ratio
 
-        # Ratio de ganadoras/perdedoras en la ventana
-        if trade_profits is not None and start < len(trade_profits):
-            end_trades = min(len(trade_profits), end - 1)
-            if end_trades > start:
-                trades_in_window = trade_profits[start:end_trades]
-                n_trades = len(trades_in_window)
-                if n_trades > 0:
-                    n_winners = 0
-                    for p in trades_in_window:
-                        if p > 0:
-                            n_winners += 1
-                    win_ratio = n_winners / n_trades
-                    win_ratios_sum += win_ratio
-                    win_ratios_count += 1
-
-    prop_ventanas_rentables = wins / total if total else 0.0
-    avg_win_ratio = win_ratios_sum / win_ratios_count if win_ratios_count > 0 else 0.0
-
+    if total_windows == 0:
+        return 0.0
+        
+    prop_ventanas_rentables = wins / total_windows
+    avg_win_ratio = win_ratios_sum / total_windows
     return prop_ventanas_rentables * avg_win_ratio
 
 def get_periods_per_year(timeframe: str) -> float:
@@ -438,10 +418,7 @@ def manual_linear_regression(x, y):
         ss_tot += y_diff_mean * y_diff_mean
     
     # Calcular R²
-    if abs(ss_tot) < 1e-12:
-        r2 = 0.0
-    else:
-        r2 = 1.0 - (ss_res / ss_tot)
+    r2 = 1.0 - (ss_res / (ss_tot + 1e-12))
     
     return r2, slope
 

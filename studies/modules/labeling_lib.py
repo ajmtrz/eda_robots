@@ -635,10 +635,13 @@ def get_features(data: pd.DataFrame, hp, decimal_precision=6):
     ohlcv = data.loc[index, ["open", "high", "low", "close", "volume"]]
     df = pd.concat([df, ohlcv], axis=1)
 
-    # 2) limpiar Inf/NaN SOLO en columnas de features
-    feat_cols = df.filter(like='_main_feature').columns
-    df[feat_cols] = df[feat_cols].replace([np.inf, -np.inf], np.nan)
-    df = df.dropna(subset=feat_cols)
+    # 2) limpiar Inf/NaN en TODAS las columnas de features (main + meta)
+    main_feat_cols = df.filter(like='_main_feature').columns
+    meta_feat_cols = df.filter(like='_meta_feature').columns
+    all_feat_cols = list(main_feat_cols) + list(meta_feat_cols)
+    
+    df[all_feat_cols] = df[all_feat_cols].replace([np.inf, -np.inf], np.nan)
+    df = df.dropna(subset=all_feat_cols)
 
     # 3) verificación — el close debe coincidir al 100 %
     if not np.allclose(df["close"].values,

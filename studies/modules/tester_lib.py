@@ -19,27 +19,11 @@ def tester(
         model_meta_threshold: float = 0.5,
         model_max_orders: int = 1,
         model_delay_bars: int = 1) -> tuple[float, pd.DataFrame]:
-
-    """Evalúa una estrategia para una o ambas direcciones.
-
-    Parameters
-    ----------
-    dataset : pd.DataFrame
-        DataFrame con las columnas de cierre y etiquetas.
-    model_main_cols : list[str]
-        Lista de nombres de columnas para el modelo principal.
-    model_meta_cols : list[str]
-        Lista de nombres de columnas para el meta-modelo.
-    model_main : object
-        Modelo principal entrenado con ``predict_proba``.
-    model_meta : object
-        Meta-modelo entrenado con ``predict_proba``.
-    direction : str, optional
-        ``'buy'``, ``'sell'`` o ``'both'``. Por defecto ``'both'``.
-    timeframe : str, optional
-        Timeframe de los datos para cálculos de anualización. Por defecto ``'H1'``.
-    print_metrics : bool, optional
-        Si ``True`` imprime métricas detalladas para debugging. Por defecto ``False``.
+    """
+    Evalúa una estrategia para una o ambas direcciones, usando ejecución realista:
+    - Las operaciones se abren y cierran al precio 'open' de la barra actual (índice t),
+      ya que las features y señales de t son válidas para operar en t.
+    - Solo se pasan los arrays estrictamente necesarios a la función jiteada backtest.
 
     Returns
     -------
@@ -52,7 +36,7 @@ def tester(
         # Preparación de datos
         ds_main = dataset[model_main_cols].to_numpy()
         ds_meta = dataset[model_meta_cols].to_numpy()
-        close = dataset['close'].to_numpy()
+        open_ = dataset['open'].to_numpy()
 
         # Calcular probabilidades usando ambos modelos (sin binarizar)
         main = predict_proba_onnx_models(model_main, ds_main)
@@ -65,7 +49,7 @@ def tester(
             meta = meta[0]
 
         # Asegurar contigüidad en memoria
-        close = np.ascontiguousarray(close)
+        open_ = np.ascontiguousarray(open_)
         main = np.ascontiguousarray(main)
         meta = np.ascontiguousarray(meta)
 
@@ -81,8 +65,6 @@ def tester(
             pb = main
             ps = 1.0 - main
         # --- Generar columna "labels" al estilo MQL5 ---
-        # int label = ((buy_sig || sell_sig) && meta_ok) ? 1 : 0;
-        # buy_sig = (pb > main_thr), sell_sig = (ps > main_thr), meta_ok = (meta > meta_thr)
         buy_sig = pb > model_main_threshold
         sell_sig = ps > model_main_threshold
         meta_ok = meta > model_meta_threshold
@@ -91,7 +73,7 @@ def tester(
         dataset_with_labels["labels"] = label_arr
 
         rpt, trade_stats, trade_profits = backtest(
-            close,
+            open_,
             prob_buy   = pb,
             prob_sell  = ps,
             meta_sig   = meta,
@@ -105,7 +87,6 @@ def tester(
         trade_nl, rdd_nl, r2, slope_nl, wf_nl = evaluate_report(rpt, trade_profits=trade_profits)
         if (trade_nl <= -1.0 and rdd_nl <= -1.0 and r2 <= -1.0 and slope_nl <= -1.0 and wf_nl <= -1.0):
             return -1.0, dataset_with_labels
-        # Pesos optimizados para promover consistencia temporal (in-sample similar a out-of-sample)
         score = (
                 0.12 * r2 +
                 0.15 * slope_nl +
@@ -195,7 +176,7 @@ def evaluate_report(
     return trade_nl, rdd_nl, r2, slope_nl, wf_nl
 
 @njit(cache=True)
-def backtest(close,
+def backtest(open_,
             prob_buy,          # numpy[float] - P(buy) de la red MAIN
             prob_sell,         # numpy[float] - P(sell) idem
             meta_sig,          # numpy[float] - P(clase 1) de la red META
@@ -205,16 +186,13 @@ def backtest(close,
             max_orders = 1,    # 0 → ilimitado
             delay_bars = 1):
     """
-    Permite múltiples posiciones abiertas simultáneamente (hasta max_orders) siguiendo la lógica MQL5.
-    Cada posición se gestiona de forma independiente (tipo y precio de entrada).
-    Devuelve:
-        report  – equity acumulada por trade   (len = nº_trades + 1)
-        stats   – tupla (n_trades, n_positivos, n_negativos)
+    Backtest realista: las operaciones se abren y cierran al precio 'open' de la barra actual (índice t),
+    ya que las features y señales de t son válidas para operar en t.
+    No se usa 'close' para la ejecución de operaciones.
     """
     LONG, SHORT = 0, 1
 
-    # Cada posición es (tipo, precio_entrada, bar_entrada)
-    open_positions_type = np.empty(max_orders if max_orders > 0 else close.size, dtype=np.int64)
+    open_positions_type = np.empty(max_orders if max_orders > 0 else open_.size, dtype=np.int64)
     open_positions_price = np.empty_like(open_positions_type, dtype=np.float64)
     open_positions_bar = np.empty_like(open_positions_type, dtype=np.int64)
     n_open = 0
@@ -222,11 +200,11 @@ def backtest(close,
     report = [0.0]
     trade_profits = []
 
-    last_trade_bar = -delay_bars-1  # para permitir apertura en barra 0
+    last_trade_bar = -delay_bars-1
 
-    for bar in range(close.size):
+    for bar in range(open_.size):
         pb, ps, pm = prob_buy[bar], prob_sell[bar], meta_sig[bar]
-        price      = close[bar]
+        price      = open_[bar]
 
         # 0) señales elementales
         buy_sig  = pb > main_thr if direction != 1 else False
@@ -244,14 +222,13 @@ def backtest(close,
                     profit = open_positions_price[i] - price
                 report.append(report[-1] + profit)
                 trade_profits.append(profit)
-                # Eliminar posición cerrada (swap con la última y reducir n_open)
                 if i != n_open - 1:
                     open_positions_type[i] = open_positions_type[n_open - 1]
                     open_positions_price[i] = open_positions_price[n_open - 1]
                     open_positions_bar[i] = open_positions_bar[n_open - 1]
                 n_open -= 1
                 last_trade_bar = bar
-                continue  # no incrementar i, revisar la nueva posición en i
+                continue
             i += 1
 
         # 2) Apertura: meta OK, señal BUY/SELL OK, delay cumplido, cupo OK
@@ -263,8 +240,6 @@ def backtest(close,
                 open_positions_bar[n_open] = bar
                 n_open += 1
                 last_trade_bar = bar
-                # Si solo se permite una posición por barra, comentar el siguiente continue
-                # continue
             # SELL
             if sell_sig and (max_orders == 0 or n_open < max_orders):
                 open_positions_type[n_open] = SHORT
@@ -272,19 +247,17 @@ def backtest(close,
                 open_positions_bar[n_open] = bar
                 n_open += 1
                 last_trade_bar = bar
-                # continue
 
     # 4) Cierre forzoso al final de todas las posiciones abiertas
     for i in range(n_open):
         pos_type = open_positions_type[i]
         if pos_type == LONG:
-            profit = close[-1] - open_positions_price[i]
+            profit = open_[-1] - open_positions_price[i]
         else:
-            profit = open_positions_price[i] - close[-1]
+            profit = open_positions_price[i] - open_[-1]
         report.append(report[-1] + profit)
         trade_profits.append(profit)
 
-    # Calcular estadísticas de trades
     n_trades = len(trade_profits)
     n_positivos = 0
     n_negativos = 0

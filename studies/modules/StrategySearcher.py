@@ -29,7 +29,7 @@ from modules.labeling_lib import (
     wkmeans_clustering,
 )
 from modules.tester_lib import tester, clear_onnx_session_cache
-from modules.export_lib import export_models_to_ONNX, export_to_mql5
+from modules.export_lib import export_models_to_ONNX, export_dataset_to_csv, export_to_mql5
 
 class StrategySearcher:
     LABEL_FUNCS = {
@@ -174,6 +174,7 @@ class StrategySearcher:
                                                 os.remove(p)
                                     # Guardar nuevas rutas de modelos
                                     study.set_user_attr("best_score", trial.user_attrs['score'])
+                                    study.set_user_attr("best_full_ds_with_labels_path", trial.user_attrs['full_ds_with_labels_path'])
                                     study.set_user_attr("best_model_paths", trial.user_attrs['model_paths'])
                                     study.set_user_attr("best_periods_main", trial.user_attrs.get('feature_main_periods'))
                                     study.set_user_attr("best_stats_main", trial.user_attrs.get('feature_main_stats'))
@@ -188,6 +189,7 @@ class StrategySearcher:
                                         "models_export_path": self.models_export_path,
                                         "include_export_path": self.include_export_path,
                                         "best_score": study.user_attrs["best_score"],
+                                        "best_full_ds_with_labels_path": study.user_attrs["best_full_ds_with_labels_path"],
                                         "best_model_paths": study.user_attrs["best_model_paths"],
                                         "best_model_cols": study.user_attrs["best_model_cols"],
                                         "best_periods_main": study.user_attrs["best_periods_main"],
@@ -212,6 +214,9 @@ class StrategySearcher:
                                 for p in trial.user_attrs['model_paths']:
                                     if p and os.path.exists(p):
                                         os.remove(p)
+                            if 'full_ds_with_labels_path' in trial.user_attrs and trial.user_attrs['full_ds_with_labels_path']:
+                                if os.path.exists(trial.user_attrs['full_ds_with_labels_path']):
+                                    os.remove(trial.user_attrs['full_ds_with_labels_path'])
 
                         # Log
                         if study.best_trial:
@@ -359,12 +364,13 @@ class StrategySearcher:
                 # Aplicar clustering
                 full_ds = _clustering_method(full_ds, hp)
 
-            score, model_paths, models_cols = self.evaluate_clusters(trial, full_ds, hp)
+            score, full_ds_with_labels_path, model_paths, models_cols = self.evaluate_clusters(trial, full_ds, hp)
             if score is None or model_paths is None or models_cols is None:
                 return -1.0
             trial.set_user_attr('score', score)
             trial.set_user_attr('model_paths', model_paths)
             trial.set_user_attr('model_cols', models_cols)
+            trial.set_user_attr('full_ds_with_labels_path', full_ds_with_labels_path)
             return trial.user_attrs.get('score', -1.0)
         except Exception as e:
             print(f"Error en search_clusters: {str(e)}")
@@ -769,7 +775,7 @@ class StrategySearcher:
                         print(f"🔍     Meta labels: {meta_dist}")
                     
                 # Entrenar modelos
-                score, model_paths, models_cols = self.fit_final_models(
+                score, full_ds_with_labels_path, model_paths, models_cols = self.fit_final_models(
                     trial=trial,
                     full_ds=full_ds,
                     model_main_train_data=model_main_train_data,
@@ -784,6 +790,7 @@ class StrategySearcher:
                             if p and os.path.exists(p):
                                 os.remove(p)
                     best_score = score
+                    best_full_ds_with_labels_path = full_ds_with_labels_path
                     best_model_paths = model_paths
                     best_models_cols = models_cols
                     if self.debug:
@@ -794,7 +801,7 @@ class StrategySearcher:
                             os.remove(p)
             if best_score == -math.inf or best_model_paths == (None, None):
                 return None, None, None
-            return best_score, best_model_paths, best_models_cols
+            return best_score, best_full_ds_with_labels_path, best_model_paths, best_models_cols
         except Exception as e:
             print(f"⚠️ ERROR en evaluación de clusters: {str(e)}")
             return None, None, None
@@ -1118,7 +1125,7 @@ class StrategySearcher:
             
             test_train_time_start = time.time()
             try:
-                score = tester(
+                score, full_ds_with_labels = tester(
                     dataset=full_ds,
                     model_main=model_main_path,
                     model_meta=model_meta_path,
@@ -1140,9 +1147,20 @@ class StrategySearcher:
             if not np.isfinite(score):
                 score = -1.0
 
+            # Eliminar columnas "labels_meta" y "labels_main" antes de exportar
+            df_to_export = full_ds_with_labels.drop(columns=["labels_meta", "labels_main"], errors="ignore")
+            # Desplazar columnas OHLCV una posición hacia atrás
+            ohlcv_cols = ["open", "high", "low", "close", "volume"]
+            for col in ohlcv_cols:
+                if col in df_to_export.columns:
+                    df_to_export[col] = df_to_export[col].shift(1)
+            df_to_export = df_to_export.dropna()
+            full_ds_with_labels_path = export_dataset_to_csv(df_to_export, self.decimal_precision)
+
             if self.debug:
+                print(f"🔍 DEBUG: Dataset con labels guardado en {full_ds_with_labels_path}")
                 print(f"🔍 DEBUG: Modelos guardados en {model_main_path} y {model_meta_path}")
-            return score, (model_main_path, model_meta_path), (main_feature_cols, meta_feature_cols)
+            return score, full_ds_with_labels_path, (model_main_path, model_meta_path), (main_feature_cols, meta_feature_cols)
         except Exception as e:
             print(f"Error en función de entrenamiento y test: {str(e)}")
             return None, None, None
@@ -1532,16 +1550,6 @@ class StrategySearcher:
                         print(f"🔍   {n_diff} diferencias en columna 'close'. Ejemplo: {full_close[diffs].head(3)} vs {base_close[diffs].head(3)}")
             if not (index_match and close_match):
                 raise ValueError("Integridad de full_ds fallida: índice o columna 'close' no coinciden con base_df en el rango de interés.")
-            
-            # Guardar dataset completo a disco
-            if self.debug:
-                if self.tag:
-                    data_dir = "./data"
-                    os.makedirs(data_dir, exist_ok=True)
-                    dataset_filename = f"{self.tag}.csv"
-                    dataset_path = os.path.join(data_dir, dataset_filename)
-                    full_ds.to_csv(dataset_path, index=True, float_format=f'%.{self.decimal_precision+2}f', date_format='%Y.%m.%d %H:%M:%S')
-                    print(f"🔍 DEBUG: Dataset guardado en {dataset_path}")
 
             return full_ds
 

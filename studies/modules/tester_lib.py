@@ -18,7 +18,7 @@ def tester(
         model_main_threshold: float = 0.5,
         model_meta_threshold: float = 0.5,
         model_max_orders: int = 1,
-        model_delay_bars: int = 1) -> float:
+        model_delay_bars: int = 1) -> tuple[float, pd.DataFrame]:
 
     """Evalúa una estrategia para una o ambas direcciones.
 
@@ -43,20 +43,18 @@ def tester(
 
     Returns
     -------
-    float
-        Puntuación de la estrategia según :func:`evaluate_report`.
+    tuple
+        (score, dataset_con_labels)
+        score: Puntuación de la estrategia según :func:`evaluate_report`.
+        dataset_con_labels: DataFrame original con columna "labels" (1.0/0.0) según lógica MQL5.
     """
     try:
-        
         # Preparación de datos
         ds_main = dataset[model_main_cols].to_numpy()
         ds_meta = dataset[model_meta_cols].to_numpy()
         close = dataset['close'].to_numpy()
 
         # Calcular probabilidades usando ambos modelos (sin binarizar)
-        # La nueva función predict_proba_onnx_models detecta automáticamente si se pasa una lista o un solo modelo.
-        # Si se pasa una lista de modelos, devuelve shape (n_models, n_samples)
-        # Si se pasa un solo modelo (str), devuelve shape (n_samples,)
         main = predict_proba_onnx_models(model_main, ds_main)
         meta = predict_proba_onnx_models(model_meta, ds_meta)
 
@@ -82,6 +80,15 @@ def tester(
         else:
             pb = main
             ps = 1.0 - main
+        # --- Generar columna "labels" al estilo MQL5 ---
+        # int label = ((buy_sig || sell_sig) && meta_ok) ? 1 : 0;
+        # buy_sig = (pb > main_thr), sell_sig = (ps > main_thr), meta_ok = (meta > meta_thr)
+        buy_sig = pb > model_main_threshold
+        sell_sig = ps > model_main_threshold
+        meta_ok = meta > model_meta_threshold
+        label_arr = ((buy_sig | sell_sig) & meta_ok).astype(float)
+        dataset_with_labels = dataset.copy()
+        dataset_with_labels["labels"] = label_arr
 
         rpt, trade_stats, trade_profits = backtest(
             close,
@@ -97,7 +104,7 @@ def tester(
 
         trade_nl, rdd_nl, r2, slope_nl, wf_nl = evaluate_report(rpt, trade_profits=trade_profits)
         if (trade_nl <= -1.0 and rdd_nl <= -1.0 and r2 <= -1.0 and slope_nl <= -1.0 and wf_nl <= -1.0):
-            return -1.0
+            return -1.0, dataset_with_labels
         # Pesos optimizados para promover consistencia temporal (in-sample similar a out-of-sample)
         score = (
                 0.12 * r2 +
@@ -107,7 +114,7 @@ def tester(
                 0.30 * wf_nl
         )
         if score < 0.0:
-            return -1.0
+            return -1.0, dataset_with_labels
         if print_metrics:
             print(f"🔍 DEBUG - Main threshold: {model_main_threshold}, Meta threshold: {model_meta_threshold}, Max orders: {model_max_orders}, Delay bars: {model_delay_bars}")
             print(f"🔍 DEBUG - Métricas de evaluación: SCORE: {score}, trade_nl: {trade_nl}, rdd_nl: {rdd_nl}, r2: {r2}, slope_nl: {slope_nl}, wf_nl: {wf_nl}")
@@ -122,11 +129,11 @@ def tester(
             plt.show()
             plt.close()
 
-        return score
-    
+        return score, dataset_with_labels
+
     except Exception as e:
         print(f"🔍 DEBUG: Error en tester: {e}")
-        return -1.0
+        return -1.0, dataset_with_labels
 
 @njit(cache=True)
 def evaluate_report(

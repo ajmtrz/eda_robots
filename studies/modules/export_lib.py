@@ -70,9 +70,15 @@ def export_models_to_ONNX(models):
         onnx_models.append(tmp.name)
     return onnx_models
 
+def export_dataset_to_csv(dataset, decimal_precision=6):
+    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".csv")
+    dataset.to_csv(tmp.name, index=True, float_format=f'%.{decimal_precision+2}f', date_format='%Y.%m.%d %H:%M:%S')
+    return tmp.name
+
 def export_to_mql5(**kwargs):
     tag = kwargs.get('tag')
     best_score = kwargs.get('best_score')
+    best_full_ds_with_labels_path = kwargs.get('best_full_ds_with_labels_path')
     model_paths = kwargs.get('best_model_paths')
     model_cols = kwargs.get('best_model_cols')
     stats_main = kwargs.get('best_stats_main')
@@ -136,6 +142,17 @@ def export_to_mql5(**kwargs):
                     os.remove(p)
                 except Exception:
                     pass
+
+        # Copia el dataset con labels desde el archivo temporal a la ruta de destino
+        data_dir = "./data"
+        os.makedirs(data_dir, exist_ok=True)
+        dataset_filename = f"{tag}.csv"
+        dataset_path = os.path.join(data_dir, dataset_filename)
+        if best_full_ds_with_labels_path:
+            with open(best_full_ds_with_labels_path, "rb") as src, open(dataset_path, "wb") as dst:
+                dst.write(src.read())
+        if best_full_ds_with_labels_path:
+            os.remove(best_full_ds_with_labels_path)
 
         stat_function_templates = {
             "std": """

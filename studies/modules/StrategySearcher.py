@@ -1510,7 +1510,29 @@ class StrategySearcher:
                 print(f"🔍   Índice: {full_ds.index[0]}")
                 print(f"🔍   Columnas: {list(full_ds.columns)}")
                 print(f"🔍   Valores: {full_ds.iloc[0].to_dict()}")
-                
+
+            # ──────────────────────────────────────────────────────────────
+            # Chequeo de integridad: comparar índice y columna 'close' con base_df
+            idx_full = full_ds.index
+            base_close = self.base_df.loc[idx_full, 'close']
+            full_close = full_ds['close']
+            index_match = idx_full.equals(base_close.index)
+            close_match = full_close.equals(base_close)
+            if self.debug:
+                if index_match and close_match:
+                    print(f"🔍 DEBUG: Chequeo de integridad OK: índice y columna 'close' coinciden entre full_ds y base_df [{idx_full[0]} - {idx_full[-1]}] ({len(idx_full)} filas)")
+                else:
+                    print(f"🔍 DEBUG: ERROR de integridad: índice o columna 'close' NO coinciden entre full_ds y base_df")
+                    if not index_match:
+                        print(f"🔍   Índices diferentes. Ejemplo full_ds: {list(idx_full[:3])} ... {list(idx_full[-3:])}")
+                        print(f"🔍   Índices base_df: {list(base_close.index[:3])} ... {list(base_close.index[-3:])}")
+                    if not close_match:
+                        diffs = (full_close != base_close)
+                        n_diff = diffs.sum()
+                        print(f"🔍   {n_diff} diferencias en columna 'close'. Ejemplo: {full_close[diffs].head(3)} vs {base_close[diffs].head(3)}")
+            if not (index_match and close_match):
+                raise ValueError("Integridad de full_ds fallida: índice o columna 'close' no coinciden con base_df en el rango de interés.")
+            
             # Guardar dataset completo a disco
             if self.debug:
                 if self.tag:

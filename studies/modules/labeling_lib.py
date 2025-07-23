@@ -132,7 +132,6 @@ def momentum_roc(x):
 
 @njit(cache=True)
 def fractal_dimension_manual(x):
-    x = np.ascontiguousarray(x)
     eps = std_manual(x) / 4
     if eps == 0:
         return 1.0
@@ -644,8 +643,7 @@ def get_features(data: pd.DataFrame, hp, decimal_precision=6):
     df = df.dropna(subset=all_feat_cols)
 
     # 3) verificación — el close debe coincidir al 100 %
-    if not np.allclose(df["close"].values,
-                    ohlcv.loc[df.index, "close"].values):
+    if not np.allclose(df["close"].values, ohlcv.loc[df.index, "close"].values):
         raise RuntimeError("❌ 'close' desalineado tras generar features")
 
     return df
@@ -670,7 +668,6 @@ def safe_savgol_filter(x, label_rolling: int, label_polyorder: int):
         - filtering_successful: Boolean indicating if Savitzky-Golay was applied successfully
     """
 
-    x = np.asarray(x)
     n = len(x)
     if n <= label_polyorder:
         return x, False  # Datos insuficientes
@@ -830,19 +827,19 @@ def get_labels_trend(
         print(f"🔍 DEBUG: Savitzky-Golay filtering failed in get_labels_trend, returning empty dataset")
         return pd.DataFrame()
     trend = np.gradient(smoothed_prices)
-    vol = dataset['close'].rolling(label_vol_window).std().values
+    vol = bn.move_std(dataset['close'].values, window=label_vol_window, min_count=1)
     normalized_trend = np.where(vol != 0, trend / vol, np.nan)  # Set NaN where vol is 0
     
     # Removing NaN and synchronizing data
     valid_mask = ~np.isnan(normalized_trend)
     normalized_trend_clean = normalized_trend[valid_mask]
     close_clean = dataset['close'].values[valid_mask]
-    dataset_clean = dataset[valid_mask].copy()
     
     # Calculate ATR
-    high = dataset["high"].values if "high" in dataset else dataset["close"].values
-    low = dataset["low"].values if "low" in dataset else dataset["close"].values
-    atr = calculate_atr_simple(high, low, dataset["close"].values, period=label_atr_period)
+    high = dataset['high'].values
+    low = dataset['low'].values
+    close = dataset['close'].values
+    atr = calculate_atr_simple(high, low, close, period=label_atr_period)
     atr_clean = atr[valid_mask]
     
     # Generate labels with profit validation
@@ -854,10 +851,9 @@ def get_labels_trend(
     )
     
     # Trimming the dataset and adding labels
-    dataset_clean = dataset_clean.iloc[:len(labels)].copy()
-    dataset_clean['labels_main'] = labels[:len(dataset_clean)]
-    dataset_clean = dataset_clean.dropna()  # Remove rows with NaN
-    return dataset_clean
+    dataset['labels_main'] = labels
+    dataset['labels_main'] = dataset['labels_main'].fillna(2.0)
+    return dataset
 
 def plot_trading_signals(
     dataset: pd.DataFrame,
@@ -879,7 +875,7 @@ def plot_trading_signals(
         figsize: Figure dimensions. Default (14,7)
     """
     # Copy and clean data
-    df = dataset[['close']].copy().dropna()
+    df = dataset[['close']].copy()
     close_prices = df['close'].values
     
     # 1. Smooth prices using Savitzky-Golay label_filter
@@ -892,7 +888,7 @@ def plot_trading_signals(
     trend = np.gradient(smoothed)
     
     # 3. Compute volatility (label_rolling std) - usando bottleneck para acelerar
-    vol = bn.move_std(df['close'].values, window=label_vol_window, min_count=1)
+    vol = bn.move_std(close_prices, window=label_vol_window, min_count=1)
     
     # 4. Normalize trend by volatility
     normalized_trend = np.zeros_like(trend)
@@ -1101,19 +1097,18 @@ def get_labels_trend_with_profit(
         return pd.DataFrame()
     trend = np.gradient(smoothed_prices)
 
-    # Normalizing the trend by volatility (usando bottleneck para acelerar)
+    # Removing NaN and synchronizing data
     vol = bn.move_std(dataset['close'].values, window=label_vol_window, min_count=1)
     normalized_trend = np.where(vol != 0, trend / vol, np.nan)
-
-    # Removing NaN and synchronizing data
     valid_mask = ~np.isnan(normalized_trend)
     normalized_trend_clean = normalized_trend[valid_mask]
     close_clean = dataset['close'].values[valid_mask]
-    high = dataset["high"].values if "high" in dataset else dataset["close"].values
-    low = dataset["low"].values if "low" in dataset else dataset["close"].values
-    atr = calculate_atr_simple(high, low, dataset["close"].values, period=label_atr_period)
+
+    high = dataset['high'].values
+    low = dataset['low'].values
+    close = dataset['close'].values
+    atr = calculate_atr_simple(high, low, close, period=label_atr_period)
     atr_clean = atr[valid_mask]
-    dataset_clean = dataset[valid_mask].copy()
 
     # Generating labels
     method_map = {'first': 0, 'last': 1, 'mean': 2, 'max': 3, 'min': 4, 'random': 5}
@@ -1131,12 +1126,9 @@ def get_labels_trend_with_profit(
     )
 
     # Trimming the dataset and adding labels
-    dataset_clean = dataset_clean.iloc[:len(labels)].copy()
-    dataset_clean['labels_main'] = labels[: len(dataset_clean)]
-
-    # Filtering the results
-    dataset_clean = dataset_clean.dropna()
-    return dataset_clean
+    dataset['labels_main'] = labels
+    dataset['labels_main'] = dataset['labels_main'].fillna(2.0)
+    return dataset
 
 @njit(cache=True)
 def calculate_labels_trend_different_filters(close, atr, normalized_trend, label_threshold, label_markup, label_min_val, label_max_val, method_int=5):
@@ -1226,9 +1218,10 @@ def get_labels_trend_with_profit_different_filters(dataset, label_filter='savgol
     normalized_trend_clean = normalized_trend[valid_mask]
     close_clean = dataset['close'].values[valid_mask]
     dataset_clean = dataset[valid_mask].copy()
-    high = dataset["high"].values if "high" in dataset else dataset["close"].values
-    low = dataset["low"].values if "low" in dataset else dataset["close"].values
-    atr = calculate_atr_simple(high, low, dataset["close"].values, period=label_atr_period)
+    high = dataset['high'].values
+    low = dataset['low'].values
+    close = dataset['close'].values
+    atr = calculate_atr_simple(high, low, close, period=label_atr_period)
     atr_clean = atr[valid_mask]
     
     # Generating labels
@@ -1237,12 +1230,9 @@ def get_labels_trend_with_profit_different_filters(dataset, label_filter='savgol
     labels = calculate_labels_trend_different_filters(close_clean, atr_clean, normalized_trend_clean, label_threshold, label_markup, label_min_val, label_max_val, method_int)
     
     # Trimming the dataset and adding labels
-    dataset_clean = dataset_clean.iloc[:len(labels)].copy()
-    dataset_clean['labels_main'] = labels[: len(dataset_clean)]
-    
-    # Filtering the results
-    dataset_clean = dataset_clean.dropna()    
-    return dataset_clean
+    dataset['labels_main'] = labels
+    dataset['labels_main'] = dataset['labels_main'].fillna(2.0)
+    return dataset
 
 @njit(cache=True)
 def calculate_labels_trend_multi(
@@ -1381,11 +1371,10 @@ def get_labels_trend_with_profit_multi(
     valid_mask = ~np.isnan(normalized_trends_array).any(axis=0)
     normalized_trends_clean = normalized_trends_array[:, valid_mask]
     close_clean = close_prices[valid_mask]
-    dataset_clean = dataset[valid_mask].copy()
 
-    high = dataset["high"].values if "high" in dataset else dataset["close"].values
-    low = dataset["low"].values if "low" in dataset else dataset["close"].values
-    atr = calculate_atr_simple(high, low, dataset["close"].values, period=label_atr_period)
+    high = dataset['high'].values
+    low = dataset['low'].values
+    atr = calculate_atr_simple(high, low, close_prices, period=label_atr_period)
     atr_clean = atr[valid_mask]
     # Generate labels
     method_map = {'first': 0, 'last': 1, 'mean': 2, 'max': 3, 'min': 4, 'random': 5}
@@ -1402,13 +1391,10 @@ def get_labels_trend_with_profit_multi(
         method_int=method_int
     )
 
-    # Trim data and add labels
-    dataset_clean = dataset_clean.iloc[:len(labels)].copy()
-    dataset_clean['labels_main'] = labels[: len(dataset_clean)]
-
-    # Remove remaining NaN
-    dataset_clean = dataset_clean.dropna()
-    return dataset_clean
+    # Trimming the dataset and adding labels
+    dataset['labels_main'] = labels
+    dataset['labels_main'] = dataset['labels_main'].fillna(2.0)
+    return dataset
 
 @njit(cache=True)
 def calculate_labels_clusters(close_data, atr, clusters, label_markup, direction=2):
@@ -1480,15 +1466,15 @@ def get_labels_clusters(
     close_data = dataset['close'].values
     clusters = dataset['cluster'].values
 
-    high = dataset["high"].values if "high" in dataset else dataset["close"].values
-    low = dataset["low"].values if "low" in dataset else dataset["close"].values
-    atr = calculate_atr_simple(high, low, dataset["close"].values, period=label_atr_period)
+    high = dataset['high'].values
+    low = dataset['low'].values
+    close = dataset['close'].values
+    atr = calculate_atr_simple(high, low, close, period=label_atr_period)
     labels = calculate_labels_clusters(close_data, atr, clusters, label_markup, direction=direction)
 
-    dataset = dataset.iloc[:len(labels)].copy()
-    dataset['labels_main'] = labels[:len(dataset)]
-    dataset = dataset.drop(columns=['cluster'])
-    dataset = dataset.dropna()
+    # Trimming the dataset and adding labels
+    dataset['labels_main'] = labels
+    dataset['labels_main'] = dataset['labels_main'].fillna(2.0)
     return dataset
 
 @njit(cache=True)
@@ -1575,27 +1561,26 @@ def get_labels_multi_window(
     Etiquetado multi-ventana con profit target basado en ATR * markup.
     direction: 0=solo buy, 1=solo sell, 2=ambas
     """
-    prices = dataset['close'].values
     
     # Calculate ATR
-    high = dataset["high"].values if "high" in dataset else prices
-    low = dataset["low"].values if "low" in dataset else prices
-    atr = calculate_atr_simple(high, low, prices, period=label_atr_period)
+    high = dataset['high'].values
+    low = dataset['low'].values
+    close = dataset['close'].values
+    atr = calculate_atr_simple(high, low, close, period=label_atr_period)
     
     window_sizes_t = List(label_window_sizes_int)
     method_map = {'first': 0, 'last': 1, 'mean': 2, 'max': 3, 'min': 4, 'random': 5}
     method_int = method_map.get(label_method_random, 5)
-    signals = calculate_labels_multi_window(
+    labels = calculate_labels_multi_window(
         prices, atr, window_sizes_t, label_markup, label_min_val, label_max_val, direction, method_int
     )
     
-    # Ajustar padding inicial considerando label_max_val
-    max_window = max(label_window_sizes_int)
-    signals = [2.0] * max_window + signals
+    # Asignar etiquetas alineadas y rellenar con 2.0 usando pandas para evitar padding manual
+    labels = pd.Series(labels, index=dataset.index[max(label_window_sizes_int):]).reindex_like(dataset).fillna(2.0)
     
-    dataset = dataset.iloc[:len(signals)].copy()
-    dataset['labels_main'] = signals[:len(dataset)]
-    dataset = dataset.dropna()  # Remove rows with NaN
+    # Trimming the dataset and adding labels
+    dataset['labels_main'] = labels
+    dataset['labels_main'] = dataset['labels_main'].fillna(2.0)
     return dataset
 
 @njit(cache=True)
@@ -1682,23 +1667,23 @@ def get_labels_validated_levels(
     Etiquetado de rupturas de niveles validados con profit target basado en ATR * markup.
     direction: 0=solo buy, 1=solo sell, 2=ambas
     """
-    prices = dataset['close'].values
-    
     # Calculate ATR
-    high = dataset["high"].values if "high" in dataset else prices
-    low = dataset["low"].values if "low" in dataset else prices
-    atr = calculate_atr_simple(high, low, prices, period=label_atr_period)
+    high = dataset["high"].values
+    low = dataset["low"].values
+    close = dataset["close"].values
+    atr = calculate_atr_simple(high, low, close, period=label_atr_period)
     
     labels = calculate_labels_validated_levels(
-        prices, atr, label_window_size, label_markup, label_min_touches,
+        close, atr, label_window_size, label_markup, label_min_touches,
         label_min_val, label_max_val, direction
     )
     
-    # Ajustar padding inicial considerando label_max_val
-    labels = [2.0] * label_window_size + labels
-    dataset = dataset.iloc[:len(labels)].copy()
-    dataset['labels_main'] = labels[:len(dataset)]
-    dataset = dataset.dropna()  # Remove rows with NaN
+    # Asignar etiquetas alineadas y rellenar con 2.0 usando pandas para evitar padding manual
+    labels = pd.Series(labels, index=dataset.index[label_window_size:]).reindex_like(dataset).fillna(2.0)
+    
+    # Trimming the dataset and adding labels
+    dataset['labels_main'] = labels
+    dataset['labels_main'] = dataset['labels_main'].fillna(2.0)
     return dataset
 
 @njit(cache=True)
@@ -1795,29 +1780,26 @@ def get_labels_filter_zigzag(
     Generates labels for a financial dataset based on zigzag peaks and troughs with profit target validation.
     This function identifies peaks and troughs using scipy.signal and validates signals with ATR * markup.
     """
-    close_prices = dataset['close'].values
+    high = dataset["high"].values
+    low = dataset["low"].values
+    close = dataset["close"].values
     
     # Find peaks and troughs in the closing prices
-    peaks, _ = find_peaks(close_prices, prominence=label_peak_prominence)
-    troughs, _ = find_peaks(-close_prices, prominence=label_peak_prominence)
+    peaks, _ = find_peaks(close, prominence=label_peak_prominence)
+    troughs, _ = find_peaks(-close, prominence=label_peak_prominence)
     
     # Calculate ATR
-    high = dataset["high"].values if "high" in dataset else close_prices
-    low = dataset["low"].values if "low" in dataset else close_prices
-    atr = calculate_atr_simple(high, low, close_prices, period=label_atr_period)
+    atr = calculate_atr_simple(high, low, close, period=label_atr_period)
     
     # Calculate buy/sell labels using the zigzag-based labeling function with profit validation
     labels = calculate_labels_zigzag(
-        peaks, troughs, close_prices, atr, label_markup, label_min_val, label_max_val, direction
+        peaks, troughs, close, atr, label_markup, label_min_val, label_max_val, direction
     ) 
 
     # Trimming the dataset and adding labels
-    dataset_trimmed = dataset.iloc[:len(labels)].copy()
-    dataset_trimmed['labels_main'] = labels[:len(dataset_trimmed)]
-    dataset_trimmed = dataset_trimmed.dropna()  # Remove rows with NaN
-        
-    # Return the modified DataFrame 
-    return dataset_trimmed
+    dataset['labels_main'] = labels
+    dataset['labels_main'] = dataset['labels_main'].fillna(2.0)
+    return dataset
 
 # MEAN REVERSION WITH RESTRICTIONS BASED LABELING (with unidirectional support)
 @njit(cache=True)
@@ -1892,27 +1874,31 @@ def get_labels_mean_reversion(
         pd.DataFrame: The original DataFrame with a new 'labels_main' column and filtered rows.
     """
 
-    # Calculate the price deviation ('lvl') based on the chosen label_filter
+    # Calculate the price deviation ('lvl') based on the chosen label_filter, applying decay_factor
     if label_filter == 'mean':
         # Usando bottleneck para acelerar el cálculo de media móvil
         rolling_mean = bn.move_mean(dataset['close'].values, window=label_rolling, min_count=1)
-        dataset['lvl'] = dataset['close'].values - rolling_mean
+        diff = dataset['close'].values - rolling_mean
+        weighted_diff = diff * np.exp(np.arange(len(diff)) * label_decay_factor / len(diff))
+        dataset['lvl'] = weighted_diff
     elif label_filter == 'spline':
         x = np.array(range(dataset.shape[0]))
         y = dataset['close'].values
         spl = UnivariateSpline(x, y, k=3, s=label_rolling)
         yHat = spl(np.linspace(min(x), max(x), num=x.shape[0]))
         yHat_shifted = np.roll(yHat, shift=label_shift) # Apply the shift 
-        dataset['lvl'] = dataset['close'] - yHat_shifted
+        diff = dataset['close'] - yHat_shifted
+        weighted_diff = diff * np.exp(np.arange(len(diff)) * label_decay_factor / len(diff))
+        dataset['lvl'] = weighted_diff
         dataset = dataset.dropna() 
     elif label_filter == 'savgol':
         smoothed_prices, filtering_successful = safe_savgol_filter(dataset['close'].values, label_rolling=label_rolling, label_polyorder=5)
         if not filtering_successful:
             print(f"🔍 DEBUG: Savitzky-Golay filtering failed in get_labels_mean_reversion, returning empty dataset")
             return pd.DataFrame()
-        dataset['lvl'] = dataset['close'] - smoothed_prices
-
-    dataset = dataset.dropna()  # Remove NaN values before proceeding
+        diff = dataset['close'] - smoothed_prices
+        weighted_diff = diff * np.exp(np.arange(len(diff)) * label_decay_factor / len(diff))
+        dataset['lvl'] = weighted_diff
 
     # Ensure label_max_val does not exceed dataset length
     label_max_val = min(int(label_max_val), max(len(dataset) - 1, 1))
@@ -1921,20 +1907,21 @@ def get_labels_mean_reversion(
     q = tuple(dataset['lvl'].quantile(label_quantiles).to_list())  # Calculate quantiles for the 'reversion zone'
 
     # Prepare data for label calculation
-    close = dataset['close'].values
     lvl = dataset['lvl'].values
     
     # Calculate buy/sell labels with unidirectional support
-    high = dataset["high"].values if "high" in dataset else close
-    low = dataset["low"].values if "low" in dataset else close
+    high = dataset['high'].values
+    low = dataset['low'].values
+    close = dataset['close'].values
     atr = calculate_atr_simple(high, low, close, period=label_atr_period)
     labels = calculate_labels_mean_reversion(close, atr, lvl, label_markup, label_min_val, label_max_val, q, direction=direction)
 
-    # Process the dataset and labels
-    dataset = dataset.iloc[:len(labels)].copy()
+    # Trimming the dataset and adding labels
     dataset['labels_main'] = labels
-    dataset = dataset.dropna()
-    return dataset.drop(columns=['lvl'])  # Remove the temporary 'lvl' column 
+    dataset['labels_main'] = dataset['labels_main'].fillna(2.0)
+
+    # Remove temporary columns and return
+    return dataset.drop(columns=['lvl'])
 
 @njit(cache=True)
 def calculate_labels_mean_reversion_multi(
@@ -2029,10 +2016,9 @@ def get_labels_mean_reversion_multi(
         close_data, atr, lvl_data, q_t, label_markup, label_min_val, label_max_val, windows_t, direction
     )
 
-    dataset = dataset.iloc[:len(labels)].copy()
+    # Trimming the dataset and adding labels
     dataset['labels_main'] = labels
-    dataset = dataset.dropna()
-    
+    dataset['labels_main'] = dataset['labels_main'].fillna(2.0)
     return dataset
 
 @njit(cache=True)
@@ -2121,9 +2107,8 @@ def get_labels_mean_reversion_vol(
     """
 
     # Calculate Volatility
-    dataset['volatility'] = dataset['close'].pct_change().rolling(window=label_vol_window).std()
-    vol = dataset['volatility'].dropna()
-    if vol.nunique() < 2:
+    dataset['volatility'] = bn.move_std(dataset['close'].values, window=label_vol_window, min_count=1)
+    if len(np.unique(dataset['volatility'])) < 2:
         # No se puede hacer qcut, todos los valores son iguales
         return pd.DataFrame()
     # Divide into 20 groups by volatility 
@@ -2139,15 +2124,12 @@ def get_labels_mean_reversion_vol(
         yHat = spl(np.linspace(min(x), max(x), num=x.shape[0]))
         yHat_shifted = np.roll(yHat, shift=label_shift) # Apply the shift 
         dataset['lvl'] = dataset['close'] - yHat_shifted
-        dataset = dataset.dropna() 
     elif label_filter == 'savgol':
         smoothed_prices, filtering_successful = safe_savgol_filter(dataset['close'].values, label_rolling=label_rolling, label_polyorder=5)
         if not filtering_successful:
             print(f"🔍 DEBUG: Savitzky-Golay filtering failed in get_labels_mean_reversion_vol, returning empty dataset")
             return pd.DataFrame()
         dataset['lvl'] = dataset['close'] - smoothed_prices
-
-    dataset = dataset.dropna()
 
     # Ensure label_max_val does not exceed dataset length
     label_max_val = min(int(label_max_val), max(len(dataset) - 1, 1))
@@ -2166,27 +2148,26 @@ def get_labels_mean_reversion_vol(
         quantile_groups_high.append(quantiles_values[1])
 
     # Prepare data for label calculation (potentially using Numba)
-    close_data = dataset['close'].values
     lvl_data = dataset['lvl'].values
     volatility_group = dataset['volatility_group'].values
     
     # Convert quantile groups to numpy arrays
     quantile_groups_low = np.array(quantile_groups_low)
-    high = dataset["high"].values if "high" in dataset else close_data
-    low = dataset["low"].values if "low" in dataset else close_data
-    atr = calculate_atr_simple(high, low, close_data, period=label_atr_period)
+    high = dataset["high"].values
+    low = dataset["low"].values
+    close = dataset["close"].values
+    atr = calculate_atr_simple(high, low, close, period=label_atr_period)
     quantile_groups_high = np.array(quantile_groups_high)
 
     # Calculate buy/sell labels with direction support
     labels = calculate_labels_mean_reversion_vol(
-        close_data, atr, lvl_data, volatility_group, quantile_groups_low, quantile_groups_high,
+        close, atr, lvl_data, volatility_group, quantile_groups_low, quantile_groups_high,
         label_markup, label_min_val, label_max_val, direction
     )
     
     # Process dataset and labels
-    dataset = dataset.iloc[:len(labels)].copy()
     dataset['labels_main'] = labels
-    dataset = dataset.dropna()
+    dataset['labels_main'] = dataset['labels_main'].fillna(2.0)
     
     # Remove temporary columns and return
     return dataset.drop(columns=['lvl', 'volatility', 'volatility_group'])
@@ -2279,9 +2260,6 @@ def get_labels_filter(
     else:
         dataset['lvl'] = weighted_diff  # Normal method
 
-    # Remove any rows with NaN values 
-    dataset = dataset.dropna()
-    
     # Calculate the quantiles of the 'lvl' column (price deviation)
     q = tuple(dataset['lvl'].quantile(label_quantiles).to_list())
 
@@ -2292,14 +2270,9 @@ def get_labels_filter(
     # Calculate buy/sell labels using the 'calculate_labels_filter' function 
     labels = calculate_labels_filter(close, lvl, q, direction=direction) 
 
-    # Trim the dataset to match the length of the calculated labels
-    dataset = dataset.iloc[:len(labels)].copy()
-    
-    # Add the calculated labels as a new 'labels_main' column to the DataFrame
+    # Trimming the dataset and adding labels
     dataset['labels_main'] = labels
-    
-    # Remove any rows with NaN values
-    dataset = dataset.dropna()
+    dataset['labels_main'] = dataset['labels_main'].fillna(2.0)
     
     # Return the modified DataFrame with the 'lvl' column removed
     return dataset.drop(columns=['lvl']) 
@@ -2389,9 +2362,6 @@ def get_labels_multiple_filters(
                        - Rows with missing values (NaN) are removed. 
     """
     
-    # Create a copy of the dataset to avoid modifying the original
-    dataset = dataset.copy()
-    
     # Lists to store price deviation levels and quantiles for each label_rolling period
     all_levels = []
     all_quantiles = []
@@ -2428,11 +2398,7 @@ def get_labels_multiple_filters(
     
     # Add the calculated labels to the DataFrame
     dataset['labels_main'] = labels
-    
-    # Remove rows with NaN values
-    dataset = dataset.dropna()
-        
-    # Return the DataFrame with the new 'labels_main' column
+    dataset['labels_main'] = dataset['labels_main'].fillna(2.0)
     return dataset
 
 @njit(cache=True)
@@ -2506,10 +2472,12 @@ def get_labels_filter_bidirectional(
                        - Temporary 'lvl1' and 'lvl2' columns are removed.
     """
 
+    close = dataset['close'].values
+
     # Apply the first Savitzky-Golay label_filter (forward direction)
-    smoothed_prices, filtering_successful1 = safe_savgol_filter(dataset['close'].values, label_rolling=label_rolling, label_polyorder=label_polyorder)
+    smoothed_prices, filtering_successful1 = safe_savgol_filter(close, label_rolling=label_rolling, label_polyorder=label_polyorder)
     # Apply the second Savitzky-Golay label_filter (could be in reverse direction if rolling2 is negative)
-    smoothed_prices2, filtering_successful2 = safe_savgol_filter(dataset['close'].values, label_rolling=label_rolling2, label_polyorder=label_polyorder)
+    smoothed_prices2, filtering_successful2 = safe_savgol_filter(close, label_rolling=label_rolling2, label_polyorder=label_polyorder)
     if not filtering_successful1 or not filtering_successful2:
         print(f"🔍 DEBUG: Savitzky-Golay filtering failed in get_labels_filter_bidirectional, returning empty dataset")
         return pd.DataFrame()
@@ -2521,29 +2489,22 @@ def get_labels_filter_bidirectional(
     # Add price deviations as new columns to the DataFrame
     dataset['lvl1'] = diff1
     dataset['lvl2'] = diff2
-    
-    # Remove rows with NaN values 
-    dataset = dataset.dropna()
 
     # Calculate quantiles for the "reversion zones" for both price deviation series
     q1 = tuple(dataset['lvl1'].quantile(label_quantiles).to_list())
     q2 = tuple(dataset['lvl2'].quantile(label_quantiles).to_list())
 
     # Extract relevant data for label calculation
-    close = dataset['close'].values
     lvl1 = dataset['lvl1'].values
     lvl2 = dataset['lvl2'].values
 
     # Calculate buy/sell labels using the 'calc_labels_bidirectional' function
     labels = calc_labels_bidirectional(close, lvl1, lvl2, q1, q2, direction=direction)
 
-    # Process the dataset and labels
-    dataset = dataset.iloc[:len(labels)].copy()
+    # Trimming the dataset and adding labels
     dataset['labels_main'] = labels
-    dataset = dataset.dropna()
-    
-    # Return the DataFrame with temporary columns removed
-    return dataset.drop(columns=['lvl1', 'lvl2']) 
+    dataset['labels_main'] = dataset['labels_main'].fillna(2.0)
+    return dataset.drop(columns=['lvl1', 'lvl2'])
 
 @njit(cache=True)
 def calculate_atr_simple(high, low, close, period=14):
@@ -2574,7 +2535,7 @@ def calculate_atr_simple(high, low, close, period=14):
 
 # ONE DIRECTION LABELING
 @njit(cache=True)
-def calculate_labels_random(high, low, close, label_markup, label_min_val, label_max_val, direction_int, label_atr_period=14, method_int=5):
+def calculate_labels_random(high, low, close, atr, label_markup, label_min_val, label_max_val, direction_int, label_atr_period=14, method_int=5):
     """
     Etiquetado random con soporte para bidireccional (2) y unidireccional (0=buy, 1=sell) siguiendo la convención:
     - Direcciones únicas: 1.0=éxito direccional, 0.0=fracaso, 2.0=no confiable
@@ -2583,7 +2544,6 @@ def calculate_labels_random(high, low, close, label_markup, label_min_val, label
     n = len(close)
     if n <= label_max_val:
         return np.full(0, 2.0, dtype=np.float64)
-    atr = calculate_atr_simple(high, low, close, period=label_atr_period)
     result = np.full(n - label_max_val, 2.0, dtype=np.float64)
     for i in range(n - label_max_val):
         window = close[i + label_min_val : i + label_max_val + 1]
@@ -2642,19 +2602,20 @@ def get_labels_random(dataset, label_markup=0.5, label_min_val=1, label_max_val=
 
     direction debe venir ya mapeada a int: 0=buy, 1=sell, 2=both
     """
-    close_data = np.ascontiguousarray(dataset['close'].values)
-    high_data = np.ascontiguousarray(dataset['high'].values)
-    low_data = np.ascontiguousarray(dataset['low'].values)
+    close = dataset['close'].values
+    high = dataset['high'].values
+    low = dataset['low'].values
+    atr = calculate_atr_simple(high, low, close, period=label_atr_period)
     method_map = {'first': 0, 'last': 1, 'mean': 2, 'max': 3, 'min': 4, 'random': 5}
     method_int = method_map.get(label_method_random, 5)
     labels = calculate_labels_random(
-        high_data, low_data, close_data,
+        high, low, close, atr,
         label_markup, label_min_val, label_max_val, direction,
         label_atr_period, method_int
     )
-    dataset = dataset.iloc[:len(labels)].copy()
+
     dataset['labels_main'] = labels
-    dataset = dataset.dropna()
+    dataset['labels_main'] = dataset['labels_main'].fillna(2.0)
     return dataset
 
 @njit(cache=True)
@@ -3016,37 +2977,22 @@ def get_labels_fractal_patterns(
     Returns:
         DataFrame con columna 'labels_main' agregada
     """
-    if 'close' not in dataset.columns:
-        raise ValueError("Dataset must contain a 'close' column.")
-
-    close_data = dataset['close'].values
-    n_data = len(close_data)
-
-    if label_min_window < 2:
-        label_min_window = 2
-    if label_max_window < label_min_window:
-        label_max_window = label_min_window
-    if label_min_val <= 0:
-        raise ValueError("label_min_val must be > 0")
-    if label_max_val < label_min_val:
-        raise ValueError("label_max_val must be >= label_min_val")
-    
-    # Calculate ATR
-    high = dataset["high"].values if "high" in dataset else close_data
-    low = dataset["low"].values if "low" in dataset else close_data
-    atr = calculate_atr_simple(high, low, close_data, period=label_atr_period)
+    close = dataset['close'].values
+    high = dataset['high'].values
+    low = dataset['low'].values
+    atr = calculate_atr_simple(high, low, close, period=label_atr_period)
     
     correlations_at_start, best_window_sizes_at_start = calculate_symmetric_correlation_dynamic(
-        close_data,
+        close,
         label_min_window,
         label_max_window,
     )
     
     labels = calculate_future_outcome_labels_for_patterns_atr(
-        n_data,
+        len(close),
         correlations_at_start,
         best_window_sizes_at_start,
-        close_data,
+        close,
         atr,
         label_corr_threshold,
         label_min_val,
@@ -3054,10 +3000,11 @@ def get_labels_fractal_patterns(
         label_markup,
         direction
     )
-    result_df = dataset.copy()
-    result_df['labels_main'] = pd.Series(labels, index=dataset.index)
-    result_df = result_df.dropna()  # Remove rows with NaN
-    return result_df
+    
+    # Trimming the dataset and adding labels
+    dataset['labels_main'] = labels
+    dataset['labels_main'] = dataset['labels_main'].fillna(2.0)
+    return dataset
 
 #### ------------------------------------------------------------------------------------------------
 #### ------------------------------------------------------------------------------------------------

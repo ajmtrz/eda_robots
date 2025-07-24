@@ -232,15 +232,15 @@ def backtest(open_,
             i += 1
 
         # 2) Apertura: meta OK, señal BUY/SELL OK, delay cumplido, cupo OK
-        if meta_ok and (bar - last_trade_bar) >= delay_bars and (max_orders == 0 or n_open < max_orders):
+        if meta_ok and (bar - last_trade_bar) >= delay_bars:
             # BUY
-            if buy_sig:
+            if buy_sig and (max_orders == 0 or n_open < max_orders):
                 open_positions_type[n_open] = LONG
                 open_positions_price[n_open] = price
                 open_positions_bar[n_open] = bar
                 n_open += 1
                 last_trade_bar = bar
-            # SELL
+            # SELL - Check position limit again after potential BUY opening
             if sell_sig and (max_orders == 0 or n_open < max_orders):
                 open_positions_type[n_open] = SHORT
                 open_positions_price[n_open] = price

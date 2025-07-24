@@ -38,26 +38,36 @@ print(f"Using log file: {log_file}")
 
 
 def parse_mt_log_line(line):
-    """Parse a MetaTrader log line and extract relevant data."""
     line = line.strip()
     if not line:
         return None
 
-    # Solo procesar líneas con fecha y grupo
+    # Buscar timestamp en cualquier parte de la línea
     timestamp_pattern = r'\d{4}\.\d{2}\.\d{2} \d{2}:\d{2}:\d{2}'
-    group_pattern = r'\[\s*\d+\s*\]'
-    if not re.search(timestamp_pattern, line) or not re.search(group_pattern, line):
+    timestamp_match = re.search(timestamp_pattern, line)
+    if not timestamp_match:
         return None
 
     try:
-        timestamp_match = re.search(timestamp_pattern, line)
         timestamp_str = timestamp_match.group()
         timestamp = datetime.strptime(timestamp_str, '%Y.%m.%d %H:%M:%S')
 
-        group_match = re.search(group_pattern, line)
-        group_num = int(re.search(r'\d+', group_match.group()).group())
+        # Buscar grupo [número] tras el timestamp (si existe)
+        group_pattern = r'\[\s*\d+\s*\]'
+        group_match = re.search(group_pattern, line[timestamp_match.end():])
+        if group_match:
+            group_num = int(re.search(r'\d+', group_match.group()).group())
+            after_group = line[timestamp_match.end() + group_match.end():].strip()
+        else:
+            group_num = 0
+            after_group = line[timestamp_match.end():].strip()
 
-        after_group = line[group_match.end():].strip()
+        # Filtro: solo líneas que tras el timestamp/grupo contienen solo números (y opcionalmente signos, puntos, espacios)
+        # Si hay alguna palabra (letra) tras el timestamp/grupo, descarta la línea
+        if re.search(r'[a-zA-Z]', after_group):
+            return None
+
+        # Extraer todos los valores numéricos (float) que aparecen después del timestamp/grupo
         values = []
         for val_str in after_group.split():
             try:
@@ -65,12 +75,17 @@ def parse_mt_log_line(line):
             except ValueError:
                 continue
 
+        # Puedes ajustar el mínimo de valores requeridos según tu dataset (ej: 5, 8, 10...)
+        if len(values) < 5:
+            return None
+
         return {
             'timestamp': timestamp,
             'group': group_num,
             'values': values
         }
     except Exception as e:
+        print(f"🔍 DEBUG: Excepción parseando línea: {line} -> {e}")
         return None
 
 def group_mt_records_by_timestamp(mt_data):
@@ -349,10 +364,18 @@ def main():
                 csv_lbl = float(csv_rec['labels'])
                 label_ok = abs(mt_lbl - csv_lbl) <= tolerance
             if not (feature_ok and ohlcv_ok and label_ok):
+                print(f"\n🔍 DEBUG: Discrepancia en {ts.strftime('%Y.%m.%d %H:%M:%S')}")
+                print(f"  MT features: {mt_feat}")
+                print(f"  CSV features: {[float(csv_rec[feature_names[j]]) for j in range(len(feature_names))]}")
+                print(f"  MT OHLCV: {mt_ohlc}")
+                print(f"  CSV OHLCV: {[float(csv_rec['open']), float(csv_rec['high']), float(csv_rec['low']), float(csv_rec['close']), float(csv_rec['volume'])]}")
+                print(f"  MT label: {mt_lbl}")
+                print(f"  CSV label: {float(csv_rec['labels'])}")
+                print(f"  Tolerancia: {tolerance}")
                 mismatch_timestamps.append(ts)
         print(f"   Total mismatches: {len(mismatch_timestamps)}")
         for ts in mismatch_timestamps:
-            print(f"   - {ts}")
+            print(f"   - {ts.strftime('%Y.%m.%d %H:%M:%S')}")
 
     # Feature completeness note
     if len(mt_features) < len(feature_names):

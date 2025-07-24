@@ -139,8 +139,8 @@ def evaluate_report(
         return -1.0, -1.0, -1.0, -1.0, -1.0
 
     # ---------- nº de trades (normalizado) -----------------------------------
-    returns = np.diff(equity_curve)
-    n_trades = returns.size
+    # CORREGIDO: usar trade_profits.size en lugar de equity_curve differences
+    n_trades = trade_profits.size
     if n_trades < min_trades:
         return -1.0, -1.0, -1.0, -1.0, -1.0
     trade_nl = 1.0 / (1.0 + np.exp(-(n_trades - min_trades) / (min_trades * 5.0)))
@@ -233,19 +233,26 @@ def backtest(open_,
 
         # 2) Apertura: meta OK, señal BUY/SELL OK, delay cumplido, cupo OK
         if meta_ok and (bar - last_trade_bar) >= delay_bars:
+            trade_opened_this_bar = False
+            
             # BUY
             if buy_sig and (max_orders == 0 or n_open < max_orders):
                 open_positions_type[n_open] = LONG
                 open_positions_price[n_open] = price
                 open_positions_bar[n_open] = bar
                 n_open += 1
-                last_trade_bar = bar
+                trade_opened_this_bar = True
+                
             # SELL - Check position limit again after potential BUY opening
             if sell_sig and (max_orders == 0 or n_open < max_orders):
                 open_positions_type[n_open] = SHORT
                 open_positions_price[n_open] = price
                 open_positions_bar[n_open] = bar
                 n_open += 1
+                trade_opened_this_bar = True
+                
+            # Update last_trade_bar only once per bar, regardless of how many positions opened
+            if trade_opened_this_bar:
                 last_trade_bar = bar
 
     # 4) Cierre forzoso al final de todas las posiciones abiertas

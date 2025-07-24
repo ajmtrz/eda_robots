@@ -834,6 +834,7 @@ def export_to_mql5(**kwargs):
         code += '\n\n'
         code += f'#define DIRECTION            "{str(direction)}"\n'
         code += f'#define MAGIC_NUMBER         {str(model_seed)}\n'
+        code += f'#define DECIMAL_PRECISION    {str(decimal_precision)}\n'
         
         # ───── AGREGAR FUNCIÓN DE RETORNOS ─────
         code += """
@@ -920,14 +921,14 @@ void fill_arays_main(double &dst[])
             if(ArraySize(returns) == 0) {{
                 dst[k] = 0.0;  // Valor por defecto si no se pueden calcular retornos
             }} else {{
-                dst[k] = NormalizeDouble(FUNCS_MAIN[k](returns), {decimal_precision});
+                dst[k] = NormalizeDouble(FUNCS_MAIN[k](returns), DECIMAL_PRECISION);
             }}
         }} else {{
-            dst[k] = NormalizeDouble(FUNCS_MAIN[k](pr), {decimal_precision});
+            dst[k] = NormalizeDouble(FUNCS_MAIN[k](pr), DECIMAL_PRECISION);
         }}
     }}
 }}
-""".format(decimal_precision=str(decimal_precision))
+"""
 
         if meta_periods:  # Solo agregar si hay features meta
             code += """
@@ -946,14 +947,14 @@ void fill_arays_meta(double &dst[])
             if(ArraySize(returns) == 0) {{
                 dst[k] = 0.0;  // Valor por defecto si no se pueden calcular retornos
             }} else {{
-                dst[k] = NormalizeDouble(FUNCS_META[k](returns), {decimal_precision});
+                dst[k] = NormalizeDouble(FUNCS_META[k](returns), DECIMAL_PRECISION);
             }}
         }} else {{
-            dst[k] = NormalizeDouble(FUNCS_META[k](pr), {decimal_precision});
+            dst[k] = NormalizeDouble(FUNCS_META[k](pr), DECIMAL_PRECISION);
         }}
     }}
 }}
-""".format(decimal_precision=str(decimal_precision))
+"""
 
         file_name = os.path.join(include_export_path, f"{tag}.mqh")
         with open(file_name, "w") as file:

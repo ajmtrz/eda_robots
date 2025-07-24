@@ -37,7 +37,7 @@ def get_prices(symbol, timeframe, history_path) -> pd.DataFrame:
     pFixed['volume'] = p['<TICKVOL>']
     pFixed.set_index('time', inplace=True)
     pFixed = pFixed.drop_duplicates().sort_index()
-    return pFixed.dropna()
+    return pFixed
 
 @njit(cache=True)
 def std_manual(x):
@@ -638,9 +638,7 @@ def get_features(data: pd.DataFrame, hp, decimal_precision=6):
     main_feat_cols = df.filter(like='_main_feature').columns
     meta_feat_cols = df.filter(like='_meta_feature').columns
     all_feat_cols = list(main_feat_cols) + list(meta_feat_cols)
-    
     df[all_feat_cols] = df[all_feat_cols].replace([np.inf, -np.inf], np.nan)
-    df = df.dropna(subset=all_feat_cols)
 
     # 3) verificación — el close debe coincidir al 100 %
     if not np.allclose(df["close"].values, ohlcv.loc[df.index, "close"].values):

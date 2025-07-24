@@ -392,8 +392,8 @@ class StrategySearcher:
                 # Main data: solo muestras confiables
                 reliable_mask = full_ds['labels_main'] != 2.0
                 reliable_data = full_ds[reliable_mask].copy()
-                feature_cols = [col for col in reliable_data.columns if col.endswith('_main_feature')]
-                X = reliable_data[feature_cols]
+                main_feature_cols = [col for col in reliable_data.columns if col.endswith('_main_feature')]
+                X = reliable_data[main_feature_cols].dropna(subset=main_feature_cols)
                 y = reliable_data['labels_main']
 
             else:
@@ -401,9 +401,9 @@ class StrategySearcher:
                 if self.debug:
                     print(f"🔍 DEBUG search_mapie - Usando esquema tradicional MAPIE")
                     
-                feature_cols = [col for col in full_ds.columns if col.endswith('_main_feature')]
-                X = full_ds[feature_cols]
-                y = full_ds['labels_main'] if 'labels_main' in full_ds.columns else full_ds['labels']
+                main_feature_cols = [col for col in full_ds.columns if col.endswith('_main_feature')]
+                X = full_ds[main_feature_cols].dropna(subset=main_feature_cols)
+                y = full_ds['labels_main']
 
             catboost_params = dict(
                 iterations=hp['cat_main_iterations'],
@@ -439,7 +439,7 @@ class StrategySearcher:
                 full_ds.loc[set_sizes == 1, 'conformal_labels'] = 1.0
                 full_ds.loc[predicted == y, 'meta_labels'] = 1.0
                 
-            model_main_train_data = full_ds[full_ds['meta_labels'] == 1][feature_cols + ['labels_main']].copy()
+            model_main_train_data = full_ds[full_ds['meta_labels'] == 1][main_feature_cols + ['labels_main']].dropna(subset=main_feature_cols).copy()
             if len(model_main_train_data) < 200:  # Mínimo razonable
                 if self.debug:
                     print(f"🔍 DEBUG search_mapie - Insuficientes muestras main: {len(model_main_train_data)}")
@@ -447,8 +447,8 @@ class StrategySearcher:
             # Meta model debe usar meta features, no main features
             meta_feature_cols = [col for col in full_ds.columns if col.endswith('_meta_feature')]
             if not meta_feature_cols:  # Fallback: usar main features si no hay meta features
-                meta_feature_cols = feature_cols
-            model_meta_train_data = full_ds[meta_feature_cols].copy()
+                meta_feature_cols = main_feature_cols
+            model_meta_train_data = full_ds[meta_feature_cols].dropna(subset=meta_feature_cols).copy()
             model_meta_train_data['labels_meta'] = full_ds['conformal_labels']
             score, model_paths, models_cols = self.fit_final_models(
                 trial=trial,
@@ -542,9 +542,9 @@ class StrategySearcher:
                 
                 # Main data: solo muestras confiables
                 reliable_mask = full_ds['labels_main'] != 2.0
-                reliable_data = full_ds[reliable_mask].copy()
-                feature_cols = [col for col in reliable_data.columns if col.endswith('_main_feature')]
-                X = reliable_data[feature_cols]
+                main_feature_cols = [col for col in reliable_data.columns if col.endswith('_main_feature')]
+                reliable_data = full_ds[reliable_mask]
+                X = reliable_data[main_feature_cols].dropna(subset=main_feature_cols).copy()
                 y = reliable_data['labels_main']
 
             else:
@@ -552,9 +552,9 @@ class StrategySearcher:
                 if self.debug:
                     print(f"🔍 DEBUG search_causal - Usando esquema tradicional CAUSAL")
                     
-                feature_cols = [col for col in full_ds.columns if col.endswith('_main_feature')]
-                X = full_ds[feature_cols]
-                y = full_ds['labels_main'] if 'labels_main' in full_ds.columns else full_ds['labels']
+                main_feature_cols = [col for col in full_ds.columns if col.endswith('_main_feature')]
+                X = full_ds[main_feature_cols].dropna(subset=main_feature_cols)
+                y = full_ds['labels_main']
                 
             err0, err1, oob = _bootstrap_oob_identification(X, y, n_models=hp.get('causal_meta_learners', 15))
             best_frac = _optimize_bad_samples_threshold(err0, err1, oob)
@@ -577,7 +577,7 @@ class StrategySearcher:
                 # Esquema tradicional: all_bad se aplica directamente
                 full_ds.loc[full_ds.index.isin(all_bad), 'meta_labels'] = 0.0
                 
-            model_main_train_data = full_ds[full_ds['meta_labels'] == 1.0][feature_cols + ['labels_main']].copy()
+            model_main_train_data = full_ds[full_ds['meta_labels'] == 1.0][main_feature_cols + ['labels_main']].dropna(subset=main_feature_cols).copy()
             if len(model_main_train_data) < 200:  # Mínimo razonable
                 if self.debug:
                     print(f"🔍 DEBUG search_causal - Insuficientes muestras main: {len(model_main_train_data)}")
@@ -585,8 +585,8 @@ class StrategySearcher:
             # Meta model debe usar meta features, no main features
             meta_feature_cols = [col for col in full_ds.columns if col.endswith('_meta_feature')]
             if not meta_feature_cols:  # Fallback: usar main features si no hay meta features
-                meta_feature_cols = feature_cols
-            model_meta_train_data = full_ds[meta_feature_cols].copy()
+                meta_feature_cols = main_feature_cols
+            model_meta_train_data = full_ds[meta_feature_cols].dropna(subset=meta_feature_cols).copy()
             model_meta_train_data['labels_meta'] = full_ds['meta_labels']
             score, model_paths, models_cols = self.fit_final_models(
                 trial=trial,
@@ -632,10 +632,10 @@ class StrategySearcher:
                 return -1.0
                 
             # Separar datos EXACTAMENTE como en el artículo MQL5
-            feature_cols = [c for c in full_ds.columns if c.endswith('_main_feature')]
+            main_feature_cols = [c for c in full_ds.columns if c.endswith('_main_feature')]
             
             if self.debug:
-                print(f"🔍 DEBUG search_reliability - Feature columns: {len(feature_cols)}")
+                print(f"🔍 DEBUG search_reliability - Feature columns: {len(main_feature_cols)}")
                 labels_dist = full_ds['labels_main'].value_counts()
                 print(f"🔍   Labels distribution: {labels_dist}")
             # Main: solo muestras con señales, etiquetas direccionales
@@ -644,7 +644,7 @@ class StrategySearcher:
                 if self.debug:
                     print(f"🔍 DEBUG search_reliability - No hay muestras de trading")
                 return -1.0    
-            model_main_train_data = full_ds.loc[trading_mask, feature_cols + ['labels_main']].copy()
+            model_main_train_data = full_ds.loc[trading_mask, main_feature_cols + ['labels_main']].dropna(subset=main_feature_cols).copy()
             # Verificar que tenemos suficientes muestras
             if len(model_main_train_data) < 200:  # Mínimo razonable
                 if self.debug:
@@ -655,8 +655,8 @@ class StrategySearcher:
             # 1 si hay señal (0 o 1), 0 si neutral (2)
             meta_feature_cols = [c for c in full_ds.columns if c.endswith('_meta_feature')]
             if not meta_feature_cols:  # Fallback: usar main features si no hay meta features
-                meta_feature_cols = feature_cols
-            model_meta_train_data = full_ds[meta_feature_cols].copy()
+                meta_feature_cols = main_feature_cols
+            model_meta_train_data = full_ds[meta_feature_cols].dropna(subset=meta_feature_cols).copy()
             model_meta_train_data['labels_meta'] = (full_ds['labels_main'].isin([0.0, 1.0])).astype(int)
             
             if self.debug:
@@ -733,17 +733,17 @@ class StrategySearcher:
                         print(f"🔍   Cluster {clust} descartado: sin muestras confiables")
                     continue
                 main_feature_cols = [c for c in full_ds.columns if c.endswith('_main_feature')]
-                model_main_train_data = full_ds.loc[hybrid_mask, main_feature_cols + ['labels_main']].copy()
+                model_main_train_data = full_ds.loc[hybrid_mask, main_feature_cols + ['labels_main']].dropna(subset=main_feature_cols).copy()
                 if self.label_method in self.RELIABILITY_METHODS:
                     # Intersección: cluster + confiabilidad
                     meta_feature_cols = [c for c in full_ds.columns if c.endswith('_meta_feature')]
-                    model_meta_train_data = full_ds[meta_feature_cols].copy()
+                    model_meta_train_data = full_ds[meta_feature_cols].dropna(subset=meta_feature_cols).copy()
                     model_meta_train_data['labels_meta'] = hybrid_mask.astype('int8')  # 1 = cluster bueno + confiable
                     
                 else:
                     # Esquema tradicional de clusters
                     meta_feature_cols = full_ds.columns[full_ds.columns.str.contains('_meta_feature')]
-                    model_meta_train_data = full_ds.loc[:, meta_feature_cols].copy()
+                    model_meta_train_data = full_ds.loc[:, meta_feature_cols].dropna(subset=meta_feature_cols).copy()
                     model_meta_train_data['labels_meta'] = cluster_mask.astype('int8') # 1 = cluster bueno
 
                 # Verificar que tenemos suficientes muestras
@@ -916,8 +916,8 @@ class StrategySearcher:
             'label_window_size': lambda t: t.suggest_int('label_window_size', 4, 60, log=True),
             'label_window_sizes_int': lambda t: [t.suggest_int(f'label_window_sizes_{i}', 4, 60, log=True) for i in range(3)],
             'label_window_sizes_float': lambda t: [t.suggest_float(f'label_window_sizes_{i}', 0.2, 0.5) for i in range(3)],
-            'label_min_window': lambda t: t.suggest_int('label_min_window', 6, 30, log=True),
-            'label_max_window': lambda t: t.suggest_int('label_max_window', 40, 120, log=True),
+            'label_min_window': lambda t: t.suggest_int('label_min_window', 2, 20, log=True),
+            'label_max_window': lambda t: t.suggest_int('label_max_window', 20, 60, log=True),
             'label_vol_window': lambda t: t.suggest_int('label_vol_window', 10, 50, log=True),
             'label_min_touches': lambda t: t.suggest_int('label_min_touches', 2, 10),
             'label_peak_prominence': lambda t: t.suggest_float('label_peak_prominence', 0.05, 0.2),
@@ -1154,11 +1154,11 @@ class StrategySearcher:
             for col in ohlcv_cols:
                 if col in df_to_export.columns:
                     df_to_export[col] = df_to_export[col].shift(1)
-            df_to_export = df_to_export.dropna()
+            df_to_export = df_to_export.iloc[1:]
             full_ds_with_labels_path = export_dataset_to_csv(df_to_export, self.decimal_precision)
 
             if self.debug:
-                print(f"🔍 DEBUG: Dataset con labels guardado en {full_ds_with_labels_path}")
+                print(f"🔍 DEBUG: Dataset con shape {df_to_export.shape} guardado en {full_ds_with_labels_path}")
                 print(f"🔍 DEBUG: Modelos guardados en {model_main_path} y {model_meta_path}")
             return score, full_ds_with_labels_path, (model_main_path, model_meta_path), (main_feature_cols, meta_feature_cols)
         except Exception as e:

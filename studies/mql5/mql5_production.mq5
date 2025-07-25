@@ -310,6 +310,9 @@ double OnTester()
    const int min_trades = 200;
    const double rdd_floor = 1.0;
 
+   if(n_trades < min_trades)
+      return -1.0;
+
 //── 2) Ordenar por tiempo de cierre ------------------------------
    int order[];
    ArrayResize(order, n_trades);
@@ -356,9 +359,7 @@ double OnTester()
    running_max[0] = equity[0];
 
    for(int i = 1; i < n_trades + 1; i++)
-     {
       running_max[i] = (running_max[i-1] > equity[i]) ? running_max[i-1] : equity[i];
-     }
 
    double max_dd = 0.0;
    for(int i = 0; i < n_trades + 1; i++)
@@ -372,17 +373,11 @@ double OnTester()
    double total_ret = equity[n_trades] - equity[0];
    double rdd;
    if(max_dd == 0.0)
-     {
       rdd = 0.0;
-     }
    else
-     {
       rdd = total_ret / max_dd;
-     }
-
    if(rdd < rdd_floor)
       return -1.0;
-
    double rdd_nl = 1.0 / (1.0 + MathExp(-(rdd - rdd_floor) / (rdd_floor * 5.0)));
 
 //── 5) Regresión lineal sobre la curva de equity - MATCH PYTHON EXACTLY
@@ -417,10 +412,6 @@ double OnTester()
    double slope = numerator / denominator;
    double intercept = y_mean - slope * x_mean;
 
-// Check for negative slope
-   if(slope < 0.0)
-      return -1.0;
-
 // Calculate R² using Python's exact method
    double ss_res = 0.0;
    double ss_tot = 0.0;
@@ -434,16 +425,14 @@ double OnTester()
       ss_res += y_diff_pred * y_diff_pred;
       ss_tot += y_diff_mean * y_diff_mean;
      }
+   if(slope < 0.0)
+      return -1.0;
 
    double r2;
    if(MathAbs(ss_tot) < 1e-12)
-     {
       r2 = 0.0;
-     }
    else
-     {
       r2 = 1.0 - (ss_res / ss_tot);
-     }
 
 // Normalize slope - MATCH PYTHON
    double slope_nl = 1.0 / (1.0 + MathExp(-(MathLog(1.0 + slope) / 5.0)));
@@ -471,10 +460,8 @@ double OnTester()
          // 2) Ratio de ganadoras/perdedoras en la ventana - MATCH PYTHON
          int n_winners = 0;
          for(int j = start; j < end; j++)
-           {
             if(profit_ordered[j] > 0.0)
                n_winners++;
-           }
          double win_ratio = (double)n_winners / window;
          win_ratios_sum += win_ratio;
          win_ratios_count++;
@@ -501,7 +488,7 @@ double OnTester()
 //+------------------------------------------------------------------+
 //|                                                                  |
 //+------------------------------------------------------------------+
-int countOrders(ulong magic) // Наличие текущих позиций в рынке
+int countOrders(ulong magic)
   {
    int n_trades=0;
    for(int i= PositionsTotal()-1; i>=0; i--)
@@ -698,5 +685,4 @@ void print_features_debug(double &features_main[], double &features_meta[], int 
    index++;
    ArrayPrint(print_array, DECIMAL_PRECISION);
   }
-//+------------------------------------------------------------------+
 //+------------------------------------------------------------------+

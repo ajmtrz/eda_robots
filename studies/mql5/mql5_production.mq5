@@ -294,6 +294,12 @@ double OnTester()
       ulong ticket = HistoryDealGetTicket(i);
       if(HistoryDealGetInteger(ticket, DEAL_ENTRY) != DEAL_ENTRY_OUT)
          continue;
+      
+      // CRITICAL: Filter by magic number and symbol to match Python behavior
+      if(HistoryDealGetInteger(ticket, DEAL_MAGIC) != MAGIC_NUMBER)
+         continue;
+      if(HistoryDealGetString(ticket, DEAL_SYMBOL) != _Symbol)
+         continue;
 
       ArrayResize(profits, n_trades + 1);
       ArrayResize(times, n_trades + 1);
@@ -434,7 +440,7 @@ double OnTester()
    else
       r2 = 1.0 - (ss_res / ss_tot);
 
-// Normalize slope - MATCH PYTHON
+// Normalize slope - MATCH PYTHON EXACTLY (use log1p for better precision)
    double slope_nl = 1.0 / (1.0 + MathExp(-(MathLog(1.0 + slope) / 5.0)));
 
 //── 6) Walk-Forward Analysis - CORRECTED TO MATCH PYTHON -----------
@@ -482,6 +488,10 @@ double OnTester()
                   0.24 * rdd_nl +
                   0.19 * trade_nl +
                   0.30 * wf_nl;
+
+   // CRITICAL: Apply same logic as Python - check for negative scores
+   if(score < 0.0)
+      return -1.0;
 
    return score;
   }

@@ -172,6 +172,9 @@ class StrategySearcher:
                                         for p in study.user_attrs["best_model_paths"]:
                                             if p and os.path.exists(p):
                                                 os.remove(p)
+                                    if study.user_attrs.get("best_full_ds_with_labels_path"):
+                                        if os.path.exists(study.user_attrs["best_full_ds_with_labels_path"]):
+                                            os.remove(study.user_attrs["best_full_ds_with_labels_path"])
                                     # Guardar nuevas rutas de modelos
                                     study.set_user_attr("best_score", trial.user_attrs['score'])
                                     study.set_user_attr("best_full_ds_with_labels_path", trial.user_attrs['full_ds_with_labels_path'])
@@ -204,6 +207,9 @@ class StrategySearcher:
                                     for p in study.user_attrs.get("best_model_paths", []):
                                         if p and os.path.exists(p):
                                             os.remove(p)
+                                    if study.user_attrs.get("best_full_ds_with_labels_path"):
+                                        if os.path.exists(study.user_attrs["best_full_ds_with_labels_path"]):
+                                            os.remove(study.user_attrs["best_full_ds_with_labels_path"])
                                     # Parar el algoritmo
                                     if self.debug:
                                         #if trial.number > 1:

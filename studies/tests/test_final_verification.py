@@ -9,120 +9,60 @@ import re
 from datetime import datetime
 import os
 import glob
+import sys
 
-# Buscar el archivo .csv más reciente en ../data/ y el .log más reciente en ../logs/
 def find_latest_file(folder, extension):
+    """Buscar el archivo .csv más reciente en ../data/ y el .log más reciente en ../logs/"""
     files = glob.glob(os.path.join(folder, f'*.{extension}'))
     if not files:
         return None
     latest_file = max(files, key=os.path.getmtime)
     return latest_file
 
-# Paths relativos al script
-script_dir = os.path.dirname(os.path.abspath(__file__))
-data_folder = os.path.normpath(os.path.join(script_dir, '..', 'data'))
-logs_folder = os.path.normpath(os.path.join(script_dir, '..', 'logs'))
-
-csv_file = find_latest_file(data_folder, 'csv')
-log_file = find_latest_file(logs_folder, 'log')
-
-if not csv_file:
-    print(f"❌ No CSV file found in {data_folder}")
-    exit(1)
-if not log_file:
-    print(f"❌ No log file found in {logs_folder}")
-    exit(1)
-
-print(f"Using CSV file: {csv_file}")
-print(f"Using log file: {log_file}")
-
-
-def parse_mt_log_line(line):
-    line = line.strip()
-    if not line:
-        return None
-
-    # Buscar timestamp en cualquier parte de la línea
-    timestamp_pattern = r'\d{4}\.\d{2}\.\d{2} \d{2}:\d{2}:\d{2}'
-    timestamp_match = re.search(timestamp_pattern, line)
-    if not timestamp_match:
-        return None
-
-    try:
-        timestamp_str = timestamp_match.group()
-        timestamp = datetime.strptime(timestamp_str, '%Y.%m.%d %H:%M:%S')
-
-        # Buscar grupo [número] tras el timestamp (si existe)
-        group_pattern = r'\[\s*\d+\s*\]'
-        group_match = re.search(group_pattern, line[timestamp_match.end():])
-        if group_match:
-            group_num = int(re.search(r'\d+', group_match.group()).group())
-            after_group = line[timestamp_match.end() + group_match.end():].strip()
-        else:
-            group_num = 0
-            after_group = line[timestamp_match.end():].strip()
-
-        # Filtro: solo líneas que tras el timestamp/grupo contienen solo números (y opcionalmente signos, puntos, espacios)
-        # Si hay alguna palabra (letra) tras el timestamp/grupo, descarta la línea
-        if re.search(r'[a-zA-Z]', after_group):
-            return None
-
-        # Extraer todos los valores numéricos (float) que aparecen después del timestamp/grupo
-        values = []
-        for val_str in after_group.split():
-            try:
-                values.append(float(val_str))
-            except ValueError:
-                continue
-
-        # Puedes ajustar el mínimo de valores requeridos según tu dataset (ej: 5, 8, 10...)
-        if len(values) < 5:
-            return None
-
-        return {
-            'timestamp': timestamp,
-            'group': group_num,
-            'values': values
-        }
-    except Exception as e:
-        print(f"🔍 DEBUG: Excepción parseando línea: {line} -> {e}")
-        return None
-
-def group_mt_records_by_timestamp(mt_data):
-    """Group MetaTrader records by timestamp."""
-    grouped = {}
-    for record in mt_data:
-        timestamp = record['timestamp']
-        group = record['group']
-        if timestamp not in grouped:
-            grouped[timestamp] = {}
-        grouped[timestamp][group] = record['values']
-    return grouped
-
-def extract_correct_features_and_ohlcv(mt_record):
-    """Extrae todos los features concatenando todos los grupos, y OHLCV+label del último grupo."""
-    features = []
-    ohlcv = None
-    label = None
-    if not mt_record:
-        return features, ohlcv, label
-    group_keys = sorted(mt_record.keys())
-    for group in group_keys:
-        vals = mt_record[group]
-        # Último grupo: features restantes + OHLCV + label
-        if group == group_keys[-1]:
-            # Asume: features + 5 OHLCV + 1 label
-            n_features = len(vals) - 6
-            if n_features > 0:
-                features.extend(vals[:n_features])
-            if len(vals) >= 6:
-                ohlcv = vals[n_features:n_features+5]
-                label = vals[-1]
-        else:
-            features.extend(vals)
-    return features, ohlcv, label
-
 def main():
+    # Verificar argumentos de línea de comandos
+    if len(sys.argv) == 3:
+        # Usar archivos proporcionados como argumentos
+        csv_file = sys.argv[1]
+        log_file = sys.argv[2]
+        
+        # Verificar que los archivos existan
+        if not os.path.exists(csv_file):
+            print(f"❌ CSV file not found: {csv_file}")
+            sys.exit(1)
+        if not os.path.exists(log_file):
+            print(f"❌ LOG file not found: {log_file}")
+            sys.exit(1)
+            
+        print(f"Using CSV file: {csv_file}")
+        print(f"Using log file: {log_file}")
+        
+    elif len(sys.argv) == 1:
+        # Usar archivos automáticos (comportamiento original)
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        data_folder = os.path.normpath(os.path.join(script_dir, '..', 'data'))
+        logs_folder = os.path.normpath(os.path.join(script_dir, '..', 'logs'))
+
+        csv_file = find_latest_file(data_folder, 'csv')
+        log_file = find_latest_file(logs_folder, 'log')
+
+        if not csv_file:
+            print(f"❌ No CSV file found in {data_folder}")
+            print(f"Usage: {sys.argv[0]} [csv_file] [log_file]")
+            sys.exit(1)
+        if not log_file:
+            print(f"❌ No log file found in {logs_folder}")
+            print(f"Usage: {sys.argv[0]} [csv_file] [log_file]")
+            sys.exit(1)
+            
+        print(f"Using CSV file: {csv_file}")
+        print(f"Using log file: {log_file}")
+        
+    else:
+        print(f"Usage: {sys.argv[0]} [csv_file] [log_file]")
+        print(f"  If no arguments provided, will search for latest files in ../data/ and ../logs/")
+        sys.exit(1)
+
     print("="*80)
     print("FINAL COMPREHENSIVE VERIFICATION")
     print("MetaTrader Log vs Python CSV Data")
@@ -394,6 +334,91 @@ def main():
     else:
         print(f"\n⚠️  DISCREPANCIES DETECTED")
         print(f"   Some records don't match between platforms.")
+
+def parse_mt_log_line(line):
+    line = line.strip()
+    if not line:
+        return None
+
+    # Buscar timestamp en cualquier parte de la línea
+    timestamp_pattern = r'\d{4}\.\d{2}\.\d{2} \d{2}:\d{2}:\d{2}'
+    timestamp_match = re.search(timestamp_pattern, line)
+    if not timestamp_match:
+        return None
+
+    try:
+        timestamp_str = timestamp_match.group()
+        timestamp = datetime.strptime(timestamp_str, '%Y.%m.%d %H:%M:%S')
+
+        # Buscar grupo [número] tras el timestamp (si existe)
+        group_pattern = r'\[\s*\d+\s*\]'
+        group_match = re.search(group_pattern, line[timestamp_match.end():])
+        if group_match:
+            group_num = int(re.search(r'\d+', group_match.group()).group())
+            after_group = line[timestamp_match.end() + group_match.end():].strip()
+        else:
+            group_num = 0
+            after_group = line[timestamp_match.end():].strip()
+
+        # Filtro: solo líneas que tras el timestamp/grupo contienen solo números (y opcionalmente signos, puntos, espacios)
+        # Si hay alguna palabra (letra) tras el timestamp/grupo, descarta la línea
+        if re.search(r'[a-zA-Z]', after_group):
+            return None
+
+        # Extraer todos los valores numéricos (float) que aparecen después del timestamp/grupo
+        values = []
+        for val_str in after_group.split():
+            try:
+                values.append(float(val_str))
+            except ValueError:
+                continue
+
+        # Puedes ajustar el mínimo de valores requeridos según tu dataset (ej: 5, 8, 10...)
+        if len(values) < 5:
+            return None
+
+        return {
+            'timestamp': timestamp,
+            'group': group_num,
+            'values': values
+        }
+    except Exception as e:
+        print(f"🔍 DEBUG: Excepción parseando línea: {line} -> {e}")
+        return None
+
+def group_mt_records_by_timestamp(mt_data):
+    """Group MetaTrader records by timestamp."""
+    grouped = {}
+    for record in mt_data:
+        timestamp = record['timestamp']
+        group = record['group']
+        if timestamp not in grouped:
+            grouped[timestamp] = {}
+        grouped[timestamp][group] = record['values']
+    return grouped
+
+def extract_correct_features_and_ohlcv(mt_record):
+    """Extrae todos los features concatenando todos los grupos, y OHLCV+label del último grupo."""
+    features = []
+    ohlcv = None
+    label = None
+    if not mt_record:
+        return features, ohlcv, label
+    group_keys = sorted(mt_record.keys())
+    for group in group_keys:
+        vals = mt_record[group]
+        # Último grupo: features restantes + OHLCV + label
+        if group == group_keys[-1]:
+            # Asume: features + 5 OHLCV + 1 label
+            n_features = len(vals) - 6
+            if n_features > 0:
+                features.extend(vals[:n_features])
+            if len(vals) >= 6:
+                ohlcv = vals[n_features:n_features+5]
+                label = vals[-1]
+        else:
+            features.extend(vals)
+    return features, ohlcv, label
 
 if __name__ == "__main__":
     main()

@@ -322,9 +322,37 @@ def _walk_forward_validation(eq, trade_profits):
     if n_trades < base_window:
         return 0.0
 
-    # Evaluar múltiples escalas temporales
-    windows = [base_window, min(base_window * 2, n_trades // 10), min(base_window * 3, n_trades // 5)]
-    weights = [0.5, 0.3, 0.2]  # Mayor peso a ventanas más pequeñas
+    # Evaluar múltiples escalas temporales con ventanas monótonamente crecientes
+    # Asegurar que cada ventana sea mayor que la anterior y no exceda el límite
+    window1 = base_window
+    window2 = min(window1 * 2, n_trades // 8)  # Ajustado para evitar ventanas muy pequeñas
+    window3 = min(window1 * 3, n_trades // 4)  # Ajustado para evitar ventanas muy pequeñas
+    
+    # Filtrar ventanas válidas (debe ser al menos 5 trades por ventana)
+    windows = []
+    weights = []
+    
+    if window1 >= 5:
+        windows.append(window1)
+        weights.append(0.5)
+    
+    if window2 > window1 and window2 >= 5:
+        windows.append(window2)
+        weights.append(0.3)
+    
+    if window3 > window2 and window3 >= 5:
+        windows.append(window3)
+        weights.append(0.2)
+    
+    # Si no hay ventanas válidas, usar solo la base
+    if len(windows) == 0:
+        windows = [base_window]
+        weights = [1.0]
+    
+    # Normalizar pesos si hay menos ventanas de las esperadas
+    if len(weights) > 0:
+        weight_sum = sum(weights)
+        weights = [w / weight_sum for w in weights]
     
     total_score = 0.0
     

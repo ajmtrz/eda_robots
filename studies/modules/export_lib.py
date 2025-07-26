@@ -72,7 +72,7 @@ def export_models_to_ONNX(models):
 
 def export_dataset_to_csv(dataset, decimal_precision=6):
     tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".csv")
-    dataset.to_csv(tmp.name, index=True, float_format=f'%.{decimal_precision+2}f', date_format='%Y.%m.%d %H:%M:%S')
+    dataset.to_csv(tmp.name, index=True, float_format=f'%.{decimal_precision}f', date_format='%Y.%m.%d %H:%M:%S')
     return tmp.name
 
 def export_to_mql5(**kwargs):

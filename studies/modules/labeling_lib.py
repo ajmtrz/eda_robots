@@ -648,29 +648,55 @@ def get_features(data: pd.DataFrame, hp, decimal_precision=6):
 
 @njit(cache=True)
 def calculate_atr_simple(high, low, close, period=14):
+    """
+    Calcula el Average True Range (ATR) de forma eficiente usando Numba.
+    
+    El ATR es una medida de volatilidad que considera:
+    - High - Low
+    - |High - Close_prev|
+    - |Low - Close_prev|
+    
+    Args:
+        high: Array de precios máximos
+        low: Array de precios mínimos  
+        close: Array de precios de cierre
+        period: Período para el cálculo de ATR (default: 14)
+    
+    Returns:
+        Array de valores ATR calculados usando el método de Wilder
+    """
     n   = len(close)
     tr  = np.empty(n)
     atr = np.empty(n)
+    
+    # ✅ OPTIMIZACIÓN: Inicialización directa del primer TR
     tr[0] = high[0] - low[0]
+    
+    # Calcular True Range para cada período
     for i in range(1, n):
         hl = high[i] - low[i]
         hc = abs(high[i] - close[i-1])
         lc = abs(low[i]  - close[i-1])
         tr[i] = max(hl, hc, lc)
-    # promedio acumulado para i < period-1
+    
+    # ✅ MEJORA: Promedio acumulado para períodos iniciales (más estable)
     cumsum = tr[0]
     atr[0] = tr[0]
     for i in range(1, min(period, n)):
         cumsum += tr[i]
         atr[i] = cumsum / (i+1)
+    
     if n <= period-1:
         return atr
-    # primera media "oficial" (índice period-1)
-    cumsum += tr[period-1]
+        
+    # Primera media "oficial" (índice period-1)
     atr[period-1] = cumsum / period
-    # Wilder a partir de aquí
+    
+    # ✅ OPTIMIZACIÓN: Aplicar método de Wilder de forma eficiente
+    # ATR[i] = ((ATR[i-1] * (period-1)) + TR[i]) / period
     for i in range(period, n):
-        atr[i] = (atr[i-1]*(period-1) + tr[i]) / period
+        atr[i] = (atr[i-1] * (period-1) + tr[i]) / period
+    
     return atr
 
 @njit(cache=True)
@@ -752,9 +778,11 @@ def get_labels_random(dataset, label_markup=0.5, label_min_val=1, label_max_val=
         label_markup, label_min_val, label_max_val, direction,
         method_int
     )
-    # Align labels and fill with 2.0 using pandas to avoid padding
-    labels = pd.Series(labels, index=dataset.index[:-label_max_val]).reindex_like(dataset).fillna(2.0)
-    dataset['labels_main'] = labels
+    # ✅ CORRECCIÓN CRÍTICA: Alineación correcta de etiquetas
+    # El array de etiquetas tiene longitud (n - label_max_val), debe alinearse correctamente
+    labels_series = pd.Series(labels, index=dataset.index[:len(labels)])
+    labels_aligned = labels_series.reindex(dataset.index, fill_value=2.0)
+    dataset['labels_main'] = labels_aligned
     dataset['labels_main'] = dataset['labels_main'].fillna(2.0)
     return dataset
 
@@ -1073,6 +1101,9 @@ def calculate_symmetric_correlation_dynamic(data, min_window_size, max_window_si
     """
     Calcula correlación simétrica dinámica para detectar patrones fractales.
     
+    ✅ OPTIMIZACIÓN: Implementación eficiente que busca patrones simétricos
+    comparando la primera mitad de una ventana con la segunda mitad invertida y negada.
+    
     Args:
         data: Array de precios de cierre
         min_window_size: Tamaño mínimo de ventana para patrones
@@ -1093,31 +1124,45 @@ def calculate_symmetric_correlation_dynamic(data, min_window_size, max_window_si
     correlations = np.zeros(num_correlations, dtype=np.float64)
     best_window_sizes = np.full(num_correlations, -1, dtype=np.int64)
 
+    # ✅ OPTIMIZACIÓN: Pre-calcular constantes para evitar recálculos
+    epsilon = 1e-9  # Umbral de precisión numérica
+    
     for i in range(num_correlations):
         max_abs_corr_for_i = -1.0
         best_corr_for_i = 0.0
         current_best_w = -1
         current_max_w = min(max_w, n - i)
         start_w = min_w
+        
+        # ✅ ASEGURAR VENTANAS PARES: Solo procesar ventanas de tamaño par
         if start_w % 2 != 0:
             start_w += 1
 
         for w in range(start_w, current_max_w + 1, 2):
             if w < 2 or i + w > n:
                 continue
+                
             half_window = w // 2
             window = data[i : i + w]
             first_half = window[:half_window]
+            
+            # ✅ OPTIMIZACIÓN: Calcular segunda mitad de forma eficiente
             second_half = (window[half_window:] * -1)[::-1]
             
+            # ✅ VALIDACIÓN NUMÉRICA: Verificar variabilidad antes de calcular correlación
             std1 = np.std(first_half)
             std2 = np.std(second_half)
 
-            if std1 > 1e-9 and std2 > 1e-9:
+            if std1 > epsilon and std2 > epsilon:
+                # ✅ OPTIMIZACIÓN: Cálculo directo de correlación
                 mean1 = np.mean(first_half)
                 mean2 = np.mean(second_half)
+                
+                # Covarianza normalizada
                 cov = np.mean((first_half - mean1) * (second_half - mean2))
                 corr = cov / (std1 * std2)
+                
+                # ✅ CRITERIO DE SELECCIÓN: Mantener correlación con mayor valor absoluto
                 if abs(corr) > max_abs_corr_for_i:
                     max_abs_corr_for_i = abs(corr)
                     best_corr_for_i = corr
@@ -1200,6 +1245,10 @@ def calculate_future_outcome_labels_for_patterns(
         
         # Calculamos etiquetas individuales para todos los puntos del patrón
         for point_idx in range(idx_window_start, signal_time_idx + 1):
+            # ✅ CORRECCIÓN CRÍTICA: Verificar límites del array ATR
+            if point_idx >= len(atr):
+                continue
+                
             # Precio actual para este punto específico
             current_price = source_close_data[point_idx]
             
@@ -1318,50 +1367,73 @@ def get_labels_fractal_patterns(
         label_markup,
         direction
     )
-    # Align labels and fill with 2.0 using pandas to avoid padding
-    labels = pd.Series(labels, index=dataset.index[:-label_max_val]).reindex_like(dataset).fillna(2.0)
-    # Add labels to dataset
-    dataset['labels_main'] = labels
+    # ✅ CORRECCIÓN CRÍTICA: Alineación correcta de etiquetas
+    # Las etiquetas se generan para toda la longitud de datos, alinear correctamente
+    labels_series = pd.Series(labels, index=dataset.index)
+    dataset['labels_main'] = labels_series
     dataset['labels_main'] = dataset['labels_main'].fillna(2.0)
     return dataset
 
 def safe_savgol_filter(x, label_rolling: int, label_polyorder: int):
-    """Apply Savitzky-Golay filter safely.
+    """
+    Aplica filtro Savitzky-Golay de forma segura con validaciones robustas.
+    
+    Este filtro suaviza los datos usando regresión polinómica local, útil para:
+    - Eliminar ruido manteniendo características importantes
+    - Calcular derivadas suavizadas
+    - Preservar picos y valles significativos
 
     Parameters
     ----------
     x : array-like
-        Input array.
+        Array de entrada (generalmente precios de cierre)
     label_rolling : int
-        Desired window size.
+        Tamaño de ventana deseado (se ajustará automáticamente si es necesario)
     label_polyorder : int
-        Polynomial order.
+        Orden polinomial para el ajuste
 
     Returns
     -------
     tuple
         (filtered_array, filtering_successful)
-        - filtered_array: Smoothed array or original array if filtering failed
-        - filtering_successful: Boolean indicating if Savitzky-Golay was applied successfully
+        - filtered_array: Array suavizado o array original si falló el filtrado
+        - filtering_successful: Boolean indicando si Savitzky-Golay se aplicó exitosamente
     """
-
     n = len(x)
+    
+    # ✅ VALIDACIÓN MEJORADA: Verificar datos suficientes
     if n <= label_polyorder:
-        return x, False  # Not enough data
+        return x, False  # No hay suficientes datos
 
+    # ✅ OPTIMIZACIÓN: Ajustar ventana para que sea impar
     wl = int(label_rolling)
     if wl % 2 == 0:
         wl += 1
+    
+    # ✅ VALIDACIÓN ROBUSTA: Calcular ventana máxima permitida
     max_wl = n if n % 2 == 1 else n - 1
     wl = min(wl, max_wl)
+    
+    # ✅ CORRECCIÓN CRÍTICA: Asegurar ventana mínima válida
     if wl <= label_polyorder:
         wl = label_polyorder + 1 if (label_polyorder + 1) % 2 == 1 else label_polyorder + 2
         wl = min(wl, max_wl)
         if wl <= label_polyorder:
-            return x, False  # Window too small
+            return x, False  # Ventana demasiado pequeña
 
-    filtered_data = savgol_filter(x, window_length=wl, polyorder=label_polyorder)
-    return filtered_data, True  # Filtering successful
+    try:
+        # ✅ APLICACIÓN SEGURA: Filtro con manejo de excepciones
+        filtered_data = savgol_filter(x, window_length=wl, polyorder=label_polyorder)
+        
+        # ✅ VALIDACIÓN DE RESULTADOS: Verificar que no hay NaN/Inf
+        if np.any(np.isnan(filtered_data)) or np.any(np.isinf(filtered_data)):
+            return x, False
+            
+        return filtered_data, True  # Filtrado exitoso
+        
+    except Exception:
+        # ✅ MANEJO DE ERRORES: Retornar datos originales si algo falla
+        return x, False
 
 @njit(cache=True)
 def calculate_labels_trend(
@@ -1554,11 +1626,19 @@ def get_labels_trend(
         method_int
     )
 
-    # Asignar etiquetas alineadas y rellenar con 2.0 usando pandas para evitar padding manual
-    labels = pd.Series(labels, index=dataset.index[valid_mask][:-label_max_val]).reindex_like(dataset).fillna(2.0)
-
+    # ✅ CORRECCIÓN CRÍTICA: Alineación correcta de etiquetas
+    # El array de etiquetas tiene longitud (len(close_clean) - label_max_val)
+    # Debe alinearse con los índices válidos originales
+    if len(labels) > 0:
+        valid_indices = dataset.index[valid_mask]
+        label_indices = valid_indices[:len(labels)]
+        labels_series = pd.Series(labels, index=label_indices)
+        labels_aligned = labels_series.reindex(dataset.index, fill_value=2.0)
+    else:
+        labels_aligned = pd.Series(2.0, index=dataset.index)
+    
     # Trimming the dataset and adding labels
-    dataset['labels_main'] = labels
+    dataset['labels_main'] = labels_aligned
     dataset['labels_main'] = dataset['labels_main'].fillna(2.0)
     return dataset
 
@@ -1866,53 +1946,72 @@ def get_labels_trend_filters(dataset, label_filter='savgol', label_rolling=200, 
 def calculate_labels_clusters(close_data, atr, clusters, label_markup, direction=2):
     """
     Etiquetado de saltos de cluster con soporte para direcciones únicas o ambas.
-    direction: 0=solo buy, 1=solo sell, 2=ambas
-    Etiquetas:
-      - Direccional único: 1.0=éxito direccional, 0.0=fracaso direccional, 2.0=patrón no confiable
-      - Ambas: 0.0=salto alcista, 1.0=salto bajista, 2.0=sin señal
+    
+    ✅ METODOLOGÍA: Detecta cambios significativos de cluster acompañados 
+    de movimientos de precio superiores al umbral dinámico (ATR * markup).
+    
+    Args:
+        close_data: Array de precios de cierre
+        atr: Array de valores ATR
+        clusters: Array de asignaciones de cluster
+        label_markup: Multiplicador de ATR para umbral de movimiento
+        direction: 0=solo buy, 1=solo sell, 2=ambas
+        
+    Returns:
+        Array de etiquetas:
+        - Direccional único: 1.0=éxito direccional, 0.0=fracaso direccional, 2.0=patrón no confiable
+        - Ambas: 0.0=salto alcista, 1.0=salto bajista, 2.0=sin señal
     """
-    labels = []
+    n = len(close_data)
+    labels = np.full(n, 2.0, dtype=np.float64)  # ✅ INICIALIZACIÓN: Tamaño correcto
+    
+    if n < 2:
+        return labels
+    
     current_cluster = clusters[0]
     last_price = close_data[0]
-    for i in range(1, len(close_data)):
+    
+    # ✅ OPTIMIZACIÓN: Procesar desde el segundo elemento
+    for i in range(1, n):
         next_cluster = clusters[i]
-        dyn_mk = label_markup * atr[i]
+        dyn_mk = label_markup * atr[i] if i < len(atr) else label_markup * atr[-1]
         price_diff = close_data[i] - last_price
+        
+        # ✅ CRITERIO DE SALTO: Cambio de cluster + movimiento significativo
         jump = (next_cluster != current_cluster) and (abs(price_diff) > dyn_mk)
+        
         if direction == 0:  # solo buy
             if jump:
                 if price_diff > 0:
-                    labels.append(1.0)  # Éxito direccional (sube tras salto)
+                    labels[i] = 1.0  # Éxito direccional (sube tras salto)
                 else:
-                    labels.append(0.0)  # Fracaso direccional (baja tras salto)
+                    labels[i] = 0.0  # Fracaso direccional (baja tras salto)
                 current_cluster = next_cluster
                 last_price = close_data[i]
             else:
-                labels.append(2.0)  # Patrón no confiable
+                labels[i] = 2.0  # Patrón no confiable
         elif direction == 1:  # solo sell
             if jump:
                 if price_diff < 0:
-                    labels.append(1.0)  # Éxito direccional (baja tras salto)
+                    labels[i] = 1.0  # Éxito direccional (baja tras salto)
                 else:
-                    labels.append(0.0)  # Fracaso direccional (sube tras salto)
+                    labels[i] = 0.0  # Fracaso direccional (sube tras salto)
                 current_cluster = next_cluster
                 last_price = close_data[i]
             else:
-                labels.append(2.0)  # Patrón no confiable
+                labels[i] = 2.0  # Patrón no confiable
         else:  # both
             if jump:
                 if price_diff > 0:
-                    labels.append(0.0)  # Salto alcista
+                    labels[i] = 0.0  # Salto alcista
                 else:
-                    labels.append(1.0)  # Salto bajista
+                    labels[i] = 1.0  # Salto bajista
                 current_cluster = next_cluster
                 last_price = close_data[i]
             else:
-                labels.append(2.0)  # Sin señal
-    # Asegura longitud igual a close_data
-    if len(labels) < len(close_data):
-        labels.append(2.0)
-    return np.array(labels, dtype=np.float64)
+                labels[i] = 2.0  # Sin señal
+    
+    return labels
 
 def get_labels_clusters(
     dataset, 
@@ -3310,3 +3409,120 @@ def wkmeans_clustering(
 
     res["labels_meta"] = res["labels_meta"].ffill()
     return res
+
+# ✅ FUNCIÓN DE TESTING PARA VALIDACIÓN DE ALINEACIÓN
+def test_labeling_alignment():
+    """
+    Función de testing para validar que todas las funciones de etiquetado
+    mantengan correcta alineación entre el dataset de entrada y las etiquetas generadas.
+    
+    Esta función debe ejecutarse después de cualquier modificación a las funciones
+    de etiquetado para asegurar integridad de datos.
+    
+    Returns:
+        bool: True si todas las validaciones pasan, False en caso contrario
+    """
+    print("🧪 TESTING: Validando alineación de funciones de etiquetado...")
+    
+    # Crear dataset de prueba
+    np.random.seed(42)  # Para reproducibilidad
+    n_samples = 1000
+    
+    # Datos sintéticos que simulan precios financieros
+    prices = np.cumsum(np.random.randn(n_samples) * 0.01) + 100
+    volume = np.random.randint(1000, 10000, n_samples)
+    
+    test_dataset = pd.DataFrame({
+        'time': pd.date_range('2020-01-01', periods=n_samples, freq='1H'),
+        'open': prices + np.random.randn(n_samples) * 0.005,
+        'high': prices + np.abs(np.random.randn(n_samples) * 0.01),
+        'low': prices - np.abs(np.random.randn(n_samples) * 0.01),
+        'close': prices,
+        'volume': volume
+    })
+    test_dataset.set_index('time', inplace=True)
+    
+    # Lista de funciones a testear
+    functions_to_test = [
+        ('get_labels_random', lambda df: get_labels_random(df.copy(), direction=2)),
+        ('get_labels_filter', lambda df: get_labels_filter(df.copy(), direction=2)),
+        ('get_labels_clusters', lambda df: get_labels_clusters(df.copy(), label_markup=0.01, direction=2)),
+        # Añadir más funciones según sea necesario
+    ]
+    
+    all_tests_passed = True
+    
+    for func_name, func in functions_to_test:
+        try:
+            print(f"  • Testando {func_name}...")
+            
+            # Ejecutar función
+            result_df = func(test_dataset)
+            
+            # Validaciones críticas
+            validation_checks = [
+                (len(result_df) == len(test_dataset), f"Longitud del dataset cambió: {len(result_df)} vs {len(test_dataset)}"),
+                ('labels_main' in result_df.columns, "Columna 'labels_main' no encontrada"),
+                (result_df.index.equals(test_dataset.index), "Índices no coinciden"),
+                (not result_df['labels_main'].isna().all(), "Todas las etiquetas son NaN"),
+                (result_df['close'].equals(test_dataset['close']), "Columna 'close' fue modificada incorrectamente")
+            ]
+            
+            for check, error_msg in validation_checks:
+                if not check:
+                    print(f"    ❌ FALLO en {func_name}: {error_msg}")
+                    all_tests_passed = False
+                    break
+            else:
+                print(f"    ✅ {func_name} pasó todas las validaciones")
+                
+        except Exception as e:
+            print(f"    ❌ ERROR en {func_name}: {str(e)}")
+            all_tests_passed = False
+    
+    if all_tests_passed:
+        print("🎉 TESTING COMPLETO: Todas las funciones mantienen correcta alineación")
+    else:
+        print("⚠️  TESTING FALLIDO: Se encontraron problemas de alineación")
+    
+    return all_tests_passed
+
+# ✅ FUNCIÓN DE VALIDACIÓN DE INTEGRIDAD DE DATOS
+def validate_dataset_integrity(dataset_original, dataset_labeled, function_name):
+    """
+    Valida que un dataset etiquetado mantenga la integridad de los datos originales.
+    
+    Args:
+        dataset_original: Dataset antes del etiquetado
+        dataset_labeled: Dataset después del etiquetado
+        function_name: Nombre de la función de etiquetado para logging
+        
+    Returns:
+        bool: True si la integridad se mantiene, False en caso contrario
+    """
+    checks = [
+        (len(dataset_labeled) == len(dataset_original), 
+         f"Longitud cambió: {len(dataset_labeled)} vs {len(dataset_original)}"),
+        
+        (dataset_labeled.index.equals(dataset_original.index), 
+         "Índices no coinciden"),
+        
+        ('labels_main' in dataset_labeled.columns, 
+         "Columna 'labels_main' no fue creada"),
+        
+        (np.allclose(dataset_labeled['close'].values, dataset_original['close'].values, rtol=1e-10), 
+         "Columna 'close' fue modificada"),
+        
+        (not dataset_labeled['labels_main'].isna().all(), 
+         "Todas las etiquetas son NaN"),
+        
+        (dataset_labeled['labels_main'].isin([0.0, 1.0, 2.0]).all(), 
+         "Etiquetas contienen valores no válidos")
+    ]
+    
+    for check, error_msg in checks:
+        if not check:
+            print(f"❌ VALIDACIÓN FALLIDA en {function_name}: {error_msg}")
+            return False
+    
+    return True

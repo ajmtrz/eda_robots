@@ -22,8 +22,8 @@ from modules.labeling_lib import (
     get_labels_multi_window, get_labels_validated_levels,
     get_labels_filter_zigzag, get_labels_mean_reversion,
     get_labels_mean_reversion_multi, get_labels_mean_reversion_vol,
-    get_labels_filter, get_labels_multiple_filters,
-    get_labels_filter_bidirectional, get_labels_fractal_patterns,
+    get_labels_filter, get_labels_filters_multi,
+    get_labels_filter_binary, get_labels_fractal_patterns,
     clustering_kmeans, clustering_hdbscan,
     clustering_markov, clustering_lgmm,
     wkmeans_clustering,
@@ -36,8 +36,8 @@ class StrategySearcher:
         # No usan confiabilidad
         "random": get_labels_random,
         "filter": get_labels_filter,
-        "multi_filter": get_labels_multiple_filters,
-        "filter_bidirectional": get_labels_filter_bidirectional,
+        "multi_filter": get_labels_filters_multi,
+        "filter_binary": get_labels_filter_binary,
         # Usan confiabilidad
         "fractal": get_labels_fractal_patterns,
         "trend": get_labels_trend,

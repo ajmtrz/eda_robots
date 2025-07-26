@@ -2243,40 +2243,31 @@ def get_labels_filter(
     # Calculate smoothed prices using the Savitzky-Golay label_filter
     smoothed_prices, filtering_successful = safe_savgol_filter(dataset['close'].values, label_rolling=label_rolling, label_polyorder=label_polyorder)
     if not filtering_successful:
-        print(f"🔍 DEBUG: Savitzky-Golay filtering failed in get_labels_filter, returning empty dataset")
         return pd.DataFrame()
-    
     # Calculate the difference between the actual closing prices and the smoothed prices
     diff = dataset['close'] - smoothed_prices
-    
     # Apply exponential weighting to the 'diff' values
     weighted_diff = diff * np.exp(np.arange(len(diff)) * label_decay_factor / len(diff)) 
-    
     # Apply method-specific transformation
     if label_method_trend == 'inverse':
         dataset['lvl'] = 1 / weighted_diff  # Inverse method
     else:
         dataset['lvl'] = weighted_diff  # Normal method
-
     # Calculate the quantiles of the 'lvl' column (price deviation)
     q = tuple(dataset['lvl'].quantile(label_quantiles).to_list())
-
     # Extract the closing prices and the calculated 'lvl' values as NumPy arrays
     close = dataset['close'].values
     lvl = dataset['lvl'].values
-    
     # Calculate buy/sell labels using the 'calculate_labels_filter' function 
     labels = calculate_labels_filter(close, lvl, q, direction=direction) 
-
     # Trimming the dataset and adding labels
     dataset['labels_main'] = labels
     dataset['labels_main'] = dataset['labels_main'].fillna(2.0)
-    
     # Return the modified DataFrame with the 'lvl' column removed
-    return dataset.drop(columns=['lvl']) 
+    return dataset.drop(columns=['lvl'])
 
 @njit(cache=True)
-def calc_labels_multiple_filters(close, lvls, qs, direction=2):
+def calc_labels_filters_multi(close, lvls, qs, direction=2):
     """
     direction: 0=solo buy, 1=solo sell, 2=ambas
     Para direcciones únicas: 1.0=éxito direccional, 0.0=fracaso, 2.0=no confiable
@@ -2323,7 +2314,7 @@ def calc_labels_multiple_filters(close, lvls, qs, direction=2):
             labels[i] = 2.0  # fallback
     return labels
 
-def get_labels_multiple_filters(
+def get_labels_filters_multi(
     dataset,
     label_rolling_periods_big=[200, 400, 600],
     label_quantiles=[.45, .55],
@@ -2363,7 +2354,6 @@ def get_labels_multiple_filters(
     # Lists to store price deviation levels and quantiles for each label_rolling period
     all_levels = []
     all_quantiles = []
-    
     # Calculate smoothed price trends and label_rolling quantiles for each label_rolling period
     for label_rolling in label_rolling_periods_big:
                 # Calculate smoothed prices using the Savitzky-Golay label_filter
@@ -2371,36 +2361,29 @@ def get_labels_multiple_filters(
                                        label_rolling=label_rolling,
                                        label_polyorder=label_polyorder)
         if not filtering_successful:
-            print(f"🔍 DEBUG: Savitzky-Golay filtering failed in get_labels_multiple_filters, returning empty dataset")
             return pd.DataFrame()
         # Calculate the price deviation from the smoothed prices
         diff = dataset['close'] - smoothed_prices
-        
         # Create a temporary DataFrame to calculate label_rolling quantiles
         temp_df = pd.DataFrame({'diff': diff})
-        
         # Calculate quantiles using pandas rolling for better compatibility
         q_low = temp_df['diff'].rolling(window=label_window_size, min_periods=1).quantile(label_quantiles[0])
         q_high = temp_df['diff'].rolling(window=label_window_size, min_periods=1).quantile(label_quantiles[1])
-        
         # Store the price deviation and quantiles for the current label_rolling period
         all_levels.append(diff)
         all_quantiles.append([q_low.values, q_high.values])
-    
     # Convert lists to NumPy arrays for faster calculations (potentially using Numba)
     lvls_array = np.array(all_levels)
     qs_array = np.array(all_quantiles)
-
     # Calculate buy/sell labels using the 'calc_labels_multiple_filters' function 
-    labels = calc_labels_multiple_filters(dataset['close'].values, lvls_array, qs_array, direction=direction)
-    
+    labels = calc_labels_filters_multi(dataset['close'].values, lvls_array, qs_array, direction=direction)
     # Add the calculated labels to the DataFrame
     dataset['labels_main'] = labels
     dataset['labels_main'] = dataset['labels_main'].fillna(2.0)
     return dataset
 
 @njit(cache=True)
-def calc_labels_bidirectional(close, lvl1, lvl2, q1, q2, direction=2):
+def calc_labels_binary(close, lvl1, lvl2, q1, q2, direction=2):
     """
     Etiquetado bidireccional/unidireccional con dos filtros.
     direction: 0=solo buy, 1=solo sell, 2=ambos
@@ -2436,7 +2419,7 @@ def calc_labels_bidirectional(close, lvl1, lvl2, q1, q2, direction=2):
             labels[i] = 2.0  # fallback
     return labels
 
-def get_labels_filter_bidirectional(
+def get_labels_filter_binary(
     dataset, 
     label_rolling=200, 
     label_rolling2=200, 
@@ -2471,34 +2454,26 @@ def get_labels_filter_bidirectional(
     """
 
     close = dataset['close'].values
-
     # Apply the first Savitzky-Golay label_filter (forward direction)
     smoothed_prices, filtering_successful1 = safe_savgol_filter(close, label_rolling=label_rolling, label_polyorder=label_polyorder)
     # Apply the second Savitzky-Golay label_filter (could be in reverse direction if rolling2 is negative)
     smoothed_prices2, filtering_successful2 = safe_savgol_filter(close, label_rolling=label_rolling2, label_polyorder=label_polyorder)
     if not filtering_successful1 or not filtering_successful2:
-        print(f"🔍 DEBUG: Savitzky-Golay filtering failed in get_labels_filter_bidirectional, returning empty dataset")
         return pd.DataFrame()
-
     # Calculate price deviations from both smoothed price series
     diff1 = dataset['close'] - smoothed_prices
     diff2 = dataset['close'] - smoothed_prices2
-
     # Add price deviations as new columns to the DataFrame
     dataset['lvl1'] = diff1
     dataset['lvl2'] = diff2
-
     # Calculate quantiles for the "reversion zones" for both price deviation series
     q1 = tuple(dataset['lvl1'].quantile(label_quantiles).to_list())
     q2 = tuple(dataset['lvl2'].quantile(label_quantiles).to_list())
-
     # Extract relevant data for label calculation
     lvl1 = dataset['lvl1'].values
     lvl2 = dataset['lvl2'].values
-
-    # Calculate buy/sell labels using the 'calc_labels_bidirectional' function
-    labels = calc_labels_bidirectional(close, lvl1, lvl2, q1, q2, direction=direction)
-
+    # Calculate buy/sell labels using the 'calc_labels_binary' function
+    labels = calc_labels_binary(close, lvl1, lvl2, q1, q2, direction=direction)
     # Trimming the dataset and adding labels
     dataset['labels_main'] = labels
     dataset['labels_main'] = dataset['labels_main'].fillna(2.0)

@@ -87,12 +87,15 @@ def tester(
         trade_nl, rdd_nl, r2, slope_nl, wf_nl = evaluate_report(rpt, trade_profits=trade_profits)
         if (trade_nl <= -1.0 and rdd_nl <= -1.0 and r2 <= -1.0 and slope_nl <= -1.0 and wf_nl <= -1.0):
             return -1.0, dataset_with_labels
+        
+        # Pesos optimizados para favorecer estabilidad temporal y linealidad constante
+        # Prioriza: 1) Consistencia temporal (45%), 2) Linealidad+Pendiente (40%), 3) Otros (15%)
         score = (
-                0.12 * r2 +
-                0.15 * slope_nl +
-                0.24 * rdd_nl +
-                0.19 * trade_nl +
-                0.30 * wf_nl
+                0.20 * r2 +        # Linealidad de la curva (R²)
+                0.20 * slope_nl +  # Pendiente positiva consistente
+                0.10 * rdd_nl +    # Ratio retorno/drawdown
+                0.05 * trade_nl +  # Número de trades (menor importancia)
+                0.45 * wf_nl       # Consistencia temporal (máxima prioridad)
         )
         if score < 0.0:
             return -1.0, dataset_with_labels
@@ -155,9 +158,14 @@ def evaluate_report(
         rdd = 0.0
     else:
         rdd = total_ret / max_dd
-    if rdd < rdd_floor:
+    
+    # Umbral más exigente para el ratio retorno/drawdown
+    min_rdd = max(rdd_floor * 1.5, 2.0)  # Al menos 2.0 o 1.5 veces el floor
+    if rdd < min_rdd:
         return -1.0, -1.0, -1.0, -1.0, -1.0
-    rdd_nl = 1.0 / (1.0 + np.exp(-(rdd - rdd_floor) / (rdd_floor * 5.0)))
+    
+    # Normalización más estricta que penaliza ratios bajos
+    rdd_nl = 1.0 / (1.0 + np.exp(-(rdd - min_rdd) / (min_rdd * 3.0)))
 
     # ---------- linealidad y pendiente (normalizado) ---------------------------
     x = np.arange(n, dtype=np.float64)
@@ -165,7 +173,15 @@ def evaluate_report(
     r2, slope = manual_linear_regression(x, y)
     if slope < 0.0:
         return -1.0, -1.0, -1.0, -1.0, -1.0
-    slope_nl = 1.0 / (1.0 + np.exp(-(np.log1p(slope) / 5.0)))
+    
+    # Penalizar más fuertemente R² bajos para favorecer linealidad
+    # Usar función exponencial para discriminar mejor
+    if r2 < 0.7:  # Umbral más estricto para R²
+        r2 = r2 * 0.5  # Penalización severa para R² < 0.7
+    else:
+        r2 = 0.35 + (r2 - 0.7) * 2.17  # Reescalar 0.7-1.0 a 0.35-1.0
+    
+    slope_nl = 1.0 / (1.0 + np.exp(-(np.log1p(slope) / 3.0)))  # Más sensible a pendientes pequeñas
 
     # Walk-Forward Analysis - consistencia temporal
     wf_nl = _walk_forward_validation(equity_curve, trade_profits)
@@ -282,56 +298,98 @@ def backtest(open_,
 @njit(cache=True)
 def _walk_forward_validation(eq, trade_profits):
     """
-    Calcula un score de consistencia temporal combinando:
-    - Proporción de ventanas (walk-forward windows) con equity final > inicial
+    Calcula un score de consistencia temporal mejorado combinando:
+    - Proporción de ventanas con equity final > inicial (ventanas más largas)
     - Promedio del ratio de trades ganadores en cada ventana
+    - Penalización por volatilidad excesiva entre ventanas
+    - Evaluación de múltiples escalas temporales
 
-    El score final es el producto de ambas métricas.
+    El score final penaliza fuertemente las inconsistencias temporales.
 
     Args:
         eq (np.ndarray): Curva de equity (acumulada) como array 1D (N+1 puntos).
         trade_profits (np.ndarray): Array 1D de profits por trade (N puntos).
 
     Returns:
-        float: Score combinado (0.0 a 1.0).
+        float: Score combinado (0.0 a 1.0) con mayor énfasis en consistencia.
     """
     n = eq.size
     n_trades = len(trade_profits)
-    window = 5
-    step = 1
-
-    if n_trades < window:
+    
+    # Ventanas más largas para mayor robustez
+    base_window = max(10, n_trades // 20)  # Al menos 10, o 5% del total
+    
+    if n_trades < base_window:
         return 0.0
 
-    wins = 0
-    total = 0
-    win_ratios_sum = 0.0
-    win_ratios_count = 0
+    # Evaluar múltiples escalas temporales
+    windows = [base_window, min(base_window * 2, n_trades // 10), min(base_window * 3, n_trades // 5)]
+    weights = [0.5, 0.3, 0.2]  # Mayor peso a ventanas más pequeñas
+    
+    total_score = 0.0
+    
+    for window, weight in zip(windows, weights):
+        if n_trades < window:
+            continue
+            
+        step = max(1, window // 4)  # Solapamiento del 75%
+        wins = 0
+        total = 0
+        win_ratios_sum = 0.0
+        win_ratios_count = 0
+        window_returns = []
 
-    for start in range(0, n_trades - window + 1, step):
-        end = start + window
-        # 1) Rentabilidad de la ventana (equity)
-        r = eq[end] - eq[start]  # eq tiene N+1 puntos, así que eq[end] es válido
-        if r > 0:
-            wins += 1
-        total += 1
+        for start in range(0, n_trades - window + 1, step):
+            end = start + window
+            # 1) Rentabilidad de la ventana (equity)
+            r = eq[end] - eq[start]
+            window_returns.append(r)
+            if r > 0:
+                wins += 1
+            total += 1
 
-        # 2) Ratio de ganadoras/perdedoras en la ventana
-        trades_in_window = trade_profits[start:end]
-        n_window_trades = len(trades_in_window)
-        if n_window_trades > 0:
-            n_winners = 0
-            for p in trades_in_window:
-                if p > 0:
-                    n_winners += 1
-            win_ratio = n_winners / n_window_trades
-            win_ratios_sum += win_ratio
-            win_ratios_count += 1
+            # 2) Ratio de ganadoras/perdedoras en la ventana
+            trades_in_window = trade_profits[start:end]
+            n_window_trades = len(trades_in_window)
+            if n_window_trades > 0:
+                n_winners = 0
+                for p in trades_in_window:
+                    if p > 0:
+                        n_winners += 1
+                win_ratio = n_winners / n_window_trades
+                win_ratios_sum += win_ratio
+                win_ratios_count += 1
 
-    prop_ventanas_rentables = wins / total if total else 0.0
-    avg_win_ratio = win_ratios_sum / win_ratios_count if win_ratios_count > 0 else 0.0
+        if total == 0:
+            continue
+            
+        prop_ventanas_rentables = wins / total
+        avg_win_ratio = win_ratios_sum / win_ratios_count if win_ratios_count > 0 else 0.0
+        
+        # 3) Penalización por volatilidad entre ventanas
+        stability_penalty = 1.0
+        if len(window_returns) >= 3:
+            # Calcular volatilidad de los retornos de ventanas
+            mean_return = sum(window_returns) / len(window_returns)
+            variance = 0.0
+            for ret in window_returns:
+                variance += (ret - mean_return) ** 2
+            variance /= len(window_returns)
+            
+            # Penalizar alta volatilidad (inestabilidad)
+            if variance > 0:
+                cv = (variance ** 0.5) / (abs(mean_return) + 1e-8)  # Coeficiente de variación
+                stability_penalty = 1.0 / (1.0 + cv * 2.0)  # Más penalización por alta volatilidad
+        
+        # Score para esta ventana
+        window_score = prop_ventanas_rentables * avg_win_ratio * stability_penalty
+        total_score += window_score * weight
 
-    return prop_ventanas_rentables * avg_win_ratio
+    # Aplicar función sigmoide para mayor discriminación
+    # Penalizar más fuertemente scores bajos
+    final_score = total_score ** 1.5  # Exponente > 1 para penalizar más los valores bajos
+    
+    return min(1.0, final_score)
 
 def get_periods_per_year(timeframe: str) -> float:
     """

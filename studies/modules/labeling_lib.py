@@ -2403,7 +2403,7 @@ def get_labels_mean_reversion(
     label_max_val=15,
     label_rolling=0.5,
     label_quantiles=[.45, .55],
-    label_filter='spline',
+    label_filter_mean='spline',
     label_decay_factor=0.95,
     label_shift=0,
     label_atr_period=14,
@@ -2419,7 +2419,7 @@ def get_labels_mean_reversion(
         label_max_val (int, optional): Maximum number of consecutive days the label_markup is considered. Defaults to 15.
         label_rolling (float, optional): Rolling window size for smoothing/averaging. 
         label_quantiles (list, optional): Quantiles to define the "reversion zone". Defaults to [.45, .55].
-        label_filter (str, optional): Method for calculating the price deviation.
+        label_filter_mean (str, optional): Method for calculating the price deviation.
         label_decay_factor (float, optional): Exponential decay factor for weighting past data.
         label_shift (int, optional): Shift the smoothed price data forward/backward.
         label_atr_period (int, optional): ATR period.
@@ -2429,14 +2429,14 @@ def get_labels_mean_reversion(
         pd.DataFrame: The original DataFrame with a new 'labels_main' column and filtered rows.
     """
 
-    # Calculate the price deviation ('lvl') based on the chosen label_filter, applying decay_factor
-    if label_filter == 'mean':
+    # Calculate the price deviation ('lvl') based on the chosen label_filter_mean, applying decay_factor
+    if label_filter_mean == 'mean':
         # Usando bottleneck para acelerar el cálculo de media móvil
         rolling_mean = bn.move_mean(dataset['close'].values, window=label_rolling, min_count=1)
         diff = dataset['close'].values - rolling_mean
         weighted_diff = diff * np.exp(np.arange(len(diff)) * label_decay_factor / len(diff))
         dataset['lvl'] = weighted_diff
-    elif label_filter == 'spline':
+    elif label_filter_mean == 'spline':
         x = np.array(range(dataset.shape[0]))
         y = dataset['close'].values
         spl = UnivariateSpline(x, y, k=3, s=label_rolling)
@@ -2446,7 +2446,7 @@ def get_labels_mean_reversion(
         weighted_diff = diff * np.exp(np.arange(len(diff)) * label_decay_factor / len(diff))
         dataset['lvl'] = weighted_diff
         dataset = dataset.dropna() 
-    elif label_filter == 'savgol':
+    elif label_filter_mean == 'savgol':
         smoothed_prices, filtering_successful = safe_savgol_filter(dataset['close'].values, label_rolling=label_rolling, label_polyorder=5)
         if not filtering_successful:
             return pd.DataFrame()
@@ -2618,7 +2618,7 @@ def calculate_labels_mean_reversion_vol(
 
 def get_labels_mean_reversion_vol(
     dataset, label_markup, label_min_val=1, label_max_val=15, label_rolling=0.5,
-    label_quantiles=[.45, .55], label_filter='spline', label_shift=1,
+    label_quantiles=[.45, .55], label_filter_mean='spline', label_shift=1,
     label_vol_window=20, label_atr_period=14, direction=2
 ) -> pd.DataFrame:
     """
@@ -2631,13 +2631,13 @@ def get_labels_mean_reversion_vol(
         label_markup (float): The percentage label_markup used to determine buy/sell signals.
         label_min_val (int, optional): Minimum number of consecutive days the label_markup must hold. Defaults to 1.
         label_max_val (int, optional): Maximum number of consecutive days the label_markup is considered. Defaults to 15.
-        label_rolling (float, optional): Rolling window size or spline smoothing factor (see 'label_filter'). 
+        label_rolling (float, optional): Rolling window size or spline smoothing factor (see 'label_filter_mean'). 
                                      Defaults to 0.5.
         quantiles (list, optional): Quantiles to define the "reversion zone". Defaults to [.45, .55].
-        label_filter (str, optional): Method for calculating the price deviation:
+        label_filter_mean (str, optional): Method for calculating the price deviation:
                                  - 'mean': Deviation from the label_rolling mean.
                                  - 'spline': Deviation from a smoothed spline.
-                                 - 'savgol': Deviation from a Savitzky-Golay label_filter.
+                                 - 'savgol': Deviation from a Savitzky-Golay label_filter_mean.
                                  Defaults to 'spline'.
         shift (int, optional): Shift the smoothed price data forward (positive) or backward (negative).
                                  Useful for creating a lag/lead effect. Defaults to 1.
@@ -2661,17 +2661,17 @@ def get_labels_mean_reversion_vol(
         return pd.DataFrame()
     # Divide into 20 groups by volatility 
     dataset['volatility_group'] = pd.qcut(dataset['volatility'], q=20, labels=False, duplicates='drop')
-    # Calculate price deviation ('lvl') based on the chosen label_filter
-    if label_filter == 'mean':
+    # Calculate price deviation ('lvl') based on the chosen label_filter_mean
+    if label_filter_mean == 'mean':
         dataset['lvl'] = (dataset['close'] - dataset['close'].rolling(label_rolling).mean())
-    elif label_filter == 'spline':
+    elif label_filter_mean == 'spline':
         x = np.array(range(dataset.shape[0]))
         y = dataset['close'].values
         spl = UnivariateSpline(x, y, k=3, s=label_rolling)
         yHat = spl(np.linspace(min(x), max(x), num=x.shape[0]))
         yHat_shifted = np.roll(yHat, shift=label_shift) # Apply the shift 
         dataset['lvl'] = dataset['close'] - yHat_shifted
-    elif label_filter == 'savgol':
+    elif label_filter_mean == 'savgol':
         smoothed_prices, filtering_successful = safe_savgol_filter(dataset['close'].values, label_rolling=label_rolling, label_polyorder=5)
         if not filtering_successful:
             print(f"🔍 DEBUG: Savitzky-Golay filtering failed in get_labels_mean_reversion_vol, returning empty dataset")

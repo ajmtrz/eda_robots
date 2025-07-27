@@ -50,11 +50,6 @@ class StrategySearcher:
         "mean_rev_multi": get_labels_mean_reversion_multi,
         "mean_rev_vol": get_labels_mean_reversion_vol,
     }
-    RELIABILITY_METHODS = {
-        'fractal', 'trend','trend_multi', 'trend_filters', 'clusters', 
-        'multi_window', 'validated_levels', 'zigzag', 
-        'mean_rev', 'mean_rev_multi', 'mean_rev_vol'
-    }
     # Allowed smoothing methods for label functions that support a 'filter' kwarg
     ALLOWED_FILTERS = {
         "trend_filters": {"savgol", "spline", "sma", "ema"},
@@ -341,42 +336,33 @@ class StrategySearcher:
             full_ds = self.get_labeled_full_data(hp)
             if full_ds is None:
                 return -1.0
-                
-            if self.label_method in self.RELIABILITY_METHODS:
-                # Esquema híbrido: clustering + confiabilidad
-                if self.debug:
-                    print(f"🔍 DEBUG search_clusters {self.search_subtype} - Aplicando clustering híbrido")
-                
-                # Hacer clustering solo en muestras confiables
-                reliable_mask = full_ds['labels_main'] != 2.0
-                reliable_data = full_ds[reliable_mask].copy()
-                
-                if len(reliable_data) < 200:
-                    if self.debug:
-                        print(f"🔍 DEBUG search_clusters {self.search_subtype} - Insuficientes muestras confiables para clustering")
-                    return -1.0
-                
-                # Aplicar clustering
-                reliable_data_clustered = _clustering_method(reliable_data, hp)
-                # Propagar clusters a dataset completo
-                full_ds.loc[reliable_mask, 'labels_meta'] = reliable_data_clustered['labels_meta']
-                full_ds.loc[~reliable_mask, 'labels_meta'] = -1  # Muestras no confiables sin cluster
 
-            else:
-                # Esquema tradicional: aplicar clustering a todo
+            # Esquema híbrido: clustering + confiabilidad
+            if self.debug:
+                print(f"🔍 DEBUG search_clusters {self.search_subtype} - Aplicando clustering híbrido")
+            
+            # Hacer clustering solo en muestras confiables
+            reliable_mask = full_ds['labels_main'].isin([0.0, 1.0])
+            reliable_data = full_ds[reliable_mask].copy()
+            
+            if len(reliable_data) < 200:
                 if self.debug:
-                    print(f"🔍 DEBUG search_clusters {self.search_subtype} - Aplicando clustering tradicional")
-
-                # Aplicar clustering
-                full_ds = _clustering_method(full_ds, hp)
+                    print(f"🔍 DEBUG search_clusters {self.search_subtype} - Insuficientes muestras confiables para clustering")
+                return -1.0
+            
+            # Aplicar clustering
+            reliable_data_clustered = _clustering_method(reliable_data, hp)
+            # Propagar clusters a dataset completo
+            full_ds.loc[reliable_mask, 'labels_meta'] = reliable_data_clustered['labels_meta']
+            full_ds.loc[~reliable_mask, 'labels_meta'] = -1  # Muestras no confiables sin cluster
 
             score, full_ds_with_labels_path, model_paths, models_cols = self.evaluate_clusters(trial, full_ds, hp)
             if score is None or model_paths is None or models_cols is None or full_ds_with_labels_path is None:
                 return -1.0
             trial.set_user_attr('score', score)
-            trial.set_user_attr('full_ds_with_labels_path', full_ds_with_labels_path)
             trial.set_user_attr('model_paths', model_paths)
             trial.set_user_attr('model_cols', models_cols)
+            trial.set_user_attr('full_ds_with_labels_path', full_ds_with_labels_path)
             return trial.user_attrs.get('score', -1.0)
         except Exception as e:
             print(f"Error en search_clusters: {str(e)}")
@@ -389,62 +375,31 @@ class StrategySearcher:
             full_ds = self.get_labeled_full_data(hp)
             if full_ds is None:
                 return -1.0
-                
-            if self.label_method in self.RELIABILITY_METHODS:
-                # Usar esquema de confiabilidad directamente
-                if self.debug:
-                    print(f"🔍 DEBUG search_mapie - Usando esquema de confiabilidad")
-                
-                # Main data: solo muestras confiables
-                reliable_mask = full_ds['labels_main'] != 2.0
-                reliable_data = full_ds[reliable_mask].copy()
-                main_feature_cols = [col for col in reliable_data.columns if col.endswith('_main_feature')]
-                X = reliable_data[main_feature_cols].dropna(subset=main_feature_cols)
-                y = reliable_data['labels_main']
 
-            else:
-                # Esquema tradicional MAPIE
-                if self.debug:
-                    print(f"🔍 DEBUG search_mapie - Usando esquema tradicional MAPIE")
-                    
-                main_feature_cols = [col for col in full_ds.columns if col.endswith('_main_feature')]
-                X = full_ds[main_feature_cols].dropna(subset=main_feature_cols)
-                y = full_ds['labels_main']
-
-            catboost_params = dict(
-                iterations=hp['cat_main_iterations'],
-                depth=hp['cat_main_depth'],
-                learning_rate=hp['cat_main_learning_rate'],
-                l2_leaf_reg=hp['cat_main_l2_leaf_reg'],
-                eval_metric='Accuracy',
-                store_all_simple_ctr=False,
-                allow_writing_files=False,
-                thread_count=-1,
-                task_type='CPU',
-                verbose=False,
+            # Usar esquema de confiabilidad directamente
+            if self.debug:
+                print(f"🔍 DEBUG search_mapie - Usando esquema de confiabilidad")
+            
+            # Main data: solo muestras confiables
+            reliable_mask = full_ds['labels_main'].isin([0.0, 1.0])
+            
+            # REFACTORIZACIÓN: Usar apply_mapie_filter en lugar de bloque MAPIE propio
+            conformal_scores, precision_scores = self.apply_mapie_filter(
+                trial=trial, 
+                full_ds=full_ds, 
+                hp=hp, 
+                reliable_mask=reliable_mask
             )
-            base_estimator = CatBoostClassifier(**catboost_params)
-            mapie = CrossConformalClassifier(
-                estimator=base_estimator,
-                confidence_level=hp.get('mapie_confidence_level', 0.9),
-                cv=hp.get('mapie_cv', 5),
-            )
-            mapie.fit_conformalize(X, y)
-            predicted, y_prediction_sets = mapie.predict_set(X)
-            y_prediction_sets = np.squeeze(y_prediction_sets, axis=-1)
-            set_sizes = np.sum(y_prediction_sets, axis=1)
+            
+            # Inicializar etiquetas en full_ds
             full_ds['conformal_labels'] = 0.0
             full_ds['meta_labels'] = 0.0
             
-            if self.label_method in self.RELIABILITY_METHODS:
-                # Mapear resultados de reliable_data a full_ds usando índices originales
-                full_ds.loc[reliable_data.index[set_sizes == 1], 'conformal_labels'] = 1.0
-                full_ds.loc[reliable_data.index[predicted == y], 'meta_labels'] = 1.0
-            else:
-                # Esquema tradicional: usar toda la data
-                full_ds.loc[set_sizes == 1, 'conformal_labels'] = 1.0
-                full_ds.loc[predicted == y, 'meta_labels'] = 1.0
+            # Mapear scores a etiquetas (consistente con implementación original)
+            full_ds['conformal_labels'] = conformal_scores
+            full_ds['meta_labels'] = precision_scores
                 
+            main_feature_cols = [col for col in full_ds.columns if col.endswith('_main_feature')]
             model_main_train_data = full_ds[full_ds['meta_labels'] == 1][main_feature_cols + ['labels_main']].dropna(subset=main_feature_cols).copy()
             if len(model_main_train_data) < 200:  # Mínimo razonable
                 if self.debug:
@@ -456,7 +411,7 @@ class StrategySearcher:
                 meta_feature_cols = main_feature_cols
             model_meta_train_data = full_ds[meta_feature_cols].dropna(subset=meta_feature_cols).copy()
             model_meta_train_data['labels_meta'] = full_ds['conformal_labels']
-            score, model_paths, models_cols = self.fit_final_models(
+            score, full_ds_with_labels_path, model_paths, models_cols = self.fit_final_models(
                 trial=trial,
                 full_ds=full_ds,
                 model_main_train_data=model_main_train_data,
@@ -464,11 +419,12 @@ class StrategySearcher:
                 hp=hp.copy()
             )
                 
-            if score is None or model_paths is None or models_cols is None:
+            if score is None or model_paths is None or models_cols is None or full_ds_with_labels_path is None:
                 return -1.0
             trial.set_user_attr('score', score)
             trial.set_user_attr('model_paths', model_paths)
             trial.set_user_attr('model_cols', models_cols)
+            trial.set_user_attr('full_ds_with_labels_path', full_ds_with_labels_path)
             return trial.user_attrs.get('score', -1.0)
         except Exception as e:
             print(f"Error en search_mapie: {str(e)}")
@@ -540,27 +496,17 @@ class StrategySearcher:
             full_ds = self.get_labeled_full_data(hp)
             if full_ds is None:
                 return -1.0
-                
-            if self.label_method in self.RELIABILITY_METHODS:
-                # Usar esquema de confiabilidad directamente
-                if self.debug:
-                    print(f"🔍 DEBUG search_causal - Usando esquema de confiabilidad")
-                
-                # Main data: solo muestras confiables
-                reliable_mask = full_ds['labels_main'] != 2.0
-                main_feature_cols = [col for col in reliable_data.columns if col.endswith('_main_feature')]
-                reliable_data = full_ds[reliable_mask]
-                X = reliable_data[main_feature_cols].dropna(subset=main_feature_cols).copy()
-                y = reliable_data['labels_main']
 
-            else:
-                # Esquema tradicional CAUSAL
-                if self.debug:
-                    print(f"🔍 DEBUG search_causal - Usando esquema tradicional CAUSAL")
-                    
-                main_feature_cols = [col for col in full_ds.columns if col.endswith('_main_feature')]
-                X = full_ds[main_feature_cols].dropna(subset=main_feature_cols)
-                y = full_ds['labels_main']
+            # Usar esquema de confiabilidad directamente
+            if self.debug:
+                print(f"🔍 DEBUG search_causal - Usando esquema de confiabilidad")
+            
+            # Main data: solo muestras confiables
+            reliable_mask = full_ds['labels_main'].isin([0.0, 1.0])
+            reliable_data = full_ds[reliable_mask].copy()
+            main_feature_cols = [col for col in reliable_data.columns if col.endswith('_main_feature')]
+            X = reliable_data[main_feature_cols].dropna(subset=main_feature_cols).copy()
+            y = reliable_data['labels_main']
                 
             err0, err1, oob = _bootstrap_oob_identification(X, y, n_models=hp.get('causal_meta_learners', 15))
             best_frac = _optimize_bad_samples_threshold(err0, err1, oob)
@@ -572,16 +518,9 @@ class StrategySearcher:
             marked1 = to_mark_1[to_mark_1 > thr1].index
             all_bad = pd.Index(marked0).union(marked1)
             full_ds['meta_labels'] = 1.0
-            
-            if self.label_method in self.RELIABILITY_METHODS:
-                # En esquema fractal: muestras unreliable automáticamente son "malas"
-                reliable_mask = full_ds['labels_main'] != 2.0
-                full_ds.loc[~reliable_mask, 'meta_labels'] = 0.0
-                # Aplicar all_bad solo a índices que fueron analizados (reliable_data)
-                full_ds.loc[full_ds.index.isin(all_bad), 'meta_labels'] = 0.0
-            else:
-                # Esquema tradicional: all_bad se aplica directamente
-                full_ds.loc[full_ds.index.isin(all_bad), 'meta_labels'] = 0.0
+            full_ds.loc[~reliable_mask, 'meta_labels'] = 0.0
+            # Aplicar all_bad solo a índices que fueron analizados (reliable_data)
+            full_ds.loc[full_ds.index.isin(all_bad), 'meta_labels'] = 0.0
                 
             model_main_train_data = full_ds[full_ds['meta_labels'] == 1.0][main_feature_cols + ['labels_main']].dropna(subset=main_feature_cols).copy()
             if len(model_main_train_data) < 200:  # Mínimo razonable
@@ -594,7 +533,7 @@ class StrategySearcher:
                 meta_feature_cols = main_feature_cols
             model_meta_train_data = full_ds[meta_feature_cols].dropna(subset=meta_feature_cols).copy()
             model_meta_train_data['labels_meta'] = full_ds['meta_labels']
-            score, model_paths, models_cols = self.fit_final_models(
+            score, full_ds_with_labels_path, model_paths, models_cols = self.fit_final_models(
                 trial=trial,
                 full_ds=full_ds,
                 model_main_train_data=model_main_train_data,
@@ -602,11 +541,12 @@ class StrategySearcher:
                 hp=hp.copy()
             )
                 
-            if score is None or model_paths is None or models_cols is None:
+            if score is None or model_paths is None or models_cols is None or full_ds_with_labels_path is None:
                 return -1.0
             trial.set_user_attr('score', score)
             trial.set_user_attr('model_paths', model_paths)
             trial.set_user_attr('model_cols', models_cols)
+            trial.set_user_attr('full_ds_with_labels_path', full_ds_with_labels_path)
             return trial.user_attrs.get('score', -1.0)
         except Exception as e:
             print(f"Error en search_causal: {str(e)}")
@@ -681,7 +621,7 @@ class StrategySearcher:
                 return -1.0
                 
             # Usar pipeline existente
-            score, model_paths, models_cols = self.fit_final_models(
+            score, full_ds_with_labels_path, model_paths, models_cols = self.fit_final_models(
                 trial=trial,
                 full_ds=full_ds,
                 model_main_train_data=model_main_train_data,
@@ -689,12 +629,13 @@ class StrategySearcher:
                 hp=hp.copy()
             )
             
-            if score is None or model_paths is None or models_cols is None:
+            if score is None or model_paths is None or models_cols is None or full_ds_with_labels_path is None:
                 return -1.0
                 
             trial.set_user_attr('score', score)
             trial.set_user_attr('model_paths', model_paths)
             trial.set_user_attr('model_cols', models_cols)
+            trial.set_user_attr('full_ds_with_labels_path', full_ds_with_labels_path)
             return trial.user_attrs.get('score', -1.0)
             
         except Exception as e:
@@ -733,7 +674,7 @@ class StrategySearcher:
             # Evaluar cada cluster
             for clust in cluster_sizes.index:
                 cluster_mask = full_ds['labels_meta'] == clust
-                reliable_mask = full_ds['labels_main'] != 2.0
+                reliable_mask = full_ds['labels_main'].isin([0.0, 1.0])
                 hybrid_mask = cluster_mask & reliable_mask
                 
                 if not hybrid_mask.any():
@@ -748,7 +689,7 @@ class StrategySearcher:
                         print(f"🔍   hybrid_mask.sum(): {hybrid_mask.sum()}")
                         print(f"🔍   hybrid_mask.mean(): {hybrid_mask.mean():.3f}")
                     
-                    conformal_scores = self.apply_mapie_filter(trial, full_ds, hp, hybrid_mask)
+                    conformal_scores, _ = self.apply_mapie_filter(trial, full_ds, hp, hybrid_mask)
                     mapie_mask = conformal_scores == 1.0
                     final_mask = hybrid_mask & mapie_mask
                     
@@ -771,24 +712,10 @@ class StrategySearcher:
                 main_feature_cols = [c for c in full_ds.columns if c.endswith('_main_feature')]
                 model_main_train_data = full_ds.loc[final_mask, main_feature_cols + ['labels_main']].dropna(subset=main_feature_cols).copy()
                 
-                if self.label_method in self.RELIABILITY_METHODS:
-                    # Intersección: cluster + confiabilidad
-                    meta_feature_cols = [c for c in full_ds.columns if c.endswith('_meta_feature')]
-                    model_meta_train_data = full_ds[meta_feature_cols].dropna(subset=meta_feature_cols).copy()
-                    model_meta_train_data['labels_meta'] = final_mask.astype('int8')  # 1 = cluster bueno + confiable
-                    
-                else:
-                    # Esquema tradicional de clusters
-                    meta_feature_cols = full_ds.columns[full_ds.columns.str.contains('_meta_feature')]
-                    model_meta_train_data = full_ds.loc[:, meta_feature_cols].dropna(subset=meta_feature_cols).copy()
-                    # Para esquema tradicional: crear máscara meta según el caso
-                    if self.search_filter == 'mapie':
-                        # Aplicar MAPIE al cluster completo (sin filtro de confiabilidad)
-                        meta_mask = cluster_mask & mapie_mask
-                    else:
-                        # Sin MAPIE: solo cluster
-                        meta_mask = cluster_mask
-                    model_meta_train_data['labels_meta'] = meta_mask.astype('int8')
+                # Intersección: cluster + confiabilidad
+                meta_feature_cols = [c for c in full_ds.columns if c.endswith('_meta_feature')]
+                model_meta_train_data = full_ds[meta_feature_cols].dropna(subset=meta_feature_cols).copy()
+                model_meta_train_data['labels_meta'] = final_mask.astype('int8')  # 1 = cluster bueno + confiable
 
                 # Verificar que tenemos suficientes muestras
                 if model_main_train_data is None or model_main_train_data.empty:
@@ -961,6 +888,7 @@ class StrategySearcher:
             'label_method_trend':     lambda t: t.suggest_categorical('label_method_trend', ['normal', 'inverse']),
             'label_method_random':     lambda t: t.suggest_categorical('label_method_random', ['first', 'last', 'mean', 'max', 'min', 'random']),
             'label_filter':     lambda t: t.suggest_categorical('label_filter', ['savgol', 'spline', 'sma', 'ema']),
+            'label_filter_mean':     lambda t: t.suggest_categorical('label_filter_mean', ['savgol', 'spline', 'mean']),
             'label_window_size': lambda t: t.suggest_int('label_window_size', 4, 60, log=True),
             'label_window_sizes_int': lambda t: [t.suggest_int(f'label_window_sizes_{i}', 4, 60, log=True) for i in range(3)],
             'label_window_sizes_float': lambda t: [t.suggest_float(f'label_window_sizes_{i}', 0.2, 0.5) for i in range(3)],
@@ -1231,7 +1159,7 @@ class StrategySearcher:
             reliable_mask: Máscara opcional para filtrar muestras confiables
             
         Returns:
-            np.ndarray: conformal_scores con 1.0 para muestras confiables, 0.0 para no confiables
+            tuple: conformal_scores con 1.0 para muestras confiables, 0.0 para no confiables
         """
         try:
             if self.debug:
@@ -1247,20 +1175,22 @@ class StrategySearcher:
                 reliable_data = full_ds[reliable_mask].copy()
                 main_feature_cols = [col for col in reliable_data.columns if col.endswith('_main_feature')]
                 X = reliable_data[main_feature_cols].dropna(subset=main_feature_cols)
-                y = reliable_data['labels_main']
+                y = reliable_data.loc[X.index, 'labels_main']
                 
                 if self.debug:
                     print(f"🔍   reliable_data.shape: {reliable_data.shape}")
                     print(f"🔍   X.shape: {X.shape}")
+                    print(f"🔍   y.shape: {y.shape}")
                     print(f"🔍   y.value_counts(): {y.value_counts().to_dict()}")
             else:
                 # Esquema tradicional
                 main_feature_cols = [col for col in full_ds.columns if col.endswith('_main_feature')]
                 X = full_ds[main_feature_cols].dropna(subset=main_feature_cols)
-                y = full_ds['labels_main']
+                y = full_ds.loc[X.index, 'labels_main']
                 
                 if self.debug:
                     print(f"🔍   X.shape: {X.shape}")
+                    print(f"🔍   y.shape: {y.shape}")
                     print(f"🔍   y.value_counts(): {y.value_counts().to_dict()}")
 
             catboost_params = dict(
@@ -1284,31 +1214,47 @@ class StrategySearcher:
             )
             
             mapie.fit_conformalize(X, y)
-            _ , y_prediction_sets = mapie.predict_set(X)
+            predicted, y_prediction_sets = mapie.predict_set(X)
             y_prediction_sets = np.squeeze(y_prediction_sets, axis=-1)
             set_sizes = np.sum(y_prediction_sets, axis=1)
             
             # Scores de confiabilidad: 1.0 si set_size == 1 (alta confianza), 0.0 en caso contrario
             conformal_scores = (set_sizes == 1).astype(float)
+            # Scores de precisión: 1.0 si predicted == y (predicción correcta), 0.0 en caso contrario
+            precision_scores = (predicted == y).astype(float)
+            # Combinar: solo muestras que son tanto confiables como precisas
+            combined_scores = ((conformal_scores == 1.0) & (precision_scores == 1.0)).astype(float)
             
             if self.debug:
                 print(f"🔍   set_sizes.min(): {set_sizes.min()}, set_sizes.max(): {set_sizes.max()}")
                 print(f"🔍   conformal_scores.sum(): {conformal_scores.sum()}")
-                print(f"🔍   conformal_scores.mean(): {conformal_scores.mean():.3f}")
+                print(f"🔍   precision_scores.sum(): {precision_scores.sum()}")
+                print(f"🔍   combined_scores.sum(): {combined_scores.sum()}")
+                print(f"🔍   combined_scores.mean(): {combined_scores.mean():.3f}")
                 print(f"🔍 DEBUG apply_mapie_filter - Filtrado MAPIE completado")
             
-            # Mapear scores de vuelta al dataset completo
             if reliable_mask is not None:
-                # Crear array de ceros del tamaño del dataset completo
                 full_conformal_scores = np.zeros(len(full_ds))
-                # Mapear scores usando los índices de reliable_mask
+                full_precision_scores = np.zeros(len(full_ds))
+                full_combined_scores = np.zeros(len(full_ds))
+                
                 full_conformal_scores[reliable_mask] = conformal_scores
-                return full_conformal_scores
+                full_precision_scores[reliable_mask] = precision_scores
+                full_combined_scores[reliable_mask] = combined_scores
+                
+                if self.debug:
+                    print(f"🔍   reliable_mask.sum(): {reliable_mask.sum()}")
+                    print(f"🔍   conformal_scores.shape: {conformal_scores.shape}")
+                    print(f"🔍   precision_scores.shape: {precision_scores.shape}")
+                
+                return full_conformal_scores, full_precision_scores
             else:
-                return conformal_scores
+                return conformal_scores, precision_scores
             
         except Exception as e:
-            return np.zeros(len(full_ds))
+            if self.debug:
+                print(f"🔍 DEBUG apply_mapie_filter - ERROR: {str(e)}")
+            return np.zeros(len(full_ds)), np.zeros(len(full_ds))
         
     def apply_labeling(self, dataset: pd.DataFrame, hp: dict) -> pd.DataFrame:
         """Apply the selected labeling function dynamically.
@@ -1373,10 +1319,10 @@ class StrategySearcher:
 
             # Ajuste automático para savgol_filter y similares
             filter_val = kwargs.get('label_filter')
-            allowed = self.ALLOWED_FILTERS.get(self.label_method)
+            filter_mean_val = kwargs.get('label_filter_mean')
             # Detectar parámetros de ventana relevantes
             window_keys = [k for k in kwargs if any(x in k for x in ('rolling', 'window', 'window_size'))]
-            if filter_val == 'savgol' and window_keys:
+            if (filter_val == 'savgol' or filter_mean_val == 'savgol') and window_keys:
                 for k in window_keys:
                     v = kwargs[k]
                     if isinstance(v, list) or isinstance(v, tuple):
@@ -1437,11 +1383,6 @@ class StrategySearcher:
             if 'label_max_val' in kwargs and len(dataset) <= kwargs['label_max_val']:
                 if self.debug:
                     print(f"🔍 DEBUG apply_labeling - FALLO: Dataset <= label_max_val ({len(dataset)} <= {kwargs['label_max_val']})")
-                return pd.DataFrame()
-
-            if filter_val and allowed and filter_val not in allowed:
-                if self.debug:
-                    print(f"🔍 DEBUG apply_labeling - FALLO: Filtro '{filter_val}' no permitido para '{self.label_method}'")
                 return pd.DataFrame()
 
             if self.debug:

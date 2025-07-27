@@ -384,7 +384,7 @@ class StrategySearcher:
             reliable_mask = full_ds['labels_main'].isin([0.0, 1.0])
             
             # REFACTORIZACIÓN: Usar apply_mapie_filter en lugar de bloque MAPIE propio
-            mapie_scores = self.apply_mapie_filter(
+            conformal_scores, precision_scores = self.apply_mapie_filter(
                 trial=trial, 
                 full_ds=full_ds, 
                 hp=hp, 
@@ -392,8 +392,12 @@ class StrategySearcher:
             )
             
             # Inicializar etiquetas en full_ds
-            full_ds['conformal_labels'] = mapie_scores
-            full_ds['meta_labels'] = mapie_scores
+            full_ds['conformal_labels'] = conformal_scores
+            full_ds['precision_labels'] = precision_scores
+            
+            # Para el meta model, usar solo muestras que sean tanto confiables como precisas
+            combined_scores = ((conformal_scores == 1.0) & (precision_scores == 1.0)).astype(float)
+            full_ds['meta_labels'] = combined_scores
                 
             main_feature_cols = [col for col in full_ds.columns if col.endswith('_main_feature')]
             model_main_train_data = full_ds[full_ds['meta_labels'] == 1][main_feature_cols + ['labels_main']].dropna(subset=main_feature_cols).copy()
@@ -620,11 +624,14 @@ class StrategySearcher:
                         print(f"🔍   hybrid_mask.sum(): {hybrid_mask.sum()}")
                         print(f"🔍   hybrid_mask.mean(): {hybrid_mask.mean():.3f}")
                     
-                    mapie_scores = self.apply_mapie_filter(trial, full_ds, hp, hybrid_mask)
-                    mapie_mask = mapie_scores == 1.0
+                    conformal_scores, precision_scores = self.apply_mapie_filter(trial, full_ds, hp, hybrid_mask)
+                    # Combinamos ambos criterios: confianza + precisión
+                    mapie_mask = ((conformal_scores == 1.0) & (precision_scores == 1.0))
                     final_mask = hybrid_mask & mapie_mask
                     
                     if self.debug:
+                        print(f"🔍   conformal_scores.sum(): {conformal_scores.sum()}")
+                        print(f"🔍   precision_scores.sum(): {precision_scores.sum()}")
                         print(f"🔍   mapie_mask.sum(): {mapie_mask.sum()}")
                         print(f"🔍   mapie_mask.mean(): {mapie_mask.mean():.3f}")
                         print(f"🔍   final_mask.sum(): {final_mask.sum()}")
@@ -1096,7 +1103,7 @@ class StrategySearcher:
         finally:
             clear_onnx_session_cache()
 
-    def apply_mapie_filter(self, trial, full_ds, hp, reliable_mask=None) -> np.ndarray:
+    def apply_mapie_filter(self, trial, full_ds, hp, reliable_mask=None) -> tuple:
         """
         Aplica conformal prediction (MAPIE) para obtener scores de confiabilidad.
         
@@ -1107,7 +1114,9 @@ class StrategySearcher:
             reliable_mask: Máscara opcional para filtrar muestras confiables
             
         Returns:
-            np.ndarray: combined_scores con 1.0 para muestras confiables y precisas, 0.0 para el resto
+            tuple: (conformal_scores, precision_scores) donde:
+                - conformal_scores: 1.0 para muestras confiables (set_size == 1), 0.0 en caso contrario
+                - precision_scores: 1.0 para predicciones correctas, 0.0 en caso contrario
         """
         try:
             if self.debug:
@@ -1129,7 +1138,7 @@ class StrategySearcher:
                 if len(X) != len(y):
                     if self.debug:
                         print(f"🔍 DEBUG apply_mapie_filter - Desalineación de índices reliable: X={len(X)}, y={len(y)}")
-                    return np.zeros(len(full_ds))
+                    return np.zeros(len(full_ds)), np.zeros(len(full_ds))
                 
                 if self.debug:
                     print(f"🔍   reliable_data.shape: {reliable_data.shape}")
@@ -1146,7 +1155,7 @@ class StrategySearcher:
                 if len(X) != len(y):
                     if self.debug:
                         print(f"🔍 DEBUG apply_mapie_filter - Desalineación de índices tradicional: X={len(X)}, y={len(y)}")
-                    return np.zeros(len(X))
+                    return np.zeros(len(X)), np.zeros(len(X))
                 
                 if self.debug:
                     print(f"🔍   X.shape: {X.shape}")
@@ -1158,18 +1167,18 @@ class StrategySearcher:
                 if self.debug:
                     print(f"🔍 DEBUG apply_mapie_filter - Datos insuficientes para MAPIE: {len(X)}")
                 if reliable_mask is not None:
-                    return np.zeros(len(full_ds))
+                    return np.zeros(len(full_ds)), np.zeros(len(full_ds))
                 else:
-                    return np.zeros(len(X))
+                    return np.zeros(len(X)), np.zeros(len(X))
             
             # Verificar que tenemos al menos 2 clases
             if len(y.unique()) < 2:
                 if self.debug:
                     print(f"🔍 DEBUG apply_mapie_filter - Clases insuficientes para MAPIE: {y.unique()}")
                 if reliable_mask is not None:
-                    return np.zeros(len(full_ds))
+                    return np.zeros(len(full_ds)), np.zeros(len(full_ds))
                 else:
-                    return np.zeros(len(X))
+                    return np.zeros(len(X)), np.zeros(len(X))
 
             def _randomize_catboost_params(base_params):
                 # Pequeñas variaciones aleatorias (±10%) para cada hiperparámetro relevante
@@ -1227,21 +1236,25 @@ class StrategySearcher:
                 print(f"🔍 DEBUG apply_mapie_filter - Filtrado MAPIE completado")
             
             if reliable_mask is not None:
-                full_combined_scores = np.zeros(len(full_ds))
-                full_combined_scores[reliable_mask] = combined_scores
+                full_conformal_scores = np.zeros(len(full_ds))
+                full_precision_scores = np.zeros(len(full_ds))
+                
+                full_conformal_scores[reliable_mask] = conformal_scores
+                full_precision_scores[reliable_mask] = precision_scores
                 
                 if self.debug:
                     print(f"🔍   reliable_mask.sum(): {reliable_mask.sum()}")
-                    print(f"🔍   combined_scores.shape: {combined_scores.shape}")
+                    print(f"🔍   conformal_scores.shape: {conformal_scores.shape}")
+                    print(f"🔍   precision_scores.shape: {precision_scores.shape}")
                 
-                return full_combined_scores
+                return full_conformal_scores, full_precision_scores
             else:
-                return combined_scores
+                return conformal_scores, precision_scores
             
         except Exception as e:
             if self.debug:
                 print(f"🔍 DEBUG apply_mapie_filter - ERROR: {str(e)}")
-            return np.zeros(len(full_ds))
+            return np.zeros(len(full_ds)), np.zeros(len(full_ds))
         
     def apply_causal_filter(self, trial, full_ds, hp, reliable_mask=None) -> np.ndarray:
         """

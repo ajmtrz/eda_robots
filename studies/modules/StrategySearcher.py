@@ -433,65 +433,6 @@ class StrategySearcher:
     def search_causal(self, trial: optuna.Trial) -> float:
         """Búsqueda basada en detección causal de muestras malas."""
         try:
-
-            def _bootstrap_oob_identification(X: pd.DataFrame, y: pd.Series, n_models: int = 25):
-                oob_counts = pd.Series(0, index=X.index)
-                error_counts_0 = pd.Series(0, index=X.index)
-                error_counts_1 = pd.Series(0, index=X.index)
-                for _ in range(n_models):
-                    frac = random.uniform(0.4, 0.6)
-                    train_idx = X.sample(frac=frac, replace=True).index
-                    val_idx = X.index.difference(train_idx)
-                    if len(val_idx) == 0:
-                        continue
-                    catboost_params = dict(
-                        iterations=hp['cat_main_iterations'],
-                        depth=hp['cat_main_depth'],
-                        learning_rate=hp['cat_main_learning_rate'],
-                        l2_leaf_reg=hp['cat_main_l2_leaf_reg'],
-                        eval_metric='Accuracy',
-                        store_all_simple_ctr=False,
-                        allow_writing_files=False,
-                        thread_count=-1,
-                        task_type='CPU',
-                        verbose=False,
-                    )
-                    model = CatBoostClassifier(**catboost_params)
-                    model.fit(X.loc[train_idx], y.loc[train_idx], eval_set=[(X.loc[val_idx], y.loc[val_idx])], verbose=False)
-                    pred = (model.predict_proba(X.loc[val_idx])[:, 1] >= 0.5).astype(int)
-                    val_y = y.loc[val_idx]
-                    val0 = val_idx[val_y == 0]
-                    val1 = val_idx[val_y == 1]
-                    diff0 = val0[pred[val_y == 0] != 0]
-                    diff1 = val1[pred[val_y == 1] != 1]
-                    oob_counts.loc[val_idx] += 1
-                    error_counts_0.loc[diff0] += 1
-                    error_counts_1.loc[diff1] += 1
-                return error_counts_0, error_counts_1, oob_counts
-            def _optimize_bad_samples_threshold(err0, err1, oob, fracs=[0.5, 0.6, 0.7, 0.8]):
-                to_mark_0 = (err0 / oob.replace(0, 1)).fillna(0)
-                to_mark_1 = (err1 / oob.replace(0, 1)).fillna(0)
-                best_f = None
-                best_s = np.inf
-                for frac in fracs:
-                    thr0 = np.percentile(to_mark_0[to_mark_0 > 0], 75) * frac if len(to_mark_0[to_mark_0 > 0]) else 0
-                    thr1 = np.percentile(to_mark_1[to_mark_1 > 0], 75) * frac if len(to_mark_1[to_mark_1 > 0]) else 0
-                    marked0 = to_mark_0[to_mark_0 > thr0].index
-                    marked1 = to_mark_1[to_mark_1 > thr1].index
-                    all_bad = pd.Index(marked0).union(marked1)
-                    good_mask = ~to_mark_0.index.isin(all_bad)
-                    ratios = []
-                    for idx in to_mark_0[good_mask].index:
-                        if to_mark_0[idx] > 0:
-                            ratios.append(to_mark_0[idx])
-                        if to_mark_1[idx] > 0:
-                            ratios.append(to_mark_1[idx])
-                    mean_err = np.mean(ratios) if ratios else 1.0
-                    if mean_err < best_s:
-                        best_s = mean_err
-                        best_f = frac
-                return best_f
-            
             hp = self.suggest_all_params(trial)
             full_ds = self.get_labeled_full_data(hp)
             if full_ds is None:
@@ -503,25 +444,19 @@ class StrategySearcher:
             
             # Main data: solo muestras confiables
             reliable_mask = full_ds['labels_main'].isin([0.0, 1.0])
-            reliable_data = full_ds[reliable_mask].copy()
-            main_feature_cols = [col for col in reliable_data.columns if col.endswith('_main_feature')]
-            X = reliable_data[main_feature_cols].dropna(subset=main_feature_cols).copy()
-            y = reliable_data['labels_main']
+            
+            # REFACTORIZACIÓN: Usar apply_causal_filter en lugar de bloque causal propio
+            causal_scores = self.apply_causal_filter(
+                trial=trial, 
+                full_ds=full_ds, 
+                hp=hp, 
+                reliable_mask=reliable_mask
+            )
+            
+            # Inicializar etiquetas en full_ds
+            full_ds['meta_labels'] = causal_scores
                 
-            err0, err1, oob = _bootstrap_oob_identification(X, y, n_models=hp.get('causal_meta_learners', 15))
-            best_frac = _optimize_bad_samples_threshold(err0, err1, oob)
-            to_mark_0 = (err0 / oob.replace(0, 1)).fillna(0)
-            to_mark_1 = (err1 / oob.replace(0, 1)).fillna(0)
-            thr0 = np.percentile(to_mark_0[to_mark_0 > 0], 75) * best_frac if len(to_mark_0[to_mark_0 > 0]) else 0
-            thr1 = np.percentile(to_mark_1[to_mark_1 > 0], 75) * best_frac if len(to_mark_1[to_mark_1 > 0]) else 0
-            marked0 = to_mark_0[to_mark_0 > thr0].index
-            marked1 = to_mark_1[to_mark_1 > thr1].index
-            all_bad = pd.Index(marked0).union(marked1)
-            full_ds['meta_labels'] = 1.0
-            full_ds.loc[~reliable_mask, 'meta_labels'] = 0.0
-            # Aplicar all_bad solo a índices que fueron analizados (reliable_data)
-            full_ds.loc[full_ds.index.isin(all_bad), 'meta_labels'] = 0.0
-                
+            main_feature_cols = [col for col in full_ds.columns if col.endswith('_main_feature')]
             model_main_train_data = full_ds[full_ds['meta_labels'] == 1.0][main_feature_cols + ['labels_main']].dropna(subset=main_feature_cols).copy()
             if len(model_main_train_data) < 200:  # Mínimo razonable
                 if self.debug:
@@ -696,6 +631,23 @@ class StrategySearcher:
                     if self.debug:
                         print(f"🔍   mapie_mask.sum(): {mapie_mask.sum()}")
                         print(f"🔍   mapie_mask.mean(): {mapie_mask.mean():.3f}")
+                        print(f"🔍   final_mask.sum(): {final_mask.sum()}")
+                        print(f"🔍   final_mask.mean(): {final_mask.mean():.3f}")
+                        if hybrid_mask.sum() > 0:
+                            print(f"🔍   Reducción de muestras: {hybrid_mask.sum()} -> {final_mask.sum()} ({final_mask.sum()/hybrid_mask.sum()*100:.1f}%)")
+                elif self.search_filter == 'causal':
+                    if self.debug:
+                        print(f"🔍 DEBUG evaluate_clusters - Aplicando filtrado CAUSAL al cluster {clust}")
+                        print(f"🔍   hybrid_mask.sum(): {hybrid_mask.sum()}")
+                        print(f"🔍   hybrid_mask.mean(): {hybrid_mask.mean():.3f}")
+                    
+                    causal_scores = self.apply_causal_filter(trial, full_ds, hp, hybrid_mask)
+                    causal_mask = causal_scores == 1.0
+                    final_mask = hybrid_mask & causal_mask
+                    
+                    if self.debug:
+                        print(f"🔍   causal_mask.sum(): {causal_mask.sum()}")
+                        print(f"🔍   causal_mask.mean(): {causal_mask.mean():.3f}")
                         print(f"🔍   final_mask.sum(): {final_mask.sum()}")
                         print(f"🔍   final_mask.mean(): {final_mask.mean():.3f}")
                         if hybrid_mask.sum() > 0:
@@ -940,12 +892,12 @@ class StrategySearcher:
                 p['mapie_confidence_level'] = trial.suggest_float('mapie_confidence_level', 0.8, 0.95)
                 p['mapie_cv']               = trial.suggest_int  ('mapie_cv',               3, 10)
             elif self.search_filter == 'causal':
-                p['causal_meta_learners']   = trial.suggest_int  ('causal_meta_learners',  10, 30)
+                p['causal_meta_learners']   = trial.suggest_int  ('causal_meta_learners', 5, 15)
         elif self.search_type == 'mapie':
             p['mapie_confidence_level'] = trial.suggest_float('mapie_confidence_level', 0.8, 0.95)
             p['mapie_cv']               = trial.suggest_int  ('mapie_cv',               3, 10)
         elif self.search_type == 'causal':
-            p['causal_meta_learners']   = trial.suggest_int  ('causal_meta_learners',  10, 30)
+            p['causal_meta_learners']   = trial.suggest_int  ('causal_meta_learners', 5, 15)
 
         return p
 
@@ -1193,6 +1145,21 @@ class StrategySearcher:
                     print(f"🔍   y.shape: {y.shape}")
                     print(f"🔍   y.value_counts(): {y.value_counts().to_dict()}")
 
+            def _randomize_catboost_params(base_params):
+                # Pequeñas variaciones aleatorias (±10%) para cada hiperparámetro relevante
+                randomized = base_params.copy()
+                for k in ['iterations', 'depth', 'l2_leaf_reg']:
+                    if k in randomized:
+                        jitter = random.uniform(0.7, 1.3)
+                        # Mantener enteros para iteraciones y profundidad
+                        if k in ['iterations', 'depth']:
+                            randomized[k] = max(1, int(round(randomized[k] * jitter)))
+                        else:
+                            randomized[k] = randomized[k] * jitter
+                if 'learning_rate' in randomized:
+                    jitter = random.uniform(0.7, 1.3)
+                    randomized['learning_rate'] = max(1e-4, randomized['learning_rate'] * jitter)
+                return randomized
             catboost_params = dict(
                 iterations=hp['cat_main_iterations'],
                 depth=hp['cat_main_depth'],
@@ -1205,7 +1172,7 @@ class StrategySearcher:
                 task_type='CPU',
                 verbose=False,
             )
-            
+            catboost_params = _randomize_catboost_params(catboost_params)
             base_estimator = CatBoostClassifier(**catboost_params)
             mapie = CrossConformalClassifier(
                 estimator=base_estimator,
@@ -1255,6 +1222,168 @@ class StrategySearcher:
             if self.debug:
                 print(f"🔍 DEBUG apply_mapie_filter - ERROR: {str(e)}")
             return np.zeros(len(full_ds)), np.zeros(len(full_ds))
+        
+    def apply_causal_filter(self, trial, full_ds, hp, reliable_mask=None) -> np.ndarray:
+        """
+        Aplica detección causal de muestras malas usando bootstrap OOB.
+        
+        Args:
+            trial: Optuna trial
+            full_ds: Dataset completo con features
+            hp: Hiperparámetros
+            reliable_mask: Máscara opcional para filtrar muestras confiables
+            
+        Returns:
+            np.ndarray: causal_scores con 1.0 para muestras buenas, 0.0 para muestras malas
+        """
+        try:
+            if self.debug:
+                print(f"🔍 DEBUG apply_causal_filter - Iniciando filtrado causal")
+                print(f"🔍   full_ds.shape: {full_ds.shape}")
+                print(f"🔍   reliable_mask is None: {reliable_mask is None}")
+                if reliable_mask is not None:
+                    print(f"🔍   reliable_mask.sum(): {reliable_mask.sum()}")
+                    print(f"🔍   reliable_mask.mean(): {reliable_mask.mean():.3f}")
+            
+            def _bootstrap_oob_identification(X: pd.DataFrame, y: pd.Series, n_models: int = 25):
+                oob_counts = pd.Series(0, index=X.index)
+                error_counts_0 = pd.Series(0, index=X.index)
+                error_counts_1 = pd.Series(0, index=X.index)
+                for _ in range(n_models):
+                    frac = random.uniform(0.4, 0.6)
+                    train_idx = X.sample(frac=frac, replace=True).index
+                    val_idx = X.index.difference(train_idx)
+                    if len(val_idx) == 0:
+                        continue
+                    # Diversificar hiperparámetros CatBoost para cada modelo bootstrap (sin afectar hp global)
+                    def _randomize_catboost_params(base_params):
+                        # Pequeñas variaciones aleatorias (±10%) para cada hiperparámetro relevante
+                        randomized = base_params.copy()
+                        for k in ['iterations', 'depth', 'l2_leaf_reg']:
+                            if k in randomized:
+                                jitter = random.uniform(0.7, 1.3)
+                                # Mantener enteros para iteraciones y profundidad
+                                if k in ['iterations', 'depth']:
+                                    randomized[k] = max(1, int(round(randomized[k] * jitter)))
+                                else:
+                                    randomized[k] = randomized[k] * jitter
+                        if 'learning_rate' in randomized:
+                            jitter = random.uniform(0.7, 1.3)
+                            randomized['learning_rate'] = max(1e-4, randomized['learning_rate'] * jitter)
+                        return randomized
+
+                    catboost_params = dict(
+                        iterations=hp['cat_main_iterations'],
+                        depth=hp['cat_main_depth'],
+                        learning_rate=hp['cat_main_learning_rate'],
+                        l2_leaf_reg=hp['cat_main_l2_leaf_reg'],
+                        eval_metric='Accuracy',
+                        store_all_simple_ctr=False,
+                        allow_writing_files=False,
+                        thread_count=-1,
+                        task_type='CPU',
+                        verbose=False,
+                    )
+                    catboost_params = _randomize_catboost_params(catboost_params)
+                    model = CatBoostClassifier(**catboost_params)
+                    model.fit(X.loc[train_idx], y.loc[train_idx], eval_set=[(X.loc[val_idx], y.loc[val_idx])], verbose=False)
+                    pred = (model.predict_proba(X.loc[val_idx])[:, 1] >= 0.5).astype(int)
+                    val_y = y.loc[val_idx]
+                    val0 = val_idx[val_y == 0]
+                    val1 = val_idx[val_y == 1]
+                    diff0 = val0[pred[val_y == 0] != 0]
+                    diff1 = val1[pred[val_y == 1] != 1]
+                    oob_counts.loc[val_idx] += 1
+                    error_counts_0.loc[diff0] += 1
+                    error_counts_1.loc[diff1] += 1
+                return error_counts_0, error_counts_1, oob_counts
+            
+            def _optimize_bad_samples_threshold(err0, err1, oob, fracs=[0.5, 0.6, 0.7, 0.8]):
+                to_mark_0 = (err0 / oob.replace(0, 1)).fillna(0)
+                to_mark_1 = (err1 / oob.replace(0, 1)).fillna(0)
+                best_f = None
+                best_s = np.inf
+                for frac in fracs:
+                    thr0 = np.percentile(to_mark_0[to_mark_0 > 0], 75) * frac if len(to_mark_0[to_mark_0 > 0]) else 0
+                    thr1 = np.percentile(to_mark_1[to_mark_1 > 0], 75) * frac if len(to_mark_1[to_mark_1 > 0]) else 0
+                    marked0 = to_mark_0[to_mark_0 > thr0].index
+                    marked1 = to_mark_1[to_mark_1 > thr1].index
+                    all_bad = pd.Index(marked0).union(marked1)
+                    good_mask = ~to_mark_0.index.isin(all_bad)
+                    ratios = []
+                    for idx in to_mark_0[good_mask].index:
+                        if to_mark_0[idx] > 0:
+                            ratios.append(to_mark_0[idx])
+                        if to_mark_1[idx] > 0:
+                            ratios.append(to_mark_1[idx])
+                    mean_err = np.mean(ratios) if ratios else 1.0
+                    if mean_err < best_s:
+                        best_s = mean_err
+                        best_f = frac
+                return best_f
+            
+            if reliable_mask is not None:
+                # Usar esquema de confiabilidad
+                reliable_data = full_ds[reliable_mask].copy()
+                main_feature_cols = [col for col in reliable_data.columns if col.endswith('_main_feature')]
+                X = reliable_data[main_feature_cols].dropna(subset=main_feature_cols)
+                y = reliable_data.loc[X.index, 'labels_main']
+                
+                if self.debug:
+                    print(f"🔍   reliable_data.shape: {reliable_data.shape}")
+                    print(f"🔍   X.shape: {X.shape}")
+                    print(f"🔍   y.shape: {y.shape}")
+                    print(f"🔍   y.value_counts(): {y.value_counts().to_dict()}")
+            else:
+                # Esquema tradicional
+                main_feature_cols = [col for col in full_ds.columns if col.endswith('_main_feature')]
+                X = full_ds[main_feature_cols].dropna(subset=main_feature_cols)
+                y = full_ds.loc[X.index, 'labels_main']
+                
+                if self.debug:
+                    print(f"🔍   X.shape: {X.shape}")
+                    print(f"🔍   y.shape: {y.shape}")
+                    print(f"🔍   y.value_counts(): {y.value_counts().to_dict()}")
+            
+            # Aplicar detección causal
+            err0, err1, oob = _bootstrap_oob_identification(X, y, n_models=hp['causal_meta_learners'])
+            best_frac = _optimize_bad_samples_threshold(err0, err1, oob)
+            
+            to_mark_0 = (err0 / oob.replace(0, 1)).fillna(0)
+            to_mark_1 = (err1 / oob.replace(0, 1)).fillna(0)
+            thr0 = np.percentile(to_mark_0[to_mark_0 > 0], 75) * best_frac if len(to_mark_0[to_mark_0 > 0]) else 0
+            thr1 = np.percentile(to_mark_1[to_mark_1 > 0], 75) * best_frac if len(to_mark_1[to_mark_1 > 0]) else 0
+            marked0 = to_mark_0[to_mark_0 > thr0].index
+            marked1 = to_mark_1[to_mark_1 > thr1].index
+            all_bad = pd.Index(marked0).union(marked1)
+            
+            # Crear scores: 1.0 para muestras buenas, 0.0 para muestras malas
+            causal_scores = np.ones(len(X))
+            causal_scores[X.index.isin(all_bad)] = 0.0
+            
+            if self.debug:
+                print(f"🔍   all_bad.shape: {len(all_bad)}")
+                print(f"🔍   causal_scores.sum(): {causal_scores.sum()}")
+                print(f"🔍   causal_scores.mean(): {causal_scores.mean():.3f}")
+                print(f"🔍 DEBUG apply_causal_filter - Filtrado causal completado")
+            
+            if reliable_mask is not None:
+                # Mapear scores de vuelta al dataset completo
+                full_causal_scores = np.zeros(len(full_ds))
+                full_causal_scores[reliable_mask] = causal_scores
+                
+                if self.debug:
+                    print(f"🔍   reliable_mask.sum(): {reliable_mask.sum()}")
+                    print(f"🔍   causal_scores.shape: {causal_scores.shape}")
+                
+                return full_causal_scores
+            else:
+                return causal_scores
+            
+        except Exception as e:
+            if self.debug:
+                print(f"🔍 DEBUG apply_causal_filter - ERROR: {str(e)}")
+            return np.zeros(len(full_ds))
         
     def apply_labeling(self, dataset: pd.DataFrame, hp: dict) -> pd.DataFrame:
         """Apply the selected labeling function dynamically.

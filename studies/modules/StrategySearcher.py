@@ -312,7 +312,7 @@ class StrategySearcher:
                         data,
                         n_clusters=hp["wk_n_clusters"],
                         window_size=hp["wk_window"],
-                        metric=self.search_subtype,
+                        metric="wasserstein",
                         step=hp.get("wk_step", 1),
                         bandwidth=hp.get("wk_bandwidth", 1.0),
                         n_proj=hp.get("wk_proj", 100),
@@ -384,7 +384,7 @@ class StrategySearcher:
             reliable_mask = full_ds['labels_main'].isin([0.0, 1.0])
             
             # REFACTORIZACIÓN: Usar apply_mapie_filter en lugar de bloque MAPIE propio
-            conformal_scores, precision_scores = self.apply_mapie_filter(
+            mapie_scores = self.apply_mapie_filter(
                 trial=trial, 
                 full_ds=full_ds, 
                 hp=hp, 
@@ -392,15 +392,10 @@ class StrategySearcher:
             )
             
             # Inicializar etiquetas en full_ds
-            full_ds['conformal_labels'] = 0.0
-            full_ds['meta_labels'] = 0.0
-            
-            # Mapear scores a etiquetas (consistente con implementación original)
-            full_ds['conformal_labels'] = conformal_scores
-            full_ds['meta_labels'] = precision_scores
+            full_ds['labels_meta'] = mapie_scores
                 
             main_feature_cols = [col for col in full_ds.columns if col.endswith('_main_feature')]
-            model_main_train_data = full_ds[full_ds['meta_labels'] == 1][main_feature_cols + ['labels_main']].dropna(subset=main_feature_cols).copy()
+            model_main_train_data = full_ds[full_ds['labels_meta'] == 1][main_feature_cols + ['labels_main']].dropna(subset=main_feature_cols).copy()
             if len(model_main_train_data) < 200:  # Mínimo razonable
                 if self.debug:
                     print(f"🔍 DEBUG search_mapie - Insuficientes muestras main: {len(model_main_train_data)}")
@@ -409,8 +404,7 @@ class StrategySearcher:
             meta_feature_cols = [col for col in full_ds.columns if col.endswith('_meta_feature')]
             if not meta_feature_cols:  # Fallback: usar main features si no hay meta features
                 meta_feature_cols = main_feature_cols
-            model_meta_train_data = full_ds[meta_feature_cols].dropna(subset=meta_feature_cols).copy()
-            model_meta_train_data['labels_meta'] = full_ds['conformal_labels']
+            model_meta_train_data = full_ds[meta_feature_cols + ['labels_meta']].dropna(subset=meta_feature_cols).copy()
             score, full_ds_with_labels_path, model_paths, models_cols = self.fit_final_models(
                 trial=trial,
                 full_ds=full_ds,
@@ -454,10 +448,10 @@ class StrategySearcher:
             )
             
             # Inicializar etiquetas en full_ds
-            full_ds['meta_labels'] = causal_scores
+            full_ds['labels_meta'] = causal_scores
                 
             main_feature_cols = [col for col in full_ds.columns if col.endswith('_main_feature')]
-            model_main_train_data = full_ds[full_ds['meta_labels'] == 1.0][main_feature_cols + ['labels_main']].dropna(subset=main_feature_cols).copy()
+            model_main_train_data = full_ds[full_ds['labels_meta'] == 1.0][main_feature_cols + ['labels_main']].dropna(subset=main_feature_cols).copy()
             if len(model_main_train_data) < 200:  # Mínimo razonable
                 if self.debug:
                     print(f"🔍 DEBUG search_causal - Insuficientes muestras main: {len(model_main_train_data)}")
@@ -466,8 +460,7 @@ class StrategySearcher:
             meta_feature_cols = [col for col in full_ds.columns if col.endswith('_meta_feature')]
             if not meta_feature_cols:  # Fallback: usar main features si no hay meta features
                 meta_feature_cols = main_feature_cols
-            model_meta_train_data = full_ds[meta_feature_cols].dropna(subset=meta_feature_cols).copy()
-            model_meta_train_data['labels_meta'] = full_ds['meta_labels']
+            model_meta_train_data = full_ds[meta_feature_cols + ['labels_meta']].dropna(subset=meta_feature_cols).copy()
             score, full_ds_with_labels_path, model_paths, models_cols = self.fit_final_models(
                 trial=trial,
                 full_ds=full_ds,
@@ -624,8 +617,8 @@ class StrategySearcher:
                         print(f"🔍   hybrid_mask.sum(): {hybrid_mask.sum()}")
                         print(f"🔍   hybrid_mask.mean(): {hybrid_mask.mean():.3f}")
                     
-                    conformal_scores, _ = self.apply_mapie_filter(trial, full_ds, hp, hybrid_mask)
-                    mapie_mask = conformal_scores == 1.0
+                    mapie_scores = self.apply_mapie_filter(trial, full_ds, hp, hybrid_mask)
+                    mapie_mask = mapie_scores == 1.0
                     final_mask = hybrid_mask & mapie_mask
                     
                     if self.debug:
@@ -1111,7 +1104,7 @@ class StrategySearcher:
             reliable_mask: Máscara opcional para filtrar muestras confiables
             
         Returns:
-            tuple: conformal_scores con 1.0 para muestras confiables, 0.0 para no confiables
+            np.ndarray: combined_scores con 1.0 para muestras confiables y precisas, 0.0 para el resto
         """
         try:
             if self.debug:
@@ -1129,6 +1122,12 @@ class StrategySearcher:
                 X = reliable_data[main_feature_cols].dropna(subset=main_feature_cols)
                 y = reliable_data.loc[X.index, 'labels_main']
                 
+                # Verificar alineación de índices
+                if len(X) != len(y):
+                    if self.debug:
+                        print(f"🔍 DEBUG apply_mapie_filter - Desalineación de índices reliable: X={len(X)}, y={len(y)}")
+                    return np.zeros(len(full_ds))
+                
                 if self.debug:
                     print(f"🔍   reliable_data.shape: {reliable_data.shape}")
                     print(f"🔍   X.shape: {X.shape}")
@@ -1140,10 +1139,34 @@ class StrategySearcher:
                 X = full_ds[main_feature_cols].dropna(subset=main_feature_cols)
                 y = full_ds.loc[X.index, 'labels_main']
                 
+                # Verificar alineación de índices
+                if len(X) != len(y):
+                    if self.debug:
+                        print(f"🔍 DEBUG apply_mapie_filter - Desalineación de índices tradicional: X={len(X)}, y={len(y)}")
+                    return np.zeros(len(X))
+                
                 if self.debug:
                     print(f"🔍   X.shape: {X.shape}")
                     print(f"🔍   y.shape: {y.shape}")
                     print(f"🔍   y.value_counts(): {y.value_counts().to_dict()}")
+
+            # Verificar que tenemos suficientes datos y clases balanceadas
+            if len(X) < 100:  # Mínimo requerido para conformal prediction robusta
+                if self.debug:
+                    print(f"🔍 DEBUG apply_mapie_filter - Datos insuficientes para MAPIE: {len(X)}")
+                if reliable_mask is not None:
+                    return np.zeros(len(full_ds))
+                else:
+                    return np.zeros(len(X))
+            
+            # Verificar que tenemos al menos 2 clases
+            if len(y.unique()) < 2:
+                if self.debug:
+                    print(f"🔍 DEBUG apply_mapie_filter - Clases insuficientes para MAPIE: {y.unique()}")
+                if reliable_mask is not None:
+                    return np.zeros(len(full_ds))
+                else:
+                    return np.zeros(len(X))
 
             def _randomize_catboost_params(base_params):
                 # Pequeñas variaciones aleatorias (±10%) para cada hiperparámetro relevante
@@ -1201,27 +1224,21 @@ class StrategySearcher:
                 print(f"🔍 DEBUG apply_mapie_filter - Filtrado MAPIE completado")
             
             if reliable_mask is not None:
-                full_conformal_scores = np.zeros(len(full_ds))
-                full_precision_scores = np.zeros(len(full_ds))
                 full_combined_scores = np.zeros(len(full_ds))
-                
-                full_conformal_scores[reliable_mask] = conformal_scores
-                full_precision_scores[reliable_mask] = precision_scores
                 full_combined_scores[reliable_mask] = combined_scores
                 
                 if self.debug:
                     print(f"🔍   reliable_mask.sum(): {reliable_mask.sum()}")
-                    print(f"🔍   conformal_scores.shape: {conformal_scores.shape}")
-                    print(f"🔍   precision_scores.shape: {precision_scores.shape}")
+                    print(f"🔍   combined_scores.shape: {combined_scores.shape}")
                 
-                return full_conformal_scores, full_precision_scores
+                return full_combined_scores
             else:
-                return conformal_scores, precision_scores
+                return combined_scores
             
         except Exception as e:
             if self.debug:
                 print(f"🔍 DEBUG apply_mapie_filter - ERROR: {str(e)}")
-            return np.zeros(len(full_ds)), np.zeros(len(full_ds))
+            return np.zeros(len(full_ds))
         
     def apply_causal_filter(self, trial, full_ds, hp, reliable_mask=None) -> np.ndarray:
         """
@@ -1329,6 +1346,12 @@ class StrategySearcher:
                 X = reliable_data[main_feature_cols].dropna(subset=main_feature_cols)
                 y = reliable_data.loc[X.index, 'labels_main']
                 
+                # Verificar alineación de índices
+                if len(X) != len(y):
+                    if self.debug:
+                        print(f"🔍 DEBUG apply_causal_filter - Desalineación de índices reliable: X={len(X)}, y={len(y)}")
+                    return np.zeros(len(full_ds))
+                
                 if self.debug:
                     print(f"🔍   reliable_data.shape: {reliable_data.shape}")
                     print(f"🔍   X.shape: {X.shape}")
@@ -1340,10 +1363,34 @@ class StrategySearcher:
                 X = full_ds[main_feature_cols].dropna(subset=main_feature_cols)
                 y = full_ds.loc[X.index, 'labels_main']
                 
+                # Verificar alineación de índices
+                if len(X) != len(y):
+                    if self.debug:
+                        print(f"🔍 DEBUG apply_causal_filter - Desalineación de índices tradicional: X={len(X)}, y={len(y)}")
+                    return np.zeros(len(X))
+                
                 if self.debug:
                     print(f"🔍   X.shape: {X.shape}")
                     print(f"🔍   y.shape: {y.shape}")
                     print(f"🔍   y.value_counts(): {y.value_counts().to_dict()}")
+            
+            # Verificar que tenemos suficientes datos
+            if len(X) < 100:  # Mínimo requerido para análisis causal robusto
+                if self.debug:
+                    print(f"🔍 DEBUG apply_causal_filter - Datos insuficientes para análisis causal: {len(X)}")
+                if reliable_mask is not None:
+                    return np.zeros(len(full_ds))
+                else:
+                    return np.zeros(len(X))
+            
+            # Verificar que tenemos al menos 2 clases
+            if len(y.unique()) < 2:
+                if self.debug:
+                    print(f"🔍 DEBUG apply_causal_filter - Clases insuficientes para análisis causal: {y.unique()}")
+                if reliable_mask is not None:
+                    return np.zeros(len(full_ds))
+                else:
+                    return np.zeros(len(X))
             
             # Aplicar detección causal
             err0, err1, oob = _bootstrap_oob_identification(X, y, n_models=hp['causal_meta_learners'])

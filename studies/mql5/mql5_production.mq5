@@ -382,9 +382,14 @@ double OnTester()
       rdd = 0.0;
    else
       rdd = total_ret / max_dd;
-   if(rdd < rdd_floor)
+   
+   // MATCH PYTHON: Umbral más exigente para el ratio retorno/drawdown
+   double min_rdd = MathMax(rdd_floor * 1.5, 2.0);  // Al menos 2.0 o 1.5 veces el floor
+   if(rdd < min_rdd)
       return -1.0;
-   double rdd_nl = 1.0 / (1.0 + MathExp(-(rdd - rdd_floor) / (rdd_floor * 5.0)));
+   
+   // MATCH PYTHON: Normalización más estricta que penaliza ratios bajos
+   double rdd_nl = 1.0 / (1.0 + MathExp(-(rdd - min_rdd) / (min_rdd * 3.0)));
 
 //── 5) Regresión lineal sobre la curva de equity - MATCH PYTHON EXACTLY
    int N = ArraySize(equity);
@@ -440,57 +445,27 @@ double OnTester()
    else
       r2 = 1.0 - (ss_res / ss_tot);
 
-// Normalize slope - MATCH PYTHON EXACTLY (use log1p for better precision)
-   double slope_nl = 1.0 / (1.0 + MathExp(-(MathLog(1.0 + slope) / 5.0)));
+// MATCH PYTHON: Penalizar más fuertemente R² bajos para favorecer linealidad
+   if(r2 < 0.7)  // Umbral más estricto para R²
+      r2 = r2 * 0.5;  // Penalización severa para R² < 0.7
+   else
+      r2 = 0.35 + (r2 - 0.7) * 2.17;  // Reescalar 0.7-1.0 a 0.35-1.0
 
-//── 6) Walk-Forward Analysis - CORRECTED TO MATCH PYTHON -----------
-   const int window = 5;
-   const int step = 1;
-   int wins = 0;
-   int total_windows = 0;
-   double win_ratios_sum = 0.0;
-   int win_ratios_count = 0;
+// MATCH PYTHON: Normalize slope - más sensible a pendientes pequeñas
+   double slope_nl = 1.0 / (1.0 + MathExp(-(MathLog(1.0 + slope) / 3.0)));
 
-   if(n_trades >= window)
-     {
-      for(int start = 0; start <= n_trades - window; start += step)
-        {
-         int end = start + window;
-
-         // 1) Rentabilidad de la ventana (equity) - MATCH PYTHON
-         double r = equity[end] - equity[start];
-         if(r > 0.0)
-            wins++;
-         total_windows++;
-
-         // 2) Ratio de ganadoras/perdedoras en la ventana - MATCH PYTHON
-         int n_winners = 0;
-         for(int j = start; j < end; j++)
-            if(profit_ordered[j] > 0.0)
-               n_winners++;
-         double win_ratio = (double)n_winners / window;
-         win_ratios_sum += win_ratio;
-         win_ratios_count++;
-        }
-     }
-
-   double wf_nl = 0.0;
-   if(total_windows > 0 && win_ratios_count > 0)
-     {
-      double prop_ventanas_rentables = (double)wins / total_windows;
-      double avg_win_ratio = win_ratios_sum / win_ratios_count;
-      wf_nl = prop_ventanas_rentables * avg_win_ratio;
-     }
+//── 6) Walk-Forward Analysis - MATCH PYTHON EXACTLY -----------
+   double wf_nl = WalkForwardValidation(equity, profit_ordered, n_trades);
 
 //── 7) Calcular score final - EXACT PYTHON WEIGHTS ----------------
-   double score = 0.12 * r2 +
-                  0.15 * slope_nl +
-                  0.24 * rdd_nl +
-                  0.19 * trade_nl +
-                  0.30 * wf_nl;
+   double score = 0.20 * r2 +        // Linealidad de la curva (R²)
+                  0.20 * slope_nl +  // Pendiente positiva consistente
+                  0.10 * rdd_nl +    // Ratio retorno/drawdown
+                  0.05 * trade_nl +  // Número de trades (menor importancia)
+                  0.45 * wf_nl;      // Consistencia temporal (máxima prioridad)
 
-   // CRITICAL: Apply same logic as Python - check for negative scores
-   if(score < 0.0)
+   // CRITICAL: Apply same logic as Python - check for negative scores and invalid metrics
+   if(score < 0.0 || trade_nl <= -1.0 || rdd_nl <= -1.0 || r2 <= -1.0 || slope_nl <= -1.0 || wf_nl <= -1.0)
       return -1.0;
 
    return score;
@@ -694,5 +669,163 @@ void print_features_debug(double &features_main[], double &features_meta[], int 
    print_array[index] = NormalizeDouble(double(label), 1);
    index++;
    ArrayPrint(print_array, DECIMAL_PRECISION);
+  }
+
+//+------------------------------------------------------------------+
+//| Walk-Forward Validation - MATCH PYTHON EXACTLY                  |
+//+------------------------------------------------------------------+
+double WalkForwardValidation(double &equity[], double &trade_profits[], int n_trades)
+  {
+   // Ventanas más largas para mayor robustez
+   int base_window = MathMax(10, n_trades / 20);  // Al menos 10, o 5% del total
+   
+   if(n_trades < base_window)
+      return 0.0;
+
+   // Evaluar múltiples escalas temporales con ventanas monótonamente crecientes
+   int window1 = base_window;
+   int window2 = MathMin(window1 * 2, n_trades / 8);
+   int window3 = MathMin(window1 * 3, n_trades / 4);
+   
+   // Filtrar ventanas válidas (debe ser al menos 5 trades por ventana)
+   int windows[];
+   double weights[];
+   int window_count = 0;
+   
+   if(window1 >= 5)
+     {
+      ArrayResize(windows, window_count + 1);
+      ArrayResize(weights, window_count + 1);
+      windows[window_count] = window1;
+      weights[window_count] = 0.5;
+      window_count++;
+     }
+   
+   if(window2 > window1 && window2 >= 5)
+     {
+      ArrayResize(windows, window_count + 1);
+      ArrayResize(weights, window_count + 1);
+      windows[window_count] = window2;
+      weights[window_count] = 0.3;
+      window_count++;
+     }
+   
+   if(window3 > window2 && window3 >= 5)
+     {
+      ArrayResize(windows, window_count + 1);
+      ArrayResize(weights, window_count + 1);
+      windows[window_count] = window3;
+      weights[window_count] = 0.2;
+      window_count++;
+     }
+   
+   // Si no hay ventanas válidas, usar solo la base
+   if(window_count == 0)
+     {
+      ArrayResize(windows, 1);
+      ArrayResize(weights, 1);
+      windows[0] = base_window;
+      weights[0] = 1.0;
+      window_count = 1;
+     }
+   
+   // Normalizar pesos si hay menos ventanas de las esperadas
+   if(window_count > 0)
+     {
+      double weight_sum = 0.0;
+      for(int i = 0; i < window_count; i++)
+         weight_sum += weights[i];
+      for(int i = 0; i < window_count; i++)
+         weights[i] = weights[i] / weight_sum;
+     }
+   
+   double total_score = 0.0;
+   
+   for(int w_idx = 0; w_idx < window_count; w_idx++)
+     {
+      int window = windows[w_idx];
+      double weight = weights[w_idx];
+      
+      if(n_trades < window)
+         continue;
+         
+      int step = MathMax(1, window / 4);  // Solapamiento del 75%
+      int wins = 0;
+      int total = 0;
+      double win_ratios_sum = 0.0;
+      int win_ratios_count = 0;
+      double window_returns[];
+      int window_returns_count = 0;
+
+      for(int start = 0; start <= n_trades - window; start += step)
+        {
+         int end = start + window;
+         
+         // 1) Rentabilidad de la ventana (equity)
+         double r = equity[end] - equity[start];
+         ArrayResize(window_returns, window_returns_count + 1);
+         window_returns[window_returns_count] = r;
+         window_returns_count++;
+         
+         if(r > 0)
+            wins++;
+         total++;
+
+         // 2) Ratio de ganadoras/perdedoras en la ventana
+         int n_window_trades = end - start;
+         if(n_window_trades > 0)
+           {
+            int n_winners = 0;
+            for(int j = start; j < end; j++)
+               if(trade_profits[j] > 0)
+                  n_winners++;
+            double win_ratio = (double)n_winners / n_window_trades;
+            win_ratios_sum += win_ratio;
+            win_ratios_count++;
+           }
+        }
+
+      if(total == 0)
+         continue;
+         
+      double prop_ventanas_rentables = (double)wins / total;
+      double avg_win_ratio = win_ratios_count > 0 ? win_ratios_sum / win_ratios_count : 0.0;
+      
+      // 3) Penalización por volatilidad entre ventanas
+      double stability_penalty = 1.0;
+      if(window_returns_count >= 3)
+        {
+         // Calcular volatilidad de los retornos de ventanas
+         double mean_return = 0.0;
+         for(int i = 0; i < window_returns_count; i++)
+            mean_return += window_returns[i];
+         mean_return /= window_returns_count;
+         
+         double variance = 0.0;
+         for(int i = 0; i < window_returns_count; i++)
+           {
+            double diff = window_returns[i] - mean_return;
+            variance += diff * diff;
+           }
+         variance /= window_returns_count;
+         
+         // Penalizar alta volatilidad (inestabilidad)
+         if(variance > 0)
+           {
+            double cv = MathSqrt(variance) / (MathAbs(mean_return) + 1e-8);  // Coeficiente de variación
+            stability_penalty = 1.0 / (1.0 + cv * 2.0);  // Más penalización por alta volatilidad
+           }
+        }
+      
+      // Score para esta ventana
+      double window_score = prop_ventanas_rentables * avg_win_ratio * stability_penalty;
+      total_score += window_score * weight;
+     }
+
+   // Aplicar función sigmoide para mayor discriminación
+   // Penalizar más fuertemente scores bajos
+   double final_score = MathPow(total_score, 1.5);  // Exponente > 1 para penalizar más los valores bajos
+   
+   return MathMin(1.0, final_score);
   }
 //+------------------------------------------------------------------+

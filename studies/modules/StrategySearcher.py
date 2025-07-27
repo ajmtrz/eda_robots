@@ -748,7 +748,7 @@ class StrategySearcher:
                         print(f"🔍   hybrid_mask.sum(): {hybrid_mask.sum()}")
                         print(f"🔍   hybrid_mask.mean(): {hybrid_mask.mean():.3f}")
                     
-                    conformal_scores = self._apply_mapie_filter(trial, full_ds, hp, hybrid_mask)
+                    conformal_scores = self.apply_mapie_filter(trial, full_ds, hp, hybrid_mask)
                     mapie_mask = conformal_scores == 1.0
                     final_mask = hybrid_mask & mapie_mask
                     
@@ -1220,9 +1220,95 @@ class StrategySearcher:
         finally:
             clear_onnx_session_cache()
 
-    # =========================================================================
-    # Método de aplicación de etiquetado (continuación...)
-    # =========================================================================
+    def apply_mapie_filter(self, trial, full_ds, hp, reliable_mask=None) -> np.ndarray:
+        """
+        Aplica conformal prediction (MAPIE) para obtener scores de confiabilidad.
+        
+        Args:
+            trial: Optuna trial
+            full_ds: Dataset completo con features
+            hp: Hiperparámetros
+            reliable_mask: Máscara opcional para filtrar muestras confiables
+            
+        Returns:
+            np.ndarray: conformal_scores con 1.0 para muestras confiables, 0.0 para no confiables
+        """
+        try:
+            if self.debug:
+                print(f"🔍 DEBUG apply_mapie_filter - Iniciando filtrado MAPIE")
+                print(f"🔍   full_ds.shape: {full_ds.shape}")
+                print(f"🔍   reliable_mask is None: {reliable_mask is None}")
+                if reliable_mask is not None:
+                    print(f"🔍   reliable_mask.sum(): {reliable_mask.sum()}")
+                    print(f"🔍   reliable_mask.mean(): {reliable_mask.mean():.3f}")
+            
+            if reliable_mask is not None:
+                # Usar esquema de confiabilidad
+                reliable_data = full_ds[reliable_mask].copy()
+                main_feature_cols = [col for col in reliable_data.columns if col.endswith('_main_feature')]
+                X = reliable_data[main_feature_cols].dropna(subset=main_feature_cols)
+                y = reliable_data['labels_main']
+                
+                if self.debug:
+                    print(f"🔍   reliable_data.shape: {reliable_data.shape}")
+                    print(f"🔍   X.shape: {X.shape}")
+                    print(f"🔍   y.value_counts(): {y.value_counts().to_dict()}")
+            else:
+                # Esquema tradicional
+                main_feature_cols = [col for col in full_ds.columns if col.endswith('_main_feature')]
+                X = full_ds[main_feature_cols].dropna(subset=main_feature_cols)
+                y = full_ds['labels_main']
+                
+                if self.debug:
+                    print(f"🔍   X.shape: {X.shape}")
+                    print(f"🔍   y.value_counts(): {y.value_counts().to_dict()}")
+
+            catboost_params = dict(
+                iterations=hp['cat_main_iterations'],
+                depth=hp['cat_main_depth'],
+                learning_rate=hp['cat_main_learning_rate'],
+                l2_leaf_reg=hp['cat_main_l2_leaf_reg'],
+                eval_metric='Accuracy',
+                store_all_simple_ctr=False,
+                allow_writing_files=False,
+                thread_count=-1,
+                task_type='CPU',
+                verbose=False,
+            )
+            
+            base_estimator = CatBoostClassifier(**catboost_params)
+            mapie = CrossConformalClassifier(
+                estimator=base_estimator,
+                confidence_level=hp['mapie_confidence_level'],
+                cv=hp['mapie_cv'],
+            )
+            
+            mapie.fit_conformalize(X, y)
+            _ , y_prediction_sets = mapie.predict_set(X)
+            y_prediction_sets = np.squeeze(y_prediction_sets, axis=-1)
+            set_sizes = np.sum(y_prediction_sets, axis=1)
+            
+            # Scores de confiabilidad: 1.0 si set_size == 1 (alta confianza), 0.0 en caso contrario
+            conformal_scores = (set_sizes == 1).astype(float)
+            
+            if self.debug:
+                print(f"🔍   set_sizes.min(): {set_sizes.min()}, set_sizes.max(): {set_sizes.max()}")
+                print(f"🔍   conformal_scores.sum(): {conformal_scores.sum()}")
+                print(f"🔍   conformal_scores.mean(): {conformal_scores.mean():.3f}")
+                print(f"🔍 DEBUG apply_mapie_filter - Filtrado MAPIE completado")
+            
+            # Mapear scores de vuelta al dataset completo
+            if reliable_mask is not None:
+                # Crear array de ceros del tamaño del dataset completo
+                full_conformal_scores = np.zeros(len(full_ds))
+                # Mapear scores usando los índices de reliable_mask
+                full_conformal_scores[reliable_mask] = conformal_scores
+                return full_conformal_scores
+            else:
+                return conformal_scores
+            
+        except Exception as e:
+            return np.zeros(len(full_ds))
         
     def apply_labeling(self, dataset: pd.DataFrame, hp: dict) -> pd.DataFrame:
         """Apply the selected labeling function dynamically.
@@ -1657,95 +1743,3 @@ class StrategySearcher:
                 problematic_cols.append(col)
                 
         return problematic_cols
-
-    def _apply_mapie_filter(self, trial, full_ds, hp, reliable_mask=None) -> np.ndarray:
-        """
-        Aplica conformal prediction (MAPIE) para obtener scores de confiabilidad.
-        
-        Args:
-            trial: Optuna trial
-            full_ds: Dataset completo con features
-            hp: Hiperparámetros
-            reliable_mask: Máscara opcional para filtrar muestras confiables
-            
-        Returns:
-            np.ndarray: conformal_scores con 1.0 para muestras confiables, 0.0 para no confiables
-        """
-        try:
-            if self.debug:
-                print(f"🔍 DEBUG _apply_mapie_filter - Iniciando filtrado MAPIE")
-                print(f"🔍   full_ds.shape: {full_ds.shape}")
-                print(f"🔍   reliable_mask is None: {reliable_mask is None}")
-                if reliable_mask is not None:
-                    print(f"🔍   reliable_mask.sum(): {reliable_mask.sum()}")
-                    print(f"🔍   reliable_mask.mean(): {reliable_mask.mean():.3f}")
-            
-            if reliable_mask is not None:
-                # Usar esquema de confiabilidad
-                reliable_data = full_ds[reliable_mask].copy()
-                main_feature_cols = [col for col in reliable_data.columns if col.endswith('_main_feature')]
-                X = reliable_data[main_feature_cols].dropna(subset=main_feature_cols)
-                y = reliable_data['labels_main']
-                
-                if self.debug:
-                    print(f"🔍   reliable_data.shape: {reliable_data.shape}")
-                    print(f"🔍   X.shape: {X.shape}")
-                    print(f"🔍   y.value_counts(): {y.value_counts().to_dict()}")
-            else:
-                # Esquema tradicional
-                main_feature_cols = [col for col in full_ds.columns if col.endswith('_main_feature')]
-                X = full_ds[main_feature_cols].dropna(subset=main_feature_cols)
-                y = full_ds['labels_main']
-                
-                if self.debug:
-                    print(f"🔍   X.shape: {X.shape}")
-                    print(f"🔍   y.value_counts(): {y.value_counts().to_dict()}")
-
-            catboost_params = dict(
-                iterations=hp['cat_main_iterations'],
-                depth=hp['cat_main_depth'],
-                learning_rate=hp['cat_main_learning_rate'],
-                l2_leaf_reg=hp['cat_main_l2_leaf_reg'],
-                eval_metric='Accuracy',
-                store_all_simple_ctr=False,
-                allow_writing_files=False,
-                thread_count=-1,
-                task_type='CPU',
-                verbose=False,
-            )
-            
-            base_estimator = CatBoostClassifier(**catboost_params)
-            mapie = CrossConformalClassifier(
-                estimator=base_estimator,
-                confidence_level=hp['mapie_confidence_level'],
-                cv=hp['mapie_cv'],
-            )
-            
-            mapie.fit_conformalize(X, y)
-            _ , y_prediction_sets = mapie.predict_set(X)
-            y_prediction_sets = np.squeeze(y_prediction_sets, axis=-1)
-            set_sizes = np.sum(y_prediction_sets, axis=1)
-            
-            # Scores de confiabilidad: 1.0 si set_size == 1 (alta confianza), 0.0 en caso contrario
-            conformal_scores = (set_sizes == 1).astype(float)
-            
-            if self.debug:
-                print(f"🔍   set_sizes.min(): {set_sizes.min()}, set_sizes.max(): {set_sizes.max()}")
-                print(f"🔍   conformal_scores.sum(): {conformal_scores.sum()}")
-                print(f"🔍   conformal_scores.mean(): {conformal_scores.mean():.3f}")
-                print(f"🔍 DEBUG _apply_mapie_filter - Filtrado MAPIE completado")
-            
-            # Mapear scores de vuelta al dataset completo
-            if reliable_mask is not None:
-                # Crear array de ceros del tamaño del dataset completo
-                full_conformal_scores = np.zeros(len(full_ds))
-                # Mapear scores usando los índices de reliable_mask
-                full_conformal_scores[reliable_mask] = conformal_scores
-                return full_conformal_scores
-            else:
-                return conformal_scores
-            
-        except Exception as e:
-            print(f"Error en _apply_mapie_filter: {str(e)}")
-            # Retornar array de ceros del tamaño del dataset completo
-            return np.zeros(len(full_ds))

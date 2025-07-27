@@ -12,7 +12,7 @@ from time import perf_counter
 from typing import Dict, Any
 import optuna
 from optuna.pruners import HyperbandPruner, SuccessiveHalvingPruner
-from optuna.integration import CatBoostPruningCallback
+# from optuna.integration import CatBoostPruningCallback
 from catboost import CatBoostClassifier
 from mapie.classification import CrossConformalClassifier
 from modules.labeling_lib import (
@@ -81,6 +81,7 @@ class StrategySearcher:
         history_path: str = r"/mnt/c/Users/Administrador/AppData/Roaming/MetaQuotes/Terminal/Common/Files/",
         search_type: str = 'clusters',
         search_subtype: str = 'kmeans',
+        search_filter: str = '',
         label_method: str = 'random',
         tag: str = "",
         debug: bool = False,
@@ -100,6 +101,7 @@ class StrategySearcher:
         self.history_path = history_path
         self.search_type = search_type
         self.search_subtype = search_subtype
+        self.search_filter = search_filter
         self.label_method = label_method
         self.pruner_type = pruner_type
         self.n_trials = n_trials
@@ -119,10 +121,10 @@ class StrategySearcher:
 
     def run_search(self) -> None:
         search_funcs = {
+            'reliability': self.search_reliability,
             'clusters': self.search_clusters,
             'mapie': self.search_mapie,
             'causal': self.search_causal,
-            'reliability': self.search_reliability,
         }
         
         if self.search_type not in search_funcs:
@@ -176,8 +178,8 @@ class StrategySearcher:
                                             os.remove(study.user_attrs["best_full_ds_with_labels_path"])
                                     # Guardar nuevas rutas de modelos
                                     study.set_user_attr("best_score", trial.user_attrs['score'])
-                                    study.set_user_attr("best_full_ds_with_labels_path", trial.user_attrs['full_ds_with_labels_path'])
                                     study.set_user_attr("best_model_paths", trial.user_attrs['model_paths'])
+                                    study.set_user_attr("best_full_ds_with_labels_path", trial.user_attrs['full_ds_with_labels_path'])
                                     study.set_user_attr("best_periods_main", trial.user_attrs.get('feature_main_periods'))
                                     study.set_user_attr("best_stats_main", trial.user_attrs.get('feature_main_stats'))
                                     study.set_user_attr("best_model_cols", trial.user_attrs['model_cols'])
@@ -206,9 +208,8 @@ class StrategySearcher:
                                     for p in study.user_attrs.get("best_model_paths", []):
                                         if p and os.path.exists(p):
                                             os.remove(p)
-                                    if study.user_attrs.get("best_full_ds_with_labels_path"):
-                                        if os.path.exists(study.user_attrs["best_full_ds_with_labels_path"]):
-                                            os.remove(study.user_attrs["best_full_ds_with_labels_path"])
+                                    if os.path.exists(study.user_attrs["best_full_ds_with_labels_path"]):
+                                        os.remove(study.user_attrs["best_full_ds_with_labels_path"])
                                     # Parar el algoritmo
                                     if self.debug:
                                         #if trial.number > 1:
@@ -370,12 +371,12 @@ class StrategySearcher:
                 full_ds = _clustering_method(full_ds, hp)
 
             score, full_ds_with_labels_path, model_paths, models_cols = self.evaluate_clusters(trial, full_ds, hp)
-            if score is None or model_paths is None or models_cols is None:
+            if score is None or model_paths is None or models_cols is None or full_ds_with_labels_path is None:
                 return -1.0
             trial.set_user_attr('score', score)
+            trial.set_user_attr('full_ds_with_labels_path', full_ds_with_labels_path)
             trial.set_user_attr('model_paths', model_paths)
             trial.set_user_attr('model_cols', models_cols)
-            trial.set_user_attr('full_ds_with_labels_path', full_ds_with_labels_path)
             return trial.user_attrs.get('score', -1.0)
         except Exception as e:
             print(f"Error en search_clusters: {str(e)}")
@@ -711,6 +712,7 @@ class StrategySearcher:
             best_score = -math.inf
             best_model_paths = (None, None)
             best_models_cols = (None, None)
+            best_full_ds_with_labels_path = None
 
             # 🔍 DEBUG: Supervisar parámetros
             if self.debug:
@@ -726,30 +728,67 @@ class StrategySearcher:
             if cluster_sizes.empty:
                 if self.debug:
                     print("⚠️ ERROR: No hay clusters")
-                return None, None, None
+                return None, None, None, None
             
             # Evaluar cada cluster
             for clust in cluster_sizes.index:
                 cluster_mask = full_ds['labels_meta'] == clust
                 reliable_mask = full_ds['labels_main'] != 2.0
                 hybrid_mask = cluster_mask & reliable_mask
+                
                 if not hybrid_mask.any():
                     if self.debug:
                         print(f"🔍   Cluster {clust} descartado: sin muestras confiables")
                     continue
+                
+                # APLICAR MAPIE COMO FILTRO SECUNDARIO (opcional)
+                if self.search_filter == 'mapie':
+                    if self.debug:
+                        print(f"🔍 DEBUG evaluate_clusters - Aplicando filtrado MAPIE al cluster {clust}")
+                        print(f"🔍   hybrid_mask.sum(): {hybrid_mask.sum()}")
+                        print(f"🔍   hybrid_mask.mean(): {hybrid_mask.mean():.3f}")
+                    
+                    conformal_scores = self._apply_mapie_filter(trial, full_ds, hp, hybrid_mask)
+                    mapie_mask = conformal_scores == 1.0
+                    final_mask = hybrid_mask & mapie_mask
+                    
+                    if self.debug:
+                        print(f"🔍   mapie_mask.sum(): {mapie_mask.sum()}")
+                        print(f"🔍   mapie_mask.mean(): {mapie_mask.mean():.3f}")
+                        print(f"🔍   final_mask.sum(): {final_mask.sum()}")
+                        print(f"🔍   final_mask.mean(): {final_mask.mean():.3f}")
+                        if hybrid_mask.sum() > 0:
+                            print(f"🔍   Reducción de muestras: {hybrid_mask.sum()} -> {final_mask.sum()} ({final_mask.sum()/hybrid_mask.sum()*100:.1f}%)")
+                else:
+                    final_mask = hybrid_mask
+                    
+                    if self.debug:
+                        print(f"🔍 DEBUG evaluate_clusters - Sin filtrado MAPIE al cluster {clust}")
+                        print(f"🔍   final_mask.sum(): {final_mask.sum()}")
+                        print(f"🔍   final_mask.mean(): {final_mask.mean():.3f}")
+                
+                # Crear datasets con final_mask (lógica original)
                 main_feature_cols = [c for c in full_ds.columns if c.endswith('_main_feature')]
-                model_main_train_data = full_ds.loc[hybrid_mask, main_feature_cols + ['labels_main']].dropna(subset=main_feature_cols).copy()
+                model_main_train_data = full_ds.loc[final_mask, main_feature_cols + ['labels_main']].dropna(subset=main_feature_cols).copy()
+                
                 if self.label_method in self.RELIABILITY_METHODS:
                     # Intersección: cluster + confiabilidad
                     meta_feature_cols = [c for c in full_ds.columns if c.endswith('_meta_feature')]
                     model_meta_train_data = full_ds[meta_feature_cols].dropna(subset=meta_feature_cols).copy()
-                    model_meta_train_data['labels_meta'] = hybrid_mask.astype('int8')  # 1 = cluster bueno + confiable
+                    model_meta_train_data['labels_meta'] = final_mask.astype('int8')  # 1 = cluster bueno + confiable
                     
                 else:
                     # Esquema tradicional de clusters
                     meta_feature_cols = full_ds.columns[full_ds.columns.str.contains('_meta_feature')]
                     model_meta_train_data = full_ds.loc[:, meta_feature_cols].dropna(subset=meta_feature_cols).copy()
-                    model_meta_train_data['labels_meta'] = cluster_mask.astype('int8') # 1 = cluster bueno
+                    # Para esquema tradicional: crear máscara meta según el caso
+                    if self.search_filter == 'mapie':
+                        # Aplicar MAPIE al cluster completo (sin filtro de confiabilidad)
+                        meta_mask = cluster_mask & mapie_mask
+                    else:
+                        # Sin MAPIE: solo cluster
+                        meta_mask = cluster_mask
+                    model_meta_train_data['labels_meta'] = meta_mask.astype('int8')
 
                 # Verificar que tenemos suficientes muestras
                 if model_main_train_data is None or model_main_train_data.empty:
@@ -794,9 +833,11 @@ class StrategySearcher:
                         for p in best_model_paths:
                             if p and os.path.exists(p):
                                 os.remove(p)
+                    if best_full_ds_with_labels_path and os.path.exists(best_full_ds_with_labels_path):
+                        os.remove(best_full_ds_with_labels_path)
                     best_score = score
-                    best_full_ds_with_labels_path = full_ds_with_labels_path
                     best_model_paths = model_paths
+                    best_full_ds_with_labels_path = full_ds_with_labels_path
                     best_models_cols = models_cols
                     if self.debug:
                         print(f"🔍   Nuevo mejor cluster {clust}: score = {score}")
@@ -804,12 +845,14 @@ class StrategySearcher:
                     for p in model_paths:
                         if p and os.path.exists(p):
                             os.remove(p)
+                    if full_ds_with_labels_path and os.path.exists(full_ds_with_labels_path):
+                        os.remove(full_ds_with_labels_path)
             if best_score == -math.inf or best_model_paths == (None, None):
-                return None, None, None
+                return None, None, None, None
             return best_score, best_full_ds_with_labels_path, best_model_paths, best_models_cols
         except Exception as e:
             print(f"⚠️ ERROR en evaluación de clusters: {str(e)}")
-            return None, None, None
+            return None, None, None, None
     
     def _suggest_catboost(self, group: str, trial: optuna.Trial) -> Dict[str, float]:
         """Devuelve hiperparámetros CatBoost (main|meta) con prefijo `group`."""
@@ -965,6 +1008,11 @@ class StrategySearcher:
                 p['wk_step']          = trial.suggest_int ('wk_step',          1, 10)
                 p['wk_proj']          = trial.suggest_int ('wk_proj',          50, 200, log=True)
                 p['wk_iter']          = trial.suggest_int ('wk_iter',          100, 500, log=True)
+            if self.search_filter == 'mapie':
+                p['mapie_confidence_level'] = trial.suggest_float('mapie_confidence_level', 0.8, 0.95)
+                p['mapie_cv']               = trial.suggest_int  ('mapie_cv',               3, 10)
+            elif self.search_filter == 'causal':
+                p['causal_meta_learners']   = trial.suggest_int  ('causal_meta_learners',  10, 30)
         elif self.search_type == 'mapie':
             p['mapie_confidence_level'] = trial.suggest_float('mapie_confidence_level', 0.8, 0.95)
             p['mapie_cv']               = trial.suggest_int  ('mapie_cv',               3, 10)
@@ -1028,14 +1076,14 @@ class StrategySearcher:
             if 'labels_main' in model_main_train_data.columns:
                 model_main_train_data = model_main_train_data[model_main_train_data['labels_main'].isin([0.0, 1.0])]
             if model_main_train_data.empty:
-                return None, None, None
+                return None, None, None, None
             main_feature_cols = [col for col in model_main_train_data.columns if col != 'labels_main']
             if self.debug:
                 print(f"🔍 DEBUG: Main model data shape: {model_main_train_data.shape}")
                 print(f"🔍 DEBUG: Main feature columns: {main_feature_cols}")
             model_main_train_data, model_main_eval_data = self.get_train_test_data(dataset=model_main_train_data)
             if model_main_train_data is None or model_main_eval_data is None:
-                return None, None, None
+                return None, None, None, None
             X_train_main = model_main_train_data[main_feature_cols]
             y_train_main = model_main_train_data['labels_main'].astype('int8')
             X_val_main = model_main_eval_data[main_feature_cols]
@@ -1044,14 +1092,14 @@ class StrategySearcher:
                 print(f"🔍 DEBUG: X_train_main shape: {X_train_main.shape}, y_train_main shape: {y_train_main.shape}")
                 print(f"🔍 DEBUG: X_val_main shape: {X_val_main.shape}, y_val_main shape: {y_val_main.shape}")
             if len(y_train_main.value_counts()) < 2 or len(y_val_main.value_counts()) < 2:
-                return None, None, None
+                return None, None, None, None
             meta_feature_cols = [col for col in model_meta_train_data.columns if col != 'labels_meta']
             if self.debug:
                 print(f"🔍 DEBUG: Meta model data shape: {model_meta_train_data.shape}")
                 print(f"🔍 DEBUG: Meta feature columns: {meta_feature_cols}")
             model_meta_train_data, model_meta_eval_data = self.get_train_test_data(dataset=model_meta_train_data)
             if model_meta_train_data is None or model_meta_eval_data is None:
-                return None, None, None
+                return None, None, None, None
             X_train_meta = model_meta_train_data[meta_feature_cols]
             y_train_meta = model_meta_train_data['labels_meta'].astype('int8')
             X_val_meta = model_meta_eval_data[meta_feature_cols]
@@ -1060,7 +1108,7 @@ class StrategySearcher:
                 print(f"🔍 DEBUG: X_train_meta shape: {X_train_meta.shape}, y_train_meta shape: {y_train_meta.shape}")
                 print(f"🔍 DEBUG: X_val_meta shape: {X_val_meta.shape}, y_val_meta shape: {y_val_meta.shape}")
             if len(y_train_meta.value_counts()) < 2 or len(y_val_meta.value_counts()) < 2:
-                return None, None, None
+                return None, None, None, None
             cat_main_params = dict(
                 iterations=hp['cat_main_iterations'],
                 depth=hp['cat_main_depth'],
@@ -1085,7 +1133,7 @@ class StrategySearcher:
             model_main.fit(X_train_main, y_train_main, 
                            eval_set=[(X_val_main, y_val_main)],
                            early_stopping_rounds=hp['cat_main_early_stopping'],
-                           callbacks=[CatBoostPruningCallback(trial=trial, metric='Logloss')],
+                           # callbacks=[CatBoostPruningCallback(trial=trial, metric='Logloss')],
                            use_best_model=True,
                            verbose=False
             )
@@ -1116,7 +1164,7 @@ class StrategySearcher:
             model_meta.fit(X_train_meta, y_train_meta, 
                            eval_set=[(X_val_meta, y_val_meta)], 
                            early_stopping_rounds=hp['cat_meta_early_stopping'],
-                           callbacks=[CatBoostPruningCallback(trial=trial, metric='Logloss')],
+                           # callbacks=[CatBoostPruningCallback(trial=trial, metric='Logloss')],
                            use_best_model=True,
                            verbose=False
             )
@@ -1168,7 +1216,7 @@ class StrategySearcher:
             return score, full_ds_with_labels_path, (model_main_path, model_meta_path), (main_feature_cols, meta_feature_cols)
         except Exception as e:
             print(f"Error en función de entrenamiento y test: {str(e)}")
-            return None, None, None
+            return None, None, None, None
         finally:
             clear_onnx_session_cache()
 
@@ -1609,3 +1657,95 @@ class StrategySearcher:
                 problematic_cols.append(col)
                 
         return problematic_cols
+
+    def _apply_mapie_filter(self, trial, full_ds, hp, reliable_mask=None) -> np.ndarray:
+        """
+        Aplica conformal prediction (MAPIE) para obtener scores de confiabilidad.
+        
+        Args:
+            trial: Optuna trial
+            full_ds: Dataset completo con features
+            hp: Hiperparámetros
+            reliable_mask: Máscara opcional para filtrar muestras confiables
+            
+        Returns:
+            np.ndarray: conformal_scores con 1.0 para muestras confiables, 0.0 para no confiables
+        """
+        try:
+            if self.debug:
+                print(f"🔍 DEBUG _apply_mapie_filter - Iniciando filtrado MAPIE")
+                print(f"🔍   full_ds.shape: {full_ds.shape}")
+                print(f"🔍   reliable_mask is None: {reliable_mask is None}")
+                if reliable_mask is not None:
+                    print(f"🔍   reliable_mask.sum(): {reliable_mask.sum()}")
+                    print(f"🔍   reliable_mask.mean(): {reliable_mask.mean():.3f}")
+            
+            if reliable_mask is not None:
+                # Usar esquema de confiabilidad
+                reliable_data = full_ds[reliable_mask].copy()
+                main_feature_cols = [col for col in reliable_data.columns if col.endswith('_main_feature')]
+                X = reliable_data[main_feature_cols].dropna(subset=main_feature_cols)
+                y = reliable_data['labels_main']
+                
+                if self.debug:
+                    print(f"🔍   reliable_data.shape: {reliable_data.shape}")
+                    print(f"🔍   X.shape: {X.shape}")
+                    print(f"🔍   y.value_counts(): {y.value_counts().to_dict()}")
+            else:
+                # Esquema tradicional
+                main_feature_cols = [col for col in full_ds.columns if col.endswith('_main_feature')]
+                X = full_ds[main_feature_cols].dropna(subset=main_feature_cols)
+                y = full_ds['labels_main']
+                
+                if self.debug:
+                    print(f"🔍   X.shape: {X.shape}")
+                    print(f"🔍   y.value_counts(): {y.value_counts().to_dict()}")
+
+            catboost_params = dict(
+                iterations=hp['cat_main_iterations'],
+                depth=hp['cat_main_depth'],
+                learning_rate=hp['cat_main_learning_rate'],
+                l2_leaf_reg=hp['cat_main_l2_leaf_reg'],
+                eval_metric='Accuracy',
+                store_all_simple_ctr=False,
+                allow_writing_files=False,
+                thread_count=-1,
+                task_type='CPU',
+                verbose=False,
+            )
+            
+            base_estimator = CatBoostClassifier(**catboost_params)
+            mapie = CrossConformalClassifier(
+                estimator=base_estimator,
+                confidence_level=hp['mapie_confidence_level'],
+                cv=hp['mapie_cv'],
+            )
+            
+            mapie.fit_conformalize(X, y)
+            _ , y_prediction_sets = mapie.predict_set(X)
+            y_prediction_sets = np.squeeze(y_prediction_sets, axis=-1)
+            set_sizes = np.sum(y_prediction_sets, axis=1)
+            
+            # Scores de confiabilidad: 1.0 si set_size == 1 (alta confianza), 0.0 en caso contrario
+            conformal_scores = (set_sizes == 1).astype(float)
+            
+            if self.debug:
+                print(f"🔍   set_sizes.min(): {set_sizes.min()}, set_sizes.max(): {set_sizes.max()}")
+                print(f"🔍   conformal_scores.sum(): {conformal_scores.sum()}")
+                print(f"🔍   conformal_scores.mean(): {conformal_scores.mean():.3f}")
+                print(f"🔍 DEBUG _apply_mapie_filter - Filtrado MAPIE completado")
+            
+            # Mapear scores de vuelta al dataset completo
+            if reliable_mask is not None:
+                # Crear array de ceros del tamaño del dataset completo
+                full_conformal_scores = np.zeros(len(full_ds))
+                # Mapear scores usando los índices de reliable_mask
+                full_conformal_scores[reliable_mask] = conformal_scores
+                return full_conformal_scores
+            else:
+                return conformal_scores
+            
+        except Exception as e:
+            print(f"Error en _apply_mapie_filter: {str(e)}")
+            # Retornar array de ceros del tamaño del dataset completo
+            return np.zeros(len(full_ds))

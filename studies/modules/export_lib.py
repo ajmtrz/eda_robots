@@ -78,7 +78,6 @@ def export_dataset_to_csv(dataset, decimal_precision=6):
 def export_to_mql5(**kwargs):
     tag = kwargs.get('tag')
     best_score = kwargs.get('best_score')
-    best_full_ds_with_labels_path = kwargs.get('best_full_ds_with_labels_path')
     model_paths = kwargs.get('best_model_paths')
     model_cols = kwargs.get('best_model_cols')
     stats_main = kwargs.get('best_stats_main')
@@ -87,6 +86,7 @@ def export_to_mql5(**kwargs):
     models_export_path = kwargs.get('models_export_path')
     include_export_path = kwargs.get('include_export_path')
     decimal_precision = kwargs.get('decimal_precision')
+    full_ds_with_labels_path = kwargs.get('best_full_ds_with_labels_path')
 
     def _should_use_returns(stat_name):
         """Determina si un estadístico debe usar retornos en lugar de precios."""
@@ -134,8 +134,6 @@ def export_to_mql5(**kwargs):
                 dst.write(src.read())
         else:
             raise ValueError("No se encontraron suficientes rutas en model_paths para copiar los modelos ONNX.")
-
-        # Remove temporary CatBoost model files if provided
         if model_paths:
             for p in model_paths:
                 try:
@@ -148,11 +146,13 @@ def export_to_mql5(**kwargs):
         os.makedirs(data_dir, exist_ok=True)
         dataset_filename = f"{tag}.csv"
         dataset_path = os.path.join(data_dir, dataset_filename)
-        if best_full_ds_with_labels_path:
-            with open(best_full_ds_with_labels_path, "rb") as src, open(dataset_path, "wb") as dst:
+        if full_ds_with_labels_path:
+            with open(full_ds_with_labels_path, "rb") as src, open(dataset_path, "wb") as dst:
                 dst.write(src.read())
-        if best_full_ds_with_labels_path:
-            os.remove(best_full_ds_with_labels_path)
+        else:
+            raise ValueError("No se encontraron suficientes rutas en model_paths para copiar el dataset.")
+        if full_ds_with_labels_path:
+            os.remove(full_ds_with_labels_path)
 
         stat_function_templates = {
             "std": """

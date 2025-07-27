@@ -655,13 +655,13 @@ def calculate_atr_simple(high, low, close, period=14):
     - High - Low
     - |High - Close_prev|
     - |Low - Close_prev|
-    
+
     Args:
         high: Array de precios máximos
         low: Array de precios mínimos  
         close: Array de precios de cierre
         period: Período para el cálculo de ATR (default: 14)
-    
+
     Returns:
         Array de valores ATR calculados usando el método de Wilder
     """
@@ -1126,7 +1126,7 @@ def calculate_symmetric_correlation_dynamic(data, min_window_size, max_window_si
 
     # ✅ OPTIMIZACIÓN: Pre-calcular constantes para evitar recálculos
     epsilon = 1e-9  # Umbral de precisión numérica
-    
+
     for i in range(num_correlations):
         max_abs_corr_for_i = -1.0
         best_corr_for_i = 0.0
@@ -1636,7 +1636,7 @@ def get_labels_trend(
         labels_aligned = labels_series.reindex(dataset.index, fill_value=2.0)
     else:
         labels_aligned = pd.Series(2.0, index=dataset.index)
-    
+
     # Trimming the dataset and adding labels
     dataset['labels_main'] = labels_aligned
     dataset['labels_main'] = dataset['labels_main'].fillna(2.0)

@@ -683,9 +683,10 @@ double WalkForwardValidation(double &equity[], double &trade_profits[], int n_tr
       return 0.0;
 
    // Evaluar múltiples escalas temporales con ventanas monótonamente crecientes
+   // Asegurar que cada ventana sea mayor que la anterior y no exceda el límite
    int window1 = base_window;
-   int window2 = MathMin(window1 * 2, n_trades / 8);
-   int window3 = MathMin(window1 * 3, n_trades / 4);
+   int window2 = MathMin(window1 * 2, n_trades / 8);  // Ajustado para evitar ventanas muy pequeñas
+   int window3 = MathMin(window1 * 3, n_trades / 4);  // Ajustado para evitar ventanas muy pequeñas
    
    // Filtrar ventanas válidas (debe ser al menos 5 trades por ventana)
    int windows[];

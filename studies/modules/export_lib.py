@@ -1,73 +1,27 @@
 import os
 import tempfile
 import hashlib
-from catboost import CatBoostClassifier
-from skl2onnx import convert_sklearn, update_registered_converter
-from skl2onnx.common.shape_calculator import calculate_linear_classifier_output_shapes
-from skl2onnx.common.data_types import FloatTensorType, Int64TensorType
-from skl2onnx._parse import _apply_zipmap, _get_sklearn_operator_name
-from onnx.helper import get_attribute_value
-from catboost.utils import convert_to_onnx_object
-    
-# ONNX para Pipeline con Catboost
-def skl2onnx_parser_catboost_classifier(scope, model, inputs, custom_parsers=None):
-    options = scope.get_options(model, dict(zipmap=True))
-    no_zipmap = isinstance(options["zipmap"], bool) and not options["zipmap"]
-    
-    alias = _get_sklearn_operator_name(type(model))
-    this_operator = scope.declare_local_operator(alias, model)
-    this_operator.inputs = inputs
-    
-    label_variable = scope.declare_local_variable("label", Int64TensorType())
-    probability_tensor_variable = scope.declare_local_variable("probabilities", FloatTensorType())
-    
-    this_operator.outputs.append(label_variable)
-    this_operator.outputs.append(probability_tensor_variable)
-    
-    return _apply_zipmap(options["zipmap"], scope, model, inputs[0].type, this_operator.outputs)
+from catboost import CatBoostClassifier, CatBoostRegressor
 
-def skl2onnx_convert_catboost(scope, operator, container):
-    onx = convert_to_onnx_object(operator.raw_operator)
-    node = onx.graph.node[0]
-    
-    container.add_node(
-        node.op_type,
-        [operator.inputs[0].full_name],
-        [operator.outputs[0].full_name, operator.outputs[1].full_name],
-        op_domain=node.domain,
-        **{att.name: get_attribute_value(att) for att in node.attribute}
-    )
 def export_models_to_ONNX(models):
     """
-    Convierte una lista de modelos CatBoost a ONNX.
+    Convierte una lista de modelos CatBoost a ONNX usando el método nativo de CatBoost.
     
     :param models: Lista de modelos CatBoost a convertir.
-    :param feature_names: Nombres de las características del modelo.
-    :param target_opset: Versión del opset de ONNX a utilizar.
-    :return: Lista de modelos convertidos a ONNX.
+    :return: Lista de rutas de archivos ONNX temporales.
     """
-    # Registrar el convertidor personalizado para CatBoostClassifier
-    update_registered_converter(
-        CatBoostClassifier,
-        "CatBoostClassifier",
-        calculate_linear_classifier_output_shapes,
-        skl2onnx_convert_catboost,
-        parser=skl2onnx_parser_catboost_classifier,
-        options={"nocl": [True, False], "zipmap": [True, False]}
-    )
-    # Convertir cada modelo a ONNX
     onnx_models = []
     for model in models:
-        onnx_model = convert_sklearn(
-            model,
-            initial_types=[('input', FloatTensorType([None, len(model.feature_names_)]))],
-            target_opset={"": 18, "ai.onnx.ml": 2},
-            options={"nocl": False, "zipmap": False}
-        )
+        # Crear archivo temporal para el modelo ONNX
         tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".onnx")
-        tmp.write(onnx_model.SerializeToString())
         tmp.close()
+        
+        # Usar el método nativo de CatBoost para exportar a ONNX
+        # Este método está disponible según la documentación oficial de CatBoost
+        model.save_model(tmp.name, format="onnx")
+        
         onnx_models.append(tmp.name)
+    
     return onnx_models
 
 def export_dataset_to_csv(dataset, decimal_precision=6):

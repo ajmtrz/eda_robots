@@ -711,15 +711,29 @@ def calculate_labels_random(close, atr, label_markup, label_min_val, label_max_v
     n = len(close)
     if n <= label_max_val:
         return np.full(0, 2.0, dtype=np.float64)
+    
     result = np.full(n - label_max_val, 2.0, dtype=np.float64)
+    
     for i in range(n - label_max_val):
+        # ✅ VALIDACIÓN DE LÍMITES: Verificar que tenemos suficientes datos para la ventana
+        if i + label_max_val >= n:
+            break
+            
         window = close[i + label_min_val : i + label_max_val + 1]
         if window.size == 0:
             continue
+            
+        # Selección del precio futuro según el método
         if method_int == 0:  # first
-            future_price = close[i + label_min_val]
+            if i + label_min_val < n:
+                future_price = close[i + label_min_val]
+            else:
+                continue
         elif method_int == 1:  # last
-            future_price = close[i + label_max_val]
+            if i + label_max_val < n:
+                future_price = close[i + label_max_val]
+            else:
+                continue
         elif method_int == 2:  # mean
             future_price = np.mean(window)
         elif method_int == 3:  # max
@@ -727,14 +741,29 @@ def calculate_labels_random(close, atr, label_markup, label_min_val, label_max_v
         elif method_int == 4:  # min
             future_price = np.min(window)
         else:  # random/otro
-            rand = np.random.randint(label_min_val, label_max_val + 1)
-            future_price = close[i + rand]
-        dyn_mk = label_markup * atr[i]
+            # ✅ CORRECCIÓN: Validar que el rango aleatorio es válido
+            max_offset = min(label_max_val, n - i - 1)
+            if max_offset >= label_min_val:
+                rand = np.random.randint(label_min_val, max_offset + 1)
+                future_price = close[i + rand]
+            else:
+                continue
+        
+        # ✅ VALIDACIÓN DE LÍMITES ATR: Verificar índice ATR válido
+        if i < len(atr):
+            dyn_mk = label_markup * atr[i]
+        else:
+            dyn_mk = label_markup * (atr[-1] if len(atr) > 0 else 1.0)
+        
+        current_price = close[i]
         
         if label_type == 1:  # Regresión - magnitud normalizada por ATR
-            magnitude = (future_price - close[i]) / (atr[i] + 1e-12)
-            is_buy = future_price > close[i] + dyn_mk
-            is_sell = future_price < close[i] - dyn_mk
+            # ✅ PREVENCIÓN DE DIVISIÓN POR CERO
+            atr_value = atr[i] if i < len(atr) else (atr[-1] if len(atr) > 0 else 1.0)
+            magnitude = (future_price - current_price) / (atr_value + 1e-12)
+            is_buy = future_price > current_price + dyn_mk
+            is_sell = future_price < current_price - dyn_mk
+            
             if is_buy and not is_sell:
                 result[i] = magnitude  # Magnitud positiva para buy
             elif is_sell and not is_buy:
@@ -744,8 +773,8 @@ def calculate_labels_random(close, atr, label_markup, label_min_val, label_max_v
         else:  # Clasificación - etiquetas binarias (funcionalidad original)
             if direction_int == 2:
                 # Bidireccional: 0.0=buy, 1.0=sell, 2.0=no confiable
-                is_buy = future_price > close[i] + dyn_mk
-                is_sell = future_price < close[i] - dyn_mk
+                is_buy = future_price > current_price + dyn_mk
+                is_sell = future_price < current_price - dyn_mk
                 if is_buy and not is_sell:
                     result[i] = 0.0
                 elif is_sell and not is_buy:
@@ -754,17 +783,17 @@ def calculate_labels_random(close, atr, label_markup, label_min_val, label_max_v
                     result[i] = 2.0
             elif direction_int == 0:
                 # Solo buy: 1.0=éxito, 0.0=fracaso, 2.0=no confiable
-                if future_price > close[i] + dyn_mk:
+                if future_price > current_price + dyn_mk:
                     result[i] = 1.0
-                elif future_price < close[i] - dyn_mk:
+                elif future_price < current_price - dyn_mk:
                     result[i] = 0.0
                 else:
                     result[i] = 2.0
             elif direction_int == 1:
                 # Solo sell: 1.0=éxito, 0.0=fracaso, 2.0=no confiable
-                if future_price < close[i] - dyn_mk:
+                if future_price < current_price - dyn_mk:
                     result[i] = 1.0
-                elif future_price > close[i] + dyn_mk:
+                elif future_price > current_price + dyn_mk:
                     result[i] = 0.0
                 else:
                     result[i] = 2.0
@@ -1245,51 +1274,64 @@ def calc_labels_filter_multi(close, atr, lvls, qs, direction=2, label_type=0, me
                   - Clasificación: 0.0=buy, 1.0=sell, 2.0=sin señal
                   - Regresión: Magnitud normalizada por ATR (positiva para buy, negativa para sell, 0.0 si no confiable)
     """
-    labels = np.empty(len(close), dtype=np.float64)
+    labels = np.empty(len(close) - label_max_val, dtype=np.float64)
     for i in range(len(close) - label_max_val):
         buy_signals = 0
         sell_signals = 0
         for j in range(len(lvls)):
             curr_lvl = lvls[j][i]
-            curr_q_low = qs[j][0][i]
-            curr_q_high = qs[j][1][i]
+            # ✅ CORRECCIÓN CRÍTICA: Acceso correcto a cuantiles como tuplas
+            curr_q_low = qs[j][0]   # Acceso a la tupla, no al array indexado
+            curr_q_high = qs[j][1]  # Acceso a la tupla, no al array indexado
             if curr_lvl > curr_q_high:
                 sell_signals += 1
             elif curr_lvl < curr_q_low:
                 buy_signals += 1
 
         curr_pr = close[i]
-        dyn_mk = label_markup * atr[i]
+        # ✅ VALIDACIÓN DE LÍMITES: Verificar que el índice está dentro del rango del array ATR
+        if i < len(atr):
+            dyn_mk = label_markup * atr[i]
+        else:
+            dyn_mk = label_markup * atr[-1] if len(atr) > 0 else label_markup
         
         # Selección del precio objetivo según method_int
         if method_int == 0:  # first
-            future_pr = close[i + label_min_val]
+            future_pr = close[i + label_min_val] if i + label_min_val < len(close) else close[-1]
         elif method_int == 1:  # last
-            future_pr = close[i + label_max_val]
+            future_pr = close[i + label_max_val] if i + label_max_val < len(close) else close[-1]
         elif method_int == 2:  # mean
             window = close[i + label_min_val : i + label_max_val + 1]
             if window.size > 0:
                 future_pr = np.mean(window)
             else:
-                future_pr = close[i + label_min_val]
+                # ✅ CORRECCIÓN: Usar último precio disponible si la ventana está vacía
+                future_pr = close[-1]
         elif method_int == 3:  # max
             window = close[i + label_min_val : i + label_max_val + 1]
             if window.size > 0:
                 future_pr = np.max(window)
             else:
-                future_pr = close[i + label_min_val]
+                future_pr = close[-1]
         elif method_int == 4:  # min
             window = close[i + label_min_val : i + label_max_val + 1]
             if window.size > 0:
                 future_pr = np.min(window)
             else:
-                future_pr = close[i + label_min_val]
+                future_pr = close[-1]
         else:  # random/otro
-            rand = np.random.randint(label_min_val, label_max_val + 1)
-            future_pr = close[i + rand]
+            # ✅ VALIDACIÓN DE LÍMITES: Asegurar que el rango aleatorio es válido
+            max_rand = min(label_max_val, len(close) - i - 1)
+            if max_rand >= label_min_val:
+                rand = np.random.randint(label_min_val, max_rand + 1)
+                future_pr = close[i + rand]
+            else:
+                future_pr = close[-1]
 
         if label_type == 1:  # Regresión - magnitud normalizada por ATR
-            magnitude = (future_pr - curr_pr) / (atr[i] + 1e-12)
+            # ✅ PREVENCIÓN DE DIVISIÓN POR CERO: Usar epsilon para evitar división por cero
+            atr_value = atr[i] if i < len(atr) else (atr[-1] if len(atr) > 0 else 1.0)
+            magnitude = (future_pr - curr_pr) / (atr_value + 1e-12)
             is_buy = future_pr > curr_pr + dyn_mk
             is_sell = future_pr < curr_pr - dyn_mk
             
@@ -1337,10 +1379,12 @@ def calc_labels_filter_multi(close, atr, lvls, qs, direction=2, label_type=0, me
     # Fill remaining positions with 2.0 for classification or 0.0 for regression
     if label_type == 1:  # Regression
         for i in range(len(close) - label_max_val, len(close)):
-            labels[i] = 0.0
+            if i < len(labels):  # ✅ VALIDACIÓN DE LÍMITES
+                labels[i] = 0.0
     else:  # Classification
         for i in range(len(close) - label_max_val, len(close)):
-            labels[i] = 2.0
+            if i < len(labels):  # ✅ VALIDACIÓN DE LÍMITES
+                labels[i] = 2.0
     
     return labels
 
@@ -1577,7 +1621,8 @@ def calculate_future_outcome_labels_for_patterns(
             # Patrón no confiable - SIEMPRE etiquetar como 2.0 (no confiable)
             # Esto aplica para cualquier dirección (buy, sell, both)
             for i in range(idx_window_start, signal_time_idx + 1):
-                labels[i] = 2.0  # No confiable
+                if i < close_data_len:  # ✅ VALIDACIÓN DE LÍMITES
+                    labels[i] = 2.0  # No confiable
             continue
             
         # Patrón confiable - evaluar direccionalidad basada en movimientos futuros
@@ -1585,6 +1630,10 @@ def calculate_future_outcome_labels_for_patterns(
         
         # Calculamos etiquetas individuales para todos los puntos del patrón
         for point_idx in range(idx_window_start, signal_time_idx + 1):
+            # ✅ VALIDACIÓN DE LÍMITES: Verificar que el índice está dentro de los límites
+            if point_idx >= close_data_len:
+                break
+                
             # ✅ CORRECCIÓN CRÍTICA: Verificar límites del array ATR
             if point_idx >= len(atr):
                 continue
@@ -1609,6 +1658,7 @@ def calculate_future_outcome_labels_for_patterns(
             dynamic_markup = markup_multiplier * atr[point_idx]
             
             if label_type == 1:  # Regresión - magnitud normalizada por ATR
+                # ✅ PREVENCIÓN DE DIVISIÓN POR CERO
                 magnitude = (future_price - current_price) / (atr[point_idx] + 1e-12)
                 is_buy = future_price > current_price + dynamic_markup
                 is_sell = future_price < current_price - dynamic_markup
@@ -1643,11 +1693,13 @@ def calculate_future_outcome_labels_for_patterns(
                     # Agregamos la etiqueta al array si no es neutral
                     if current_label != 2.0:
                         pattern_labels.append(current_label)
+        
         # Si no hay etiquetas significativas en el patrón, etiquetar como no confiable
         if len(pattern_labels) == 0:
             # Patrón confiable pero sin direccionalidad clara - etiquetar como 2.0
             for i in range(idx_window_start, signal_time_idx + 1):
-                labels[i] = 2.0  # No confiable (sin direccionalidad clara)
+                if i < close_data_len:  # ✅ VALIDACIÓN DE LÍMITES
+                    labels[i] = 2.0  # No confiable (sin direccionalidad clara)
             continue
             
         # Calculamos la etiqueta promedio de todos los puntos del patrón
@@ -1657,14 +1709,18 @@ def calculate_future_outcome_labels_for_patterns(
         avg_label /= len(pattern_labels)
         
         # Determinamos la etiqueta general para todo el patrón
-        if direction == 2:  # both directions
-            pattern_label = 0.0 if avg_label < 0.5 else 1.0
-        else:  # single direction
-            pattern_label = 1.0 if avg_label >= 0.5 else 0.0
+        if label_type == 1:  # Regresión - usar directamente el promedio de magnitudes
+            pattern_label = avg_label
+        else:  # Clasificación
+            if direction == 2:  # both directions
+                pattern_label = 0.0 if avg_label < 0.5 else 1.0
+            else:  # single direction
+                pattern_label = 1.0 if avg_label >= 0.5 else 0.0
         
         # Asignamos esta etiqueta a todos los puntos del patrón
         for i in range(idx_window_start, signal_time_idx + 1):
-            labels[i] = pattern_label
+            if i < close_data_len:  # ✅ VALIDACIÓN DE LÍMITES
+                labels[i] = pattern_label
     
     return labels
 
@@ -1987,16 +2043,32 @@ def calculate_labels_trend_multi(
     """
     num_periods = normalized_trends.shape[0]  # Number of periods
     labels = np.empty(len(close) - label_max_val, dtype=np.float64)
+    
     for i in range(len(close) - label_max_val):
-        dyn_mk = label_markup * atr[i]
+        # ✅ VALIDACIÓN DE LÍMITES ATR: Verificar índice ATR válido
+        if i < len(atr):
+            dyn_mk = label_markup * atr[i]
+        else:
+            dyn_mk = label_markup * (atr[-1] if len(atr) > 0 else 1.0)
+        
         # Select the target price using the specified method
         window = close[i + label_min_val : i + label_max_val + 1]
         if window.size == 0:
-            future_price = close[i + label_min_val] if i + label_min_val < len(close) else close[i]
+            # ✅ CORRECCIÓN: Verificar límites antes del acceso
+            if i + label_min_val < len(close):
+                future_price = close[i + label_min_val]
+            else:
+                future_price = close[-1]  # Usar último precio disponible
         elif method_int == 0:  # first
-            future_price = close[i + label_min_val]
+            if i + label_min_val < len(close):
+                future_price = close[i + label_min_val]
+            else:
+                future_price = close[-1]
         elif method_int == 1:  # last
-            future_price = close[i + label_max_val]
+            if i + label_max_val < len(close):
+                future_price = close[i + label_max_val]
+            else:
+                future_price = close[-1]
         elif method_int == 2:  # mean
             future_price = np.mean(window)
         elif method_int == 3:  # max
@@ -2004,19 +2076,31 @@ def calculate_labels_trend_multi(
         elif method_int == 4:  # min
             future_price = np.min(window)
         else:  # random
-            rand = np.random.randint(label_min_val, label_max_val + 1)
-            future_price = close[i + rand]
+            # ✅ VALIDACIÓN DE LÍMITES: Asegurar que el rango aleatorio es válido
+            max_offset = min(label_max_val, len(close) - i - 1)
+            if max_offset >= label_min_val:
+                rand = np.random.randint(label_min_val, max_offset + 1)
+                future_price = close[i + rand]
+            else:
+                future_price = close[-1]
+        
+        current_price = close[i]
+        
         if label_type == 1:  # Regresión - magnitud normalizada por ATR
-            magnitude = (future_price - close[i]) / (atr[i] + 1e-12)
-            is_buy = future_price > close[i] + dyn_mk
-            is_sell = future_price < close[i] - dyn_mk
+            # ✅ PREVENCIÓN DE DIVISIÓN POR CERO
+            atr_value = atr[i] if i < len(atr) else (atr[-1] if len(atr) > 0 else 1.0)
+            magnitude = (future_price - current_price) / (atr_value + 1e-12)
+            is_buy = future_price > current_price + dyn_mk
+            is_sell = future_price < current_price - dyn_mk
             
             # Para magnitud, siempre verificar ambas direcciones (both)
             has_signal = False
             for j in range(num_periods):
-                if normalized_trends[j, i] > label_threshold or normalized_trends[j, i] < -label_threshold:
-                    has_signal = True
-                    break
+                # ✅ VALIDACIÓN DE LÍMITES: Verificar que i está dentro del rango de normalized_trends
+                if i < normalized_trends.shape[1]:
+                    if normalized_trends[j, i] > label_threshold or normalized_trends[j, i] < -label_threshold:
+                        has_signal = True
+                        break
             
             if has_signal:
                 if is_buy and not is_sell:
@@ -2032,12 +2116,15 @@ def calculate_labels_trend_multi(
             sell_signals = 0
             # Check conditions for each period
             for j in range(num_periods):
-                if normalized_trends[j, i] > label_threshold:
-                    if future_price >= close[i] + dyn_mk:
-                        buy_signals += 1
-                elif normalized_trends[j, i] < -label_threshold:
-                    if future_price <= close[i] - dyn_mk:
-                        sell_signals += 1
+                # ✅ VALIDACIÓN DE LÍMITES: Verificar que i está dentro del rango de normalized_trends
+                if i < normalized_trends.shape[1]:
+                    if normalized_trends[j, i] > label_threshold:
+                        if future_price >= current_price + dyn_mk:
+                            buy_signals += 1
+                    elif normalized_trends[j, i] < -label_threshold:
+                        if future_price <= current_price - dyn_mk:
+                            sell_signals += 1
+            
             # Etiquetado según dirección
             if direction == 2:
                 # Esquema clásico: 0.0=buy, 1.0=sell, 2.0=no señal/conflicto

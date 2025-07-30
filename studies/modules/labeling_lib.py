@@ -643,7 +643,7 @@ def get_features(data: pd.DataFrame, hp, decimal_precision=6):
 
     return df
 
-##### NON-RELIABILITY BASED LABELING #####
+##### LABELING FUNCTIONS #####
 
 @njit(cache=True)
 def calculate_atr_simple(high, low, close, period=14):
@@ -1216,15 +1216,15 @@ def calc_labels_filter_multi(close, atr, lvls, qs, direction=2, label_type=0, me
     Methodology:
     - Uses multiple Savitzky-Golay filters with different parameters
     - Calculates price deviation from multiple smoothed trends
-    - Requires consensus across all filters for signal generation
+    - Requires consensus across ALL filters for signal generation
     - Validates signals using ATR * markup as profit target
     - For classification: 0.0=buy, 1.0=sell, 2.0=no signal
     - For regression: normalized magnitude by ATR (positive for buy, negative for sell, 0.0 if not reliable)
     
     Signal Generation Logic:
-    - Buy signals: when ALL filters show oversold and future_price > current_price + ATR*markup
-    - Sell signals: when ALL filters show overbought and future_price < current_price - ATR*markup
-    - Regression: assigns magnitude only when profit target is met and consensus across all filters
+    - Buy signals: when ALL filters show oversold and future_price >= current_price + ATR*markup
+    - Sell signals: when ALL filters show overbought and future_price <= current_price - ATR*markup
+    - Regression: assigns magnitude only when profit target is met and consensus across ALL filters
     - Classification: assigns binary labels based on profit validation and multi-filter consensus
 
     Args:
@@ -1245,10 +1245,13 @@ def calc_labels_filter_multi(close, atr, lvls, qs, direction=2, label_type=0, me
                   - Regresión: Magnitud normalizada por ATR (positiva para buy, negativa para sell, 0.0 si no confiable)
     """
     labels = np.empty(len(close), dtype=np.float64)
-    for i in range(len(close) - label_max_val):
+    num_filters = len(lvls)
+    
+    # ✅ CORRECCIÓN: Iterar hasta el último precio válido (incluyendo label_max_val)
+    for i in range(len(close) - label_max_val + 1):
         buy_signals = 0
         sell_signals = 0
-        for j in range(len(lvls)):
+        for j in range(num_filters):
             curr_lvl = lvls[j][i]
             curr_q_low = qs[j][0][i]
             curr_q_high = qs[j][1][i]
@@ -1289,56 +1292,59 @@ def calc_labels_filter_multi(close, atr, lvls, qs, direction=2, label_type=0, me
 
         if label_type == 1:  # Regresión - magnitud normalizada por ATR
             magnitude = (future_pr - curr_pr) / (atr[i] + 1e-12)
-            is_buy = future_pr > curr_pr + dyn_mk
-            is_sell = future_pr < curr_pr - dyn_mk
+            is_buy = future_pr >= curr_pr + dyn_mk  # ✅ CORRECCIÓN: >= en lugar de >
+            is_sell = future_pr <= curr_pr - dyn_mk  # ✅ CORRECCIÓN: <= en lugar de <
             
-            # Para magnitud, siempre verificar ambas direcciones (both) con consenso multi-filtro
-            if buy_signals > 0 and sell_signals == 0:  # All filters show oversold
+            # ✅ CORRECCIÓN: Consenso TOTAL requerido (ALL filters)
+            if buy_signals == num_filters and sell_signals == 0:  # ALL filters show oversold
                 if is_buy and not is_sell:
                     labels[i] = magnitude  # Magnitud positiva para buy
                 else:
                     labels[i] = 0.0  # No confiable
-            elif sell_signals > 0 and buy_signals == 0:  # All filters show overbought
+            elif sell_signals == num_filters and buy_signals == 0:  # ALL filters show overbought
                 if is_sell and not is_buy:
                     labels[i] = magnitude  # Magnitud negativa para sell
                 else:
                     labels[i] = 0.0  # No confiable
             else:
-                labels[i] = 0.0  # No confiable (no consensus across filters)
+                labels[i] = 0.0  # No confiable (no consensus across ALL filters)
         else:  # Clasificación - etiquetas binarias (funcionalidad original)
             if direction == 2:
                 # Esquema clásico: 0.0=buy, 1.0=sell, 2.0=no confiable
-                if buy_signals > 0 and sell_signals == 0 and (future_pr - dyn_mk) > curr_pr:
-                    labels[i] = 0.0
-                elif sell_signals > 0 and buy_signals == 0 and (future_pr + dyn_mk) < curr_pr:
-                    labels[i] = 1.0
+                # ✅ CORRECCIÓN: Consenso TOTAL y condiciones de profit target corregidas
+                if buy_signals == num_filters and sell_signals == 0 and future_pr >= curr_pr + dyn_mk:
+                    labels[i] = 0.0  # Buy
+                elif sell_signals == num_filters and buy_signals == 0 and future_pr <= curr_pr - dyn_mk:
+                    labels[i] = 1.0  # Sell
                 else:
-                    labels[i] = 2.0
+                    labels[i] = 2.0  # No confiable
             elif direction == 0:
                 # Solo buy: 1.0=éxito, 0.0=fracaso, 2.0=no confiable
-                if buy_signals > 0 and sell_signals == 0 and (future_pr - dyn_mk) > curr_pr:
+                # ✅ CORRECCIÓN: Consenso TOTAL y condiciones de profit target corregidas
+                if buy_signals == num_filters and sell_signals == 0 and future_pr >= curr_pr + dyn_mk:
                     labels[i] = 1.0  # Éxito direccional (buy)
-                elif buy_signals > 0 and sell_signals == 0:
+                elif buy_signals == num_filters and sell_signals == 0:
                     labels[i] = 0.0  # Fracaso direccional (buy signal but no profit)
                 else:
                     labels[i] = 2.0  # Patrón no confiable
             elif direction == 1:
                 # Solo sell: 1.0=éxito, 0.0=fracaso, 2.0=no confiable
-                if sell_signals > 0 and buy_signals == 0 and (future_pr + dyn_mk) < curr_pr:
+                # ✅ CORRECCIÓN: Consenso TOTAL y condiciones de profit target corregidas
+                if sell_signals == num_filters and buy_signals == 0 and future_pr <= curr_pr - dyn_mk:
                     labels[i] = 1.0  # Éxito direccional (sell)
-                elif sell_signals > 0 and buy_signals == 0:
+                elif sell_signals == num_filters and buy_signals == 0:
                     labels[i] = 0.0  # Fracaso direccional (sell signal but no profit)
                 else:
                     labels[i] = 2.0  # Patrón no confiable
             else:
                 labels[i] = 2.0  # fallback
     
-    # Fill remaining positions with 2.0 for classification or 0.0 for regression
+    # ✅ CORRECCIÓN: Fill remaining positions with 2.0 for classification or 0.0 for regression
     if label_type == 1:  # Regression
-        for i in range(len(close) - label_max_val, len(close)):
+        for i in range(len(close) - label_max_val + 1, len(close)):
             labels[i] = 0.0
     else:  # Classification
-        for i in range(len(close) - label_max_val, len(close)):
+        for i in range(len(close) - label_max_val + 1, len(close)):
             labels[i] = 2.0
     
     return labels
@@ -1430,8 +1436,6 @@ def get_labels_filter_multi(
     dataset['labels_main'] = labels
     dataset['labels_main'] = dataset['labels_main'].fillna(2.0)
     return dataset
-
-######### RELIABILITY BASED LABELING #########
 
 @njit(cache=True)
 def calculate_symmetric_correlation_dynamic(data, min_window_size, max_window_size):

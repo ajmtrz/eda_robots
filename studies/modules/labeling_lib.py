@@ -2569,7 +2569,9 @@ def get_labels_multi_window(
         close, atr, window_sizes_t, label_markup, label_min_val, label_max_val, direction, method_int, label_type_int
     )
     # Align labels and fill with 2.0 using pandas to avoid manual padding
-    labels = pd.Series(labels, index=dataset.index[max(label_window_sizes_int):]).reindex_like(dataset).fillna(2.0)
+    max_window = max(label_window_sizes_int)
+    end_idx = max_window + len(labels)
+    labels = pd.Series(labels, index=dataset.index[max_window:end_idx]).reindex_like(dataset).fillna(2.0)
     # Add labels to dataset
     dataset['labels_main'] = labels
     dataset['labels_main'] = dataset['labels_main'].fillna(2.0)

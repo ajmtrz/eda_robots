@@ -1532,7 +1532,7 @@ def calculate_future_outcome_labels_for_patterns(
     """
     Genera etiquetas basadas en resultados futuros para patrones fractales usando ATR * markup.
     Siguiendo el enfoque del artículo MQL5:
-    - Etiqueta TODOS los patrones fractales encontrados
+    - Etiqueta TODOS los patrones fractales encontrados PUNTO POR PUNTO
     - 0.0/1.0: Patrones confiables (correlación >= threshold) con señal direccional clara
     - 2.0: Patrones no confiables O confiables sin direccionalidad clara
     
@@ -1554,10 +1554,14 @@ def calculate_future_outcome_labels_for_patterns(
                 - Clasificación: 0.0/1.0/2.0 según convención
                 - Regresión: Magnitud normalizada por ATR (positiva/negativa)
     """
-    # Inicialización: SIEMPRE empezar con 2.0 (no confiable) para cualquier dirección
-    # Siguiendo el enfoque del artículo MQL5: primero evaluar confiabilidad
-    labels = np.full(close_data_len, 2.0, dtype=np.float64)  # 2.0: no confiable
+    # ✅ CORRECCIÓN: Inicialización con 2.0 (no confiable)
+    labels = np.full(close_data_len, 2.0, dtype=np.float64)
     num_potential_windows = len(correlations_at_window_start)
+
+    # ✅ CORRECCIÓN: Horizonte fijo para coherencia temporal del patrón
+    fixed_horizon = min_future_horizon
+    if max_future_horizon > min_future_horizon:
+        fixed_horizon = np.random.randint(min_future_horizon, max_future_horizon + 1)
 
     for idx_window_start in range(num_potential_windows):
         corr_value = correlations_at_window_start[idx_window_start]
@@ -1570,104 +1574,70 @@ def calculate_future_outcome_labels_for_patterns(
         # Momento en el tiempo (índice) cuando el patrón de correlación está completamente formado
         signal_time_idx = idx_window_start + w - 1
 
-        if signal_time_idx >= close_data_len:  # Teóricamente no debería ocurrir
+        if signal_time_idx >= close_data_len:
             continue
         
         # ✅ ENFOQUE ARTÍCULO MQL5: Verificar confiabilidad del patrón
         is_reliable_pattern = abs(corr_value) >= correlation_threshold
         
         if not is_reliable_pattern:
-            # Patrón no confiable - SIEMPRE etiquetar como 2.0 (no confiable)
-            # Esto aplica para cualquier dirección (buy, sell, both)
+            # Patrón no confiable - etiquetar como 2.0 (no confiable)
             for i in range(idx_window_start, signal_time_idx + 1):
                 labels[i] = 2.0  # No confiable
             continue
             
-        # Patrón confiable - evaluar direccionalidad basada en movimientos futuros
-        pattern_labels = []
-        
-        # Calculamos etiquetas individuales para todos los puntos del patrón
+        # ✅ CORRECCIÓN CRÍTICA: Etiquetado PUNTO POR PUNTO (no promedio)
         for point_idx in range(idx_window_start, signal_time_idx + 1):
-            # ✅ CORRECCIÓN CRÍTICA: Verificar límites del array ATR
+            # Verificar límites del array ATR
             if point_idx >= len(atr):
                 continue
                 
             # Precio actual para este punto específico
             current_price = source_close_data[point_idx]
             
-            # Determinamos el horizonte para la predicción
-            current_horizon = min_future_horizon
-            if max_future_horizon > min_future_horizon:
-                current_horizon = np.random.randint(min_future_horizon, max_future_horizon + 1)
-            
-            # Índice del precio futuro relativo al punto actual
-            future_price_idx = point_idx + current_horizon
+            # ✅ CORRECCIÓN: Usar horizonte fijo para coherencia temporal
+            future_price_idx = point_idx + fixed_horizon
             
             if future_price_idx >= close_data_len:
                 continue
                 
             future_price = source_close_data[future_price_idx]
             
-            # ✅ NUEVA FUNCIONALIDAD: Usar ATR dinámico
+            # ATR dinámico para este punto específico
             dynamic_markup = markup_multiplier * atr[point_idx]
             
             if label_type == 1:  # Regresión - magnitud normalizada por ATR
+                # ✅ CORRECCIÓN: Asignar magnitud DIRECTAMENTE al punto
                 magnitude = (future_price - current_price) / (atr[point_idx] + 1e-12)
                 is_buy = future_price > current_price + dynamic_markup
                 is_sell = future_price < current_price - dynamic_markup
                 
                 if is_buy and not is_sell:
-                    current_label = magnitude  # Magnitud positiva para buy
+                    labels[point_idx] = magnitude  # Magnitud positiva para buy
                 elif is_sell and not is_buy:
-                    current_label = magnitude  # Magnitud negativa para sell
+                    labels[point_idx] = magnitude  # Magnitud negativa para sell
                 else:
-                    current_label = 0.0  # No confiable
-                pattern_labels.append(current_label)
-            else:  # Clasificación - etiquetas binarias (funcionalidad original)
-                # Determinamos la etiqueta para el punto actual
-                current_label = 2.0  # Neutral por defecto
+                    labels[point_idx] = 0.0  # No confiable
+            else:  # Clasificación - etiquetas binarias
+                # ✅ CORRECCIÓN: Asignar etiqueta DIRECTAMENTE al punto
                 if direction == 0:  # buy only
                     if future_price > current_price + dynamic_markup:
-                        current_label = 1.0  # Señal válida
+                        labels[point_idx] = 1.0  # Éxito direccional (buy)
                     else:
-                        current_label = 0.0  # No señal
-                    pattern_labels.append(current_label)
+                        labels[point_idx] = 0.0  # Fracaso direccional (buy)
                 elif direction == 1:  # sell only
                     if future_price < current_price - dynamic_markup:
-                        current_label = 1.0  # Señal válida
+                        labels[point_idx] = 1.0  # Éxito direccional (sell)
                     else:
-                        current_label = 0.0  # No señal
-                    pattern_labels.append(current_label)
-                elif direction == 2:  # both directions (comportamiento original)
+                        labels[point_idx] = 0.0  # Fracaso direccional (sell)
+                elif direction == 2:  # both directions
                     if future_price > current_price + dynamic_markup:
-                        current_label = 0.0  # Precio subió
+                        labels[point_idx] = 0.0  # Precio subió (buy)
                     elif future_price < current_price - dynamic_markup:
-                        current_label = 1.0  # Precio bajó
-                    # Agregamos la etiqueta al array si no es neutral
-                    if current_label != 2.0:
-                        pattern_labels.append(current_label)
-        # Si no hay etiquetas significativas en el patrón, etiquetar como no confiable
-        if len(pattern_labels) == 0:
-            # Patrón confiable pero sin direccionalidad clara - etiquetar como 2.0
-            for i in range(idx_window_start, signal_time_idx + 1):
-                labels[i] = 2.0  # No confiable (sin direccionalidad clara)
-            continue
-            
-        # Calculamos la etiqueta promedio de todos los puntos del patrón
-        avg_label = 0.0
-        for l in pattern_labels:
-            avg_label += l
-        avg_label /= len(pattern_labels)
-        
-        # Determinamos la etiqueta general para todo el patrón
-        if direction == 2:  # both directions
-            pattern_label = 0.0 if avg_label < 0.5 else 1.0
-        else:  # single direction
-            pattern_label = 1.0 if avg_label >= 0.5 else 0.0
-        
-        # Asignamos esta etiqueta a todos los puntos del patrón
-        for i in range(idx_window_start, signal_time_idx + 1):
-            labels[i] = pattern_label
+                        labels[point_idx] = 1.0  # Precio bajó (sell)
+                    # Si no hay movimiento significativo, mantiene 2.0 (no confiable)
+    
+    return labels
     
     return labels
 

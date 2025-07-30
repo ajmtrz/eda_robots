@@ -818,7 +818,7 @@ class StrategySearcher:
     def _suggest_label(self, trial: optuna.Trial) -> Dict[str, float]:
         """Hiperparámetros de etiquetado dependientes de la función label_method."""
         label_search_space = {
-            'label_markup':     lambda t: t.suggest_float('label_markup',     0.0001, 0.01, log=True),
+            'label_markup':     lambda t: t.suggest_float('label_markup',     0.1, 3.0, log=True),
             'label_n_clusters': lambda t: t.suggest_int('label_n_clusters', 5, 30, log=True),
             'label_polyorder':  lambda t: t.suggest_int('label_polyorder',    2, 10, log=True),
             'label_threshold':  lambda t: t.suggest_float('label_threshold',  0.2, 0.8),
@@ -828,8 +828,8 @@ class StrategySearcher:
             'label_rolling_periods_small': lambda t: [t.suggest_int(f'label_rolling_periods_small_{i}', 4, 60, log=True) for i in range(3)],
             'label_rolling_periods_big': lambda t: [t.suggest_int(f'label_rolling_periods_big_{i}', 200, 600, log=True) for i in range(3)],
             'label_atr_period': lambda t: t.suggest_int  ('label_atr_period', 10, 50, log=True),
-            'label_min_val':    lambda t: t.suggest_int  ('label_min_val',    1,  4, log=True),
-            'label_max_val':    lambda t: t.suggest_int  ('label_max_val',    5, 15, log=True),
+            'label_min_val':    lambda t: t.suggest_int  ('label_min_val',    1,  8, log=True),
+            'label_max_val':    lambda t: t.suggest_int  ('label_max_val',    8, 25, log=True),
             'label_method_trend':     lambda t: t.suggest_categorical('label_method_trend', ['normal', 'inverse']),
             'label_method_random':     lambda t: t.suggest_categorical('label_method_random', ['first', 'last', 'mean', 'max', 'min', 'random']),
             'label_filter':     lambda t: t.suggest_categorical('label_filter', ['savgol', 'spline', 'sma', 'ema']),
@@ -841,7 +841,7 @@ class StrategySearcher:
             'label_max_window': lambda t: t.suggest_int('label_max_window', 20, 60, log=True),
             'label_vol_window': lambda t: t.suggest_int('label_vol_window', 10, 50, log=True),
             'label_min_touches': lambda t: t.suggest_int('label_min_touches', 2, 10),
-            'label_peak_prominence': lambda t: t.suggest_float('label_peak_prominence', 0.05, 0.2),
+            'label_peak_prominence': lambda t: t.suggest_float('label_peak_prominence', 0.05, 0.5),
             'label_quantiles': lambda t: [t.suggest_float(f'label_quantiles_{i}', 0.4, 0.6) for i in range(2)],
             'label_decay_factor': lambda t: t.suggest_float('label_decay_factor', 0.9, 0.99),
             'label_shift': lambda t: t.suggest_int('label_shift', 0, 10),

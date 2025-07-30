@@ -2837,21 +2837,35 @@ def calculate_labels_zigzag(peaks, troughs, close, atr, label_markup, label_min_
             is_buy = future_price > current_price + dyn_mk
             is_sell = future_price < current_price - dyn_mk
             
-            # Para magnitud, siempre verificar ambas direcciones (both)
+            # ✅ ESTRATEGIA HÍBRIDA: Validación + Continuidad
             if is_peak:
                 if is_sell and not is_buy:
                     labels[i] = magnitude  # Magnitud negativa para sell en picos
+                    last_peak_type = 1
                 else:
                     labels[i] = 0.0  # No confiable
-                last_peak_type = 1
+                    last_peak_type = -1  # Reset
             elif is_trough:
                 if is_buy and not is_sell:
                     labels[i] = magnitude  # Magnitud positiva para buy en valles
+                    last_peak_type = 0
                 else:
                     labels[i] = 0.0  # No confiable
-                last_peak_type = 0
+                    last_peak_type = -1  # Reset
             else:
-                labels[i] = 0.0  # No confiable
+                # ✅ PUNTOS INTERMEDIOS: Continuar señal SOLO si cumple profit target
+                if last_peak_type == 1:  # Último fue pico válido
+                    if is_sell and not is_buy:
+                        labels[i] = magnitude  # Magnitud negativa para sell
+                    else:
+                        labels[i] = 0.0  # No confiable
+                elif last_peak_type == 0:  # Último fue valle válido
+                    if is_buy and not is_sell:
+                        labels[i] = magnitude  # Magnitud positiva para buy
+                    else:
+                        labels[i] = 0.0  # No confiable
+                else:
+                    labels[i] = 0.0  # No confiable
         else:  # Clasificación - etiquetas binarias (funcionalidad original)
             if direction == 2:  # both
                 if is_peak and future_price <= current_price - dyn_mk:
@@ -2861,25 +2875,51 @@ def calculate_labels_zigzag(peaks, troughs, close, atr, label_markup, label_min_
                     labels[i] = 0.0  # Buy signal at troughs with profit validation
                     last_peak_type = 0
                 else:
-                    labels[i] = 2.0  # Sin señal
+                    # ✅ PUNTOS INTERMEDIOS: Continuar señal SOLO si cumple profit target
+                    if last_peak_type == 1:  # Último fue pico válido
+                        if future_price <= current_price - dyn_mk:
+                            labels[i] = 1.0  # Sell
+                        else:
+                            labels[i] = 2.0  # Sin señal
+                    elif last_peak_type == 0:  # Último fue valle válido
+                        if future_price >= current_price + dyn_mk:
+                            labels[i] = 0.0  # Buy
+                        else:
+                            labels[i] = 2.0  # Sin señal
+                    else:
+                        labels[i] = 2.0  # Sin señal
             elif direction == 0:  # solo buy
                 if is_trough and future_price >= current_price + dyn_mk:
                     labels[i] = 1.0  # Éxito direccional (señal de compra)
                     last_peak_type = 0
                 elif is_trough:
                     labels[i] = 0.0  # Fracaso direccional (no profit)
-                    last_peak_type = 0
+                    last_peak_type = -1  # Reset
                 else:
-                    labels[i] = 2.0  # Patrón no confiable
+                    # ✅ PUNTOS INTERMEDIOS: Continuar señal SOLO si cumple profit target
+                    if last_peak_type == 0:  # Último fue valle válido
+                        if future_price >= current_price + dyn_mk:
+                            labels[i] = 1.0  # Éxito direccional (buy)
+                        else:
+                            labels[i] = 2.0  # Patrón no confiable
+                    else:
+                        labels[i] = 2.0  # Patrón no confiable
             elif direction == 1:  # solo sell
                 if is_peak and future_price <= current_price - dyn_mk:
                     labels[i] = 1.0  # Éxito direccional (señal de venta)
                     last_peak_type = 1
                 elif is_peak:
                     labels[i] = 0.0  # Fracaso direccional (no profit)
-                    last_peak_type = 1
+                    last_peak_type = -1  # Reset
                 else:
-                    labels[i] = 2.0  # Patrón no confiable
+                    # ✅ PUNTOS INTERMEDIOS: Continuar señal SOLO si cumple profit target
+                    if last_peak_type == 1:  # Último fue pico válido
+                        if future_price <= current_price - dyn_mk:
+                            labels[i] = 1.0  # Éxito direccional (sell)
+                        else:
+                            labels[i] = 2.0  # Patrón no confiable
+                    else:
+                        labels[i] = 2.0  # Patrón no confiable
                 
     return labels
 
@@ -2891,8 +2931,8 @@ def get_labels_zigzag(
     label_max_val=15,
     label_atr_period=14,
     direction=2,
-    label_type='classification',
-    label_method_random='random'
+    label_method_random='random',
+    label_type='classification'
 ) -> pd.DataFrame:
     """
     Generates labels for a financial dataset based on zigzag peaks and troughs with profit target validation.

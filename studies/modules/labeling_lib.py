@@ -3080,6 +3080,7 @@ def get_labels_mean_reversion(
     label_max_val=15,
     label_rolling=0.5,
     label_quantiles=[.45, .55],
+    label_polyorder=3,
     label_filter_mean='spline',
     label_decay_factor=0.95,
     label_shift=0,
@@ -3135,7 +3136,7 @@ def get_labels_mean_reversion(
     elif label_filter_mean == 'spline':
         x = np.array(range(dataset.shape[0]))
         y = dataset['close'].values
-        spl = UnivariateSpline(x, y, k=3, s=label_rolling)
+        spl = UnivariateSpline(x, y, k=label_polyorder, s=label_rolling)
         yHat = spl(np.linspace(min(x), max(x), num=x.shape[0]))
         yHat_shifted = np.roll(yHat, shift=label_shift) # Apply the shift 
         diff = dataset['close'] - yHat_shifted
@@ -3143,7 +3144,7 @@ def get_labels_mean_reversion(
         dataset['lvl'] = weighted_diff
         dataset = dataset.dropna() 
     elif label_filter_mean == 'savgol':
-        smoothed_prices, filtering_successful = safe_savgol_filter(dataset['close'].values, label_rolling=label_rolling, label_polyorder=5)
+        smoothed_prices, filtering_successful = safe_savgol_filter(dataset['close'].values, label_rolling=label_rolling, label_polyorder=label_polyorder)
         if not filtering_successful:
             return pd.DataFrame()
         diff = dataset['close'] - smoothed_prices
@@ -3309,6 +3310,7 @@ def get_labels_mean_reversion_multi(
     label_min_val=1, 
     label_max_val=15, 
     label_window_sizes_float=[0.2, 0.3, 0.5], 
+    label_polyorder=3,
     label_quantiles=[.45, .55], 
     label_atr_period=14, 
     direction=2,
@@ -3356,7 +3358,7 @@ def get_labels_mean_reversion_multi(
     for i, label_rolling in enumerate(label_window_sizes_float):
         x = np.arange(dataset.shape[0])
         y = dataset['close'].values
-        spl = UnivariateSpline(x, y, k=3, s=label_rolling)
+        spl = UnivariateSpline(x, y, k=label_polyorder, s=label_rolling)
         yHat = spl(np.linspace(x.min(), x.max(), x.shape[0]))
         lvl_data[:, i] = dataset['close'] - yHat
         # Store quantiles directly into the NumPy array
@@ -3511,7 +3513,7 @@ def calculate_labels_mean_reversion_vol(
 def get_labels_mean_reversion_vol(
     dataset, label_markup, label_min_val=1, label_max_val=15, label_rolling=0.5,
     label_quantiles=[.45, .55], label_filter_mean='spline', label_shift=1,
-    label_vol_window=20, label_atr_period=14, direction=2,
+    label_vol_window=20, label_atr_period=14, direction=2, label_polyorder=3,
     label_type='classification',
     label_method_random='random'
 ) -> pd.DataFrame:
@@ -3573,12 +3575,12 @@ def get_labels_mean_reversion_vol(
     elif label_filter_mean == 'spline':
         x = np.array(range(dataset.shape[0]))
         y = dataset['close'].values
-        spl = UnivariateSpline(x, y, k=3, s=label_rolling)
+        spl = UnivariateSpline(x, y, k=label_polyorder, s=label_rolling)
         yHat = spl(np.linspace(min(x), max(x), num=x.shape[0]))
         yHat_shifted = np.roll(yHat, shift=label_shift) # Apply the shift 
         dataset['lvl'] = dataset['close'] - yHat_shifted
     elif label_filter_mean == 'savgol':
-        smoothed_prices, filtering_successful = safe_savgol_filter(dataset['close'].values, label_rolling=label_rolling, label_polyorder=5)
+        smoothed_prices, filtering_successful = safe_savgol_filter(dataset['close'].values, label_rolling=label_rolling, label_polyorder=label_polyorder)
         if not filtering_successful:
             print(f"🔍 DEBUG: Savitzky-Golay filtering failed in get_labels_mean_reversion_vol, returning empty dataset")
             return pd.DataFrame()

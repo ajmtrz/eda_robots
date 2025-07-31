@@ -2578,11 +2578,17 @@ def get_labels_multi_window(
     return dataset
 
 @njit(cache=True)
-def calculate_labels_validated_levels(prices, atr, window_size, label_markup, min_touches, label_min_val, label_max_val, direction=2, label_type=0):
+def calculate_labels_validated_levels(close, high, low, atr, window_size, label_markup, min_touches, label_min_val, label_max_val, direction=2, label_type=0, method_int=5):
     """
     Etiquetado de rupturas de niveles validados con profit target basado en ATR * markup.
+    
+    Metodología híbrida:
+    - Detección de niveles: Usa High para resistencia, Low para soporte (más preciso)
+    - Confirmación de rupturas: Usa Close para estabilidad (menos ruido)
+    
     direction: 0=solo buy, 1=solo sell, 2=ambas
     label_type: 0=clasificación, 1=regresión
+    method_int: 0=first, 1=last, 2=mean, 3=max, 4=min, 5=random
     
     Etiquetas:
       - Clasificación:
@@ -2590,78 +2596,155 @@ def calculate_labels_validated_levels(prices, atr, window_size, label_markup, mi
         - Ambas: 0.0=buy, 1.0=sell, 2.0=sin señal
       - Regresión: Magnitud normalizada por ATR (positiva para buy, negativa para sell, 0.0 si no confiable)
     """
-    resistance_touches = {}
-    support_touches = {}
     labels = []
     
-    for i in range(window_size, len(prices) - label_max_val):
-        window = prices[i-window_size:i]
-        current_price = prices[i]
+    # Estructuras para almacenar niveles agrupados (compatibles con Numba)
+    resistance_levels = {}  # {nivel_agrupado: (touches, precio_representativo)}
+    support_levels = {}     # {nivel_agrupado: (touches, precio_representativo)}
+    
+    # Inicializar con elementos temporales para que Numba pueda inferir tipos
+    resistance_levels[0.0] = (0, 0.0)  # (touches, precio)
+    support_levels[0.0] = (0, 0.0)     # (touches, precio)
+    
+    # Eliminar elementos temporales inmediatamente
+    del resistance_levels[0.0]
+    del support_levels[0.0]
+    
+    for i in range(window_size, len(close) - label_max_val):
+        current_close = close[i]
+        current_high = high[i]
+        current_low = low[i]
         dyn_mk = label_markup * atr[i]
-
-        potential_resistance = np.max(window)
-        potential_support = np.min(window)
-
-        # Usar ATR dinámico para determinar toques de niveles
-        for level in resistance_touches:
-            if abs(current_price - level) <= dyn_mk:
-                resistance_touches[level] += 1
-
-        for level in support_touches:
-            if abs(current_price - level) <= dyn_mk:
-                support_touches[level] += 1
-
-        if potential_resistance not in resistance_touches:
-            resistance_touches[potential_resistance] = 1
-        if potential_support not in support_touches:
-            support_touches[potential_support] = 1
-
-        valid_resistance = [level for level, touches in resistance_touches.items() if touches >= min_touches]
-        valid_support = [level for level, touches in support_touches.items() if touches >= min_touches]
-
-        # Usar ATR dinámico para detectar rupturas
-        broke_resistance = valid_resistance and current_price > min(valid_resistance) + dyn_mk
-        broke_support = valid_support and current_price < max(valid_support) - dyn_mk
-
-        # Validar con profit futuro
-        rand = np.random.randint(label_min_val, label_max_val + 1)
-        future_price = prices[i + rand]
-
+        
+        # Ventana para análisis de niveles (enfoque híbrido)
+        resistance_window = high[i-window_size:i]  # High para resistencia (más preciso)
+        support_window = low[i-window_size:i]      # Low para soporte (más preciso)
+        
+        # Detectar máximos y mínimos locales usando High/Low
+        local_max = np.max(resistance_window)  # Máximo de High para resistencia
+        local_min = np.min(support_window)     # Mínimo de Low para soporte
+        
+        # Agrupar niveles de resistencia cercanos (usando High para detección)
+        resistance_found = False
+        for level_key in list(resistance_levels.keys()):
+            level_price = resistance_levels[level_key][1]
+            if abs(current_high - level_price) <= dyn_mk:
+                # Incrementar toques solo para el nivel más cercano
+                if abs(current_high - level_price) <= dyn_mk * 0.5:  # Solo el más cercano
+                    touches, price = resistance_levels[level_key]
+                    resistance_levels[level_key] = (touches + 1, price)
+                    resistance_found = True
+                    break
+        
+        # Si no se encontró nivel cercano, crear uno nuevo
+        if not resistance_found:
+            resistance_levels[local_max] = (1, local_max)
+        
+        # Agrupar niveles de soporte cercanos (usando Low para detección)
+        support_found = False
+        for level_key in list(support_levels.keys()):
+            level_price = support_levels[level_key][1]
+            if abs(current_low - level_price) <= dyn_mk:
+                # Incrementar toques solo para el nivel más cercano
+                if abs(current_low - level_price) <= dyn_mk * 0.5:  # Solo el más cercano
+                    touches, price = support_levels[level_key]
+                    support_levels[level_key] = (touches + 1, price)
+                    support_found = True
+                    break
+        
+        # Si no se encontró nivel cercano, crear uno nuevo
+        if not support_found:
+            support_levels[local_min] = (1, local_min)
+        
+        # Limpiar niveles antiguos (más allá de la ventana actual)
+        resistance_levels = {k: v for k, v in resistance_levels.items() 
+                           if abs(current_close - v[1]) <= dyn_mk * 3}
+        support_levels = {k: v for k, v in support_levels.items() 
+                         if abs(current_close - v[1]) <= dyn_mk * 3}
+        
+        # Obtener niveles válidos (con suficientes toques)
+        valid_resistance = [v[1] for v in resistance_levels.values() if v[0] >= min_touches]
+        valid_support = [v[1] for v in support_levels.values() if v[0] >= min_touches]
+        
+        # Detectar rupturas usando niveles relevantes (Close para estabilidad)
+        broke_resistance = False
+        broke_support = False
+        
+        if len(valid_resistance) > 0:
+            # Encontrar el nivel de resistencia más cercano al precio actual
+            closest_resistance = valid_resistance[0]  # Inicializar con el primer elemento
+            min_distance = abs(valid_resistance[0] - current_close)
+            for level in valid_resistance:
+                distance = abs(level - current_close)
+                if distance < min_distance:
+                    min_distance = distance
+                    closest_resistance = level
+            if current_close > closest_resistance + dyn_mk:
+                broke_resistance = True
+        
+        if len(valid_support) > 0:
+            # Encontrar el nivel de soporte más cercano al precio actual
+            closest_support = valid_support[0]  # Inicializar con el primer elemento
+            min_distance = abs(valid_support[0] - current_close)
+            for level in valid_support:
+                distance = abs(level - current_close)
+                if distance < min_distance:
+                    min_distance = distance
+                    closest_support = level
+            if current_close < closest_support - dyn_mk:
+                broke_support = True
+        
+        # Seleccionar precio futuro según method_int (usando Close)
+        if method_int == 0:  # first
+            future_price = close[i + label_min_val]
+        elif method_int == 1:  # last
+            future_price = close[i + label_max_val]
+        elif method_int == 2:  # mean
+            future_window = close[i + label_min_val:i + label_max_val + 1]
+            future_price = np.mean(future_window)
+        elif method_int == 3:  # max
+            future_window = close[i + label_min_val:i + label_max_val + 1]
+            future_price = np.max(future_window)
+        elif method_int == 4:  # min
+            future_window = close[i + label_min_val:i + label_max_val + 1]
+            future_price = np.min(future_window)
+        else:  # random (method_int == 5)
+            rand = np.random.randint(label_min_val, label_max_val + 1)
+            future_price = close[i + rand]
+        
         if label_type == 1:  # Regresión - magnitud normalizada por ATR
-            magnitude = (future_price - current_price) / (atr[i] + 1e-12)
-            is_buy = future_price > current_price + dyn_mk
-            is_sell = future_price < current_price - dyn_mk
+            magnitude = (future_price - current_close) / (atr[i] + 1e-12)
             
             # Para magnitud, siempre verificar ambas direcciones (both)
             if broke_resistance:
-                if is_buy and not is_sell:
+                if future_price > current_close + dyn_mk:
                     labels.append(magnitude)  # Magnitud positiva para buy
                 else:
                     labels.append(0.0)  # No confiable
             elif broke_support:
-                if is_sell and not is_buy:
+                if future_price < current_close - dyn_mk:
                     labels.append(magnitude)  # Magnitud negativa para sell
                 else:
                     labels.append(0.0)  # No confiable
             else:
                 labels.append(0.0)  # No confiable
-        else:  # Clasificación - etiquetas binarias (funcionalidad original)
+        else:  # Clasificación - etiquetas binarias
             if direction == 2:  # both
-                if broke_resistance and future_price >= current_price + dyn_mk:
+                if broke_resistance and future_price >= current_close + dyn_mk:
                     labels.append(0.0)  # buy with profit validation
-                elif broke_support and future_price <= current_price - dyn_mk:
+                elif broke_support and future_price <= current_close - dyn_mk:
                     labels.append(1.0)  # sell with profit validation
                 else:
                     labels.append(2.0)  # sin señal
             elif direction == 0:  # solo buy
-                if broke_resistance and future_price >= current_price + dyn_mk:
+                if broke_resistance and future_price >= current_close + dyn_mk:
                     labels.append(1.0)  # éxito direccional (señal de compra)
                 elif broke_resistance:
                     labels.append(0.0)  # fracaso direccional (no profit)
                 else:
                     labels.append(2.0)  # patrón no confiable
             elif direction == 1:  # solo sell
-                if broke_support and future_price <= current_price - dyn_mk:
+                if broke_support and future_price <= current_close - dyn_mk:
                     labels.append(1.0)  # éxito direccional (señal de venta)
                 elif broke_support:
                     labels.append(0.0)  # fracaso direccional (no profit)
@@ -2679,7 +2762,8 @@ def get_labels_validated_levels(
     label_max_val=15,
     label_atr_period=14,
     direction=2,
-    label_type='classification'
+    label_type='classification',
+    label_method_random='random'
 ) -> pd.DataFrame:
     """
     Etiquetado de rupturas de niveles validados con profit target basado en ATR * markup.
@@ -2694,6 +2778,7 @@ def get_labels_validated_levels(
         label_atr_period (int): Período ATR.
         direction (int): 0=solo buy, 1=solo sell, 2=ambas (default).
         label_type (str): 'classification' para etiquetas binarias, 'regression' para magnitud.
+        label_method_random (str): Método de selección del precio objetivo ('first', 'last', 'mean', 'max', 'min', 'random').
     
     Returns:
         pd.DataFrame: DataFrame con columna 'labels_main' añadida:
@@ -2707,197 +2792,28 @@ def get_labels_validated_levels(
     low = dataset["low"].values
     close = dataset["close"].values
     atr = calculate_atr_simple(high, low, close, period=label_atr_period)
+    
+    # Map method string to integer
+    method_map = {'first': 0, 'last': 1, 'mean': 2, 'max': 3, 'min': 4, 'random': 5}
+    method_int = method_map.get(label_method_random, 5)
+    
     # Calculate labels
     label_type_int = 1 if label_type == 'regression' else 0
     labels = calculate_labels_validated_levels(
-        close, atr, label_window_size, label_markup, label_min_touches,
-        label_min_val, label_max_val, direction, label_type_int
+        close, high, low, atr, label_window_size, label_markup, label_min_touches,
+        label_min_val, label_max_val, direction, label_type_int, method_int
     )
+    
     # Align labels and fill with 2.0 using pandas to avoid manual padding
-    labels = pd.Series(labels, index=dataset.index[label_window_size:]).reindex_like(dataset).fillna(2.0)
+    # El bucle genera etiquetas desde window_size hasta len(close) - label_max_val
+    start_idx = label_window_size
+    end_idx = len(dataset) - label_max_val
+    labels = pd.Series(labels, index=dataset.index[start_idx:end_idx]).reindex_like(dataset).fillna(2.0)
+    
     # Add labels to dataset
     dataset['labels_main'] = labels
     dataset['labels_main'] = dataset['labels_main'].fillna(2.0)
     return dataset
-
-@njit(cache=True)
-def calculate_labels_zigzag(peaks, troughs, close, atr, label_markup, label_min_val, label_max_val, direction=2, label_type=0, method_int=5):
-    """
-    Generates labels based on peaks and troughs with profit target validation using ATR * markup.
-    
-    Methodology:
-    - Detects peaks and troughs using prominence-based identification
-    - Validates signals using ATR * markup as profit target
-    - For classification: 0.0=buy, 1.0=sell, 2.0=no signal
-    - For regression: normalized magnitude by ATR (positive for buy, negative for sell, 0.0 if not reliable)
-    
-    Signal Generation Logic:
-    - Peaks (highs) → Sell signals when future price <= current_price - ATR*markup
-    - Troughs (lows) → Buy signals when future price >= current_price + ATR*markup
-    - Only generates signals at detected extremes (peaks/troughs)
-    - Regression: assigns magnitude only when profit target is met
-    - Classification: assigns binary labels based on profit validation
-
-    Args:
-        peaks (np.array): Indices of the peaks in the data.
-        troughs (np.array): Indices of the troughs in the data.
-        close (np.array): Array of close prices.
-        atr (np.array): Array of ATR values.
-        label_markup (float): Markup multiplier for ATR.
-        label_min_val (int): Minimum bars for future validation.
-        label_max_val (int): Maximum bars for future validation.
-        direction (int): 0=solo buy, 1=solo sell, 2=ambas
-        label_type (int): 0=clasificación, 1=regresión
-        method_int (int): 0=first, 1=last, 2=mean, 3=max, 4=min, 5=random
-
-    Returns:
-        np.array: An array of labels with profit validation:
-                  - Clasificación: 0.0=buy, 1.0=sell, 2.0=sin señal
-                  - Regresión: Magnitud normalizada por ATR (positiva para buy, negativa para sell, 0.0 si no confiable)
-    """
-    len_close = len(close) - label_max_val
-    labels = np.empty(len_close, dtype=np.float64)
-    labels.fill(2.0)  # Initialize all labels to 2.0 (no signal)
-    
-    last_peak_type = -1  # -1 for the start, 1 for peak, 0 for trough
-    
-    for i in range(len_close):
-        is_peak = False
-        is_trough = False
-        
-        # Check if current index is a peak
-        for j in range(len(peaks)):
-            if i == peaks[j]:
-                is_peak = True
-                break
-        
-        # Check if current index is a trough
-        for j in range(len(troughs)):
-            if i == troughs[j]:
-                is_trough = True
-                break
-
-        dyn_mk = label_markup * atr[i]
-        
-        # Selección del precio objetivo según method_int
-        if method_int == 0:  # first
-            future_price = close[i + label_min_val]
-        elif method_int == 1:  # last
-            future_price = close[i + label_max_val]
-        elif method_int == 2:  # mean
-            window = close[i + label_min_val : i + label_max_val + 1]
-            if window.size > 0:
-                future_price = np.mean(window)
-            else:
-                future_price = close[i + label_min_val]
-        elif method_int == 3:  # max
-            window = close[i + label_min_val : i + label_max_val + 1]
-            if window.size > 0:
-                future_price = np.max(window)
-            else:
-                future_price = close[i + label_min_val]
-        elif method_int == 4:  # min
-            window = close[i + label_min_val : i + label_max_val + 1]
-            if window.size > 0:
-                future_price = np.min(window)
-            else:
-                future_price = close[i + label_min_val]
-        else:  # random/otro
-            rand = np.random.randint(label_min_val, label_max_val + 1)
-            future_price = close[i + rand]
-            
-        current_price = close[i]
-
-        if label_type == 1:  # Regresión - magnitud normalizada por ATR
-            magnitude = (future_price - current_price) / (atr[i] + 1e-12)
-            is_buy = future_price > current_price + dyn_mk
-            is_sell = future_price < current_price - dyn_mk
-            
-            # ✅ ESTRATEGIA HÍBRIDA: Validación + Continuidad
-            if is_peak:
-                if is_sell and not is_buy:
-                    labels[i] = magnitude  # Magnitud negativa para sell en picos
-                    last_peak_type = 1
-                else:
-                    labels[i] = 0.0  # No confiable
-                    last_peak_type = -1  # Reset
-            elif is_trough:
-                if is_buy and not is_sell:
-                    labels[i] = magnitude  # Magnitud positiva para buy en valles
-                    last_peak_type = 0
-                else:
-                    labels[i] = 0.0  # No confiable
-                    last_peak_type = -1  # Reset
-            else:
-                # ✅ PUNTOS INTERMEDIOS: Continuar señal SOLO si cumple profit target
-                if last_peak_type == 1:  # Último fue pico válido
-                    if is_sell and not is_buy:
-                        labels[i] = magnitude  # Magnitud negativa para sell
-                    else:
-                        labels[i] = 0.0  # No confiable
-                elif last_peak_type == 0:  # Último fue valle válido
-                    if is_buy and not is_sell:
-                        labels[i] = magnitude  # Magnitud positiva para buy
-                    else:
-                        labels[i] = 0.0  # No confiable
-                else:
-                    labels[i] = 0.0  # No confiable
-        else:  # Clasificación - etiquetas binarias (funcionalidad original)
-            if direction == 2:  # both
-                if is_peak and future_price <= current_price - dyn_mk:
-                    labels[i] = 1.0  # Sell signal at peaks with profit validation
-                    last_peak_type = 1
-                elif is_trough and future_price >= current_price + dyn_mk:
-                    labels[i] = 0.0  # Buy signal at troughs with profit validation
-                    last_peak_type = 0
-                else:
-                    # ✅ PUNTOS INTERMEDIOS: Continuar señal SOLO si cumple profit target
-                    if last_peak_type == 1:  # Último fue pico válido
-                        if future_price <= current_price - dyn_mk:
-                            labels[i] = 1.0  # Sell
-                        else:
-                            labels[i] = 2.0  # Sin señal
-                    elif last_peak_type == 0:  # Último fue valle válido
-                        if future_price >= current_price + dyn_mk:
-                            labels[i] = 0.0  # Buy
-                        else:
-                            labels[i] = 2.0  # Sin señal
-                    else:
-                        labels[i] = 2.0  # Sin señal
-            elif direction == 0:  # solo buy
-                if is_trough and future_price >= current_price + dyn_mk:
-                    labels[i] = 1.0  # Éxito direccional (señal de compra)
-                    last_peak_type = 0
-                elif is_trough:
-                    labels[i] = 0.0  # Fracaso direccional (no profit)
-                    last_peak_type = -1  # Reset
-                else:
-                    # ✅ PUNTOS INTERMEDIOS: Continuar señal SOLO si cumple profit target
-                    if last_peak_type == 0:  # Último fue valle válido
-                        if future_price >= current_price + dyn_mk:
-                            labels[i] = 1.0  # Éxito direccional (buy)
-                        else:
-                            labels[i] = 2.0  # Patrón no confiable
-                    else:
-                        labels[i] = 2.0  # Patrón no confiable
-            elif direction == 1:  # solo sell
-                if is_peak and future_price <= current_price - dyn_mk:
-                    labels[i] = 1.0  # Éxito direccional (señal de venta)
-                    last_peak_type = 1
-                elif is_peak:
-                    labels[i] = 0.0  # Fracaso direccional (no profit)
-                    last_peak_type = -1  # Reset
-                else:
-                    # ✅ PUNTOS INTERMEDIOS: Continuar señal SOLO si cumple profit target
-                    if last_peak_type == 1:  # Último fue pico válido
-                        if future_price <= current_price - dyn_mk:
-                            labels[i] = 1.0  # Éxito direccional (sell)
-                        else:
-                            labels[i] = 2.0  # Patrón no confiable
-                    else:
-                        labels[i] = 2.0  # Patrón no confiable
-                
-    return labels
 
 def get_labels_zigzag(
     dataset, 

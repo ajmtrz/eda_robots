@@ -836,7 +836,7 @@ class StrategySearcher:
             'label_filter_mean':     lambda t: t.suggest_categorical('label_filter_mean', ['savgol', 'spline', 'mean']),
             'label_window_size': lambda t: t.suggest_int('label_window_size', 4, 60, log=True),
             'label_window_sizes_int': lambda t: [t.suggest_int(f'label_window_sizes_{i}', 4, 60, log=True) for i in range(3)],
-            'label_window_sizes_float': lambda t: [t.suggest_float(f'label_window_sizes_{i}', 0.2, 0.5) for i in range(3)],
+            'label_window_sizes_float': lambda t: [t.suggest_float(f'label_window_sizes_{i}', 0.01, 0.1) for i in range(3)],
             'label_min_window': lambda t: t.suggest_int('label_min_window', 2, 20, log=True),
             'label_max_window': lambda t: t.suggest_int('label_max_window', 20, 60, log=True),
             'label_vol_window': lambda t: t.suggest_int('label_vol_window', 20, 200, log=True),

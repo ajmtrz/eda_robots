@@ -839,11 +839,11 @@ class StrategySearcher:
             'label_window_sizes_float': lambda t: [t.suggest_float(f'label_window_sizes_{i}', 0.01, 0.1) for i in range(3)],
             'label_min_window': lambda t: t.suggest_int('label_min_window', 2, 20, log=True),
             'label_max_window': lambda t: t.suggest_int('label_max_window', 20, 60, log=True),
-            'label_vol_window': lambda t: t.suggest_int('label_vol_window', 20, 200, log=True),
+            'label_vol_window': lambda t: t.suggest_int('label_vol_window', 20, 100, log=True),
             'label_min_touches': lambda t: t.suggest_int('label_min_touches', 2, 10),
             'label_peak_prominence': lambda t: t.suggest_float('label_peak_prominence', 0.05, 0.5),
-            'label_quantiles': lambda t: [t.suggest_float(f'label_quantiles_{i}', 0.4, 0.6) for i in range(2)],
-            'label_decay_factor': lambda t: t.suggest_float('label_decay_factor', 0.9, 0.99),
+            'label_quantiles': lambda t: [t.suggest_float(f'label_quantiles_{i}', 0.25, 0.75) for i in range(2)],
+            'label_decay_factor': lambda t: t.suggest_float('label_decay_factor', 0.7, 0.99),
             'label_shift': lambda t: t.suggest_int('label_shift', 0, 10),
         }
         p = {}

@@ -3165,19 +3165,19 @@ def calculate_labels_mean_reversion_multi(
             rand = np.random.randint(label_min_val, label_max_val + 1)
             future_pr = close_data[i + rand]
 
-        buy_condition = True
-        sell_condition = True
+        buy_condition = 0
+        sell_condition = 0
         for qq in range(n_win):
             curr_lvl = lvl_data[i, qq]
             q_low, q_high = q_list[qq]
             if curr_lvl >= q_high:
-                pass
-            else:
-                sell_condition = False
+                sell_condition += 1
             if curr_lvl <= q_low:
-                pass
-            else:
-                buy_condition = False
+                buy_condition += 1
+        
+        # Requerir mayoría (no unanimidad) - 2 de 3 ventanas
+        buy_condition = buy_condition >= 2
+        sell_condition = sell_condition >= 2
 
         if label_type == 1:  # Regresión - magnitud normalizada por ATR
             magnitude = (future_pr - curr_pr) / (atr[i] + 1e-12)
@@ -3229,7 +3229,7 @@ def get_labels_mean_reversion_multi(
     label_max_val=15, 
     label_window_sizes_float=[0.2, 0.3, 0.5], 
     label_polyorder=3,
-    label_quantiles=[.45, .55], 
+    label_quantiles=[.30, .70], 
     label_atr_period=14, 
     direction=2,
     label_type='classification',

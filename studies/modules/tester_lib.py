@@ -3,8 +3,11 @@ from numba import njit
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
-import onnxruntime as rt
+import onnxruntime as ort
 from typing import List, Tuple, Union
+
+# Suprimir warnings temporalmente (nivel ERROR=3)
+ort.set_default_logger_severity(3)
 
 def tester(
         dataset: pd.DataFrame,
@@ -14,16 +17,23 @@ def tester(
         model_meta_cols: list[str],
         direction: str = 'both',
         timeframe: str = 'H1',
-        print_metrics: bool = False,
+        label_type: str = 'classification',
         model_main_threshold: float = 0.5,
         model_meta_threshold: float = 0.5,
         model_max_orders: int = 1,
-        model_delay_bars: int = 1) -> tuple[float, pd.DataFrame]:
+        model_delay_bars: int = 1,
+        print_metrics: bool = False) -> tuple[float, pd.DataFrame]:
     """
     Evalúa una estrategia para una o ambas direcciones, usando ejecución realista:
     - Las operaciones se abren y cierran al precio 'open' de la barra actual (índice t),
       ya que las features y señales de t son válidas para operar en t.
     - Solo se pasan los arrays estrictamente necesarios a la función jiteada backtest.
+
+    Parameters
+    ----------
+    label_type : str, default='classification'
+        Tipo de modelo main: 'classification' o 'regression'.
+        El modelo meta siempre es de clasificación.
 
     Returns
     -------
@@ -38,8 +48,15 @@ def tester(
         ds_meta = dataset[model_meta_cols].to_numpy()
         open_ = dataset['open'].to_numpy()
 
-        # Calcular probabilidades usando ambos modelos (sin binarizar)
-        main = predict_proba_onnx_models(model_main, ds_main)
+        # Calcular predicciones usando ambos modelos según label_type
+        if label_type == 'classification':
+            # Modelo main: clasificación (probabilidades)
+            main = predict_proba_onnx_models(model_main, ds_main)
+        else:  # regression
+            # Modelo main: regresión (valores continuos)
+            main = predict_regression_onnx_models(model_main, ds_main)
+        
+        # Modelo meta: siempre clasificación (probabilidades)
         meta = predict_proba_onnx_models(model_meta, ds_meta)
 
         # Asegurarse de que main y meta sean arrays 1D (n_samples,)
@@ -55,15 +72,31 @@ def tester(
 
         # ── BACKTEST ──────────────────────────────────────────────────
         dir_flag = {"buy": 0, "sell": 1, "both": 2}[direction]
-        if dir_flag == 0:
-            pb = main
-            ps = np.zeros_like(main)
-        elif dir_flag == 1:
-            pb = np.zeros_like(main)
-            ps = main
-        else:
-            pb = main
-            ps = 1.0 - main
+        
+        if label_type == 'classification':
+            # Lógica de clasificación (probabilidades)
+            if dir_flag == 0:
+                pb = main
+                ps = np.zeros_like(main)
+            elif dir_flag == 1:
+                pb = np.zeros_like(main)
+                ps = main
+            else:
+                pb = main
+                ps = 1.0 - main
+        else:  # regression
+            # Lógica de regresión (valores continuos)
+            # Convertir valores de regresión a probabilidades para trading
+            # Valores positivos = señal de compra, negativos = señal de venta
+            if dir_flag == 0:  # solo buy
+                pb = np.maximum(main, 0.0)  # Solo valores positivos
+                ps = np.zeros_like(main)
+            elif dir_flag == 1:  # solo sell
+                pb = np.zeros_like(main)
+                ps = np.maximum(-main, 0.0)  # Solo valores negativos convertidos a positivos
+            else:  # both
+                pb = np.maximum(main, 0.0)  # Valores positivos para buy
+                ps = np.maximum(-main, 0.0)  # Valores negativos para sell
 
         rpt, trade_stats, trade_profits = backtest(
             open_,
@@ -93,7 +126,7 @@ def tester(
         if score < 0.0:
             return -1.0
         if print_metrics:
-            print(f"🔍 DEBUG - Main threshold: {model_main_threshold}, Meta threshold: {model_meta_threshold}, Max orders: {model_max_orders}, Delay bars: {model_delay_bars}")
+            print(f"🔍 DEBUG - Label type: {label_type}, Main threshold: {model_main_threshold}, Meta threshold: {model_meta_threshold}, Max orders: {model_max_orders}, Delay bars: {model_delay_bars}")
             print(f"🔍 DEBUG - Métricas de evaluación: SCORE: {score}, trade_nl: {trade_nl}, rdd_nl: {rdd_nl}, r2: {r2}, slope_nl: {slope_nl}, wf_nl: {wf_nl}")
             print(f"🔍 DEBUG - Trade stats: n_trades: {trade_stats[0]}, n_positivos: {trade_stats[1]}, n_negativos: {trade_stats[2]}")
             plt.figure(figsize=(10, 6))
@@ -505,10 +538,10 @@ def manual_linear_regression(x, y):
     return r2, slope
 
 # ───── sesión cache – thread-safe ────────────────────────────────────────────
-_session_cache: dict[str, Tuple[rt.InferenceSession, str]] = {}
+_session_cache: dict[str, Tuple[ort.InferenceSession, str]] = {}
 _session_lock = threading.RLock()
 
-def _get_ort_session(model_path: str) -> Tuple[rt.InferenceSession, str]:
+def _get_ort_session(model_path: str) -> Tuple[ort.InferenceSession, str]:
     """
     Devuelve (sess, input_name) reutilizando sesiones ya abiertas.
     """
@@ -516,7 +549,7 @@ def _get_ort_session(model_path: str) -> Tuple[rt.InferenceSession, str]:
         if model_path in _session_cache:
             return _session_cache[model_path]
 
-        sess = rt.InferenceSession(model_path, providers=["CPUExecutionProvider"])
+        sess = ort.InferenceSession(model_path, providers=["CPUExecutionProvider"])
         input_name = sess.get_inputs()[0].name
         _session_cache[model_path] = (sess, input_name)
         return sess, input_name
@@ -594,3 +627,53 @@ def predict_proba_onnx_models(
             raise RuntimeError(f"Salida ONNX inesperada: shape={raw.shape}")
 
     return probs
+
+def predict_regression_onnx_models(
+    onnx_paths: Union[str, List[str]],
+    X: np.ndarray,
+) -> np.ndarray:
+    """
+    Devuelve las predicciones de regresión para uno o varios modelos ONNX.
+    
+    Parameters
+    ----------
+    onnx_paths : str o list[str]
+        Ruta o rutas a los ficheros .onnx.
+    X : np.ndarray  shape (n_samples, n_features)
+        Matriz de características.
+
+    Returns
+    -------
+    np.ndarray
+        Si se pasa una sola ruta → shape (n_samples,)
+        Si se pasa una lista → shape (n_models, n_samples)
+    """
+    X = X.astype(np.float32, copy=False)
+
+    # Caso: un solo modelo (str)
+    if isinstance(onnx_paths, str):
+        sess, inp = _get_ort_session(onnx_paths)
+        try:
+            raw = sess.run(['predictions'], {inp: X})[0]
+        except Exception:
+            raw = sess.run(None, {inp: X})[0]
+        
+        # Aplanar la salida a 1D independientemente de su forma original
+        return raw.ravel()
+
+    # Caso: múltiples modelos (lista)
+    n_models = len(onnx_paths)
+    n_samples = X.shape[0]
+    predictions = np.empty((n_models, n_samples), dtype=np.float32)
+
+    for k, path in enumerate(onnx_paths):
+        sess, inp = _get_ort_session(path)
+        try:
+            raw = sess.run(['predictions'], {inp: X})[0]
+        except Exception:
+            raw = sess.run(None, {inp: X})[0]
+        
+        # Aplanar y almacenar
+        predictions[k] = raw.ravel()
+        
+    return predictions

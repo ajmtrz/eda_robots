@@ -1,7 +1,6 @@
 import os
 import tempfile
 import hashlib
-from catboost import CatBoostClassifier, CatBoostRegressor
 
 def export_models_to_ONNX(models):
     """

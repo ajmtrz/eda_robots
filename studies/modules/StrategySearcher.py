@@ -587,7 +587,7 @@ class StrategySearcher:
             main_labels_dist = model_main_train_data['labels_main'].value_counts()
             meta_labels_dist = model_meta_train_data['labels_meta'].value_counts()
             
-            if len(main_labels_dist) < 2 or len(meta_labels_dist) < 2:
+            if len(main_labels_dist) != 2 or len(meta_labels_dist) != 2:
                 if self.debug:
                     print(f"🔍 DEBUG search_reliability - Distribución insuficiente de clases")
                 return -1.0
@@ -935,7 +935,6 @@ class StrategySearcher:
         elif self.search_type == 'causal':
             p['causal_meta_learners'] = trial.suggest_int('causal_meta_learners', 5, 15)
             p['causal_percentile'] = trial.suggest_int('causal_percentile', 60, 90)
-            
             # Parámetros específicos para regresión causal
             if self.label_type == 'regression':
                 p['causal_error_threshold'] = trial.suggest_float('causal_error_threshold', 0.1, 2.0, log=True)
@@ -951,10 +950,12 @@ class StrategySearcher:
         elif self.search_filter == 'causal':
             p['causal_meta_learners'] = trial.suggest_int('causal_meta_learners', 5, 15)
             p['causal_percentile'] = trial.suggest_int('causal_percentile', 60, 90)
-            
             # Parámetros específicos para regresión causal
             if self.label_type == 'regression':
                 p['causal_error_threshold'] = trial.suggest_float('causal_error_threshold', 0.1, 2.0, log=True)
+
+        if self.label_type == 'regression':
+            p['model_main_threshold'] = trial.suggest_float('model_main_threshold', 0.5, 5.0, log=True)
 
         return p
 
@@ -1172,7 +1173,9 @@ class StrategySearcher:
                     model_meta_cols=meta_feature_cols,
                     direction=self.direction,
                     timeframe=self.timeframe,
-                    print_metrics=self.debug
+                    model_main_threshold=hp.get('model_main_threshold', 0.5),
+                    label_type=self.label_type,
+                    print_metrics=self.debug,
                 )
             except Exception as tester_error:
                 if self.debug:
@@ -1243,7 +1246,13 @@ class StrategySearcher:
                     print(f"🔍   reliable_data.shape: {reliable_data.shape}")
                     print(f"🔍   X.shape: {X.shape}")
                     print(f"🔍   y.shape: {y.shape}")
-                    print(f"🔍   y.value_counts(): {y.value_counts().to_dict()}")
+                    # Ajuste: para regresión, muestra solo conteo de no-cero y cero; para clasificación, muestra value_counts completo
+                    if self.label_type == 'classification':
+                        print(f"🔍   y.value_counts(): {y.value_counts().to_dict()}")
+                    else:
+                        n_nonzero = (y != 0.0).sum()
+                        n_zero = (y == 0.0).sum()
+                        print(f"🔍   y: n_nonzero={n_nonzero}, n_zero={n_zero}, total={len(y)}")
             else:
                 # Esquema tradicional
                 main_feature_cols = [col for col in full_ds.columns if col.endswith('_main_feature')]
@@ -1259,7 +1268,13 @@ class StrategySearcher:
                 if self.debug:
                     print(f"🔍   X.shape: {X.shape}")
                     print(f"🔍   y.shape: {y.shape}")
-                    print(f"🔍   y.value_counts(): {y.value_counts().to_dict()}")
+                    # Ajuste: para regresión, muestra solo conteo de no-cero y cero; para clasificación, muestra value_counts completo
+                    if self.label_type == 'classification':
+                        print(f"🔍   y.value_counts(): {y.value_counts().to_dict()}")
+                    else:
+                        n_nonzero = (y != 0.0).sum()
+                        n_zero = (y == 0.0).sum()
+                        print(f"🔍   y: n_nonzero={n_nonzero}, n_zero={n_zero}, total={len(y)}")
 
             # Verificar que tenemos suficientes datos y clases balanceadas
             if len(X) < 100:  # Mínimo requerido para conformal prediction robusta
@@ -1352,10 +1367,11 @@ class StrategySearcher:
                 )
             
             mapie.fit_conformalize(X, y)
-            predicted, y_prediction_intervals = mapie.predict_interval(X)
             
             # Calcular scores según label_type
             if self.label_type == 'classification':
+                # Para clasificación: predict_interval devuelve (predictions, prediction_sets)
+                predicted, y_prediction_sets = mapie.predict_interval(X)
                 y_prediction_sets = np.squeeze(y_prediction_sets, axis=-1)
                 set_sizes = np.sum(y_prediction_sets, axis=1)
                 
@@ -1366,8 +1382,20 @@ class StrategySearcher:
                 # Combinar: solo muestras que son tanto confiables como precisas
                 combined_scores = ((conformal_scores == 1.0) & (precision_scores == 1.0)).astype(float)
             else:  # regression
+                # Para regresión: predict_interval devuelve (predictions, prediction_intervals)
+                predicted, y_prediction_intervals = mapie.predict_interval(X)
+                
                 # Para regresión: analizar intervalos de confianza
-                interval_width = y_prediction_intervals[:, 1] - y_prediction_intervals[:, 0]
+                # Según documentación MAPIE: prediction_intervals tiene shape (n_samples, 2, n_confidence_levels)
+                # Necesitamos extraer el primer (y único) nivel de confianza
+                if y_prediction_intervals.ndim == 3:
+                    # Shape: (n_samples, 2, n_confidence_levels) -> extraer primer nivel
+                    intervals = y_prediction_intervals[:, :, 0]  # Shape: (n_samples, 2)
+                else:
+                    # Shape: (n_samples, 2) -> usar directamente
+                    intervals = y_prediction_intervals
+                
+                interval_width = intervals[:, 1] - intervals[:, 0]
                 
                 # Criterios de confiabilidad para regresión (optimizados por Optuna)
                 threshold_width = hp['mapie_threshold_width']  # Umbral para ancho de intervalo
@@ -1561,10 +1589,13 @@ class StrategySearcher:
                     print(f"🔍   reliable_data.shape: {reliable_data.shape}")
                     print(f"🔍   X.shape: {X.shape}")
                     print(f"🔍   y.shape: {y.shape}")
+                    # Ajuste: para regresión, muestra solo conteo de no-cero y cero; para clasificación, muestra value_counts completo
                     if self.label_type == 'classification':
                         print(f"🔍   y.value_counts(): {y.value_counts().to_dict()}")
                     else:
-                        print(f"🔍   y.describe(): {y.describe()}")
+                        n_nonzero = (y != 0.0).sum()
+                        n_zero = (y == 0.0).sum()
+                        print(f"🔍   y: n_nonzero={n_nonzero}, n_zero={n_zero}, total={len(y)}")
             else:
                 # Esquema tradicional
                 main_feature_cols = [col for col in full_ds.columns if col.endswith('_main_feature')]
@@ -1580,10 +1611,13 @@ class StrategySearcher:
                 if self.debug:
                     print(f"🔍   X.shape: {X.shape}")
                     print(f"🔍   y.shape: {y.shape}")
+                    # Ajuste: para regresión, muestra solo conteo de no-cero y cero; para clasificación, muestra value_counts completo
                     if self.label_type == 'classification':
                         print(f"🔍   y.value_counts(): {y.value_counts().to_dict()}")
                     else:
-                        print(f"🔍   y.describe(): {y.describe()}")
+                        n_nonzero = (y != 0.0).sum()
+                        n_zero = (y == 0.0).sum()
+                        print(f"🔍   y: n_nonzero={n_nonzero}, n_zero={n_zero}, total={len(y)}")
             
             # Verificar que tenemos suficientes datos
             if len(X) < 100:  # Mínimo requerido para análisis causal robusto
@@ -1595,7 +1629,7 @@ class StrategySearcher:
                     return np.zeros(len(X))
             
             # Verificar que tenemos al menos 2 clases para clasificación
-            if self.label_type == 'classification' and len(y.unique()) < 2:
+            if self.label_type == 'classification' and len(y.unique()) != 2:
                 if self.debug:
                     print(f"🔍 DEBUG apply_causal_filter - Clases insuficientes para análisis causal: {y.unique()}")
                 if reliable_mask is not None:
@@ -1684,12 +1718,17 @@ class StrategySearcher:
         for name, param in params.items():
             if name == 'dataset':
                 continue
-            if name == 'direction':
+            elif name == 'direction':
                 # Mapeo consistente de string a int para todas las funciones de etiquetado
                 direction_map = {"buy": 0, "sell": 1, "both": 2}
                 kwargs['direction'] = direction_map.get(self.direction, 2)
                 if self.debug:
                     print(f"🔍   Mapeando direction: '{self.direction}' -> {kwargs['direction']}")
+            elif name == 'label_type':
+                # Pasar label_type desde self.label_type
+                kwargs['label_type'] = self.label_type
+                if self.debug:
+                    print(f"🔍   Mapeando label_type: '{self.label_type}' -> {kwargs['label_type']}")
             # ✅ SIMPLIFICADO: Pasar parámetros directamente sin conversiones
             elif name in hp:
                 kwargs[name] = hp[name]

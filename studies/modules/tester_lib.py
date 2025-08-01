@@ -64,13 +64,6 @@ def tester(
         else:
             pb = main
             ps = 1.0 - main
-        # --- Generar columna "labels" al estilo MQL5 ---
-        buy_sig = pb > model_main_threshold
-        sell_sig = ps > model_main_threshold
-        meta_ok = meta > model_meta_threshold
-        label_arr = ((buy_sig | sell_sig) & meta_ok).astype(float)
-        dataset_with_labels = dataset.copy()
-        dataset_with_labels["labels"] = label_arr
 
         rpt, trade_stats, trade_profits = backtest(
             open_,
@@ -86,7 +79,7 @@ def tester(
 
         trade_nl, rdd_nl, r2, slope_nl, wf_nl = evaluate_report(rpt, trade_profits=trade_profits)
         if (trade_nl <= -1.0 and rdd_nl <= -1.0 and r2 <= -1.0 and slope_nl <= -1.0 and wf_nl <= -1.0):
-            return -1.0, dataset_with_labels
+            return -1.0
         
         # Pesos optimizados para favorecer estabilidad temporal y linealidad constante
         # Prioriza: 1) Consistencia temporal (45%), 2) Linealidad+Pendiente (40%), 3) Otros (15%)
@@ -98,7 +91,7 @@ def tester(
                 0.45 * wf_nl       # Consistencia temporal (máxima prioridad)
         )
         if score < 0.0:
-            return -1.0, dataset_with_labels
+            return -1.0
         if print_metrics:
             print(f"🔍 DEBUG - Main threshold: {model_main_threshold}, Meta threshold: {model_meta_threshold}, Max orders: {model_max_orders}, Delay bars: {model_delay_bars}")
             print(f"🔍 DEBUG - Métricas de evaluación: SCORE: {score}, trade_nl: {trade_nl}, rdd_nl: {rdd_nl}, r2: {r2}, slope_nl: {slope_nl}, wf_nl: {wf_nl}")
@@ -113,11 +106,11 @@ def tester(
             plt.show()
             plt.close()
 
-        return score, dataset_with_labels
+        return score
 
     except Exception as e:
         print(f"🔍 DEBUG: Error en tester: {e}")
-        return -1.0, dataset_with_labels
+        return -1.0
 
 @njit(cache=True)
 def evaluate_report(

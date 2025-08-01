@@ -1164,7 +1164,7 @@ class StrategySearcher:
             
             test_train_time_start = time.time()
             try:
-                score, full_ds_with_labels = tester(
+                score = tester(
                     dataset=full_ds,
                     model_main=model_main_path,
                     model_meta=model_meta_path,
@@ -1186,18 +1186,16 @@ class StrategySearcher:
             if not np.isfinite(score):
                 score = -1.0
 
-            # Eliminar columnas "labels_meta" y "labels_main" antes de exportar
-            df_to_export = full_ds_with_labels.drop(columns=["labels_meta", "labels_main"], errors="ignore")
             # Desplazar columnas OHLCV una posición hacia atrás
             ohlcv_cols = ["open", "high", "low", "close", "volume"]
             for col in ohlcv_cols:
-                if col in df_to_export.columns:
-                    df_to_export[col] = df_to_export[col].shift(1)
-            df_to_export = df_to_export.iloc[1:]
-            full_ds_with_labels_path = export_dataset_to_csv(df_to_export, self.decimal_precision)
+                if col in full_ds.columns:
+                    full_ds[col] = full_ds[col].shift(1)
+            full_ds = full_ds.iloc[1:]
+            full_ds_with_labels_path = export_dataset_to_csv(full_ds, self.decimal_precision)
 
             if self.debug:
-                print(f"🔍 DEBUG: Dataset con shape {df_to_export.shape} guardado en {full_ds_with_labels_path}")
+                print(f"🔍 DEBUG: Dataset con shape {full_ds.shape} guardado en {full_ds_with_labels_path}")
                 print(f"🔍 DEBUG: Modelos guardados en {model_main_path} y {model_meta_path}")
             return score, full_ds_with_labels_path, (model_main_path, model_meta_path), (main_feature_cols, meta_feature_cols)
         except Exception as e:

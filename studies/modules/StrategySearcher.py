@@ -504,23 +504,64 @@ class StrategySearcher:
             full_ds = self.get_labeled_full_data(hp)
             if full_ds is None:
                 return -1.0
-                
-            # Separar datos EXACTAMENTE como en el artículo MQL5
-            main_feature_cols = [c for c in full_ds.columns if c.endswith('_main_feature')]
-            
-            if self.debug:
-                print(f"🔍 DEBUG search_reliability - Feature columns: {len(main_feature_cols)}")
-                labels_dist = full_ds['labels_main'].value_counts()
-                print(f"🔍   Labels distribution: {labels_dist}")
+
             # Main: solo muestras con señales, etiquetas direccionales
             trading_mask = full_ds['labels_main'].isin([0.0, 1.0])
+
             if not trading_mask.any():
                 if self.debug:
                     print(f"🔍 DEBUG search_reliability - No hay muestras de trading")
-                return -1.0    
-            model_main_train_data = full_ds.loc[trading_mask, main_feature_cols + ['labels_main']].dropna(subset=main_feature_cols).copy()
+                return -1.0
+            
+            # APLICAR MAPIE COMO FILTRO SECUNDARIO (opcional)
+            if self.search_filter == 'mapie':
+                if self.debug:
+                    print(f"🔍 DEBUG search_reliability - Aplicando filtrado MAPIE")
+                    print(f"🔍   trading_mask.sum(): {trading_mask.sum()}")
+                    print(f"🔍   trading_mask.mean(): {trading_mask.mean():.3f}")
+                
+                mapie_scores = self.apply_mapie_filter(trial, full_ds, hp, trading_mask)
+                mapie_mask = mapie_scores == 1.0
+                final_mask = trading_mask & mapie_mask
+                
+                if self.debug:
+                    print(f"🔍   mapie_mask.sum(): {mapie_mask.sum()}")
+                    print(f"🔍   mapie_mask.mean(): {mapie_mask.mean():.3f}")
+                    print(f"🔍   final_mask.sum(): {final_mask.sum()}")
+                    print(f"🔍   final_mask.mean(): {final_mask.mean():.3f}")
+                    if trading_mask.sum() > 0:
+                        print(f"🔍   Reducción de muestras: {trading_mask.sum()} -> {final_mask.sum()} ({final_mask.sum()/trading_mask.sum()*100:.1f}%)")
+            elif self.search_filter == 'causal':
+                if self.debug:
+                    print(f"🔍 DEBUG search_reliability - Aplicando filtrado CAUSAL")
+                    print(f"🔍   trading_mask.sum(): {trading_mask.sum()}")
+                    print(f"🔍   trading_mask.mean(): {trading_mask.mean():.3f}")
+                
+                causal_scores = self.apply_causal_filter(trial, full_ds, hp, trading_mask)
+                causal_mask = causal_scores == 1.0
+                final_mask = trading_mask & causal_mask
+                
+                if self.debug:
+                    print(f"🔍   causal_mask.sum(): {causal_mask.sum()}")
+                    print(f"🔍   causal_mask.mean(): {causal_mask.mean():.3f}")
+                    print(f"🔍   final_mask.sum(): {final_mask.sum()}")
+                    print(f"🔍   final_mask.mean(): {final_mask.mean():.3f}")
+                    if trading_mask.sum() > 0:
+                        print(f"🔍   Reducción de muestras: {trading_mask.sum()} -> {final_mask.sum()} ({final_mask.sum()/trading_mask.sum()*100:.1f}%)")
+            else:
+                final_mask = trading_mask
+                
+                if self.debug:
+                    print(f"🔍 DEBUG search_reliability - Sin filtrado MAPIE o CAUSAL")
+                    print(f"🔍   final_mask.sum(): {final_mask.sum()}")
+                    print(f"🔍   final_mask.mean(): {final_mask.mean():.3f}")
+
+            # Crear datasets con final_mask (lógica original)
+            main_feature_cols = [c for c in full_ds.columns if c.endswith('_main_feature')]
+            model_main_train_data = full_ds.loc[final_mask, main_feature_cols + ['labels_main']].dropna(subset=main_feature_cols).copy()
+                
             # Verificar que tenemos suficientes muestras
-            if len(model_main_train_data) < 200:  # Mínimo razonable
+            if len(model_main_train_data) < 200:
                 if self.debug:
                     print(f"🔍 DEBUG search_reliability - Insuficientes muestras main: {len(model_main_train_data)}")
                 return -1.0
@@ -531,7 +572,7 @@ class StrategySearcher:
             if not meta_feature_cols:  # Fallback: usar main features si no hay meta features
                 meta_feature_cols = main_feature_cols
             model_meta_train_data = full_ds[meta_feature_cols].dropna(subset=meta_feature_cols).copy()
-            model_meta_train_data['labels_meta'] = (full_ds['labels_main'].isin([0.0, 1.0])).astype(int)
+            model_meta_train_data['labels_meta'] = (full_ds['labels_main'].isin([0.0, 1.0])).astype('int8')
             
             if self.debug:
                 print(f"🔍 DEBUG search_reliability - Main data shape: {model_main_train_data.shape}")
@@ -881,15 +922,17 @@ class StrategySearcher:
                 p['wk_step']          = trial.suggest_int ('wk_step',          1, 10)
                 p['wk_proj']          = trial.suggest_int ('wk_proj',          50, 200, log=True)
                 p['wk_iter']          = trial.suggest_int ('wk_iter',          100, 500, log=True)
-            if self.search_filter == 'mapie':
-                p['mapie_confidence_level'] = trial.suggest_float('mapie_confidence_level', 0.8, 0.95)
-                p['mapie_cv']               = trial.suggest_int  ('mapie_cv',               3, 10)
-            elif self.search_filter == 'causal':
-                p['causal_meta_learners']   = trial.suggest_int  ('causal_meta_learners', 5, 15)
         elif self.search_type == 'mapie':
             p['mapie_confidence_level'] = trial.suggest_float('mapie_confidence_level', 0.8, 0.95)
             p['mapie_cv']               = trial.suggest_int  ('mapie_cv',               3, 10)
         elif self.search_type == 'causal':
+            p['causal_meta_learners']   = trial.suggest_int  ('causal_meta_learners', 5, 15)
+
+        # Parámetros de filtros (independientes del search_type)
+        if self.search_filter == 'mapie':
+            p['mapie_confidence_level'] = trial.suggest_float('mapie_confidence_level', 0.8, 0.95)
+            p['mapie_cv']               = trial.suggest_int  ('mapie_cv',               3, 10)
+        elif self.search_filter == 'causal':
             p['causal_meta_learners']   = trial.suggest_int  ('causal_meta_learners', 5, 15)
 
         return p

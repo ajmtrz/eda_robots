@@ -933,7 +933,12 @@ class StrategySearcher:
                 p['mapie_threshold_width']     = trial.suggest_float('mapie_threshold_width', 0.1, 2.0, log=True)
                 p['mapie_threshold_magnitude'] = trial.suggest_float('mapie_threshold_magnitude', 0.05, 1.0, log=True)
         elif self.search_type == 'causal':
-            p['causal_meta_learners']   = trial.suggest_int  ('causal_meta_learners', 5, 15)
+            p['causal_meta_learners'] = trial.suggest_int('causal_meta_learners', 5, 15)
+            p['causal_percentile'] = trial.suggest_int('causal_percentile', 60, 90)
+            
+            # Parámetros específicos para regresión causal
+            if self.label_type == 'regression':
+                p['causal_error_threshold'] = trial.suggest_float('causal_error_threshold', 0.1, 2.0, log=True)
 
         # Parámetros de filtros (independientes del search_type)
         if self.search_filter == 'mapie':
@@ -944,7 +949,12 @@ class StrategySearcher:
                 p['mapie_threshold_width']     = trial.suggest_float('mapie_threshold_width', 0.1, 2.0, log=True)
                 p['mapie_threshold_magnitude'] = trial.suggest_float('mapie_threshold_magnitude', 0.05, 1.0, log=True)
         elif self.search_filter == 'causal':
-            p['causal_meta_learners']   = trial.suggest_int  ('causal_meta_learners', 5, 15)
+            p['causal_meta_learners'] = trial.suggest_int('causal_meta_learners', 5, 15)
+            p['causal_percentile'] = trial.suggest_int('causal_percentile', 60, 90)
+            
+            # Parámetros específicos para regresión causal
+            if self.label_type == 'regression':
+                p['causal_error_threshold'] = trial.suggest_float('causal_error_threshold', 0.1, 2.0, log=True)
 
         return p
 
@@ -1421,7 +1431,7 @@ class StrategySearcher:
         """
         try:
             if self.debug:
-                print(f"🔍 DEBUG apply_causal_filter - Iniciando filtrado causal")
+                print(f"🔍 DEBUG apply_causal_filter - Iniciando filtrado causal ({self.label_type})")
                 print(f"🔍   full_ds.shape: {full_ds.shape}")
                 print(f"🔍   reliable_mask is None: {reliable_mask is None}")
                 if reliable_mask is not None:
@@ -1430,22 +1440,26 @@ class StrategySearcher:
             
             def _bootstrap_oob_identification(X: pd.DataFrame, y: pd.Series, n_models: int = 25):
                 oob_counts = pd.Series(0, index=X.index)
-                error_counts_0 = pd.Series(0, index=X.index)
-                error_counts_1 = pd.Series(0, index=X.index)
+                if self.label_type == 'classification':
+                    error_counts_0 = pd.Series(0, index=X.index)
+                    error_counts_1 = pd.Series(0, index=X.index)
+                else:  # regression
+                    error_sums = pd.Series(0.0, index=X.index)
+                    error_counts = pd.Series(0, index=X.index)
+                
                 for _ in range(n_models):
                     frac = random.uniform(0.4, 0.6)
                     train_idx = X.sample(frac=frac, replace=True).index
                     val_idx = X.index.difference(train_idx)
                     if len(val_idx) == 0:
                         continue
-                    # Diversificar hiperparámetros CatBoost para cada modelo bootstrap (sin afectar hp global)
+                    
+                    # Diversificar hiperparámetros CatBoost para cada modelo bootstrap
                     def _randomize_catboost_params(base_params):
-                        # Pequeñas variaciones aleatorias (±10%) para cada hiperparámetro relevante
                         randomized = base_params.copy()
                         for k in ['iterations', 'depth', 'l2_leaf_reg']:
                             if k in randomized:
                                 jitter = random.uniform(0.7, 1.3)
-                                # Mantener enteros para iteraciones y profundidad
                                 if k in ['iterations', 'depth']:
                                     randomized[k] = max(1, int(round(randomized[k] * jitter)))
                                 else:
@@ -1455,31 +1469,58 @@ class StrategySearcher:
                             randomized['learning_rate'] = max(1e-4, randomized['learning_rate'] * jitter)
                         return randomized
 
-                    catboost_params = dict(
-                        iterations=hp['cat_main_iterations'],
-                        depth=hp['cat_main_depth'],
-                        learning_rate=hp['cat_main_learning_rate'],
-                        l2_leaf_reg=hp['cat_main_l2_leaf_reg'],
-                        eval_metric='Accuracy',
-                        store_all_simple_ctr=False,
-                        allow_writing_files=False,
-                        thread_count=-1,
-                        task_type='CPU',
-                        verbose=False,
-                    )
-                    catboost_params = _randomize_catboost_params(catboost_params)
-                    model = CatBoostClassifier(**catboost_params)
-                    model.fit(X.loc[train_idx], y.loc[train_idx], eval_set=[(X.loc[val_idx], y.loc[val_idx])], verbose=False)
-                    pred = (model.predict_proba(X.loc[val_idx])[:, 1] >= 0.5).astype(int)
-                    val_y = y.loc[val_idx]
-                    val0 = val_idx[val_y == 0]
-                    val1 = val_idx[val_y == 1]
-                    diff0 = val0[pred[val_y == 0] != 0]
-                    diff1 = val1[pred[val_y == 1] != 1]
-                    oob_counts.loc[val_idx] += 1
-                    error_counts_0.loc[diff0] += 1
-                    error_counts_1.loc[diff1] += 1
-                return error_counts_0, error_counts_1, oob_counts
+                    if self.label_type == 'classification':
+                        catboost_params = dict(
+                            iterations=hp['cat_main_iterations'],
+                            depth=hp['cat_main_depth'],
+                            learning_rate=hp['cat_main_learning_rate'],
+                            l2_leaf_reg=hp['cat_main_l2_leaf_reg'],
+                            eval_metric='Accuracy',
+                            store_all_simple_ctr=False,
+                            allow_writing_files=False,
+                            thread_count=-1,
+                            task_type='CPU',
+                            verbose=False,
+                        )
+                        catboost_params = _randomize_catboost_params(catboost_params)
+                        model = CatBoostClassifier(**catboost_params)
+                        model.fit(X.loc[train_idx], y.loc[train_idx], eval_set=[(X.loc[val_idx], y.loc[val_idx])], verbose=False)
+                        pred = (model.predict_proba(X.loc[val_idx])[:, 1] >= 0.5).astype(int)
+                        val_y = y.loc[val_idx]
+                        val0 = val_idx[val_y == 0]
+                        val1 = val_idx[val_y == 1]
+                        diff0 = val0[pred[val_y == 0] != 0]
+                        diff1 = val1[pred[val_y == 1] != 1]
+                        oob_counts.loc[val_idx] += 1
+                        error_counts_0.loc[diff0] += 1
+                        error_counts_1.loc[diff1] += 1
+                    else:  # regression
+                        catboost_params = dict(
+                            iterations=hp['cat_main_iterations'],
+                            depth=hp['cat_main_depth'],
+                            learning_rate=hp['cat_main_learning_rate'],
+                            l2_leaf_reg=hp['cat_main_l2_leaf_reg'],
+                            eval_metric='RMSE',
+                            store_all_simple_ctr=False,
+                            allow_writing_files=False,
+                            thread_count=-1,
+                            task_type='CPU',
+                            verbose=False,
+                        )
+                        catboost_params = _randomize_catboost_params(catboost_params)
+                        model = CatBoostRegressor(**catboost_params)
+                        model.fit(X.loc[train_idx], y.loc[train_idx], eval_set=[(X.loc[val_idx], y.loc[val_idx])], verbose=False)
+                        pred = model.predict(X.loc[val_idx])
+                        val_y = y.loc[val_idx]
+                        errors = np.abs(pred - val_y)
+                        oob_counts.loc[val_idx] += 1
+                        error_sums.loc[val_idx] += errors
+                        error_counts.loc[val_idx] += 1
+                
+                if self.label_type == 'classification':
+                    return error_counts_0, error_counts_1, oob_counts
+                else:  # regression
+                    return error_sums, error_counts, oob_counts
             
             def _optimize_bad_samples_threshold(err0, err1, oob, fracs=[0.5, 0.6, 0.7, 0.8]):
                 to_mark_0 = (err0 / oob.replace(0, 1)).fillna(0)
@@ -1522,7 +1563,10 @@ class StrategySearcher:
                     print(f"🔍   reliable_data.shape: {reliable_data.shape}")
                     print(f"🔍   X.shape: {X.shape}")
                     print(f"🔍   y.shape: {y.shape}")
-                    print(f"🔍   y.value_counts(): {y.value_counts().to_dict()}")
+                    if self.label_type == 'classification':
+                        print(f"🔍   y.value_counts(): {y.value_counts().to_dict()}")
+                    else:
+                        print(f"🔍   y.describe(): {y.describe()}")
             else:
                 # Esquema tradicional
                 main_feature_cols = [col for col in full_ds.columns if col.endswith('_main_feature')]
@@ -1538,7 +1582,10 @@ class StrategySearcher:
                 if self.debug:
                     print(f"🔍   X.shape: {X.shape}")
                     print(f"🔍   y.shape: {y.shape}")
-                    print(f"🔍   y.value_counts(): {y.value_counts().to_dict()}")
+                    if self.label_type == 'classification':
+                        print(f"🔍   y.value_counts(): {y.value_counts().to_dict()}")
+                    else:
+                        print(f"🔍   y.describe(): {y.describe()}")
             
             # Verificar que tenemos suficientes datos
             if len(X) < 100:  # Mínimo requerido para análisis causal robusto
@@ -1549,8 +1596,8 @@ class StrategySearcher:
                 else:
                     return np.zeros(len(X))
             
-            # Verificar que tenemos al menos 2 clases
-            if len(y.unique()) < 2:
+            # Verificar que tenemos al menos 2 clases para clasificación
+            if self.label_type == 'classification' and len(y.unique()) < 2:
                 if self.debug:
                     print(f"🔍 DEBUG apply_causal_filter - Clases insuficientes para análisis causal: {y.unique()}")
                 if reliable_mask is not None:
@@ -1559,16 +1606,38 @@ class StrategySearcher:
                     return np.zeros(len(X))
             
             # Aplicar detección causal
-            err0, err1, oob = _bootstrap_oob_identification(X, y, n_models=hp['causal_meta_learners'])
-            best_frac = _optimize_bad_samples_threshold(err0, err1, oob)
-            
-            to_mark_0 = (err0 / oob.replace(0, 1)).fillna(0)
-            to_mark_1 = (err1 / oob.replace(0, 1)).fillna(0)
-            thr0 = np.percentile(to_mark_0[to_mark_0 > 0], 75) * best_frac if len(to_mark_0[to_mark_0 > 0]) else 0
-            thr1 = np.percentile(to_mark_1[to_mark_1 > 0], 75) * best_frac if len(to_mark_1[to_mark_1 > 0]) else 0
-            marked0 = to_mark_0[to_mark_0 > thr0].index
-            marked1 = to_mark_1[to_mark_1 > thr1].index
-            all_bad = pd.Index(marked0).union(marked1)
+            if self.label_type == 'classification':
+                err0, err1, oob = _bootstrap_oob_identification(X, y, n_models=hp['causal_meta_learners'])
+                best_frac = _optimize_bad_samples_threshold(err0, err1, oob, fracs=[hp['causal_percentile']/100])
+                
+                to_mark_0 = (err0 / oob.replace(0, 1)).fillna(0)
+                to_mark_1 = (err1 / oob.replace(0, 1)).fillna(0)
+                thr0 = np.percentile(to_mark_0[to_mark_0 > 0], hp['causal_percentile']) * best_frac if len(to_mark_0[to_mark_0 > 0]) else 0
+                thr1 = np.percentile(to_mark_1[to_mark_1 > 0], hp['causal_percentile']) * best_frac if len(to_mark_1[to_mark_1 > 0]) else 0
+                marked0 = to_mark_0[to_mark_0 > thr0].index
+                marked1 = to_mark_1[to_mark_1 > thr1].index
+                all_bad = pd.Index(marked0).union(marked1)
+            else:  # regression
+                error_sums, error_counts, oob = _bootstrap_oob_identification(X, y, n_models=hp['causal_meta_learners'])
+                
+                # Calcular errores promedio por muestra
+                avg_errors = (error_sums / error_counts.replace(0, 1)).fillna(0)
+                
+                # Aplicar umbrales para regresión
+                error_threshold = hp['causal_error_threshold']
+                percentile_threshold = np.percentile(avg_errors[avg_errors > 0], hp['causal_percentile']) if len(avg_errors[avg_errors > 0]) > 0 else 0
+                
+                # Usar el umbral más estricto entre los dos
+                final_threshold = max(error_threshold, percentile_threshold)
+                
+                # Identificar muestras malas
+                all_bad = avg_errors[avg_errors > final_threshold].index
+                
+                if self.debug:
+                    print(f"🔍   error_threshold: {error_threshold:.4f}")
+                    print(f"🔍   percentile_threshold: {percentile_threshold:.4f}")
+                    print(f"🔍   final_threshold: {final_threshold:.4f}")
+                    print(f"🔍   avg_errors.describe(): {avg_errors.describe()}")
             
             # Crear scores: 1.0 para muestras buenas, 0.0 para muestras malas
             causal_scores = np.ones(len(X))
@@ -1578,7 +1647,7 @@ class StrategySearcher:
                 print(f"🔍   all_bad.shape: {len(all_bad)}")
                 print(f"🔍   causal_scores.sum(): {causal_scores.sum()}")
                 print(f"🔍   causal_scores.mean(): {causal_scores.mean():.3f}")
-                print(f"🔍 DEBUG apply_causal_filter - Filtrado causal completado")
+                print(f"🔍 DEBUG apply_causal_filter - Filtrado causal completado ({self.label_type})")
             
             if reliable_mask is not None:
                 # Mapear scores de vuelta al dataset completo
@@ -1597,7 +1666,7 @@ class StrategySearcher:
             if self.debug:
                 print(f"🔍 DEBUG apply_causal_filter - ERROR: {str(e)}")
             return np.zeros(len(full_ds))
-        
+
     def apply_labeling(self, dataset: pd.DataFrame, hp: dict) -> pd.DataFrame:
         """Apply the selected labeling function dynamically.
 

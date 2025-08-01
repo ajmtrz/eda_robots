@@ -13,8 +13,9 @@ from typing import Dict, Any
 import optuna
 from optuna.pruners import HyperbandPruner, SuccessiveHalvingPruner
 # from optuna.integration import CatBoostPruningCallback
-from catboost import CatBoostClassifier
+from catboost import CatBoostClassifier, CatBoostRegressor
 from mapie.classification import CrossConformalClassifier
+from mapie.regression import CrossConformalRegressor
 from modules.labeling_lib import (
     get_prices, get_features, get_labels_random,
     get_labels_trend, get_labels_trend_multi, get_labels_clusters,
@@ -78,6 +79,7 @@ class StrategySearcher:
         search_subtype: str = 'kmeans',
         search_filter: str = '',
         label_method: str = 'random',
+        label_type: str = 'classification',  # 'classification' o 'regression'
         tag: str = "",
         debug: bool = False,
         decimal_precision: int = 6,
@@ -98,6 +100,7 @@ class StrategySearcher:
         self.search_subtype = search_subtype
         self.search_filter = search_filter
         self.label_method = label_method
+        self.label_type = label_type
         self.pruner_type = pruner_type
         self.n_trials = n_trials
         self.n_models = n_models
@@ -341,8 +344,8 @@ class StrategySearcher:
             if self.debug:
                 print(f"🔍 DEBUG search_clusters {self.search_subtype} - Aplicando clustering híbrido")
             
-            # Hacer clustering solo en muestras confiables
-            reliable_mask = full_ds['labels_main'].isin([0.0, 1.0])
+            # Hacer clustering solo en muestras confiables, según label_type
+            reliable_mask = self.get_trading_mask(full_ds)
             reliable_data = full_ds[reliable_mask].copy()
             
             if len(reliable_data) < 200:
@@ -380,8 +383,8 @@ class StrategySearcher:
             if self.debug:
                 print(f"🔍 DEBUG search_mapie - Usando esquema de confiabilidad")
             
-            # Main data: solo muestras confiables
-            reliable_mask = full_ds['labels_main'].isin([0.0, 1.0])
+            # Main data: solo muestras confiables, según label_type
+            reliable_mask = self.get_trading_mask(full_ds)
             
             # REFACTORIZACIÓN: Usar apply_mapie_filter en lugar de bloque MAPIE propio
             mapie_scores = self.apply_mapie_filter(
@@ -436,8 +439,8 @@ class StrategySearcher:
             if self.debug:
                 print(f"🔍 DEBUG search_causal - Usando esquema de confiabilidad")
             
-            # Main data: solo muestras confiables
-            reliable_mask = full_ds['labels_main'].isin([0.0, 1.0])
+            # Main data: solo muestras confiables, según label_type
+            reliable_mask = self.get_trading_mask(full_ds)
             
             # REFACTORIZACIÓN: Usar apply_causal_filter en lugar de bloque causal propio
             causal_scores = self.apply_causal_filter(
@@ -505,8 +508,8 @@ class StrategySearcher:
             if full_ds is None:
                 return -1.0
 
-            # Main: solo muestras con señales, etiquetas direccionales
-            trading_mask = full_ds['labels_main'].isin([0.0, 1.0])
+            # Main: solo muestras con señales, según label_type
+            trading_mask = self.get_trading_mask(full_ds)
 
             if not trading_mask.any():
                 if self.debug:
@@ -567,12 +570,12 @@ class StrategySearcher:
                 return -1.0
             
             # Meta: todas las muestras, etiquetas binarias (trading/no-trading)  
-            # 1 si hay señal (0 o 1), 0 si neutral (2)
+            # 1 si hay señal de trading, 0 si neutral
             meta_feature_cols = [c for c in full_ds.columns if c.endswith('_meta_feature')]
             if not meta_feature_cols:  # Fallback: usar main features si no hay meta features
                 meta_feature_cols = main_feature_cols
             model_meta_train_data = full_ds[meta_feature_cols].dropna(subset=meta_feature_cols).copy()
-            model_meta_train_data['labels_meta'] = (full_ds['labels_main'].isin([0.0, 1.0])).astype('int8')
+            model_meta_train_data['labels_meta'] = self.get_meta_labels(full_ds)
             
             if self.debug:
                 print(f"🔍 DEBUG search_reliability - Main data shape: {model_main_train_data.shape}")
@@ -643,7 +646,7 @@ class StrategySearcher:
             # Evaluar cada cluster
             for clust in cluster_sizes.index:
                 cluster_mask = full_ds['labels_meta'] == clust
-                reliable_mask = full_ds['labels_main'].isin([0.0, 1.0])
+                reliable_mask = self.get_trading_mask(full_ds)
                 hybrid_mask = cluster_mask & reliable_mask
                 
                 if not hybrid_mask.any():
@@ -925,6 +928,10 @@ class StrategySearcher:
         elif self.search_type == 'mapie':
             p['mapie_confidence_level'] = trial.suggest_float('mapie_confidence_level', 0.8, 0.95)
             p['mapie_cv']               = trial.suggest_int  ('mapie_cv',               3, 10)
+            # Parámetros específicos para regresión MAPIE
+            if self.label_type == 'regression':
+                p['mapie_threshold_width']     = trial.suggest_float('mapie_threshold_width', 0.1, 2.0, log=True)
+                p['mapie_threshold_magnitude'] = trial.suggest_float('mapie_threshold_magnitude', 0.05, 1.0, log=True)
         elif self.search_type == 'causal':
             p['causal_meta_learners']   = trial.suggest_int  ('causal_meta_learners', 5, 15)
 
@@ -932,6 +939,10 @@ class StrategySearcher:
         if self.search_filter == 'mapie':
             p['mapie_confidence_level'] = trial.suggest_float('mapie_confidence_level', 0.8, 0.95)
             p['mapie_cv']               = trial.suggest_int  ('mapie_cv',               3, 10)
+            # Parámetros específicos para regresión MAPIE
+            if self.label_type == 'regression':
+                p['mapie_threshold_width']     = trial.suggest_float('mapie_threshold_width', 0.1, 2.0, log=True)
+                p['mapie_threshold_magnitude'] = trial.suggest_float('mapie_threshold_magnitude', 0.05, 1.0, log=True)
         elif self.search_filter == 'causal':
             p['causal_meta_learners']   = trial.suggest_int  ('causal_meta_learners', 5, 15)
 
@@ -989,26 +1000,52 @@ class StrategySearcher:
                 print(f"🔍   cat_main_*: {cat_main_params}")
                 print(f"🔍   cat_meta_*: {cat_meta_params}")
             
-            if 'labels_main' in model_main_train_data.columns:
-                model_main_train_data = model_main_train_data[model_main_train_data['labels_main'].isin([0.0, 1.0])]
-            if model_main_train_data.empty:
-                return None, None, None, None
-            main_feature_cols = [col for col in model_main_train_data.columns if col != 'labels_main']
-            if self.debug:
-                print(f"🔍 DEBUG: Main model data shape: {model_main_train_data.shape}")
-                print(f"🔍 DEBUG: Main feature columns: {main_feature_cols}")
-            model_main_train_data, model_main_eval_data = self.get_train_test_data(dataset=model_main_train_data)
-            if model_main_train_data is None or model_main_eval_data is None:
-                return None, None, None, None
-            X_train_main = model_main_train_data[main_feature_cols]
-            y_train_main = model_main_train_data['labels_main'].astype('int8')
-            X_val_main = model_main_eval_data[main_feature_cols]
-            y_val_main = model_main_eval_data['labels_main'].astype('int8')
-            if self.debug:
-                print(f"🔍 DEBUG: X_train_main shape: {X_train_main.shape}, y_train_main shape: {y_train_main.shape}")
-                print(f"🔍 DEBUG: X_val_main shape: {X_val_main.shape}, y_val_main shape: {y_val_main.shape}")
-            if len(y_train_main.value_counts()) < 2 or len(y_val_main.value_counts()) < 2:
-                return None, None, None, None
+            # Preparar datos del modelo main según label_type
+            if self.label_type == 'classification':
+                # Clasificación: filtrar solo 0.0 y 1.0
+                if 'labels_main' in model_main_train_data.columns:
+                    model_main_train_data = model_main_train_data[model_main_train_data['labels_main'].isin([0.0, 1.0])]
+                if model_main_train_data.empty:
+                    return None, None, None, None
+                main_feature_cols = [col for col in model_main_train_data.columns if col != 'labels_main']
+                if self.debug:
+                    print(f"🔍 DEBUG: Main model data shape: {model_main_train_data.shape}")
+                    print(f"🔍 DEBUG: Main feature columns: {main_feature_cols}")
+                model_main_train_data, model_main_eval_data = self.get_train_test_data(dataset=model_main_train_data)
+                if model_main_train_data is None or model_main_eval_data is None:
+                    return None, None, None, None
+                X_train_main = model_main_train_data[main_feature_cols]
+                y_train_main = model_main_train_data['labels_main'].astype('int8')
+                X_val_main = model_main_eval_data[main_feature_cols]
+                y_val_main = model_main_eval_data['labels_main'].astype('int8')
+                if self.debug:
+                    print(f"🔍 DEBUG: X_train_main shape: {X_train_main.shape}, y_train_main shape: {y_train_main.shape}")
+                    print(f"🔍 DEBUG: X_val_main shape: {X_val_main.shape}, y_val_main shape: {y_val_main.shape}")
+                if len(y_train_main.value_counts()) < 2 or len(y_val_main.value_counts()) < 2:
+                    return None, None, None, None
+            else:  # regression
+                # Regresión: usar todas las muestras con valores numéricos
+                if 'labels_main' in model_main_train_data.columns:
+                    # Filtrar solo valores numéricos (no 0.0 que es neutral)
+                    model_main_train_data = model_main_train_data[model_main_train_data['labels_main'] != 0.0]
+                if model_main_train_data.empty:
+                    return None, None, None, None
+                main_feature_cols = [col for col in model_main_train_data.columns if col != 'labels_main']
+                if self.debug:
+                    print(f"🔍 DEBUG: Main model data shape: {model_main_train_data.shape}")
+                    print(f"🔍 DEBUG: Main feature columns: {main_feature_cols}")
+                model_main_train_data, model_main_eval_data = self.get_train_test_data(dataset=model_main_train_data)
+                if model_main_train_data is None or model_main_eval_data is None:
+                    return None, None, None, None
+                X_train_main = model_main_train_data[main_feature_cols]
+                y_train_main = model_main_train_data['labels_main'].astype('float32')
+                X_val_main = model_main_eval_data[main_feature_cols]
+                y_val_main = model_main_eval_data['labels_main'].astype('float32')
+                if self.debug:
+                    print(f"🔍 DEBUG: X_train_main shape: {X_train_main.shape}, y_train_main shape: {y_train_main.shape}")
+                    print(f"🔍 DEBUG: X_val_main shape: {X_val_main.shape}, y_val_main shape: {y_val_main.shape}")
+                    print(f"🔍 DEBUG: y_train_main range: [{y_train_main.min():.4f}, {y_train_main.max():.4f}]")
+                    print(f"🔍 DEBUG: y_val_main range: [{y_val_main.min():.4f}, {y_val_main.max():.4f}]")
             meta_feature_cols = [col for col in model_meta_train_data.columns if col != 'labels_meta']
             if self.debug:
                 print(f"🔍 DEBUG: Meta model data shape: {model_meta_train_data.shape}")
@@ -1025,26 +1062,49 @@ class StrategySearcher:
                 print(f"🔍 DEBUG: X_val_meta shape: {X_val_meta.shape}, y_val_meta shape: {y_val_meta.shape}")
             if len(y_train_meta.value_counts()) < 2 or len(y_val_meta.value_counts()) < 2:
                 return None, None, None, None
-            cat_main_params = dict(
-                iterations=hp['cat_main_iterations'],
-                depth=hp['cat_main_depth'],
-                learning_rate=hp['cat_main_learning_rate'],
-                l2_leaf_reg=hp['cat_main_l2_leaf_reg'],
-                eval_metric='Accuracy',
-                store_all_simple_ctr=False,
-                allow_writing_files=False,
-                thread_count=-1,
-                task_type='CPU',
-                verbose=False,
-            )
-            
-            # 🔍 DEBUG: Mostrar configuración final de CatBoost
-            if self.debug:
-                print(f"🔍 DEBUG: CatBoost Main configuración final:")
-                for k, v in cat_main_params.items():
-                    print(f"🔍   {k}: {v}")
+            # Configurar parámetros CatBoost según label_type
+            if self.label_type == 'classification':
+                cat_main_params = dict(
+                    iterations=hp['cat_main_iterations'],
+                    depth=hp['cat_main_depth'],
+                    learning_rate=hp['cat_main_learning_rate'],
+                    l2_leaf_reg=hp['cat_main_l2_leaf_reg'],
+                    eval_metric='Accuracy',
+                    store_all_simple_ctr=False,
+                    allow_writing_files=False,
+                    thread_count=-1,
+                    task_type='CPU',
+                    verbose=False,
+                )
                 
-            model_main = CatBoostClassifier(**cat_main_params)
+                # 🔍 DEBUG: Mostrar configuración final de CatBoost
+                if self.debug:
+                    print(f"🔍 DEBUG: CatBoost Main (Classification) configuración final:")
+                    for k, v in cat_main_params.items():
+                        print(f"🔍   {k}: {v}")
+                    
+                model_main = CatBoostClassifier(**cat_main_params)
+            else:  # regression
+                cat_main_params = dict(
+                    iterations=hp['cat_main_iterations'],
+                    depth=hp['cat_main_depth'],
+                    learning_rate=hp['cat_main_learning_rate'],
+                    l2_leaf_reg=hp['cat_main_l2_leaf_reg'],
+                    eval_metric='RMSE',
+                    store_all_simple_ctr=False,
+                    allow_writing_files=False,
+                    thread_count=-1,
+                    task_type='CPU',
+                    verbose=False,
+                )
+                
+                # 🔍 DEBUG: Mostrar configuración final de CatBoost
+                if self.debug:
+                    print(f"🔍 DEBUG: CatBoost Main (Regression) configuración final:")
+                    for k, v in cat_main_params.items():
+                        print(f"🔍   {k}: {v}")
+                    
+                model_main = CatBoostRegressor(**cat_main_params)
             t_train_main_start = time.time()
             model_main.fit(X_train_main, y_train_main, 
                            eval_set=[(X_val_main, y_val_main)],
@@ -1202,14 +1262,26 @@ class StrategySearcher:
                 else:
                     return np.zeros(len(X))
             
-            # Verificar que tenemos al menos 2 clases
-            if len(y.unique()) < 2:
-                if self.debug:
-                    print(f"🔍 DEBUG apply_mapie_filter - Clases insuficientes para MAPIE: {y.unique()}")
-                if reliable_mask is not None:
-                    return np.zeros(len(full_ds))
-                else:
-                    return np.zeros(len(X))
+            # Verificar datos según label_type
+            if self.label_type == 'classification':
+                # Clasificación: verificar que tenemos al menos 2 clases
+                if len(y.unique()) < 2:
+                    if self.debug:
+                        print(f"🔍 DEBUG apply_mapie_filter - Clases insuficientes para MAPIE: {y.unique()}")
+                    if reliable_mask is not None:
+                        return np.zeros(len(full_ds))
+                    else:
+                        return np.zeros(len(X))
+            else:  # regression
+                # Regresión: verificar que tenemos suficientes muestras con magnitudes
+                non_zero_mask = y != 0.0
+                if non_zero_mask.sum() < 50:  # Mínimo para regresión
+                    if self.debug:
+                        print(f"🔍 DEBUG apply_mapie_filter - Muestras con magnitudes insuficientes: {non_zero_mask.sum()}")
+                    if reliable_mask is not None:
+                        return np.zeros(len(full_ds))
+                    else:
+                        return np.zeros(len(X))
 
             def _randomize_catboost_params(base_params):
                 # Pequeñas variaciones aleatorias (±10%) para cada hiperparámetro relevante
@@ -1226,45 +1298,96 @@ class StrategySearcher:
                     jitter = random.uniform(0.7, 1.3)
                     randomized['learning_rate'] = max(1e-4, randomized['learning_rate'] * jitter)
                 return randomized
-            catboost_params = dict(
-                iterations=hp['cat_main_iterations'],
-                depth=hp['cat_main_depth'],
-                learning_rate=hp['cat_main_learning_rate'],
-                l2_leaf_reg=hp['cat_main_l2_leaf_reg'],
-                eval_metric='Accuracy',
-                store_all_simple_ctr=False,
-                allow_writing_files=False,
-                thread_count=-1,
-                task_type='CPU',
-                verbose=False,
-            )
-            catboost_params = _randomize_catboost_params(catboost_params)
-            base_estimator = CatBoostClassifier(**catboost_params)
-            mapie = CrossConformalClassifier(
-                estimator=base_estimator,
-                confidence_level=hp['mapie_confidence_level'],
-                cv=hp['mapie_cv'],
-            )
+            # Configurar CatBoost y MAPIE según label_type
+            if self.label_type == 'classification':
+                catboost_params = dict(
+                    iterations=hp['cat_main_iterations'],
+                    depth=hp['cat_main_depth'],
+                    learning_rate=hp['cat_main_learning_rate'],
+                    l2_leaf_reg=hp['cat_main_l2_leaf_reg'],
+                    eval_metric='Accuracy',
+                    store_all_simple_ctr=False,
+                    allow_writing_files=False,
+                    thread_count=-1,
+                    task_type='CPU',
+                    verbose=False,
+                )
+                catboost_params = _randomize_catboost_params(catboost_params)
+                base_estimator = CatBoostClassifier(**catboost_params)
+                mapie = CrossConformalClassifier(
+                    estimator=base_estimator,
+                    confidence_level=hp['mapie_confidence_level'],
+                    conformity_score='lac',
+                    cv=hp['mapie_cv'],
+                )
+            else:  # regression
+                catboost_params = dict(
+                    iterations=hp['cat_main_iterations'],
+                    depth=hp['cat_main_depth'],
+                    learning_rate=hp['cat_main_learning_rate'],
+                    l2_leaf_reg=hp['cat_main_l2_leaf_reg'],
+                    eval_metric='RMSE',
+                    store_all_simple_ctr=False,
+                    allow_writing_files=False,
+                    thread_count=-1,
+                    task_type='CPU',
+                    verbose=False,
+                )
+                catboost_params = _randomize_catboost_params(catboost_params)
+                base_estimator = CatBoostRegressor(**catboost_params)
+                mapie = CrossConformalRegressor(
+                    estimator=base_estimator,
+                    confidence_level=hp['mapie_confidence_level'],
+                    conformity_score='absolute',  # Método de conformidad
+                    method='plus',  # Método de predicción
+                    cv=hp['mapie_cv'],
+                )
             
             mapie.fit_conformalize(X, y)
-            predicted, y_prediction_sets = mapie.predict_set(X)
-            y_prediction_sets = np.squeeze(y_prediction_sets, axis=-1)
-            set_sizes = np.sum(y_prediction_sets, axis=1)
+            predicted, y_prediction_intervals = mapie.predict_interval(X)
             
-            # Scores de confiabilidad: 1.0 si set_size == 1 (alta confianza), 0.0 en caso contrario
-            conformal_scores = (set_sizes == 1).astype(float)
-            # Scores de precisión: 1.0 si predicted == y (predicción correcta), 0.0 en caso contrario
-            precision_scores = (predicted == y).astype(float)
-            # Combinar: solo muestras que son tanto confiables como precisas
-            combined_scores = ((conformal_scores == 1.0) & (precision_scores == 1.0)).astype(float)
+            # Calcular scores según label_type
+            if self.label_type == 'classification':
+                y_prediction_sets = np.squeeze(y_prediction_sets, axis=-1)
+                set_sizes = np.sum(y_prediction_sets, axis=1)
+                
+                # Scores de confiabilidad: 1.0 si set_size == 1 (alta confianza), 0.0 en caso contrario
+                conformal_scores = (set_sizes == 1).astype(float)
+                # Scores de precisión: 1.0 si predicted == y (predicción correcta), 0.0 en caso contrario
+                precision_scores = (predicted == y).astype(float)
+                # Combinar: solo muestras que son tanto confiables como precisas
+                combined_scores = ((conformal_scores == 1.0) & (precision_scores == 1.0)).astype(float)
+            else:  # regression
+                # Para regresión: analizar intervalos de confianza
+                interval_width = y_prediction_intervals[:, 1] - y_prediction_intervals[:, 0]
+                
+                # Criterios de confiabilidad para regresión (optimizados por Optuna)
+                threshold_width = hp['mapie_threshold_width']  # Umbral para ancho de intervalo
+                threshold_magnitude = hp['mapie_threshold_magnitude']  # Umbral para magnitud mínima
+                
+                # 1. Ancho del intervalo (incertidumbre): intervalos estrechos = confiables
+                width_confidence = interval_width < threshold_width
+                
+                # 2. Magnitud de la predicción: magnitudes grandes = confiables
+                magnitude_confidence = abs(predicted) > threshold_magnitude
+                
+                # 3. Combinar criterios: solo muestras que son tanto confiables como precisas
+                combined_scores = (width_confidence & magnitude_confidence).astype(float)
             
             if self.debug:
-                print(f"🔍   set_sizes.min(): {set_sizes.min()}, set_sizes.max(): {set_sizes.max()}")
-                print(f"🔍   conformal_scores.sum(): {conformal_scores.sum()}")
-                print(f"🔍   precision_scores.sum(): {precision_scores.sum()}")
+                if self.label_type == 'classification':
+                    print(f"🔍   set_sizes.min(): {set_sizes.min()}, set_sizes.max(): {set_sizes.max()}")
+                    print(f"🔍   conformal_scores.sum(): {conformal_scores.sum()}")
+                    print(f"🔍   precision_scores.sum(): {precision_scores.sum()}")
+                else:  # regression
+                    print(f"🔍   threshold_width: {threshold_width:.4f}, threshold_magnitude: {threshold_magnitude:.4f}")
+                    print(f"🔍   interval_width.min(): {interval_width.min():.4f}, interval_width.max(): {interval_width.max():.4f}")
+                    print(f"🔍   width_confidence.sum(): {width_confidence.sum()}")
+                    print(f"🔍   magnitude_confidence.sum(): {magnitude_confidence.sum()}")
+                    print(f"🔍   predicted range: [{predicted.min():.4f}, {predicted.max():.4f}]")
                 print(f"🔍   combined_scores.sum(): {combined_scores.sum()}")
                 print(f"🔍   combined_scores.mean(): {combined_scores.mean():.3f}")
-                print(f"🔍 DEBUG apply_mapie_filter - Filtrado MAPIE completado")
+                print(f"🔍 DEBUG apply_mapie_filter - Filtrado MAPIE completado ({self.label_type})")
             
             if reliable_mask is not None:
                 full_combined_scores = np.zeros(len(full_ds))
@@ -1876,6 +1999,35 @@ class StrategySearcher:
             print(f"🔍 DEBUG: test_data.shape final = {test_data.shape}")
         
         return train_data, test_data
+
+    def get_trading_mask(self, full_ds: pd.DataFrame) -> pd.Series:
+        """
+        Obtiene máscara de trading según label_type.
+        
+        Args:
+            full_ds: Dataset completo con labels_main
+            
+        Returns:
+            pd.Series: Máscara booleana para muestras de trading
+        """
+        if self.label_type == 'classification':
+            # Clasificación: solo 0.0 y 1.0 (excluir 2.0=neutral)
+            return full_ds['labels_main'].isin([0.0, 1.0])
+        else:  # regression
+            # Regresión: excluir 0.0=neutral (mantener magnitudes)
+            return full_ds['labels_main'] != 0.0
+
+    def get_meta_labels(self, full_ds: pd.DataFrame) -> pd.Series:
+        """
+        Obtiene labels_meta según label_type.
+        
+        Args:
+            full_ds: Dataset completo con labels_main
+            
+        Returns:
+            pd.Series: Labels meta binarios (1=trading, 0=neutral)
+        """
+        return self.get_trading_mask(full_ds).astype('int8')
 
     def check_constant_features(self, X: pd.DataFrame, feature_cols: list, std_epsilon: float = 1e-6) -> list:
         """Return the list of columns that may cause numerical instability.

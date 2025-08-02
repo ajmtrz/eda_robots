@@ -16,6 +16,7 @@ from optuna.pruners import HyperbandPruner, SuccessiveHalvingPruner
 from catboost import CatBoostClassifier, CatBoostRegressor
 from mapie.classification import CrossConformalClassifier
 from mapie.regression import CrossConformalRegressor
+from sklearn.model_selection import TimeSeriesSplit
 from modules.labeling_lib import (
     get_prices, get_features, get_labels_random,
     get_labels_trend, get_labels_trend_multi, get_labels_clusters,
@@ -1193,6 +1194,15 @@ class StrategySearcher:
             score = -1.0
             
             test_train_time_start = time.time()
+            
+            # Debug del threshold que se pasa a tester
+            threshold_for_tester = hp.get('model_main_threshold_calculated', 0.5)
+            if self.debug:
+                print(f"🔍 DEBUG fit_final_models - Threshold para tester:")
+                print(f"🔍   model_main_threshold_calculated: {hp.get('model_main_threshold_calculated', 'NO_ASIGNADO')}")
+                print(f"🔍   model_main_threshold: {hp.get('model_main_threshold', 'NO_ASIGNADO')}")
+                print(f"🔍   threshold_for_tester: {threshold_for_tester}")
+            
             try:
                 score = tester(
                     dataset=full_ds,
@@ -1202,7 +1212,7 @@ class StrategySearcher:
                     model_meta_cols=meta_feature_cols,
                     direction=self.direction,
                     timeframe=self.timeframe,
-                    model_main_threshold=hp.get('model_main_threshold_calculated', hp.get('model_main_threshold', 0.5)),
+                    model_main_threshold=threshold_for_tester,
                     label_type=self.label_type,
                     print_metrics=self.debug,
                 )
@@ -2210,6 +2220,7 @@ class StrategySearcher:
         Args:
             full_ds: Dataset completo con labels_main
             hp: Hiperparámetros para calcular threshold dinámico (opcional)
+            use_cv: Si usar validación cruzada temporal para regresión
             
         Returns:
             pd.Series: Máscara booleana para muestras de trading
@@ -2219,9 +2230,10 @@ class StrategySearcher:
             return full_ds['labels_main'].isin([0.0, 1.0])
         else:
             # Regresión: filtrar según threshold dinámico
-            threshold_value, significant_samples = self.calculate_regression_threshold(
+            threshold_value, significant_samples = self.calculate_regression_threshold_cv(
                 full_ds['labels_main'], hp
             )
+            
             hp['model_main_threshold_calculated'] = threshold_value
             
             if self.debug:
@@ -2341,3 +2353,109 @@ class StrategySearcher:
                 print(f"🔍   both: threshold={threshold_value:.4f} (std*{hp['model_main_threshold']:.2f}), total_std={labels_main.std():.4f}")
         
         return threshold_value, significant_samples
+
+    def calculate_regression_threshold_cv(self, labels_main: pd.Series, hp: Dict[str, Any], n_splits: int = 5) -> tuple[float, int]:
+        """
+        Calcula threshold usando validación cruzada temporal.
+        
+        Parameters
+        ----------
+        labels_main : pd.Series
+            Etiquetas de regresión (valores continuos)
+        hp : Dict[str, Any]
+            Hiperparámetros con 'model_main_threshold'
+        n_splits : int
+            Número de splits para validación cruzada temporal
+            
+        Returns
+        -------
+        tuple[float, int]
+            (threshold_value, significant_samples)
+            threshold_value: Umbral optimizado por CV
+            significant_samples: Número de muestras que superan el umbral
+        """
+        
+        if len(labels_main) < n_splits * 2:
+            if self.debug:
+                print(f"🔍   CV: Datos insuficientes para {n_splits} splits, usando threshold original")
+            return self.calculate_regression_threshold(labels_main, hp)
+        
+        tscv = TimeSeriesSplit(n_splits=n_splits)
+        thresholds = []
+        performances = []
+        
+        if self.debug:
+            print(f"🔍   CV: Iniciando validación cruzada temporal con {n_splits} splits")
+        
+        for fold, (train_idx, val_idx) in enumerate(tscv.split(labels_main)):
+            train_labels = labels_main.iloc[train_idx]
+            val_labels = labels_main.iloc[val_idx]
+            
+            # Calcular threshold en train
+            train_threshold, _ = self.calculate_regression_threshold(train_labels, hp)
+            
+            # Validar en val
+            val_performance = self._evaluate_threshold_performance(val_labels, train_threshold)
+            
+            thresholds.append(train_threshold)
+            performances.append(val_performance)
+            
+            if self.debug:
+                print(f"🔍   CV Fold {fold+1}: threshold={train_threshold:.4f}, performance={val_performance:.4f}")
+        
+        # Seleccionar threshold con mejor performance promedio
+        best_idx = np.argmax(performances)
+        best_threshold = thresholds[best_idx]
+        avg_performance = np.mean(performances)
+        
+        # Calcular significant_samples con el mejor threshold
+        if self.direction == 'buy':
+            significant_samples = (labels_main > best_threshold).sum()
+        elif self.direction == 'sell':
+            significant_samples = (labels_main < -best_threshold).sum()
+        else:  # 'both'
+            significant_samples = (abs(labels_main) > best_threshold).sum()
+        
+        if self.debug:
+            print(f"🔍   CV: Mejor threshold={best_threshold:.4f}, avg_performance={avg_performance:.4f}")
+            print(f"🔍   CV: significant_samples={significant_samples}")
+        
+        return best_threshold, significant_samples
+
+    def _evaluate_threshold_performance(self, labels: pd.Series, threshold: float) -> float:
+        """
+        Evalúa la calidad del threshold usando métricas de trading.
+        
+        Parameters
+        ----------
+        labels : pd.Series
+            Etiquetas de validación
+        threshold : float
+            Threshold a evaluar
+            
+        Returns
+        -------
+        float
+            Score de performance del threshold
+        """
+        if self.direction == 'buy':
+            significant_labels = labels[labels > threshold]
+            if len(significant_labels) == 0:
+                return 0.0
+            consistency = (significant_labels > 0).mean()
+        elif self.direction == 'sell':
+            significant_labels = labels[labels < -threshold]
+            if len(significant_labels) == 0:
+                return 0.0
+            consistency = (significant_labels < 0).mean()
+        else:  # 'both'
+            significant_labels = labels[abs(labels) > threshold]
+            if len(significant_labels) == 0:
+                return 0.0
+            consistency = 0.5  # Neutral para 'both'
+        
+        # Métricas de calidad
+        avg_magnitude = abs(significant_labels).mean()
+        signal_strength = avg_magnitude * consistency
+        
+        return signal_strength

@@ -985,7 +985,7 @@ class StrategySearcher:
                 p['causal_error_threshold'] = trial.suggest_float('causal_error_threshold', 0.1, 2.0, log=True)
 
         if self.label_type == 'regression':
-            p['model_main_threshold'] = trial.suggest_float('model_main_threshold', 0.5, 2.0)  # Multiplicador de std
+            p['model_main_percentile'] = trial.suggest_float('model_main_percentile', 0.1, 0.9)  # Percentil para threshold
 
         return p
 
@@ -1110,6 +1110,7 @@ class StrategySearcher:
                     depth=hp['cat_main_depth'],
                     learning_rate=hp['cat_main_learning_rate'],
                     l2_leaf_reg=hp['cat_main_l2_leaf_reg'],
+                    auto_class_weights='Balanced',
                     eval_metric='Accuracy',
                     store_all_simple_ctr=False,
                     allow_writing_files=False,
@@ -1162,7 +1163,8 @@ class StrategySearcher:
                 depth=hp['cat_meta_depth'],
                 learning_rate=hp['cat_meta_learning_rate'],
                 l2_leaf_reg=hp['cat_meta_l2_leaf_reg'],
-                eval_metric='F1',
+                auto_class_weights='Balanced',
+                eval_metric='F1' if self.label_type == 'classification' else 'Accuracy',
                 store_all_simple_ctr=False,
                 allow_writing_files=False,
                 thread_count=-1,
@@ -1186,9 +1188,75 @@ class StrategySearcher:
                            verbose=False
             )
             t_train_meta_end = time.time()
+            
+            # DEBUG: Verificar entrenamiento del modelo meta
             if self.debug:
                 print(f"🔍 DEBUG: Tiempo de entrenamiento modelo meta: {t_train_meta_end - t_train_meta_start:.2f} segundos")
+                
+                # Debug de datos de entrenamiento meta
+                print(f"🔍 DEBUG fit_final_models - Datos de entrenamiento meta:")
+                print(f"🔍   X_train_meta.shape: {X_train_meta.shape}")
+                print(f"🔍   y_train_meta.shape: {y_train_meta.shape}")
+                print(f"🔍   y_train_meta.value_counts(): {y_train_meta.value_counts().to_dict()}")
+                print(f"🔍   y_train_meta.mean(): {y_train_meta.mean():.6f}")
+                
+                # Debug de predicciones del modelo meta en validación
+                meta_predictions_train = model_meta.predict_proba(X_train_meta)[:, 1]
+                meta_predictions_val = model_meta.predict_proba(X_val_meta)[:, 1]
+                
+                print(f"🔍 DEBUG fit_final_models - Predicciones modelo meta:")
+                print(f"🔍   Train predictions - min: {meta_predictions_train.min():.6f}, max: {meta_predictions_train.max():.6f}, mean: {meta_predictions_train.mean():.6f}")
+                print(f"🔍   Val predictions - min: {meta_predictions_val.min():.6f}, max: {meta_predictions_val.max():.6f}, mean: {meta_predictions_val.mean():.6f}")
+                
+                # Debug de métricas de entrenamiento
+                train_accuracy = (meta_predictions_train > 0.5) == y_train_meta
+                val_accuracy = (meta_predictions_val > 0.5) == y_val_meta
+                print(f"🔍   Train accuracy: {train_accuracy.mean():.6f}")
+                print(f"🔍   Val accuracy: {val_accuracy.mean():.6f}")
+            # DEBUG: Verificar tipos de modelos antes de exportar
+            if self.debug:
+                print(f"🔍 DEBUG fit_final_models - Tipos de modelos:")
+                print(f"🔍   model_main.__class__: {model_main.__class__}")
+                print(f"🔍   model_meta.__class__: {model_meta.__class__}")
+                print(f"🔍   model_main.get_params(): {model_main.get_params()}")
+                print(f"🔍   model_meta.get_params(): {model_meta.get_params()}")
+            
             model_main_path, model_meta_path = export_models_to_ONNX(models=(model_main, model_meta))
+            
+            # DEBUG: Verificar exportación ONNX y predicciones
+            if self.debug:
+                print(f"🔍 DEBUG fit_final_models - Verificación ONNX:")
+                print(f"🔍   model_main_path: {model_main_path}")
+                print(f"🔍   model_meta_path: {model_meta_path}")
+                
+                # Verificar predicciones ONNX del modelo meta
+                try:
+                    from modules.tester_lib import predict_proba_onnx_models
+                    # Convertir DataFrame a numpy array
+                    X_val_meta_np = X_val_meta.to_numpy().astype(np.float32)
+                    meta_onnx_predictions = predict_proba_onnx_models(model_meta_path, X_val_meta_np)
+                    print(f"🔍   ONNX meta predictions - min: {meta_onnx_predictions.min():.6f}, max: {meta_onnx_predictions.max():.6f}, mean: {meta_onnx_predictions.mean():.6f}")
+                    
+                    # Comparar predicciones originales vs ONNX
+                    original_predictions = model_meta.predict_proba(X_val_meta)[:, 1]
+                    onnx_predictions = meta_onnx_predictions
+                    
+                    print(f"🔍   Original vs ONNX comparison:")
+                    print(f"🔍     Original - min: {original_predictions.min():.6f}, max: {original_predictions.max():.6f}, mean: {original_predictions.mean():.6f}")
+                    print(f"🔍     ONNX - min: {onnx_predictions.min():.6f}, max: {onnx_predictions.max():.6f}, mean: {onnx_predictions.mean():.6f}")
+                    
+                    # Verificar si hay diferencias significativas
+                    diff = np.abs(original_predictions - onnx_predictions)
+                    print(f"🔍     Max difference: {diff.max():.6f}")
+                    print(f"🔍     Mean difference: {diff.mean():.6f}")
+                    
+                    # Debug adicional: verificar distribución de valores ONNX
+                    unique_onnx = np.unique(onnx_predictions)
+                    print(f"🔍     ONNX unique values: {unique_onnx}")
+                    print(f"🔍     ONNX value counts: {np.bincount((onnx_predictions * 100).astype(int))}")
+                    
+                except Exception as e:
+                    print(f"🔍   ERROR verificando ONNX: {e}")
             
             # Inicializar score con valor por defecto
             score = -1.0
@@ -1200,8 +1268,52 @@ class StrategySearcher:
             if self.debug:
                 print(f"🔍 DEBUG fit_final_models - Threshold para tester:")
                 print(f"🔍   model_main_threshold_calculated: {hp.get('model_main_threshold_calculated', 'NO_ASIGNADO')}")
-                print(f"🔍   model_main_threshold: {hp.get('model_main_threshold', 'NO_ASIGNADO')}")
                 print(f"🔍   threshold_for_tester: {threshold_for_tester}")
+                
+                # DEBUG: Verificar predicciones del modelo meta en el dataset completo
+                print(f"🔍 DEBUG fit_final_models - Verificación predicciones meta en dataset completo:")
+                
+                # Obtener features meta del dataset completo
+                meta_feature_cols = [col for col in full_ds.columns if col.endswith('_meta_feature')]
+                if meta_feature_cols:
+                    X_full_meta = full_ds[meta_feature_cols].dropna(subset=meta_feature_cols)
+                    print(f"🔍   meta_feature_cols: {meta_feature_cols}")
+                    print(f"🔍   X_full_meta.shape: {X_full_meta.shape}")
+                    
+                    # Predicciones originales del modelo meta
+                    meta_predictions_full = model_meta.predict_proba(X_full_meta)[:, 1]
+                    print(f"🔍   Meta predictions full dataset:")
+                    print(f"🔍     min: {meta_predictions_full.min():.6f}")
+                    print(f"🔍     max: {meta_predictions_full.max():.6f}")
+                    print(f"🔍     mean: {meta_predictions_full.mean():.6f}")
+                    print(f"🔍     std: {meta_predictions_full.std():.6f}")
+                    
+                    # Verificar distribución de predicciones
+                    predictions_above_05 = (meta_predictions_full > 0.5).sum()
+                    predictions_above_01 = (meta_predictions_full > 0.1).sum()
+                    print(f"🔍     predictions > 0.5: {predictions_above_05} ({predictions_above_05/len(meta_predictions_full)*100:.2f}%)")
+                    print(f"🔍     predictions > 0.1: {predictions_above_01} ({predictions_above_01/len(meta_predictions_full)*100:.2f}%)")
+                    
+                    # Predicciones ONNX del dataset completo
+                    try:
+                        # Convertir DataFrame a numpy array
+                        X_full_meta_np = X_full_meta.to_numpy().astype(np.float32)
+                        meta_onnx_full = predict_proba_onnx_models(model_meta_path, X_full_meta_np)
+                        print(f"🔍   ONNX predictions full dataset:")
+                        print(f"🔍     min: {meta_onnx_full.min():.6f}")
+                        print(f"🔍     max: {meta_onnx_full.max():.6f}")
+                        print(f"🔍     mean: {meta_onnx_full.mean():.6f}")
+                        print(f"🔍     std: {meta_onnx_full.std():.6f}")
+                        
+                        onnx_above_05 = (meta_onnx_full > 0.5).sum()
+                        onnx_above_01 = (meta_onnx_full > 0.1).sum()
+                        print(f"🔍     ONNX > 0.5: {onnx_above_05} ({onnx_above_05/len(meta_onnx_full)*100:.2f}%)")
+                        print(f"🔍     ONNX > 0.1: {onnx_above_01} ({onnx_above_01/len(meta_onnx_full)*100:.2f}%)")
+                        
+                    except Exception as e:
+                        print(f"🔍   ERROR en predicciones ONNX full dataset: {e}")
+                else:
+                    print(f"🔍   No se encontraron meta features en el dataset")
             
             try:
                 score = tester(
@@ -1214,7 +1326,7 @@ class StrategySearcher:
                     timeframe=self.timeframe,
                     model_main_threshold=threshold_for_tester,
                     label_type=self.label_type,
-                    print_metrics=self.debug,
+                    debug=self.debug,
                 )
             except Exception as tester_error:
                 if self.debug:
@@ -2321,10 +2433,12 @@ class StrategySearcher:
             # Solo valores positivos significativos
             positive_labels = labels_main[labels_main > 0]
             if len(positive_labels) > 0:
-                threshold_value = hp['model_main_threshold'] * positive_labels.std()
+                # Usar percentil optimizado por Optuna
+                percentile = hp.get('model_main_percentile', 0.75)
+                threshold_value = positive_labels.quantile(percentile)
                 significant_samples = (labels_main > threshold_value).sum()
                 if self.debug:
-                    print(f"🔍   buy: threshold={threshold_value:.4f} (std*{hp['model_main_threshold']:.2f}), positive_std={positive_labels.std():.4f}")
+                    print(f"🔍   buy: threshold={threshold_value:.4f} (q{percentile:.2f}), positive_q{percentile:.2f}={positive_labels.quantile(percentile):.4f}")
             else:
                 threshold_value = 0.0
                 significant_samples = 0
@@ -2335,10 +2449,12 @@ class StrategySearcher:
             # Solo valores negativos significativos
             negative_labels = labels_main[labels_main < 0]
             if len(negative_labels) > 0:
-                threshold_value = hp['model_main_threshold'] * abs(negative_labels.std())
+                # Usar percentil optimizado por Optuna (invertido para valores negativos)
+                percentile = hp.get('model_main_percentile', 0.25)
+                threshold_value = abs(negative_labels.quantile(percentile))
                 significant_samples = (labels_main < -threshold_value).sum()
                 if self.debug:
-                    print(f"🔍   sell: threshold={threshold_value:.4f} (std*{hp['model_main_threshold']:.2f}), negative_std={abs(negative_labels.std()):.4f}")
+                    print(f"🔍   sell: threshold={threshold_value:.4f} (q{percentile:.2f}), negative_q{percentile:.2f}={negative_labels.quantile(percentile):.4f}")
             else:
                 threshold_value = 0.0
                 significant_samples = 0
@@ -2347,10 +2463,13 @@ class StrategySearcher:
                 
         else:  # 'both'
             # Valores absolutos significativos
-            threshold_value = hp['model_main_threshold'] * labels_main.std()
+            # Usar percentil optimizado por Optuna
+            percentile = hp.get('model_main_percentile', 0.75)
+            abs_labels = abs(labels_main)
+            threshold_value = abs_labels.quantile(percentile)
             significant_samples = (abs(labels_main) > threshold_value).sum()
             if self.debug:
-                print(f"🔍   both: threshold={threshold_value:.4f} (std*{hp['model_main_threshold']:.2f}), total_std={labels_main.std():.4f}")
+                print(f"🔍   both: threshold={threshold_value:.4f} (q{percentile:.2f}), abs_q{percentile:.2f}={abs_labels.quantile(percentile):.4f}")
         
         return threshold_value, significant_samples
 

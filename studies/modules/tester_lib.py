@@ -22,7 +22,7 @@ def tester(
         model_meta_threshold: float = 0.5,
         model_max_orders: int = 1,
         model_delay_bars: int = 1,
-        print_metrics: bool = False) -> tuple[float, pd.DataFrame]:
+        debug: bool = False) -> tuple[float, pd.DataFrame]:
     """
     Evalúa una estrategia para una o ambas direcciones, usando ejecución realista:
     - Las operaciones se abren y cierran al precio 'open' de la barra actual (índice t),
@@ -70,6 +70,19 @@ def tester(
         main = np.ascontiguousarray(main)
         meta = np.ascontiguousarray(meta)
 
+        # DEBUG: Información de entrada
+        if debug:
+            print(f"🔍 DEBUG tester - Información de entrada:")
+            print(f"🔍   label_type: {label_type}")
+            print(f"🔍   direction: {direction}")
+            print(f"🔍   model_main_threshold: {model_main_threshold}")
+            print(f"🔍   model_meta_threshold: {model_meta_threshold}")
+            print(f"🔍   main.shape: {main.shape}, main.dtype: {main.dtype}")
+            print(f"🔍   meta.shape: {meta.shape}, meta.dtype: {meta.dtype}")
+            print(f"🔍   open_.shape: {open_.shape}, open_.dtype: {open_.dtype}")
+            print(f"🔍   main.min(): {main.min():.6f}, main.max(): {main.max():.6f}")
+            print(f"🔍   meta.min(): {meta.min():.6f}, meta.max(): {meta.max():.6f}")
+
         # ── BACKTEST ──────────────────────────────────────────────────
         dir_flag = {"buy": 0, "sell": 1, "both": 2}[direction]
         
@@ -86,17 +99,26 @@ def tester(
                 ps = 1.0 - main
         else:  # regression
             # Lógica de regresión (valores continuos)
-            # Convertir valores de regresión a probabilidades para trading
-            # Valores positivos = señal de compra, negativos = señal de venta
+            # Usar valores directos sin normalización para mantener compatibilidad MQL5
             if dir_flag == 0:  # solo buy
-                pb = np.maximum(main, 0.0)  # Solo valores positivos
+                pb = np.where(main > model_main_threshold, main, 0.0)
                 ps = np.zeros_like(main)
             elif dir_flag == 1:  # solo sell
                 pb = np.zeros_like(main)
-                ps = np.maximum(-main, 0.0)  # Solo valores negativos convertidos a positivos
+                ps = np.where(main < -model_main_threshold, -main, 0.0)
             else:  # both
-                pb = np.maximum(main, 0.0)  # Valores positivos para buy
-                ps = np.maximum(-main, 0.0)  # Valores negativos para sell
+                pb = np.where(main > model_main_threshold, main, 0.0)
+                ps = np.where(main < -model_main_threshold, -main, 0.0)
+
+        # DEBUG: Señales antes del backtest
+        if debug:
+            print(f"🔍 DEBUG tester - Señales generadas:")
+            print(f"🔍   pb.min(): {pb.min():.6f}, pb.max(): {pb.max():.6f}")
+            print(f"🔍   ps.min(): {ps.min():.6f}, ps.max(): {ps.max():.6f}")
+            print(f"🔍   meta.min(): {meta.min():.6f}, meta.max(): {meta.max():.6f}")
+            print(f"🔍   pb > main_thr: {(pb > model_main_threshold).sum()}")
+            print(f"🔍   ps > main_thr: {(ps > model_main_threshold).sum()}")
+            print(f"🔍   meta > meta_thr: {(meta > model_meta_threshold).sum()}")
 
         rpt, trade_stats, trade_profits = backtest(
             open_,
@@ -110,8 +132,36 @@ def tester(
             delay_bars = model_delay_bars
         )
 
+        # DEBUG: Resultados del backtest
+        if debug:
+            print(f"🔍 DEBUG tester - Resultados del backtest:")
+            print(f"🔍   trade_stats: {trade_stats}")
+            print(f"🔍   len(trade_profits): {len(trade_profits)}")
+            print(f"🔍   len(rpt): {len(rpt)}")
+            if len(trade_profits) > 0:
+                print(f"🔍   trade_profits.min(): {min(trade_profits):.6f}")
+                print(f"🔍   trade_profits.max(): {max(trade_profits):.6f}")
+                print(f"🔍   trade_profits.mean(): {np.mean(trade_profits):.6f}")
+            if len(rpt) > 1:
+                print(f"🔍   rpt[0]: {rpt[0]:.6f}")
+                print(f"🔍   rpt[-1]: {rpt[-1]:.6f}")
+                print(f"🔍   rpt.max(): {np.max(rpt):.6f}")
+                print(f"🔍   rpt.min(): {np.min(rpt):.6f}")
+
         trade_nl, rdd_nl, r2, slope_nl, wf_nl = evaluate_report(rpt, trade_profits=trade_profits)
+        
+        # DEBUG: Métricas de evaluación
+        if debug:
+            print(f"🔍 DEBUG tester - Métricas de evaluación:")
+            print(f"🔍   trade_nl: {trade_nl:.6f}")
+            print(f"🔍   rdd_nl: {rdd_nl:.6f}")
+            print(f"🔍   r2: {r2:.6f}")
+            print(f"🔍   slope_nl: {slope_nl:.6f}")
+            print(f"🔍   wf_nl: {wf_nl:.6f}")
+        
         if (trade_nl <= -1.0 and rdd_nl <= -1.0 and r2 <= -1.0 and slope_nl <= -1.0 and wf_nl <= -1.0):
+            if debug:
+                print(f"🔍 DEBUG tester - TODAS las métricas son -1.0, retornando -1.0")
             return -1.0
         
         # Pesos optimizados para favorecer estabilidad temporal y linealidad constante
@@ -124,8 +174,10 @@ def tester(
                 0.45 * wf_nl       # Consistencia temporal (máxima prioridad)
         )
         if score < 0.0:
+            if debug:
+                print(f"🔍 DEBUG tester - Score < 0.0 ({score:.6f}), retornando -1.0")
             return -1.0
-        if print_metrics:
+        if debug:
             print(f"🔍 DEBUG - Label type: {label_type}, Main threshold: {model_main_threshold}, Meta threshold: {model_meta_threshold}, Max orders: {model_max_orders}, Delay bars: {model_delay_bars}")
             print(f"🔍 DEBUG - Métricas de evaluación: SCORE: {score}, trade_nl: {trade_nl}, rdd_nl: {rdd_nl}, r2: {r2}, slope_nl: {slope_nl}, wf_nl: {wf_nl}")
             print(f"🔍 DEBUG - Trade stats: n_trades: {trade_stats[0]}, n_positivos: {trade_stats[1]}, n_negativos: {trade_stats[2]}")
@@ -150,7 +202,7 @@ def evaluate_report(
     equity_curve: np.ndarray,
     trade_profits: np.ndarray,
     min_trades: int = 200,
-    rdd_floor: float = 1.0,
+    rdd_floor: float = 1.0
 ) -> tuple:
     """
     Devuelve un score escalar para Optuna.
@@ -167,7 +219,6 @@ def evaluate_report(
         return -1.0, -1.0, -1.0, -1.0, -1.0
 
     # ---------- nº de trades (normalizado) -----------------------------------
-    # CORREGIDO: usar trade_profits.size en lugar de equity_curve differences
     n_trades = trade_profits.size
     if n_trades < min_trades:
         return -1.0, -1.0, -1.0, -1.0, -1.0
@@ -184,13 +235,11 @@ def evaluate_report(
         rdd = 0.0
     else:
         rdd = total_ret / max_dd
-    
-    # Umbral más exigente para el ratio retorno/drawdown
+
     min_rdd = max(rdd_floor * 1.5, 2.0)  # Al menos 2.0 o 1.5 veces el floor
     if rdd < min_rdd:
         return -1.0, -1.0, -1.0, -1.0, -1.0
-    
-    # Normalización más estricta que penaliza ratios bajos
+
     rdd_nl = 1.0 / (1.0 + np.exp(-(rdd - min_rdd) / (min_rdd * 3.0)))
 
     # ---------- linealidad y pendiente (normalizado) ---------------------------
@@ -199,14 +248,12 @@ def evaluate_report(
     r2, slope = manual_linear_regression(x, y)
     if slope < 0.0:
         return -1.0, -1.0, -1.0, -1.0, -1.0
-    
-    # Penalizar más fuertemente R² bajos para favorecer linealidad
-    # Usar función exponencial para discriminar mejor
+
     if r2 < 0.7:  # Umbral más estricto para R²
         r2 = r2 * 0.5  # Penalización severa para R² < 0.7
     else:
         r2 = 0.35 + (r2 - 0.7) * 2.17  # Reescalar 0.7-1.0 a 0.35-1.0
-    
+
     slope_nl = 1.0 / (1.0 + np.exp(-(np.log1p(slope) / 3.0)))  # Más sensible a pendientes pequeñas
 
     # Walk-Forward Analysis - consistencia temporal
@@ -576,9 +623,11 @@ def clear_onnx_session_cache():
 def predict_proba_onnx_models(
     onnx_paths: Union[str, List[str]],
     X: np.ndarray,
+    debug: bool = False
 ) -> np.ndarray:
     """
     Devuelve las probabilidades de clase positiva para uno o varios modelos ONNX.
+    Maneja el formato zipmap de CatBoost ONNX que incluye labels y probabilidades.
 
     Parameters
     ----------
@@ -598,16 +647,61 @@ def predict_proba_onnx_models(
     # Caso más común: un solo modelo (str)
     if isinstance(onnx_paths, str):
         sess, inp = _get_ort_session(onnx_paths)
-        raw = sess.run(None, {inp: X})[0]
-        # --- detectar formato de salida ---
-        if raw.dtype == object:  # listado de dicts {'0':p0,'1':p1}
-            return np.fromiter((r[b"1"] for r in raw), dtype=np.float32)
-        elif raw.ndim == 2:      # matriz (n_samples, 2)
-            return raw[:, 1]
-        elif raw.ndim == 1:      # vector ya binario
-            return raw
+        
+        # Ejecutar modelo ONNX
+        outputs = sess.run(None, {inp: X})
+        
+        # Manejar formato zipmap de CatBoost
+        if len(outputs) == 2:  # zipmap: [labels, probabilities]
+            # outputs[0] = labels, outputs[1] = probabilities dict
+            proba_dict = outputs[1]
+            if isinstance(proba_dict, list) and len(proba_dict) > 0:
+                # Debug: verificar estructura del zipmap
+                if debug:
+                    print(f"🔍 DEBUG ONNX - outputs[0] type: {type(outputs[0])}, shape: {np.array(outputs[0]).shape}")
+                    print(f"🔍 DEBUG ONNX - outputs[1] type: {type(proba_dict)}, len: {len(proba_dict)}")
+                    if len(proba_dict) > 0:
+                        print(f"🔍 DEBUG ONNX - proba_dict[0] type: {type(proba_dict[0])}, keys: {list(proba_dict[0].keys())}")
+                    print(f"🔍 DEBUG ONNX - proba_dict[0] values: {list(proba_dict[0].values())}")
+                    print(f"🔍 DEBUG ONNX - proba_dict[0] items: {list(proba_dict[0].items())}")
+                
+                # Extraer probabilidad de clase 1 (positiva)
+                # Las claves pueden ser bytes b"1" o enteros 1
+                result = np.fromiter((p.get(1, p.get(b"1", 0.0)) for p in proba_dict), dtype=np.float32)
+                if debug:
+                    print(f"🔍 DEBUG ONNX - result shape: {result.shape}, min: {result.min()}, max: {result.max()}")    
+                    # Debug adicional: verificar primeros valores
+                    if len(result) > 0:
+                        print(f"🔍 DEBUG ONNX - primeros 5 valores: {result[:5]}")
+                        print(f"🔍 DEBUG ONNX - primeros 5 dicts: {proba_dict[:5]}")
+                
+                return result
+            else:
+                raise RuntimeError(f"Formato zipmap inesperado: {type(proba_dict)}")
+            
+        elif len(outputs) == 1:  # formato simple
+            raw = outputs[0]
+            if debug:
+                print(f"🔍 DEBUG ONNX - formato simple: raw type: {type(raw)}, shape: {raw.shape}, dtype: {raw.dtype}")
+            # --- detectar formato de salida ---
+            if raw.dtype == object:  # listado de dicts {'0':p0,'1':p1}
+                result = np.fromiter((r[b"1"] for r in raw), dtype=np.float32)
+                if debug:
+                    print(f"🔍 DEBUG ONNX - formato simple object: result shape: {result.shape}, min: {result.min()}, max: {result.max()}")
+                return result
+            elif raw.ndim == 2:      # matriz (n_samples, 2)
+                result = raw[:, 1]
+                if debug:
+                    print(f"🔍 DEBUG ONNX - formato simple 2D: result shape: {result.shape}, min: {result.min()}, max: {result.max()}")
+                return result
+            elif raw.ndim == 1:      # vector ya binario
+                if debug:
+                    print(f"🔍 DEBUG ONNX - formato simple 1D: result shape: {raw.shape}, min: {raw.min()}, max: {raw.max()}")
+                return raw
+            else:
+                raise RuntimeError(f"Salida ONNX inesperada: shape={raw.shape}")
         else:
-            raise RuntimeError(f"Salida ONNX inesperada: shape={raw.shape}")
+            raise RuntimeError(f"Número inesperado de outputs ONNX: {len(outputs)}")
 
     # Varios modelos (lista)
     n_models = len(onnx_paths)
@@ -616,15 +710,27 @@ def predict_proba_onnx_models(
 
     for k, path in enumerate(onnx_paths):
         sess, inp = _get_ort_session(path)
-        raw = sess.run(None, {inp: X})[0]
-        if raw.dtype == object:
-            probs[k] = np.fromiter((r[b"1"] for r in raw), dtype=np.float32)
-        elif raw.ndim == 2:
-            probs[k] = raw[:, 1]
-        elif raw.ndim == 1:
-            probs[k] = raw
+        outputs = sess.run(None, {inp: X})
+        
+        if len(outputs) == 2:  # zipmap
+            proba_dict = outputs[1]
+            if isinstance(proba_dict, list) and len(proba_dict) > 0:
+                # Las claves pueden ser bytes b"1" o enteros 1
+                probs[k] = np.fromiter((p.get(1, p.get(b"1", 0.0)) for p in proba_dict), dtype=np.float32)
+            else:
+                raise RuntimeError(f"Formato zipmap inesperado: {type(proba_dict)}")
+        elif len(outputs) == 1:  # formato simple
+            raw = outputs[0]
+            if raw.dtype == object:
+                probs[k] = np.fromiter((r[b"1"] for r in raw), dtype=np.float32)
+            elif raw.ndim == 2:
+                probs[k] = raw[:, 1]
+            elif raw.ndim == 1:
+                probs[k] = raw
+            else:
+                raise RuntimeError(f"Salida ONNX inesperada: shape={raw.shape}")
         else:
-            raise RuntimeError(f"Salida ONNX inesperada: shape={raw.shape}")
+            raise RuntimeError(f"Número inesperado de outputs ONNX: {len(outputs)}")
 
     return probs
 

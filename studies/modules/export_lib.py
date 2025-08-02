@@ -10,12 +10,13 @@ def export_models_to_ONNX(models):
     :return: Lista de rutas de archivos ONNX temporales.
     """
     onnx_models = []
-    for model in models:
+    for i, model in enumerate(models):
         # Crear archivo temporal para el modelo ONNX
         tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".onnx")
         tmp.close()
-        # Exportar modelo ONNX
+
         model.save_model(tmp.name, format="onnx")
+        
         onnx_models.append(tmp.name)
     
     return onnx_models

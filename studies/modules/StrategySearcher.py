@@ -657,10 +657,10 @@ class StrategySearcher:
             # Evaluar cada cluster
             for clust in cluster_sizes.index:
                 cluster_mask = full_ds['labels_meta'] == clust
-                reliable_mask = self.get_trading_mask(full_ds, hp)
-                hybrid_mask = cluster_mask & reliable_mask
+                trading_mask = self.get_trading_mask(full_ds, hp)
+                reliable_mask = cluster_mask & trading_mask
                 
-                if not hybrid_mask.any():
+                if not reliable_mask.any():
                     if self.debug:
                         print(f"🔍   Cluster {clust} descartado: sin muestras confiables")
                     continue
@@ -669,39 +669,39 @@ class StrategySearcher:
                 if self.search_filter == 'mapie':
                     if self.debug:
                         print(f"🔍 DEBUG evaluate_clusters - Aplicando filtrado MAPIE al cluster {clust}")
-                        print(f"🔍   hybrid_mask.sum(): {hybrid_mask.sum()}")
-                        print(f"🔍   hybrid_mask.mean(): {hybrid_mask.mean():.3f}")
+                        print(f"🔍   reliable_mask.sum(): {reliable_mask.sum()}")
+                        print(f"🔍   reliable_mask.mean(): {reliable_mask.mean():.3f}")
                     
-                    mapie_scores = self.apply_mapie_filter(trial, full_ds, hp, hybrid_mask)
+                    mapie_scores = self.apply_mapie_filter(trial, full_ds, hp, reliable_mask)
                     mapie_mask = mapie_scores == 1.0
-                    final_mask = hybrid_mask & mapie_mask
+                    final_mask = reliable_mask & mapie_mask
                     
                     if self.debug:
                         print(f"🔍   mapie_mask.sum(): {mapie_mask.sum()}")
                         print(f"🔍   mapie_mask.mean(): {mapie_mask.mean():.3f}")
                         print(f"🔍   final_mask.sum(): {final_mask.sum()}")
                         print(f"🔍   final_mask.mean(): {final_mask.mean():.3f}")
-                        if hybrid_mask.sum() > 0:
-                            print(f"🔍   Reducción de muestras: {hybrid_mask.sum()} -> {final_mask.sum()} ({final_mask.sum()/hybrid_mask.sum()*100:.1f}%)")
+                        if reliable_mask.sum() > 0:
+                            print(f"🔍   Reducción de muestras: {reliable_mask.sum()} -> {final_mask.sum()} ({final_mask.sum()/reliable_mask.sum()*100:.1f}%)")
                 elif self.search_filter == 'causal':
                     if self.debug:
                         print(f"🔍 DEBUG evaluate_clusters - Aplicando filtrado CAUSAL al cluster {clust}")
-                        print(f"🔍   hybrid_mask.sum(): {hybrid_mask.sum()}")
-                        print(f"🔍   hybrid_mask.mean(): {hybrid_mask.mean():.3f}")
+                        print(f"🔍   reliable_mask.sum(): {reliable_mask.sum()}")
+                        print(f"🔍   reliable_mask.mean(): {reliable_mask.mean():.3f}")
                     
-                    causal_scores = self.apply_causal_filter(trial, full_ds, hp, hybrid_mask)
+                    causal_scores = self.apply_causal_filter(trial, full_ds, hp, reliable_mask)
                     causal_mask = causal_scores == 1.0
-                    final_mask = hybrid_mask & causal_mask
+                    final_mask = reliable_mask & causal_mask
                     
                     if self.debug:
                         print(f"🔍   causal_mask.sum(): {causal_mask.sum()}")
                         print(f"🔍   causal_mask.mean(): {causal_mask.mean():.3f}")
                         print(f"🔍   final_mask.sum(): {final_mask.sum()}")
                         print(f"🔍   final_mask.mean(): {final_mask.mean():.3f}")
-                        if hybrid_mask.sum() > 0:
-                            print(f"🔍   Reducción de muestras: {hybrid_mask.sum()} -> {final_mask.sum()} ({final_mask.sum()/hybrid_mask.sum()*100:.1f}%)")
+                        if reliable_mask.sum() > 0:
+                            print(f"🔍   Reducción de muestras: {reliable_mask.sum()} -> {final_mask.sum()} ({final_mask.sum()/reliable_mask.sum()*100:.1f}%)")
                 else:
-                    final_mask = hybrid_mask
+                    final_mask = reliable_mask
                     
                     if self.debug:
                         print(f"🔍 DEBUG evaluate_clusters - Sin filtrado MAPIE o CAUSAL al cluster {clust}")
@@ -728,21 +728,7 @@ class StrategySearcher:
                     if self.debug:
                         print(f"🔍 DEBUG evaluate_clusters - Insuficientes muestras main: {len(model_main_train_data)}")
                     continue
-                # En evaluate_clusters, alrededor de la línea 720:
-                if self.label_type == 'regression':
-                    # Para regresión: verificar muestras con magnitud significativa según dirección
-                    threshold_value, significant_samples = self.calculate_regression_threshold(
-                        model_main_train_data['labels_main'], hp
-                    )
-                    
-                    if self.debug:
-                        print(f"🔍   Cluster {clust} - {self.direction}: significant_samples={significant_samples}")
-                    
-                    if significant_samples < 50:
-                        if self.debug:
-                            print(f"🔍   Cluster {clust} descartado: muestras significativas insuficientes ({significant_samples})")
-                        continue
-                else:
+                if self.label_type == 'classification':
                     # Para clasificación: verificar distribución de clases
                     if (model_main_train_data['labels_main'].value_counts() < 2).any():
                         if self.debug:
@@ -985,7 +971,7 @@ class StrategySearcher:
                 p['causal_error_threshold'] = trial.suggest_float('causal_error_threshold', 0.1, 2.0, log=True)
 
         if self.label_type == 'regression':
-            p['model_main_percentile'] = trial.suggest_float('model_main_percentile', 0.1, 0.9)  # Percentil para threshold
+            p['model_main_percentile'] = trial.suggest_float('model_main_percentile', 0.7, 0.95)  # Percentil para threshold
 
         return p
 

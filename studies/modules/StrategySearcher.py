@@ -693,7 +693,7 @@ class StrategySearcher:
                     final_mask = hybrid_mask
                     
                     if self.debug:
-                        print(f"🔍 DEBUG evaluate_clusters - Sin filtrado MAPIE al cluster {clust}")
+                        print(f"🔍 DEBUG evaluate_clusters - Sin filtrado MAPIE o CAUSAL al cluster {clust}")
                         print(f"🔍   final_mask.sum(): {final_mask.sum()}")
                         print(f"🔍   final_mask.mean(): {final_mask.mean():.3f}")
                 
@@ -717,10 +717,20 @@ class StrategySearcher:
                     if self.debug:
                         print(f"🔍 DEBUG evaluate_clusters - Insuficientes muestras main: {len(model_main_train_data)}")
                     continue
-                if (model_main_train_data['labels_main'].value_counts() < 2).any():
-                    if self.debug:
-                        print(f"🔍   Cluster {clust} descartado: labels_main insuficientes")
-                    continue
+                # En evaluate_clusters, alrededor de la línea 720:
+                if self.label_type == 'regression':
+                    # Para regresión: verificar muestras con magnitud significativa
+                    significant_samples = (model_main_train_data['labels_main'] > hp['model_main_threshold']).sum()
+                    if significant_samples < 50:
+                        if self.debug:
+                            print(f"🔍   Cluster {clust} descartado: muestras significativas insuficientes ({significant_samples})")
+                        continue
+                else:
+                    # Para clasificación: verificar distribución de clases
+                    if (model_main_train_data['labels_main'].value_counts() < 2).any():
+                        if self.debug:
+                            print(f"🔍   Cluster {clust} descartado: labels_main insuficientes")
+                        continue
                 if (model_meta_train_data['labels_meta'].value_counts() < 2).any():
                     if self.debug:
                         print(f"🔍   Cluster {clust} descartado: labels_meta insuficientes")
@@ -728,11 +738,14 @@ class StrategySearcher:
 
                 # Información de debug
                 if self.debug:
-                        print(f"🔍   Evaluando cluster {clust}: {len(model_main_train_data)} filas main, {len(model_meta_train_data)} filas meta")
+                    print(f"🔍   Evaluando cluster {clust}: {len(model_main_train_data)} filas main, {len(model_meta_train_data)} filas meta")
+                    if self.label_type == 'classification':
                         main_dist = model_main_train_data['labels_main'].value_counts()
-                        meta_dist = model_meta_train_data['labels_meta'].value_counts()
                         print(f"🔍     Main labels: {main_dist}")
-                        print(f"🔍     Meta labels: {meta_dist}")
+                    else:
+                        print(f"🔍     Main labels: {model_main_train_data['labels_main'].min()}, {model_main_train_data['labels_main'].max()}")
+                    meta_dist = model_meta_train_data['labels_meta'].value_counts()
+                    print(f"🔍     Meta labels: {meta_dist}")
                     
                 # Entrenar modelos
                 score, full_ds_with_labels_path, model_paths, models_cols = self.fit_final_models(
@@ -1253,6 +1266,7 @@ class StrategySearcher:
                         n_nonzero = (y != 0.0).sum()
                         n_zero = (y == 0.0).sum()
                         print(f"🔍   y: n_nonzero={n_nonzero}, n_zero={n_zero}, total={len(y)}")
+                        print(f"🔍   y.min(): {y.min()}, y.max(): {y.max()}")
             else:
                 # Esquema tradicional
                 main_feature_cols = [col for col in full_ds.columns if col.endswith('_main_feature')]
@@ -1275,6 +1289,7 @@ class StrategySearcher:
                         n_nonzero = (y != 0.0).sum()
                         n_zero = (y == 0.0).sum()
                         print(f"🔍   y: n_nonzero={n_nonzero}, n_zero={n_zero}, total={len(y)}")
+                        print(f"🔍   y.min(): {y.min()}, y.max(): {y.max()}")
 
             # Verificar que tenemos suficientes datos y clases balanceadas
             if len(X) < 100:  # Mínimo requerido para conformal prediction robusta
@@ -1596,6 +1611,7 @@ class StrategySearcher:
                         n_nonzero = (y != 0.0).sum()
                         n_zero = (y == 0.0).sum()
                         print(f"🔍   y: n_nonzero={n_nonzero}, n_zero={n_zero}, total={len(y)}")
+                        print(f"🔍   y.min(): {y.min()}, y.max(): {y.max()}")
             else:
                 # Esquema tradicional
                 main_feature_cols = [col for col in full_ds.columns if col.endswith('_main_feature')]
@@ -1618,6 +1634,7 @@ class StrategySearcher:
                         n_nonzero = (y != 0.0).sum()
                         n_zero = (y == 0.0).sum()
                         print(f"🔍   y: n_nonzero={n_nonzero}, n_zero={n_zero}, total={len(y)}")
+                        print(f"🔍   y.min(): {y.min()}, y.max(): {y.max()}")
             
             # Verificar que tenemos suficientes datos
             if len(X) < 100:  # Mínimo requerido para análisis causal robusto
@@ -1855,6 +1872,10 @@ class StrategySearcher:
             if 'labels_main' in df.columns:
                 if self.debug:
                     print(f"🔍   Etiquetado exitoso: {len(df)} filas con labels_main")
+                    if self.label_type == 'classification':
+                        print(f"🔍   df['labels_main'].value_counts(): {df['labels_main'].value_counts()}")
+                    else:
+                        print(f"🔍   df['labels_main'].min(): {df['labels_main'].min()}, df['labels_main'].max(): {df['labels_main'].max()}")
                 return df
             else:
                 if self.debug:

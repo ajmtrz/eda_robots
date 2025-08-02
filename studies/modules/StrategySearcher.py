@@ -344,8 +344,8 @@ class StrategySearcher:
             if self.debug:
                 print(f"🔍 DEBUG search_clusters {self.search_subtype} - Aplicando clustering híbrido")
             
-            # Hacer clustering solo en muestras confiables, según label_type
-            reliable_mask = self.get_trading_mask(full_ds)
+            # Hacer clustering solo en muestras confiables (filtro básico: no 0.0)
+            reliable_mask = (full_ds['labels_main'] != 0.0)
             reliable_data = full_ds[reliable_mask].copy()
             
             if len(reliable_data) < 200:
@@ -383,22 +383,26 @@ class StrategySearcher:
             if self.debug:
                 print(f"🔍 DEBUG search_mapie - Usando esquema de confiabilidad")
             
-            # Main data: solo muestras confiables, según label_type
-            reliable_mask = self.get_trading_mask(full_ds)
+            # FLUJO UNIVERSAL: Filtro base + filtro secundario
+            # 1. Filtro base: threshold dinámico para regresión
+            base_mask = self.get_trading_mask(full_ds, hp)
             
-            # REFACTORIZACIÓN: Usar apply_mapie_filter en lugar de bloque MAPIE propio
+            # 2. Filtro secundario: MAPIE como método principal
             mapie_scores = self.apply_mapie_filter(
                 trial=trial, 
                 full_ds=full_ds, 
                 hp=hp, 
-                reliable_mask=reliable_mask
+                reliable_mask=base_mask
             )
             
-            # Inicializar etiquetas en full_ds
-            full_ds['labels_meta'] = mapie_scores
+            # 3. Combinación: muestras que pasan AMBOS filtros
+            final_mask = base_mask & (mapie_scores == 1.0)
+            
+            # 4. Etiquetado universal
+            full_ds['labels_meta'] = self.get_meta_labels(full_ds, hp)
                 
             main_feature_cols = [col for col in full_ds.columns if col.endswith('_main_feature')]
-            model_main_train_data = full_ds[full_ds['labels_meta'] == 1][main_feature_cols + ['labels_main']].dropna(subset=main_feature_cols).copy()
+            model_main_train_data = full_ds[final_mask][main_feature_cols + ['labels_main']].dropna(subset=main_feature_cols).copy()
             if len(model_main_train_data) < 200:  # Mínimo razonable
                 if self.debug:
                     print(f"🔍 DEBUG search_mapie - Insuficientes muestras main: {len(model_main_train_data)}")
@@ -439,22 +443,26 @@ class StrategySearcher:
             if self.debug:
                 print(f"🔍 DEBUG search_causal - Usando esquema de confiabilidad")
             
-            # Main data: solo muestras confiables, según label_type
-            reliable_mask = self.get_trading_mask(full_ds)
+            # FLUJO UNIVERSAL: Filtro base + filtro secundario
+            # 1. Filtro base: threshold dinámico para regresión
+            base_mask = self.get_trading_mask(full_ds, hp)
             
-            # REFACTORIZACIÓN: Usar apply_causal_filter en lugar de bloque causal propio
+            # 2. Filtro secundario: CAUSAL como método principal
             causal_scores = self.apply_causal_filter(
                 trial=trial, 
                 full_ds=full_ds, 
                 hp=hp, 
-                reliable_mask=reliable_mask
+                reliable_mask=base_mask
             )
             
-            # Inicializar etiquetas en full_ds
-            full_ds['labels_meta'] = causal_scores
+            # 3. Combinación: muestras que pasan AMBOS filtros
+            final_mask = base_mask & (causal_scores == 1.0)
+            
+            # 4. Etiquetado universal
+            full_ds['labels_meta'] = self.get_meta_labels(full_ds, hp)
                 
             main_feature_cols = [col for col in full_ds.columns if col.endswith('_main_feature')]
-            model_main_train_data = full_ds[full_ds['labels_meta'] == 1.0][main_feature_cols + ['labels_main']].dropna(subset=main_feature_cols).copy()
+            model_main_train_data = full_ds[final_mask][main_feature_cols + ['labels_main']].dropna(subset=main_feature_cols).copy()
             if len(model_main_train_data) < 200:  # Mínimo razonable
                 if self.debug:
                     print(f"🔍 DEBUG search_causal - Insuficientes muestras main: {len(model_main_train_data)}")
@@ -509,7 +517,7 @@ class StrategySearcher:
                 return -1.0
 
             # Main: solo muestras con señales, según label_type
-            trading_mask = self.get_trading_mask(full_ds)
+            trading_mask = self.get_trading_mask(full_ds, hp)
 
             if not trading_mask.any():
                 if self.debug:
@@ -575,7 +583,9 @@ class StrategySearcher:
             if not meta_feature_cols:  # Fallback: usar main features si no hay meta features
                 meta_feature_cols = main_feature_cols
             model_meta_train_data = full_ds[meta_feature_cols].dropna(subset=meta_feature_cols).copy()
-            model_meta_train_data['labels_meta'] = self.get_meta_labels(full_ds)
+            
+            # Etiquetado universal para consistencia
+            model_meta_train_data['labels_meta'] = self.get_meta_labels(full_ds, hp)
             
             if self.debug:
                 print(f"🔍 DEBUG search_reliability - Main data shape: {model_main_train_data.shape}")
@@ -646,7 +656,7 @@ class StrategySearcher:
             # Evaluar cada cluster
             for clust in cluster_sizes.index:
                 cluster_mask = full_ds['labels_meta'] == clust
-                reliable_mask = self.get_trading_mask(full_ds)
+                reliable_mask = self.get_trading_mask(full_ds, hp)
                 hybrid_mask = cluster_mask & reliable_mask
                 
                 if not hybrid_mask.any():
@@ -701,10 +711,10 @@ class StrategySearcher:
                 main_feature_cols = [c for c in full_ds.columns if c.endswith('_main_feature')]
                 model_main_train_data = full_ds.loc[final_mask, main_feature_cols + ['labels_main']].dropna(subset=main_feature_cols).copy()
                 
-                # Intersección: cluster + confiabilidad
+                # Etiquetado universal para consistencia
                 meta_feature_cols = [c for c in full_ds.columns if c.endswith('_meta_feature')]
                 model_meta_train_data = full_ds[meta_feature_cols].dropna(subset=meta_feature_cols).copy()
-                model_meta_train_data['labels_meta'] = final_mask.astype('int8')  # 1 = cluster bueno + confiable
+                model_meta_train_data['labels_meta'] = self.get_meta_labels(full_ds, hp)
 
                 # Verificar que tenemos suficientes muestras
                 if model_main_train_data is None or model_main_train_data.empty:
@@ -719,8 +729,14 @@ class StrategySearcher:
                     continue
                 # En evaluate_clusters, alrededor de la línea 720:
                 if self.label_type == 'regression':
-                    # Para regresión: verificar muestras con magnitud significativa
-                    significant_samples = (model_main_train_data['labels_main'] > hp['model_main_threshold']).sum()
+                    # Para regresión: verificar muestras con magnitud significativa según dirección
+                    threshold_value, significant_samples = self.calculate_regression_threshold(
+                        model_main_train_data['labels_main'], hp
+                    )
+                    
+                    if self.debug:
+                        print(f"🔍   Cluster {clust} - {self.direction}: significant_samples={significant_samples}")
+                    
                     if significant_samples < 50:
                         if self.debug:
                             print(f"🔍   Cluster {clust} descartado: muestras significativas insuficientes ({significant_samples})")
@@ -943,7 +959,7 @@ class StrategySearcher:
             p['mapie_cv']               = trial.suggest_int  ('mapie_cv',               3, 10)
             # Parámetros específicos para regresión MAPIE
             if self.label_type == 'regression':
-                p['mapie_threshold_width']     = trial.suggest_float('mapie_threshold_width', 0.1, 2.0, log=True)
+                p['mapie_threshold_width']     = trial.suggest_int('mapie_threshold_width', 5, 50)  # Percentil (1-50)
                 p['mapie_threshold_magnitude'] = trial.suggest_float('mapie_threshold_magnitude', 0.05, 1.0, log=True)
         elif self.search_type == 'causal':
             p['causal_meta_learners'] = trial.suggest_int('causal_meta_learners', 5, 15)
@@ -958,7 +974,7 @@ class StrategySearcher:
             p['mapie_cv']               = trial.suggest_int  ('mapie_cv',               3, 10)
             # Parámetros específicos para regresión MAPIE
             if self.label_type == 'regression':
-                p['mapie_threshold_width']     = trial.suggest_float('mapie_threshold_width', 0.1, 2.0, log=True)
+                p['mapie_threshold_width']     = trial.suggest_int('mapie_threshold_width', 5, 50)  # Percentil (1-50)
                 p['mapie_threshold_magnitude'] = trial.suggest_float('mapie_threshold_magnitude', 0.05, 1.0, log=True)
         elif self.search_filter == 'causal':
             p['causal_meta_learners'] = trial.suggest_int('causal_meta_learners', 5, 15)
@@ -968,7 +984,7 @@ class StrategySearcher:
                 p['causal_error_threshold'] = trial.suggest_float('causal_error_threshold', 0.1, 2.0, log=True)
 
         if self.label_type == 'regression':
-            p['model_main_threshold'] = trial.suggest_float('model_main_threshold', 0.5, 5.0, log=True)
+            p['model_main_threshold'] = trial.suggest_float('model_main_threshold', 0.5, 2.0)  # Multiplicador de std
 
         return p
 
@@ -1186,7 +1202,7 @@ class StrategySearcher:
                     model_meta_cols=meta_feature_cols,
                     direction=self.direction,
                     timeframe=self.timeframe,
-                    model_main_threshold=hp.get('model_main_threshold', 0.5),
+                    model_main_threshold=hp.get('model_main_threshold_calculated', hp.get('model_main_threshold', 0.5)),
                     label_type=self.label_type,
                     print_metrics=self.debug,
                 )
@@ -1413,14 +1429,63 @@ class StrategySearcher:
                 interval_width = intervals[:, 1] - intervals[:, 0]
                 
                 # Criterios de confiabilidad para regresión (optimizados por Optuna)
-                threshold_width = hp['mapie_threshold_width']  # Umbral para ancho de intervalo
                 threshold_magnitude = hp['mapie_threshold_magnitude']  # Umbral para magnitud mínima
                 
-                # 1. Ancho del intervalo (incertidumbre): intervalos estrechos = confiables
-                width_confidence = interval_width < threshold_width
+                # 1. Ancho del intervalo (incertidumbre): usar percentil en lugar de umbral absoluto
+                # threshold_width ahora representa el percentil (1-50) para filtrar intervalos estrechos
+                threshold_width = hp['mapie_threshold_width']
+                
+                # Validar que hay variabilidad suficiente en los intervalos
+                if np.std(interval_width) < 1e-6:
+                    # Si todos los intervalos son prácticamente iguales, aceptar todos
+                    width_confidence = np.ones_like(interval_width, dtype=bool)
+                    if self.debug:
+                        print(f"🔍   WARNING: interval_width sin variabilidad (std={np.std(interval_width):.6f}), aceptando todas las muestras")
+                else:
+                    # Usar percentil para determinar el umbral dinámico
+                    # Limitar el percentil a un rango razonable (1-50)
+                    percentile = np.clip(threshold_width, 1, 50)
+                    threshold_width = np.percentile(interval_width, percentile)
+                    width_confidence = interval_width < threshold_width
+                    
+                    if self.debug:
+                        print(f"🔍   threshold_width como percentil: {percentile:.1f}%")
+                        print(f"🔍   threshold_width calculado: {threshold_width:.4f}")
                 
                 # 2. Magnitud de la predicción: magnitudes grandes = confiables
                 magnitude_confidence = abs(predicted) > threshold_magnitude
+                
+                # 2. Magnitud de la predicción: magnitudes grandes = confiables
+                magnitude_confidence = abs(predicted) > threshold_magnitude
+                
+                # 🔍 DEBUG DETALLADO PARA REGRESIÓN
+                if self.debug:
+                    print(f"🔍   === DEBUG MAPIE REGRESIÓN ===")
+                    print(f"🔍   threshold_width (percentil): {threshold_width:.1f}%")
+                    print(f"🔍   threshold_magnitude: {threshold_magnitude:.4f}")
+                    print(f"🔍   interval_width.min(): {interval_width.min():.4f}, interval_width.max(): {interval_width.max():.4f}")
+                    print(f"🔍   interval_width.mean(): {interval_width.mean():.4f}, interval_width.std(): {interval_width.std():.4f}")
+                    print(f"🔍   predicted.min(): {predicted.min():.4f}, predicted.max(): {predicted.max():.4f}")
+                    print(f"🔍   predicted.mean(): {predicted.mean():.4f}, predicted.std(): {predicted.std():.4f}")
+                    print(f"🔍   abs(predicted).min(): {abs(predicted).min():.4f}, abs(predicted).max(): {abs(predicted).max():.4f}")
+                    print(f"🔍   width_confidence.sum(): {width_confidence.sum()}")
+                    print(f"🔍   width_confidence.mean(): {width_confidence.mean():.4f}")
+                    print(f"🔍   magnitude_confidence.sum(): {magnitude_confidence.sum()}")
+                    print(f"🔍   magnitude_confidence.mean(): {magnitude_confidence.mean():.4f}")
+                    
+                    # Debug adicional: mostrar algunos ejemplos
+                    print(f"🔍   === EJEMPLOS DE INTERVALOS ===")
+                    for i in range(min(5, len(intervals))):
+                        print(f"🔍     Muestra {i}: intervalo=[{intervals[i,0]:.4f}, {intervals[i,1]:.4f}], width={interval_width[i]:.4f}, predicted={predicted[i]:.4f}")
+                        print(f"🔍       width_confidence: {width_confidence[i]}, magnitude_confidence: {magnitude_confidence[i]}")
+                    
+                    # Debug: distribución de interval_width
+                    width_percentiles = np.percentile(interval_width, [10, 25, 50, 75, 90])
+                    print(f"🔍   interval_width percentiles: {width_percentiles}")
+                    
+                    # Debug: distribución de abs(predicted)
+                    pred_percentiles = np.percentile(abs(predicted), [10, 25, 50, 75, 90])
+                    print(f"🔍   abs(predicted) percentiles: {pred_percentiles}")
                 
                 # 3. Combinar criterios: solo muestras que son tanto confiables como precisas
                 combined_scores = (width_confidence & magnitude_confidence).astype(float)
@@ -1431,13 +1496,24 @@ class StrategySearcher:
                     print(f"🔍   conformal_scores.sum(): {conformal_scores.sum()}")
                     print(f"🔍   precision_scores.sum(): {precision_scores.sum()}")
                 else:  # regression
-                    print(f"🔍   threshold_width: {threshold_width:.4f}, threshold_magnitude: {threshold_magnitude:.4f}")
+                    print(f"🔍   threshold_width (percentil): {threshold_width:.1f}%")
+                    print(f"🔍   threshold_magnitude: {threshold_magnitude:.4f}")
                     print(f"🔍   interval_width.min(): {interval_width.min():.4f}, interval_width.max(): {interval_width.max():.4f}")
                     print(f"🔍   width_confidence.sum(): {width_confidence.sum()}")
                     print(f"🔍   magnitude_confidence.sum(): {magnitude_confidence.sum()}")
                     print(f"🔍   predicted range: [{predicted.min():.4f}, {predicted.max():.4f}]")
                 print(f"🔍   combined_scores.sum(): {combined_scores.sum()}")
                 print(f"🔍   combined_scores.mean(): {combined_scores.mean():.3f}")
+                
+                # Debug adicional para regresión
+                if self.label_type == 'regression':
+                    print(f"🔍   === RESULTADO FINAL MAPIE ===")
+                    print(f"🔍   combined_scores.shape: {combined_scores.shape}")
+                    print(f"🔍   combined_scores.dtype: {combined_scores.dtype}")
+                    print(f"🔍   combined_scores.unique(): {np.unique(combined_scores)}")
+                    print(f"🔍   combined_scores == 1.0: {(combined_scores == 1.0).sum()}")
+                    print(f"🔍   combined_scores == 0.0: {(combined_scores == 0.0).sum()}")
+                
                 print(f"🔍 DEBUG apply_mapie_filter - Filtrado MAPIE completado ({self.label_type})")
             
             if reliable_mask is not None:
@@ -2127,12 +2203,13 @@ class StrategySearcher:
         
         return train_data, test_data
 
-    def get_trading_mask(self, full_ds: pd.DataFrame) -> pd.Series:
+    def get_trading_mask(self, full_ds: pd.DataFrame, hp: Dict[str, Any]) -> pd.Series:
         """
         Obtiene máscara de trading según label_type.
         
         Args:
             full_ds: Dataset completo con labels_main
+            hp: Hiperparámetros para calcular threshold dinámico (opcional)
             
         Returns:
             pd.Series: Máscara booleana para muestras de trading
@@ -2140,21 +2217,45 @@ class StrategySearcher:
         if self.label_type == 'classification':
             # Clasificación: solo 0.0 y 1.0 (excluir 2.0=neutral)
             return full_ds['labels_main'].isin([0.0, 1.0])
-        else:  # regression
-            # Regresión: excluir 0.0=neutral (mantener magnitudes)
-            return full_ds['labels_main'] != 0.0
+        else:
+            # Regresión: filtrar según threshold dinámico
+            threshold_value, significant_samples = self.calculate_regression_threshold(
+                full_ds['labels_main'], hp
+            )
+            hp['model_main_threshold_calculated'] = threshold_value
+            
+            if self.debug:
+                print(f"🔍   Trading mask - threshold: {threshold_value:.6f}")
+                print(f"🔍   Trading mask - significant_samples: {significant_samples}")
+            
+            # Aplicar filtro según dirección
+            if self.direction == 'buy':
+                return full_ds['labels_main'] > threshold_value
+            elif self.direction == 'sell':
+                return full_ds['labels_main'] < -threshold_value
+            else:  # 'both'
+                return abs(full_ds['labels_main']) > threshold_value
 
-    def get_meta_labels(self, full_ds: pd.DataFrame) -> pd.Series:
+    def get_meta_labels(self, full_ds: pd.DataFrame, hp: Dict[str, Any] = None) -> pd.Series:
         """
-        Obtiene labels_meta según label_type.
+        Etiquetado meta universal para todos los métodos de búsqueda.
         
         Args:
             full_ds: Dataset completo con labels_main
+            hp: Hiperparámetros para calcular threshold dinámico (opcional)
             
         Returns:
-            pd.Series: Labels meta binarios (1=trading, 0=neutral)
+            pd.Series: Labels meta binarios (1=significativo/confiable, 0=neutral/no confiable)
         """
-        return self.get_trading_mask(full_ds).astype('int8')
+        # Usar get_trading_mask que ya maneja el threshold dinámico
+        trading_mask = self.get_trading_mask(full_ds, hp)
+        
+        if self.debug:
+            print(f"🔍   Meta labels - trading_samples: {trading_mask.sum()}")
+            print(f"🔍   Meta labels - total_samples: {len(full_ds)}")
+            print(f"🔍   Meta labels - reduction: {len(full_ds)} -> {trading_mask.sum()}")
+        
+        return trading_mask.astype('int8')
 
     def check_constant_features(self, X: pd.DataFrame, feature_cols: list, std_epsilon: float = 1e-6) -> list:
         """Return the list of columns that may cause numerical instability.
@@ -2182,3 +2283,61 @@ class StrategySearcher:
                 problematic_cols.append(col)
                 
         return problematic_cols
+
+    def calculate_regression_threshold(self, labels_main: pd.Series, hp: Dict[str, Any]) -> tuple[float, int]:
+        """
+        Calcula el threshold dinámico para regresión según la dirección.
+        
+        Esta función centraliza la lógica de cálculo de threshold para regresión,
+        asegurando consistencia en todo el pipeline y facilitando el mantenimiento.
+        
+        Parameters
+        ----------
+        labels_main : pd.Series
+            Etiquetas de regresión (valores continuos)
+        hp : Dict[str, Any]
+            Hiperparámetros con 'model_main_threshold'
+        
+        Returns
+        -------
+        tuple[float, int]
+            (threshold_value, significant_samples)
+            threshold_value: Umbral calculado dinámicamente
+            significant_samples: Número de muestras que superan el umbral
+        """
+        if self.direction == 'buy':
+            # Solo valores positivos significativos
+            positive_labels = labels_main[labels_main > 0]
+            if len(positive_labels) > 0:
+                threshold_value = hp['model_main_threshold'] * positive_labels.std()
+                significant_samples = (labels_main > threshold_value).sum()
+                if self.debug:
+                    print(f"🔍   buy: threshold={threshold_value:.4f} (std*{hp['model_main_threshold']:.2f}), positive_std={positive_labels.std():.4f}")
+            else:
+                threshold_value = 0.0
+                significant_samples = 0
+                if self.debug:
+                    print(f"🔍   buy: no positive labels found")
+                
+        elif self.direction == 'sell':
+            # Solo valores negativos significativos
+            negative_labels = labels_main[labels_main < 0]
+            if len(negative_labels) > 0:
+                threshold_value = hp['model_main_threshold'] * abs(negative_labels.std())
+                significant_samples = (labels_main < -threshold_value).sum()
+                if self.debug:
+                    print(f"🔍   sell: threshold={threshold_value:.4f} (std*{hp['model_main_threshold']:.2f}), negative_std={abs(negative_labels.std()):.4f}")
+            else:
+                threshold_value = 0.0
+                significant_samples = 0
+                if self.debug:
+                    print(f"🔍   sell: no negative labels found")
+                
+        else:  # 'both'
+            # Valores absolutos significativos
+            threshold_value = hp['model_main_threshold'] * labels_main.std()
+            significant_samples = (abs(labels_main) > threshold_value).sum()
+            if self.debug:
+                print(f"🔍   both: threshold={threshold_value:.4f} (std*{hp['model_main_threshold']:.2f}), total_std={labels_main.std():.4f}")
+        
+        return threshold_value, significant_samples

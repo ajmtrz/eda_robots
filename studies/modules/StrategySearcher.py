@@ -946,7 +946,7 @@ class StrategySearcher:
             p['mapie_cv']               = trial.suggest_int  ('mapie_cv',               3, 10)
             # Parámetros específicos para regresión MAPIE
             if self.label_type == 'regression':
-                p['mapie_threshold_width']     = trial.suggest_int('mapie_threshold_width', 5, 50)  # Percentil (1-50)
+                p['mapie_threshold_width']     = trial.suggest_int('mapie_threshold_width', 15, 40)  # Percentil (15-40)
                 p['mapie_threshold_magnitude'] = trial.suggest_float('mapie_threshold_magnitude', 0.05, 1.0, log=True)
         elif self.search_type == 'causal':
             p['causal_meta_learners'] = trial.suggest_int('causal_meta_learners', 5, 15)
@@ -961,7 +961,7 @@ class StrategySearcher:
             p['mapie_cv']               = trial.suggest_int  ('mapie_cv',               3, 10)
             # Parámetros específicos para regresión MAPIE
             if self.label_type == 'regression':
-                p['mapie_threshold_width']     = trial.suggest_int('mapie_threshold_width', 5, 50)  # Percentil (1-50)
+                p['mapie_threshold_width']     = trial.suggest_int('mapie_threshold_width', 15, 40)  # Percentil (15-40)
                 p['mapie_threshold_magnitude'] = trial.suggest_float('mapie_threshold_magnitude', 0.05, 1.0, log=True)
         elif self.search_filter == 'causal':
             p['causal_meta_learners'] = trial.suggest_int('causal_meta_learners', 5, 15)
@@ -1539,9 +1539,9 @@ class StrategySearcher:
                 # Criterios de confiabilidad para regresión (optimizados por Optuna)
                 threshold_magnitude = hp['mapie_threshold_magnitude']  # Umbral para magnitud mínima
                 
-                # 1. Ancho del intervalo (incertidumbre): usar percentil en lugar de umbral absoluto
-                # threshold_width ahora representa el percentil (1-50) para filtrar intervalos estrechos
-                threshold_width = hp['mapie_threshold_width']
+                # 1. Ancho del intervalo (incertidumbre): usar percentil optimizado por Optuna
+                # mapie_threshold_width representa el percentil (15-40) para filtrar intervalos estrechos
+                threshold_percentile = hp['mapie_threshold_width']
                 
                 # Validar que hay variabilidad suficiente en los intervalos
                 if np.std(interval_width) < 1e-6:
@@ -1550,18 +1550,13 @@ class StrategySearcher:
                     if self.debug:
                         print(f"🔍   WARNING: interval_width sin variabilidad (std={np.std(interval_width):.6f}), aceptando todas las muestras")
                 else:
-                    # Usar percentil para determinar el umbral dinámico
-                    # Limitar el percentil a un rango razonable (1-50)
-                    percentile = np.clip(threshold_width, 1, 50)
-                    threshold_width = np.percentile(interval_width, percentile)
-                    width_confidence = interval_width < threshold_width
+                    # Usar percentil optimizado por Optuna directamente
+                    threshold_width_value = np.percentile(interval_width, threshold_percentile)
+                    width_confidence = interval_width < threshold_width_value
                     
                     if self.debug:
-                        print(f"🔍   threshold_width como percentil: {percentile:.1f}%")
-                        print(f"🔍   threshold_width calculado: {threshold_width:.4f}")
-                
-                # 2. Magnitud de la predicción: magnitudes grandes = confiables
-                magnitude_confidence = abs(predicted) > threshold_magnitude
+                        print(f"🔍   threshold_width como percentil: {threshold_percentile:.1f}%")
+                        print(f"🔍   threshold_width calculado: {threshold_width_value:.4f}")
                 
                 # 2. Magnitud de la predicción: magnitudes grandes = confiables
                 magnitude_confidence = abs(predicted) > threshold_magnitude
@@ -1569,7 +1564,7 @@ class StrategySearcher:
                 # 🔍 DEBUG DETALLADO PARA REGRESIÓN
                 if self.debug:
                     print(f"🔍   === DEBUG MAPIE REGRESIÓN ===")
-                    print(f"🔍   threshold_width (percentil): {threshold_width:.1f}%")
+                    print(f"🔍   threshold_width (valor): {threshold_width_value:.4f}")
                     print(f"🔍   threshold_magnitude: {threshold_magnitude:.4f}")
                     print(f"🔍   interval_width.min(): {interval_width.min():.4f}, interval_width.max(): {interval_width.max():.4f}")
                     print(f"🔍   interval_width.mean(): {interval_width.mean():.4f}, interval_width.std(): {interval_width.std():.4f}")
@@ -1604,7 +1599,7 @@ class StrategySearcher:
                     print(f"🔍   conformal_scores.sum(): {conformal_scores.sum()}")
                     print(f"🔍   precision_scores.sum(): {precision_scores.sum()}")
                 else:  # regression
-                    print(f"🔍   threshold_width (percentil): {threshold_width:.1f}%")
+                    print(f"🔍   threshold_width (valor): {threshold_width_value:.4f}")
                     print(f"🔍   threshold_magnitude: {threshold_magnitude:.4f}")
                     print(f"🔍   interval_width.min(): {interval_width.min():.4f}, interval_width.max(): {interval_width.max():.4f}")
                     print(f"🔍   width_confidence.sum(): {width_confidence.sum()}")

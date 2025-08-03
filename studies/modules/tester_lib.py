@@ -47,6 +47,26 @@ def tester(
         ds_main = dataset[model_main_cols].to_numpy()
         ds_meta = dataset[model_meta_cols].to_numpy()
         open_ = dataset['open'].to_numpy()
+        
+        # 🔍 LIMPIEZA DE DATOS: Eliminar NaN de open_ antes del backtest
+        nan_mask = np.isnan(open_)
+        if nan_mask.any():
+            if debug:
+                print(f"🔍 DEBUG tester - NaN detectados en open_:")
+                print(f"🔍   Total NaN: {nan_mask.sum()}")
+                print(f"🔍   Posiciones NaN: {np.where(nan_mask)[0]}")
+                print(f"🔍   Porcentaje NaN: {100*nan_mask.mean():.2f}%")
+            
+            # Eliminar filas con NaN en open_
+            valid_mask = ~nan_mask
+            open_ = open_[valid_mask]
+            ds_main = ds_main[valid_mask]
+            ds_meta = ds_meta[valid_mask]
+            
+            if debug:
+                print(f"🔍   Datos después de limpieza: {len(open_)} filas")
+                print(f"🔍   open_.min(): {open_.min():.6f}, open_.max(): {open_.max():.6f}")
+                print(f"🔍   np.isnan(open_).sum(): {np.isnan(open_).sum()}")
 
         # Calcular predicciones usando ambos modelos según label_type
         if label_type == 'classification':
@@ -69,6 +89,19 @@ def tester(
         open_ = np.ascontiguousarray(open_)
         main = np.ascontiguousarray(main)
         meta = np.ascontiguousarray(meta)
+        
+        # 🔍 VERIFICACIÓN FINAL: Asegurar que no hay NaN en ningún array
+        if debug:
+            print(f"🔍 DEBUG tester - Verificación final de datos:")
+            print(f"🔍   open_.shape: {open_.shape}, NaN en open_: {np.isnan(open_).sum()}")
+            print(f"🔍   main.shape: {main.shape}, NaN en main: {np.isnan(main).sum()}")
+            print(f"🔍   meta.shape: {meta.shape}, NaN en meta: {np.isnan(meta).sum()}")
+            
+            if np.isnan(open_).any() or np.isnan(main).any() or np.isnan(meta).any():
+                print(f"🔍   ⚠️ ADVERTENCIA: NaN detectados en arrays de entrada")
+                print(f"🔍   open_ NaN pos: {np.where(np.isnan(open_))[0]}")
+                print(f"🔍   main NaN pos: {np.where(np.isnan(main))[0]}")
+                print(f"🔍   meta NaN pos: {np.where(np.isnan(meta))[0]}")
 
         # DEBUG: Información de entrada
         if debug:
@@ -82,52 +115,37 @@ def tester(
             print(f"🔍   open_.shape: {open_.shape}, open_.dtype: {open_.dtype}")
             print(f"🔍   main.min(): {main.min():.6f}, main.max(): {main.max():.6f}")
             print(f"🔍   meta.min(): {meta.min():.6f}, meta.max(): {meta.max():.6f}")
+            
+            # 🔍 DEBUG: Análisis detallado de predicciones
+            print(f"🔍 DEBUG tester - Análisis de predicciones:")
+            print(f"🔍   main percentiles: {np.percentile(main, [10, 25, 50, 75, 90])}")
+            print(f"🔍   main > threshold: {(main > model_main_threshold).sum()}/{len(main)} ({100*(main > model_main_threshold).mean():.1f}%)")
+            print(f"🔍   main > threshold*1.5: {(main > model_main_threshold*1.5).sum()}/{len(main)} ({100*(main > model_main_threshold*1.5).mean():.1f}%)")
+            print(f"🔍   main > threshold*2.0: {(main > model_main_threshold*2.0).sum()}/{len(main)} ({100*(main > model_main_threshold*2.0).mean():.1f}%)")
+            print(f"🔍   Gap mínimo: {main.min() - model_main_threshold:.4f}")
+            print(f"🔍   Gap promedio: {main.mean() - model_main_threshold:.4f}")
 
-        # ── BACKTEST ──────────────────────────────────────────────────
-        dir_flag = {"buy": 0, "sell": 1, "both": 2}[direction]
-        
-        if label_type == 'classification':
-            # Lógica de clasificación (probabilidades)
-            if dir_flag == 0:
-                pb = main
-                ps = np.zeros_like(main)
-            elif dir_flag == 1:
-                pb = np.zeros_like(main)
-                ps = main
-            else:
-                pb = main
-                ps = 1.0 - main
-        else:  # regression
-            # Lógica de regresión (valores continuos)
-            # Usar valores directos sin normalización para mantener compatibilidad MQL5
-            if dir_flag == 0:  # solo buy
-                pb = np.where(main > model_main_threshold, main, 0.0)
-                ps = np.zeros_like(main)
-            elif dir_flag == 1:  # solo sell
-                pb = np.zeros_like(main)
-                ps = np.where(main < -model_main_threshold, -main, 0.0)
-            else:  # both
-                pb = np.where(main > model_main_threshold, main, 0.0)
-                ps = np.where(main < -model_main_threshold, -main, 0.0)
+        # ── BACKTEST ────────────────────────────────────────────────
+        # Mapeo para jit
+        direction_int = {"buy": 0, "sell": 1, "both": 2}[direction]
+        label_type_int = {"classification": 0, "regression": 1}[label_type]
 
         # DEBUG: Señales antes del backtest
         if debug:
             print(f"🔍 DEBUG tester - Señales generadas:")
-            print(f"🔍   pb.min(): {pb.min():.6f}, pb.max(): {pb.max():.6f}")
-            print(f"🔍   ps.min(): {ps.min():.6f}, ps.max(): {ps.max():.6f}")
+            print(f"🔍   main.min(): {main.min():.6f}, main.max(): {main.max():.6f}")
             print(f"🔍   meta.min(): {meta.min():.6f}, meta.max(): {meta.max():.6f}")
-            print(f"🔍   pb > main_thr: {(pb > model_main_threshold).sum()}")
-            print(f"🔍   ps > main_thr: {(ps > model_main_threshold).sum()}")
+            print(f"🔍   main > main_thr: {(main > model_main_threshold).sum()}")
             print(f"🔍   meta > meta_thr: {(meta > model_meta_threshold).sum()}")
 
         rpt, trade_stats, trade_profits = backtest(
             open_,
-            prob_buy   = pb,
-            prob_sell  = ps,
-            meta_sig   = meta,
+            main_predictions = main,
+            meta_predictions = meta,
             main_thr   = model_main_threshold,
             meta_thr   = model_meta_threshold,
-            direction  = dir_flag,
+            direction_int  = direction_int,
+            label_type_int = label_type_int,
             max_orders = model_max_orders,
             delay_bars = model_delay_bars
         )
@@ -265,13 +283,13 @@ def evaluate_report(
 
 @njit(cache=True)
 def backtest(open_,
-            prob_buy,          # numpy[float] - P(buy) de la red MAIN
-            prob_sell,         # numpy[float] - P(sell) idem
-            meta_sig,          # numpy[float] - P(clase 1) de la red META
+            main_predictions,    # numpy[float] - Predicciones del modelo MAIN
+            meta_predictions,    # numpy[float] - Predicciones del modelo META
             main_thr   = 0.5,
             meta_thr   = 0.5,
-            direction  = 2,    # 0=solo buy, 1=solo sell, 2=both
-            max_orders = 1,    # 0 → ilimitado
+            direction_int  = 2,  # 0=buy, 1=sell, 2=both (mapeado)
+            label_type_int = 0,  # 0=classification, 1=regression (mapeado)
+            max_orders = 1,      # 0 → ilimitado
             delay_bars = 1):
     """
     Backtest realista: las operaciones se abren y cierran al precio 'open' de la barra actual (índice t),
@@ -281,7 +299,7 @@ def backtest(open_,
     LONG, SHORT = 0, 1
 
     open_positions_type = np.empty(max_orders if max_orders > 0 else open_.size, dtype=np.int64)
-    open_positions_price = np.empty_like(open_positions_type, dtype=np.float64)
+    open_positions_price = np.full_like(open_positions_type, np.nan, dtype=np.float64)  # Inicializar con NaN
     open_positions_bar = np.empty_like(open_positions_type, dtype=np.int64)
     n_open = 0
 
@@ -291,29 +309,85 @@ def backtest(open_,
     last_trade_bar = -delay_bars-1
 
     for bar in range(open_.size):
-        pb, ps, pm = prob_buy[bar], prob_sell[bar], meta_sig[bar]
-        price      = open_[bar]
+        main_val = main_predictions[bar]
+        meta_val = meta_predictions[bar]
+        price = open_[bar]
+        
+        # Los datos ya están limpios de NaN en tester(), no necesitamos verificar aquí
 
-        # 0) señales elementales
-        buy_sig  = pb > main_thr if direction != 1 else False
-        sell_sig = ps > main_thr if direction != 0 else False
-        meta_ok  = pm > meta_thr
+        # Generación de señales según tipo y dirección
+        if label_type_int == 1:  # REGRESIÓN
+            if direction_int == 0:  # Solo BUY
+                buy_sig = main_val > main_thr
+                sell_sig = False
+            elif direction_int == 1:  # Solo SELL
+                buy_sig = False
+                sell_sig = abs(main_val) > main_thr
+            else:  # direction_int == 2 (BOTH)
+                # Distinguir por signo: positivo=buy, negativo=sell
+                buy_sig = (main_val > main_thr) and (main_val > 0)
+                sell_sig = (abs(main_val) > main_thr) and (main_val < 0)
+        
+        else:  # label_type_int == 0 (CLASIFICACIÓN)
+            if direction_int == 0:  # Solo BUY
+                buy_sig = main_val > main_thr
+                sell_sig = False
+            elif direction_int == 1:  # Solo SELL
+                buy_sig = False
+                sell_sig = main_val > main_thr
+            else:  # direction_int == 2 (BOTH)
+                # Usar probabilidades directamente
+                buy_sig = main_val > main_thr
+                sell_sig = main_val > main_thr
+
+        # Meta siempre es clasificación
+        meta_ok = meta_val > meta_thr
 
         # 1) CIERRE: cerrar posiciones cuyo tipo ya no tiene señal
         i = 0
         while i < n_open:
             pos_type = open_positions_type[i]
-            if (pos_type == LONG and not buy_sig) or (pos_type == SHORT and not sell_sig):
+            
+            # Determinar si cerrar según tipo y dirección
+            should_close = False
+            
+            # Lógica de cierre según label_type y direction
+            # Usar meta model para cierre también (doble filtrado)
+            if label_type_int == 1:  # REGRESIÓN
+                if direction_int == 0:  # Solo BUY
+                    should_close = (pos_type == LONG and (not buy_sig or not meta_ok))
+                elif direction_int == 1:  # Solo SELL
+                    should_close = (pos_type == SHORT and (not sell_sig or not meta_ok))
+                else:  # direction_int == 2 (BOTH)
+                    if pos_type == LONG:
+                        should_close = not buy_sig or main_val <= 0 or not meta_ok
+                    else:  # SHORT
+                        should_close = not sell_sig or main_val >= 0 or not meta_ok
+            
+            else:  # label_type_int == 0 (CLASIFICACIÓN)
+                if direction_int == 0:  # Solo BUY
+                    should_close = (pos_type == LONG and (not buy_sig or not meta_ok))
+                elif direction_int == 1:  # Solo SELL
+                    should_close = (pos_type == SHORT and (not sell_sig or not meta_ok))
+                else:  # direction_int == 2 (BOTH)
+                    should_close = (pos_type == LONG and (not buy_sig or not meta_ok)) or (pos_type == SHORT and (not sell_sig or not meta_ok))
+            
+            if should_close:
                 if pos_type == LONG:
                     profit = price - open_positions_price[i]
                 else:
                     profit = open_positions_price[i] - price
+                
                 report.append(report[-1] + profit)
                 trade_profits.append(profit)
                 if i != n_open - 1:
                     open_positions_type[i] = open_positions_type[n_open - 1]
                     open_positions_price[i] = open_positions_price[n_open - 1]
                     open_positions_bar[i] = open_positions_bar[n_open - 1]
+                # Limpiar la posición que se acaba de cerrar
+                open_positions_price[n_open - 1] = np.nan
+                open_positions_type[n_open - 1] = 0
+                open_positions_bar[n_open - 1] = 0
                 n_open -= 1
                 last_trade_bar = bar
                 continue
@@ -350,6 +424,7 @@ def backtest(open_,
             profit = open_[-1] - open_positions_price[i]
         else:
             profit = open_positions_price[i] - open_[-1]
+        
         report.append(report[-1] + profit)
         trade_profits.append(profit)
 

@@ -946,8 +946,7 @@ class StrategySearcher:
             p['mapie_cv']               = trial.suggest_int  ('mapie_cv',               3, 10)
             # Parámetros específicos para regresión MAPIE
             if self.label_type == 'regression':
-                p['mapie_threshold_width']     = trial.suggest_int('mapie_threshold_width', 15, 40)  # Percentil (15-40)
-                p['mapie_threshold_magnitude'] = trial.suggest_float('mapie_threshold_magnitude', 0.05, 1.0, log=True)
+                p['mapie_threshold_width']     = trial.suggest_int('mapie_threshold_width', 5, 60)
         elif self.search_type == 'causal':
             p['causal_meta_learners'] = trial.suggest_int('causal_meta_learners', 5, 15)
             p['causal_percentile'] = trial.suggest_int('causal_percentile', 60, 90)
@@ -961,8 +960,7 @@ class StrategySearcher:
             p['mapie_cv']               = trial.suggest_int  ('mapie_cv',               3, 10)
             # Parámetros específicos para regresión MAPIE
             if self.label_type == 'regression':
-                p['mapie_threshold_width']     = trial.suggest_int('mapie_threshold_width', 15, 40)  # Percentil (15-40)
-                p['mapie_threshold_magnitude'] = trial.suggest_float('mapie_threshold_magnitude', 0.05, 1.0, log=True)
+                p['mapie_threshold_width']     = trial.suggest_int('mapie_threshold_width', 5, 60)
         elif self.search_filter == 'causal':
             p['causal_meta_learners'] = trial.suggest_int('causal_meta_learners', 5, 15)
             p['causal_percentile'] = trial.suggest_int('causal_percentile', 60, 90)
@@ -971,7 +969,7 @@ class StrategySearcher:
                 p['causal_error_threshold'] = trial.suggest_float('causal_error_threshold', 0.1, 2.0, log=True)
 
         if self.label_type == 'regression':
-            p['model_main_percentile'] = trial.suggest_float('model_main_percentile', 0.7, 0.95)  # Percentil para threshold
+            p['model_main_percentile'] = trial.suggest_float('model_main_percentile', 0.7, 0.95)
 
         return p
 
@@ -1061,6 +1059,17 @@ class StrategySearcher:
                 if self.debug:
                     print(f"🔍 DEBUG: Main model data shape: {model_main_train_data.shape}")
                     print(f"🔍 DEBUG: Main feature columns: {main_feature_cols}")
+                    
+                    # 🔍 DEBUG: Verificar si hay features temporales sospechosas
+                    temporal_features = [col for col in main_feature_cols if any(x in col.lower() for x in ['time', 'date', 'bar', 'index', 'position'])]
+                    if temporal_features:
+                        print(f"🔍 DEBUG: ⚠️ FEATURES TEMPORALES DETECTADAS: {temporal_features}")
+                    
+                    # 🔍 DEBUG: Verificar correlación con el tiempo
+                    if len(model_main_train_data) > 10:
+                        time_series = pd.Series(model_main_train_data.index.astype(np.int64), index=model_main_train_data.index)
+                        time_corr = time_series.corr(model_main_train_data['labels_main'])
+                        print(f"🔍 DEBUG: Correlación tiempo-labels: {time_corr:.4f}")
                 model_main_train_data, model_main_eval_data = self.get_train_test_data(dataset=model_main_train_data)
                 if model_main_train_data is None or model_main_eval_data is None:
                     return None, None, None, None
@@ -1073,6 +1082,10 @@ class StrategySearcher:
                     print(f"🔍 DEBUG: X_val_main shape: {X_val_main.shape}, y_val_main shape: {y_val_main.shape}")
                     print(f"🔍 DEBUG: y_train_main range: [{y_train_main.min():.4f}, {y_train_main.max():.4f}]")
                     print(f"🔍 DEBUG: y_val_main range: [{y_val_main.min():.4f}, {y_val_main.max():.4f}]")
+                    print(f"🔍 DEBUG: y_train_main percentiles: {y_train_main.quantile([0.1, 0.25, 0.5, 0.75, 0.9]).to_dict()}")
+                    print(f"🔍 DEBUG: y_val_main percentiles: {y_val_main.quantile([0.1, 0.25, 0.5, 0.75, 0.9]).to_dict()}")
+                    print(f"🔍 DEBUG: y_train_main > 0: {(y_train_main > 0).sum()}/{len(y_train_main)}")
+                    print(f"🔍 DEBUG: y_val_main > 0: {(y_val_main > 0).sum()}/{len(y_val_main)}")
             meta_feature_cols = [col for col in model_meta_train_data.columns if col != 'labels_meta']
             if self.debug:
                 print(f"🔍 DEBUG: Meta model data shape: {model_meta_train_data.shape}")
@@ -1144,6 +1157,14 @@ class StrategySearcher:
             t_train_main_end = time.time()
             if self.debug:
                 print(f"🔍 DEBUG: Tiempo de entrenamiento modelo main: {t_train_main_end - t_train_main_start:.2f} segundos")
+                
+                # 🔍 DEBUG: Verificar predicciones del modelo en datos de entrenamiento
+                train_pred = model_main.predict(X_train_main)
+                val_pred = model_main.predict(X_val_main)
+                print(f"🔍 DEBUG: Train predictions - min: {train_pred.min():.4f}, max: {train_pred.max():.4f}, mean: {train_pred.mean():.4f}")
+                print(f"🔍 DEBUG: Val predictions - min: {val_pred.min():.4f}, max: {val_pred.max():.4f}, mean: {val_pred.mean():.4f}")
+                print(f"🔍 DEBUG: Train predictions > threshold: {(train_pred > hp.get('model_main_threshold_calculated', 0.5)).sum()}/{len(train_pred)}")
+                print(f"🔍 DEBUG: Val predictions > threshold: {(val_pred > hp.get('model_main_threshold_calculated', 0.5)).sum()}/{len(val_pred)}")
             cat_meta_params = dict(
                 iterations=hp['cat_meta_iterations'],
                 depth=hp['cat_meta_depth'],
@@ -1235,11 +1256,6 @@ class StrategySearcher:
                     diff = np.abs(original_predictions - onnx_predictions)
                     print(f"🔍     Max difference: {diff.max():.6f}")
                     print(f"🔍     Mean difference: {diff.mean():.6f}")
-                    
-                    # Debug adicional: verificar distribución de valores ONNX
-                    unique_onnx = np.unique(onnx_predictions)
-                    print(f"🔍     ONNX unique values: {unique_onnx}")
-                    print(f"🔍     ONNX value counts: {np.bincount((onnx_predictions * 100).astype(int))}")
                     
                 except Exception as e:
                     print(f"🔍   ERROR verificando ONNX: {e}")
@@ -1537,7 +1553,7 @@ class StrategySearcher:
                 interval_width = intervals[:, 1] - intervals[:, 0]
                 
                 # Criterios de confiabilidad para regresión (optimizados por Optuna)
-                threshold_magnitude = hp['mapie_threshold_magnitude']  # Umbral para magnitud mínima
+                threshold_magnitude = hp['model_main_threshold_calculated']  # Umbral para magnitud mínima (coherente con el threshold del tester)
                 
                 # 1. Ancho del intervalo (incertidumbre): usar percentil optimizado por Optuna
                 # mapie_threshold_width representa el percentil (15-40) para filtrar intervalos estrechos
@@ -1565,7 +1581,7 @@ class StrategySearcher:
                 if self.debug:
                     print(f"🔍   === DEBUG MAPIE REGRESIÓN ===")
                     print(f"🔍   threshold_width (valor): {threshold_width_value:.4f}")
-                    print(f"🔍   threshold_magnitude: {threshold_magnitude:.4f}")
+                    print(f"🔍   threshold_magnitude (model_main_threshold_calculated): {threshold_magnitude:.4f}")
                     print(f"🔍   interval_width.min(): {interval_width.min():.4f}, interval_width.max(): {interval_width.max():.4f}")
                     print(f"🔍   interval_width.mean(): {interval_width.mean():.4f}, interval_width.std(): {interval_width.std():.4f}")
                     print(f"🔍   predicted.min(): {predicted.min():.4f}, predicted.max(): {predicted.max():.4f}")
@@ -1600,7 +1616,7 @@ class StrategySearcher:
                     print(f"🔍   precision_scores.sum(): {precision_scores.sum()}")
                 else:  # regression
                     print(f"🔍   threshold_width (valor): {threshold_width_value:.4f}")
-                    print(f"🔍   threshold_magnitude: {threshold_magnitude:.4f}")
+                    print(f"🔍   threshold_magnitude (model_main_threshold_calculated): {threshold_magnitude:.4f}")
                     print(f"🔍   interval_width.min(): {interval_width.min():.4f}, interval_width.max(): {interval_width.max():.4f}")
                     print(f"🔍   width_confidence.sum(): {width_confidence.sum()}")
                     print(f"🔍   magnitude_confidence.sum(): {magnitude_confidence.sum()}")

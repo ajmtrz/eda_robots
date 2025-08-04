@@ -351,7 +351,7 @@ class StrategySearcher:
             if self.debug:
                 print(f"🔍 DEBUG search_clusters {self.search_subtype} - Aplicando clustering híbrido")
             
-            base_mask = self.get_trading_mask(full_ds, hp)
+            base_mask = self.get_base_mask(full_ds)
             reliable_data = full_ds[base_mask].copy()
             
             # 🔍 DEBUG: Verificar distribución después del filtrado
@@ -401,7 +401,7 @@ class StrategySearcher:
             
             # FLUJO UNIVERSAL: Filtro base + filtro secundario
             # 1. Filtro base: threshold dinámico para regresión
-            base_mask = self.get_trading_mask(full_ds, hp)
+            base_mask = self.get_base_mask(full_ds)
             
             # 2. Filtro secundario: MAPIE como método principal
             mapie_scores = self.apply_mapie_filter(
@@ -463,7 +463,7 @@ class StrategySearcher:
             
             # FLUJO UNIVERSAL: Filtro base + filtro secundario
             # 1. Filtro base: threshold dinámico para regresión
-            base_mask = self.get_trading_mask(full_ds, hp)
+            base_mask = self.get_base_mask(full_ds)
             
             # 2. Filtro secundario: CAUSAL como método principal
             causal_scores = self.apply_causal_filter(
@@ -537,9 +537,9 @@ class StrategySearcher:
                 return -1.0
 
             # Main: solo muestras con señales, según label_type
-            trading_mask = self.get_trading_mask(full_ds, hp)
+            base_mask = self.get_base_mask(full_ds)
 
-            if not trading_mask.any():
+            if not base_mask.any():
                 if self.debug:
                     print(f"🔍 DEBUG search_reliability - No hay muestras de trading")
                 return -1.0
@@ -548,39 +548,39 @@ class StrategySearcher:
             if self.search_filter == 'mapie':
                 if self.debug:
                     print(f"🔍 DEBUG search_reliability - Aplicando filtrado MAPIE")
-                    print(f"🔍   trading_mask.sum(): {trading_mask.sum()}")
-                    print(f"🔍   trading_mask.mean(): {trading_mask.mean():.3f}")
+                    print(f"🔍   base_mask.sum(): {base_mask.sum()}")
+                    print(f"🔍   base_mask.mean(): {base_mask.mean():.3f}")
                 
-                mapie_scores = self.apply_mapie_filter(trial, full_ds, hp, trading_mask)
+                mapie_scores = self.apply_mapie_filter(trial, full_ds, hp, base_mask)
                 mapie_mask = mapie_scores == 1.0
-                final_mask = trading_mask & mapie_mask
+                final_mask = base_mask & mapie_mask
                 
                 if self.debug:
                     print(f"🔍   mapie_mask.sum(): {mapie_mask.sum()}")
                     print(f"🔍   mapie_mask.mean(): {mapie_mask.mean():.3f}")
                     print(f"🔍   final_mask.sum(): {final_mask.sum()}")
                     print(f"🔍   final_mask.mean(): {final_mask.mean():.3f}")
-                    if trading_mask.sum() > 0:
-                        print(f"🔍   Reducción de muestras: {trading_mask.sum()} -> {final_mask.sum()} ({final_mask.sum()/trading_mask.sum()*100:.1f}%)")
+                    if base_mask.sum() > 0:
+                        print(f"🔍   Reducción de muestras: {base_mask.sum()} -> {final_mask.sum()} ({final_mask.sum()/base_mask.sum()*100:.1f}%)")
             elif self.search_filter == 'causal':
                 if self.debug:
                     print(f"🔍 DEBUG search_reliability - Aplicando filtrado CAUSAL")
-                    print(f"🔍   trading_mask.sum(): {trading_mask.sum()}")
-                    print(f"🔍   trading_mask.mean(): {trading_mask.mean():.3f}")
+                    print(f"🔍   base_mask.sum(): {base_mask.sum()}")
+                    print(f"🔍   base_mask.mean(): {base_mask.mean():.3f}")
                 
-                causal_scores = self.apply_causal_filter(trial, full_ds, hp, trading_mask)
+                causal_scores = self.apply_causal_filter(trial, full_ds, hp, base_mask)
                 causal_mask = causal_scores == 1.0
-                final_mask = trading_mask & causal_mask
+                final_mask = base_mask & causal_mask
                 
                 if self.debug:
                     print(f"🔍   causal_mask.sum(): {causal_mask.sum()}")
                     print(f"🔍   causal_mask.mean(): {causal_mask.mean():.3f}")
                     print(f"🔍   final_mask.sum(): {final_mask.sum()}")
                     print(f"🔍   final_mask.mean(): {final_mask.mean():.3f}")
-                    if trading_mask.sum() > 0:
-                        print(f"🔍   Reducción de muestras: {trading_mask.sum()} -> {final_mask.sum()} ({final_mask.sum()/trading_mask.sum()*100:.1f}%)")
+                    if base_mask.sum() > 0:
+                        print(f"🔍   Reducción de muestras: {base_mask.sum()} -> {final_mask.sum()} ({final_mask.sum()/base_mask.sum()*100:.1f}%)")
             else:
-                final_mask = trading_mask
+                final_mask = base_mask
                 
                 if self.debug:
                     print(f"🔍 DEBUG search_reliability - Sin filtrado MAPIE o CAUSAL")
@@ -678,9 +678,7 @@ class StrategySearcher:
             
             # Evaluar cada cluster
             for clust in cluster_sizes.index:
-                cluster_mask = full_ds['labels_meta'] == clust
-                trading_mask = self.get_trading_mask(full_ds, hp)
-                reliable_mask = cluster_mask & trading_mask
+                reliable_mask = full_ds['labels_meta'] == clust
                 
                 if not reliable_mask.any():
                     if self.debug:
@@ -2357,7 +2355,7 @@ class StrategySearcher:
         
         return train_data, test_data
 
-    def get_trading_mask(self, full_ds: pd.DataFrame, hp: Dict[str, Any]) -> pd.Series:
+    def get_base_mask(self, full_ds: pd.DataFrame) -> pd.Series:
         """
         Obtiene máscara de trading según label_type.
         
@@ -2374,27 +2372,15 @@ class StrategySearcher:
             # Las etiquetas 0.0 son una clase válida en clasificación, no se deben excluir
             return full_ds['labels_main'] != 2.0
         else:
-            # Regresión: filtrar según threshold dinámico
-            threshold_value, significant_samples = self.calculate_regression_threshold_cv(
-                full_ds['labels_main'], hp
-            )
-            
-            # THRESHOLDS UNIFICADOS: asignar a main_threshold
-            hp['main_threshold'] = threshold_value
-            
-            if self.debug:
-                print(f"🔍   Trading mask - threshold: {threshold_value:.6f}")
-                print(f"🔍   Trading mask - significant_samples: {significant_samples}")
-            
             # Aplicar filtro según dirección
             if self.direction == 'buy':
-                return full_ds['labels_main'] > threshold_value
+                return full_ds['labels_main'] > 0.0
             elif self.direction == 'sell':
-                return full_ds['labels_main'] < -threshold_value
+                return full_ds['labels_main'] < 0.0
             else:  # 'both'
-                return abs(full_ds['labels_main']) > threshold_value
+                return full_ds['labels_main'] != 0.0
 
-    def get_meta_labels(self, full_ds: pd.DataFrame, hp: Dict[str, Any] = None) -> pd.Series:
+    def get_meta_labels(self, full_ds: pd.DataFrame, hp: Dict[str, Any]) -> pd.Series:
         """
         Etiquetado meta universal para todos los métodos de búsqueda.
         
@@ -2405,15 +2391,37 @@ class StrategySearcher:
         Returns:
             pd.Series: Labels meta binarios (1=significativo/confiable, 0=neutral/no confiable)
         """
-        # Usar get_trading_mask que ya maneja el threshold dinámico
-        trading_mask = self.get_trading_mask(full_ds, hp)
+        # Usar get_base_mask que ya maneja el threshold dinámico
+        base_mask = self.get_base_mask(full_ds)
+
+        if self.label_type == 'regression':
+            # Regresión: filtrar según threshold dinámico
+            threshold_value, significant_samples = self.calculate_regression_threshold_cv(
+                full_ds['labels_main'], hp
+            )
+            
+            # THRESHOLDS UNIFICADOS: asignar a main_threshold
+            hp['main_threshold'] = threshold_value
+            
+            if self.debug:
+                print(f"🔍   Meta labels - threshold: {threshold_value:.6f}")
+                print(f"🔍   Meta labels - significant_samples: {significant_samples}")
+            
+            # Aplicar filtro según dirección
+            if self.direction == 'buy':
+                threshold_mask = full_ds['labels_main'] > threshold_value
+            elif self.direction == 'sell':
+                threshold_mask = full_ds['labels_main'] < -threshold_value
+            else:  # 'both'
+                threshold_mask = abs(full_ds['labels_main']) > threshold_value
+            reliable_mask = base_mask & threshold_mask
         
         if self.debug:
-            print(f"🔍   Meta labels - trading_samples: {trading_mask.sum()}")
+            print(f"🔍   Meta labels - trading_samples: {reliable_mask.sum()}")
             print(f"🔍   Meta labels - total_samples: {len(full_ds)}")
-            print(f"🔍   Meta labels - reduction: {len(full_ds)} -> {trading_mask.sum()}")
+            print(f"🔍   Meta labels - reduction: {len(full_ds)} -> {reliable_mask.sum()}")
         
-        return trading_mask.astype('int8')
+        return reliable_mask.astype('int8')
 
     def check_constant_features(self, X: pd.DataFrame, feature_cols: list, std_epsilon: float = 1e-6) -> list:
         """Return the list of columns that may cause numerical instability.

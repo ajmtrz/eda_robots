@@ -1,24 +1,86 @@
 import os
 import tempfile
 import hashlib
+import onnx
+import numpy as np
+from catboost import CatBoostRegressor, CatBoostClassifier
+
+def convert_catboost_regression_to_mql5_compatible(model, output_path):
+    """
+    Convierte modelo CatBoost de regresión a ONNX compatible con MQL5.
+    
+    Args:
+        model: Modelo CatBoost entrenado
+        output_path: Ruta donde guardar el modelo ONNX convertido
+    
+    Returns:
+        str: Ruta del modelo convertido
+    """
+    try:
+        # Crear archivo temporal para el modelo ONNX original
+        temp_path = tempfile.NamedTemporaryFile(delete=False, suffix=".onnx")
+        temp_path.close()
+        
+        # Exportar modelo CatBoost a ONNX temporal
+        model.save_model(temp_path.name, format="onnx")
+        
+        # Cargar modelo ONNX
+        onnx_model = onnx.load(temp_path.name)
+        
+        # Modificar solo la forma de salida sin tocar los nodos internos
+        for output in onnx_model.graph.output:
+            if len(output.type.tensor_type.shape.dim) == 1:
+                # Crear nueva dimensión
+                new_dim = output.type.tensor_type.shape.dim.add()
+                new_dim.dim_value = 1
+        
+        # Asegurar versión IR compatible
+        onnx_model.ir_version = 10
+        onnx_model.producer_name = "CatBoost-MQL5-Converter"
+        onnx_model.producer_version = "1.0"
+        
+        # Guardar modelo modificado
+        onnx.save(onnx_model, output_path)
+        
+        # Limpiar archivo temporal
+        os.remove(temp_path.name)
+        
+        print(f"✅ Modelo de regresión convertido exitosamente a: {output_path}")
+        return output_path
+        
+    except Exception as e:
+        print(f"❌ Error en conversión: {e}")
+        # Limpiar archivo temporal en caso de error
+        if os.path.exists(temp_path.name):
+            os.remove(temp_path.name)
+        raise
 
 def export_models_to_ONNX(models):
     """
-    Convierte una lista de modelos CatBoost a ONNX usando el método nativo de CatBoost.
-    
-    :param models: Lista de modelos CatBoost a convertir.
+    Convierte una lista de modelos CatBoost a ONNX usando el método nativo de CatBoost o el convertidor personalizado según el tipo de modelo.
+
+    :param models: Lista o tupla de modelos CatBoost a convertir.
     :return: Lista de rutas de archivos ONNX temporales.
     """
+
     onnx_models = []
-    for i, model in enumerate(models):
+    for model in models:
         # Crear archivo temporal para el modelo ONNX
         tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".onnx")
         tmp.close()
 
-        model.save_model(tmp.name, format="onnx")
-        
+        # Detectar tipo de modelo automáticamente
+        if isinstance(model, CatBoostRegressor):
+            # Para regresión, usar convertidor personalizado para compatibilidad con MQL5
+            convert_catboost_regression_to_mql5_compatible(model, tmp.name)
+        elif isinstance(model, CatBoostClassifier):
+            # Para clasificación, usar exportación normal
+            model.save_model(tmp.name, format="onnx")
+        else:
+            raise ValueError(f"Tipo de modelo no soportado para exportación ONNX: {type(model)}")
+
         onnx_models.append(tmp.name)
-    
+
     return onnx_models
 
 def export_dataset_to_csv(dataset, decimal_precision=6):
@@ -38,6 +100,9 @@ def export_to_mql5(**kwargs):
     include_export_path = kwargs.get('include_export_path')
     decimal_precision = kwargs.get('decimal_precision')
     full_ds_with_labels_path = kwargs.get('best_full_ds_with_labels_path')
+    label_type = kwargs.get('label_type')
+    main_threshold = kwargs.get('best_main_threshold')
+    meta_threshold = kwargs.get('best_meta_threshold')
 
     def _should_use_returns(stat_name):
         """Determina si un estadístico debe usar retornos en lugar de precios."""
@@ -786,7 +851,9 @@ def export_to_mql5(**kwargs):
         code += f'#define DIRECTION            "{str(direction)}"\n'
         code += f'#define MAGIC_NUMBER         {str(model_seed)}\n'
         code += f'#define DECIMAL_PRECISION    {str(decimal_precision)}\n'
-        
+        code += f'#define LABEL_TYPE           "{str(label_type)}"\n'
+        code += f'#define MAIN_THRESHOLD       {str(main_threshold)}\n'
+        code += f'#define META_THRESHOLD       {str(meta_threshold)}\n'
         # ───── AGREGAR FUNCIÓN DE RETORNOS ─────
         code += """
 // ───── FUNCIÓN PARA CALCULAR RETORNOS LOGARÍTMICOS ─────

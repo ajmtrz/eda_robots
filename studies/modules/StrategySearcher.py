@@ -182,6 +182,9 @@ class StrategySearcher:
                                     study.set_user_attr("best_periods_main", trial.user_attrs.get('feature_main_periods'))
                                     study.set_user_attr("best_stats_main", trial.user_attrs.get('feature_main_stats'))
                                     study.set_user_attr("best_model_cols", trial.user_attrs['model_cols'])
+                                    # THRESHOLDS UNIFICADOS: guardar thresholds apropiados
+                                    study.set_user_attr("best_main_threshold", trial.user_attrs.get('best_main_threshold', 0.5))
+                                    study.set_user_attr("best_meta_threshold", trial.user_attrs.get('best_meta_threshold', 0.5))
                                     # Cambiar acceso directo por .get para evitar error si no existe
                                     study.set_user_attr("best_periods_meta", trial.user_attrs.get('feature_meta_periods'))
                                     study.set_user_attr("best_stats_meta", trial.user_attrs.get('feature_meta_stats'))
@@ -189,6 +192,7 @@ class StrategySearcher:
                                     export_params = {
                                         "tag": self.tag,
                                         "direction": self.direction,
+                                        "label_type": self.label_type,
                                         "models_export_path": self.models_export_path,
                                         "include_export_path": self.include_export_path,
                                         "best_score": study.user_attrs["best_score"],
@@ -199,6 +203,8 @@ class StrategySearcher:
                                         "best_periods_meta": study.user_attrs["best_periods_meta"],
                                         "best_stats_main": study.user_attrs["best_stats_main"],
                                         "best_stats_meta": study.user_attrs["best_stats_meta"],
+                                        "best_main_threshold": study.user_attrs.get("best_main_threshold"),
+                                        "best_meta_threshold": study.user_attrs.get("best_meta_threshold"),
                                         "decimal_precision": self.decimal_precision,
                                     }
                                     export_to_mql5(**export_params)
@@ -345,9 +351,15 @@ class StrategySearcher:
             if self.debug:
                 print(f"🔍 DEBUG search_clusters {self.search_subtype} - Aplicando clustering híbrido")
             
-            # Hacer clustering solo en muestras confiables (filtro básico: no 0.0)
-            reliable_mask = (full_ds['labels_main'] != 0.0)
-            reliable_data = full_ds[reliable_mask].copy()
+            base_mask = self.get_trading_mask(full_ds, hp)
+            reliable_data = full_ds[base_mask].copy()
+            
+            # 🔍 DEBUG: Verificar distribución después del filtrado
+            if self.debug:
+                print(f"🔍 DEBUG search_clusters {self.search_subtype} - Filtrado por {self.label_type}:")
+                print(f"🔍   Total muestras: {len(full_ds)}")
+                print(f"🔍   Muestras confiables: {base_mask.sum()} ({base_mask.mean():.1%})")
+                print(f"🔍   Total muestras confiables: {len(reliable_data)}")
             
             if len(reliable_data) < 200:
                 if self.debug:
@@ -357,16 +369,19 @@ class StrategySearcher:
             # Aplicar clustering
             reliable_data_clustered = _clustering_method(reliable_data, hp)
             # Propagar clusters a dataset completo
-            full_ds.loc[reliable_mask, 'labels_meta'] = reliable_data_clustered['labels_meta']
-            full_ds.loc[~reliable_mask, 'labels_meta'] = -1  # Muestras no confiables sin cluster
+            full_ds.loc[base_mask, 'labels_meta'] = reliable_data_clustered['labels_meta']
+            full_ds.loc[~base_mask, 'labels_meta'] = -1  # Muestras no confiables sin cluster
 
-            score, full_ds_with_labels_path, model_paths, models_cols = self.evaluate_clusters(trial, full_ds, hp)
+            score, full_ds_with_labels_path, model_paths, models_cols, best_main_threshold = self.evaluate_clusters(trial, full_ds, hp)
             if score is None or model_paths is None or models_cols is None or full_ds_with_labels_path is None:
                 return -1.0
             trial.set_user_attr('score', score)
             trial.set_user_attr('model_paths', model_paths)
             trial.set_user_attr('model_cols', models_cols)
             trial.set_user_attr('full_ds_with_labels_path', full_ds_with_labels_path)
+            trial.set_user_attr('best_main_threshold', best_main_threshold)
+            # THRESHOLDS UNIFICADOS: guardar meta threshold
+            trial.set_user_attr('best_meta_threshold', hp.get('meta_threshold', 0.5))
             return trial.user_attrs.get('score', -1.0)
         except Exception as e:
             print(f"Error en search_clusters: {str(e)}")
@@ -427,6 +442,8 @@ class StrategySearcher:
             trial.set_user_attr('model_paths', model_paths)
             trial.set_user_attr('model_cols', models_cols)
             trial.set_user_attr('full_ds_with_labels_path', full_ds_with_labels_path)
+            # THRESHOLDS UNIFICADOS: guardar meta threshold
+            trial.set_user_attr('best_meta_threshold', hp.get('meta_threshold', 0.5))
             return trial.user_attrs.get('score', -1.0)
         except Exception as e:
             print(f"Error en search_mapie: {str(e)}")
@@ -487,6 +504,8 @@ class StrategySearcher:
             trial.set_user_attr('model_paths', model_paths)
             trial.set_user_attr('model_cols', models_cols)
             trial.set_user_attr('full_ds_with_labels_path', full_ds_with_labels_path)
+            # THRESHOLDS UNIFICADOS: guardar meta threshold
+            trial.set_user_attr('best_meta_threshold', hp.get('meta_threshold', 0.5))
             return trial.user_attrs.get('score', -1.0)
         except Exception as e:
             print(f"Error en search_causal: {str(e)}")
@@ -619,6 +638,8 @@ class StrategySearcher:
             trial.set_user_attr('model_paths', model_paths)
             trial.set_user_attr('model_cols', models_cols)
             trial.set_user_attr('full_ds_with_labels_path', full_ds_with_labels_path)
+            # THRESHOLDS UNIFICADOS: guardar meta threshold
+            trial.set_user_attr('best_meta_threshold', hp.get('meta_threshold', 0.5))
             return trial.user_attrs.get('score', -1.0)
             
         except Exception as e:
@@ -637,6 +658,7 @@ class StrategySearcher:
             best_model_paths = (None, None)
             best_models_cols = (None, None)
             best_full_ds_with_labels_path = None
+            best_main_threshold = None
 
             # 🔍 DEBUG: Supervisar parámetros
             if self.debug:
@@ -652,7 +674,7 @@ class StrategySearcher:
             if cluster_sizes.empty:
                 if self.debug:
                     print("⚠️ ERROR: No hay clusters")
-                return None, None, None, None
+                return None, None, None, None, None
             
             # Evaluar cada cluster
             for clust in cluster_sizes.index:
@@ -771,6 +793,11 @@ class StrategySearcher:
                     best_model_paths = model_paths
                     best_full_ds_with_labels_path = full_ds_with_labels_path
                     best_models_cols = models_cols
+                    # THRESHOLDS UNIFICADOS: usar el threshold apropiado según label_type
+                    if self.label_type == 'classification':
+                        best_main_threshold = hp.get('main_threshold', 0.5)
+                    else:  # regression
+                        best_main_threshold = hp.get('main_threshold')
                     if self.debug:
                         print(f"🔍   Nuevo mejor cluster {clust}: score = {score}")
                 else:
@@ -780,11 +807,11 @@ class StrategySearcher:
                     if full_ds_with_labels_path and os.path.exists(full_ds_with_labels_path):
                         os.remove(full_ds_with_labels_path)
             if best_score == -math.inf or best_model_paths == (None, None):
-                return None, None, None, None
-            return best_score, best_full_ds_with_labels_path, best_model_paths, best_models_cols
+                return None, None, None, None, None
+            return best_score, best_full_ds_with_labels_path, best_model_paths, best_models_cols, best_main_threshold
         except Exception as e:
             print(f"⚠️ ERROR en evaluación de clusters: {str(e)}")
-            return None, None, None, None
+            return None, None, None, None, None
     
     def _suggest_catboost(self, group: str, trial: optuna.Trial) -> Dict[str, float]:
         """Devuelve hiperparámetros CatBoost (main|meta) con prefijo `group`."""
@@ -968,8 +995,16 @@ class StrategySearcher:
             if self.label_type == 'regression':
                 p['causal_error_threshold'] = trial.suggest_float('causal_error_threshold', 0.1, 2.0, log=True)
 
-        if self.label_type == 'regression':
+        # THRESHOLDS UNIFICADOS (preparación para optimización futura)
+        if self.label_type == 'classification':
+            # Clasificación: ambos thresholds fijos por ahora (futuro optimizables)
+            p['main_threshold'] = 0.5  # FUTURO: trial.suggest_float('main_threshold', 0.1, 0.9)
+            p['meta_threshold'] = 0.5  # FUTURO: trial.suggest_float('meta_threshold', 0.1, 0.9)
+        else:  # regression
+            # Regresión: meta threshold fijo por ahora (futuro optimizable), main se calcula dinámicamente
+            p['meta_threshold'] = 0.5  # FUTURO: trial.suggest_float('meta_threshold', 0.1, 0.9)
             p['model_main_percentile'] = trial.suggest_float('model_main_percentile', 0.7, 0.95)
+            # main_threshold se calcula dinámicamente en calculate_regression_threshold_cv
 
         return p
 
@@ -1163,8 +1198,8 @@ class StrategySearcher:
                 val_pred = model_main.predict(X_val_main)
                 print(f"🔍 DEBUG: Train predictions - min: {train_pred.min():.4f}, max: {train_pred.max():.4f}, mean: {train_pred.mean():.4f}")
                 print(f"🔍 DEBUG: Val predictions - min: {val_pred.min():.4f}, max: {val_pred.max():.4f}, mean: {val_pred.mean():.4f}")
-                print(f"🔍 DEBUG: Train predictions > threshold: {(train_pred > hp.get('model_main_threshold_calculated', 0.5)).sum()}/{len(train_pred)}")
-                print(f"🔍 DEBUG: Val predictions > threshold: {(val_pred > hp.get('model_main_threshold_calculated', 0.5)).sum()}/{len(val_pred)}")
+                print(f"🔍 DEBUG: Train predictions > threshold: {(train_pred > hp.get('main_threshold', 0.5)).sum()}/{len(train_pred)}")
+                print(f"🔍 DEBUG: Val predictions > threshold: {(val_pred > hp.get('main_threshold', 0.5)).sum()}/{len(val_pred)}")
             cat_meta_params = dict(
                 iterations=hp['cat_meta_iterations'],
                 depth=hp['cat_meta_depth'],
@@ -1266,10 +1301,10 @@ class StrategySearcher:
             test_train_time_start = time.time()
             
             # Debug del threshold que se pasa a tester
-            threshold_for_tester = hp.get('model_main_threshold_calculated', 0.5)
+            threshold_for_tester = hp.get('main_threshold', 0.5)
             if self.debug:
                 print(f"🔍 DEBUG fit_final_models - Threshold para tester:")
-                print(f"🔍   model_main_threshold_calculated: {hp.get('model_main_threshold_calculated', 'NO_ASIGNADO')}")
+                print(f"🔍   main_threshold: {hp.get('main_threshold', 'NO_ASIGNADO')}")
                 print(f"🔍   threshold_for_tester: {threshold_for_tester}")
                 
                 # DEBUG: Verificar predicciones del modelo meta en el dataset completo
@@ -1553,7 +1588,7 @@ class StrategySearcher:
                 interval_width = intervals[:, 1] - intervals[:, 0]
                 
                 # Criterios de confiabilidad para regresión (optimizados por Optuna)
-                threshold_magnitude = hp['model_main_threshold_calculated']  # Umbral para magnitud mínima (coherente con el threshold del tester)
+                threshold_magnitude = hp['main_threshold']  # Umbral para magnitud mínima (coherente con el threshold del tester)
                 
                 # 1. Ancho del intervalo (incertidumbre): usar percentil optimizado por Optuna
                 # mapie_threshold_width representa el percentil (15-40) para filtrar intervalos estrechos
@@ -1581,7 +1616,7 @@ class StrategySearcher:
                 if self.debug:
                     print(f"🔍   === DEBUG MAPIE REGRESIÓN ===")
                     print(f"🔍   threshold_width (valor): {threshold_width_value:.4f}")
-                    print(f"🔍   threshold_magnitude (model_main_threshold_calculated): {threshold_magnitude:.4f}")
+                    print(f"🔍   threshold_magnitude (main_threshold): {threshold_magnitude:.4f}")
                     print(f"🔍   interval_width.min(): {interval_width.min():.4f}, interval_width.max(): {interval_width.max():.4f}")
                     print(f"🔍   interval_width.mean(): {interval_width.mean():.4f}, interval_width.std(): {interval_width.std():.4f}")
                     print(f"🔍   predicted.min(): {predicted.min():.4f}, predicted.max(): {predicted.max():.4f}")
@@ -1616,7 +1651,7 @@ class StrategySearcher:
                     print(f"🔍   precision_scores.sum(): {precision_scores.sum()}")
                 else:  # regression
                     print(f"🔍   threshold_width (valor): {threshold_width_value:.4f}")
-                    print(f"🔍   threshold_magnitude (model_main_threshold_calculated): {threshold_magnitude:.4f}")
+                    print(f"🔍   threshold_magnitude (main_threshold): {threshold_magnitude:.4f}")
                     print(f"🔍   interval_width.min(): {interval_width.min():.4f}, interval_width.max(): {interval_width.max():.4f}")
                     print(f"🔍   width_confidence.sum(): {width_confidence.sum()}")
                     print(f"🔍   magnitude_confidence.sum(): {magnitude_confidence.sum()}")
@@ -2335,15 +2370,17 @@ class StrategySearcher:
             pd.Series: Máscara booleana para muestras de trading
         """
         if self.label_type == 'classification':
-            # Clasificación: solo 0.0 y 1.0 (excluir 2.0=neutral)
-            return full_ds['labels_main'].isin([0.0, 1.0])
+            # Clasificación: mantener todas las clases válidas (0.0, 1.0), excluir no confiables (2.0)
+            # Las etiquetas 0.0 son una clase válida en clasificación, no se deben excluir
+            return full_ds['labels_main'] != 2.0
         else:
             # Regresión: filtrar según threshold dinámico
             threshold_value, significant_samples = self.calculate_regression_threshold_cv(
                 full_ds['labels_main'], hp
             )
             
-            hp['model_main_threshold_calculated'] = threshold_value
+            # THRESHOLDS UNIFICADOS: asignar a main_threshold
+            hp['main_threshold'] = threshold_value
             
             if self.debug:
                 print(f"🔍   Trading mask - threshold: {threshold_value:.6f}")
@@ -2417,7 +2454,7 @@ class StrategySearcher:
         labels_main : pd.Series
             Etiquetas de regresión (valores continuos)
         hp : Dict[str, Any]
-            Hiperparámetros con 'model_main_threshold'
+            Hiperparámetros con 'main_threshold'
         
         Returns
         -------
@@ -2479,7 +2516,7 @@ class StrategySearcher:
         labels_main : pd.Series
             Etiquetas de regresión (valores continuos)
         hp : Dict[str, Any]
-            Hiperparámetros con 'model_main_threshold'
+            Hiperparámetros con 'main_threshold'
         n_splits : int
             Número de splits para validación cruzada temporal
             

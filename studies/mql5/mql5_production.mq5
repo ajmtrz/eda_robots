@@ -7,7 +7,7 @@
 #include <Trade\AccountInfo.mqh>
 #include <Math\Alglib\alglib.mqh>
 #include <ajmtrz/include/clsOptimalF.mqh>
-#include <ajmtrz\include\Dmitrievsky\XAUUSD_H1_buy_filter_clusters_kmeans.mqh>
+#include <ajmtrz\include\Dmitrievsky\XAUUSD_H1_buy_cl_lg_ra_re.mqh>
 #include <Indicators\Indicators.mqh>
 #property strict
 #property copyright "Copyright 2025, Dmitrievsky"
@@ -23,8 +23,6 @@ CiTickVolume   m_vol;
 CiATR          m_atr;
 CPositionInfo  m_position;
 
-input double   main_threshold    = 0.5;
-input double   meta_threshold    = 0.5;
 input int      max_orders        = 1;
 input int      delay_bars        = 1;
 input double   manual_lot        = 0.01;
@@ -55,7 +53,7 @@ int OnInit()
 
    if(ExtHandle_main == INVALID_HANDLE || ExtHandle_meta == INVALID_HANDLE)
      {
-      Print("OnnxCreateFromBuffer error ", GetLastError());
+      Print("OnnxCreateFromBuffer failed, error ", GetLastError());
       return(INIT_FAILED);
      }
 
@@ -65,23 +63,37 @@ int OnInit()
       OnnxRelease(ExtHandle_main);
       return(INIT_FAILED);
      }
+   if(LABEL_TYPE == "classification")
+     {
+      // Clasificación: salida con probabilidades
+      const ulong output_shape_main[] = {1};
 
+      if(!OnnxSetOutputShape(ExtHandle_main, 0, output_shape_main))
+        {
+         Print("OnnxSetOutputShape main (classification) failed, error ", GetLastError());
+         return(INIT_FAILED);
+        }
+     }
+   else // "regression"
+     {
+      const ulong output_shape_main[] = {1, 1};
+
+      if(!OnnxSetOutputShape(ExtHandle_main, 0, output_shape_main))
+        {
+         Print("OnnxSetOutputShape main (regression) failed, error  ", GetLastError());
+         return(INIT_FAILED);
+        }
+     }
    if(!OnnxSetInputShape(ExtHandle_meta, 0, ExtInputShape_meta))
      {
-      Print("OnnxSetInputShape 2 failed, error ", GetLastError());
+      Print("OnnxSetInputShape meta failed, error ", GetLastError());
       OnnxRelease(ExtHandle_meta);
       return(INIT_FAILED);
      }
-
-   const ulong output_shape[] = {1};
-   if(!OnnxSetOutputShape(ExtHandle_main, 0, output_shape))
+   const ulong output_shape_meta[] = {1};
+   if(!OnnxSetOutputShape(ExtHandle_meta, 0, output_shape_meta))
      {
-      Print("OnnxSetOutputShape 1 error ", GetLastError());
-      return(INIT_FAILED);
-     }
-   if(!OnnxSetOutputShape(ExtHandle_meta, 0, output_shape))
-     {
-      Print("OnnxSetOutputShape 2 error ", GetLastError());
+      Print("OnnxSetOutputShape meta failed, error ", GetLastError());
       return(INIT_FAILED);
      }
 //--- initialize object
@@ -152,40 +164,89 @@ void OnTick()
       float          proba[];
      };
    output main_out2[], meta_out2[];
-   OnnxRun(ExtHandle_main, ONNX_DEFAULT, features_main, main_out, main_out2);
-   OnnxRun(ExtHandle_meta, ONNX_DEFAULT, features_meta, meta_out, meta_out2);
 
-   double main_prob = main_out2[0].proba[1];
-   double meta_sig  = meta_out2[0].proba[1];
+   double main_sig;
+   double meta_sig;
+
+// Ejecutar modelo meta (siempre clasificación)
+   OnnxRun(ExtHandle_meta, ONNX_DEFAULT, features_meta, meta_out, meta_out2);
+   meta_sig = meta_out2[0].proba[1];
+
+// Ejecutar modelo main según tipo
+   if(LABEL_TYPE == "classification")
+     {
+      OnnxRun(ExtHandle_main, ONNX_DEFAULT, features_main, main_out, main_out2);
+      main_sig = main_out2[0].proba[1];
+     }
+   else // "regression"
+     {
+      // Para regresión convertida, usar acceso directo al primer elemento
+      OnnxRun(ExtHandle_main, ONNX_DEFAULT, features_main, main_out);
+
+      if(debug)
+         Print("🔍 DEBUG - Regresión: main_out.Size()=", main_out.Size());
+
+      main_sig = main_out[0];  // Acceso directo al primer elemento
+      if(debug)
+         Print("🔍 DEBUG - Regresión: main_sig=", main_sig);
+     }
 
 // EXACT PYTHON LOGIC FOR DIRECTION HANDLING
    double prob_buy, prob_sell;
    int dir_flag;
 
-   if(DIRECTION == "buy")
+   if(LABEL_TYPE == "classification")
      {
-      prob_buy = main_prob;
-      prob_sell = 0.0;
-      dir_flag = 0;
+      // CLASIFICACIÓN (lógica actual)
+      if(DIRECTION == "buy")
+        {
+         prob_buy = main_sig;
+         prob_sell = 0.0;
+         dir_flag = 0;
+        }
+      else
+         if(DIRECTION == "sell")
+           {
+            prob_buy = 0.0;
+            prob_sell = main_sig;
+            dir_flag = 1;
+           }
+         else // "both"
+           {
+            prob_buy = main_sig;
+            prob_sell = 1.0 - main_sig;
+            dir_flag = 2;
+           }
      }
-   else
-      if(DIRECTION == "sell")
+   else // "regression"
+     {
+      // REGRESIÓN (nueva lógica)
+      if(DIRECTION == "buy")
         {
-         prob_buy = 0.0;
-         prob_sell = main_prob;
-         dir_flag = 1;
+         prob_buy = main_sig;
+         prob_sell = 0.0;
+         dir_flag = 0;
         }
-      else // "both"
-        {
-         prob_buy = main_prob;
-         prob_sell = 1.0 - main_prob;
-         dir_flag = 2;
-        }
+      else
+         if(DIRECTION == "sell")
+           {
+            prob_buy = 0.0;
+            prob_sell = MathAbs(main_sig);  // Valor absoluto para sell
+            dir_flag = 1;
+           }
+         else // "both"
+           {
+            // Distinguir por signo: positivo=buy, negativo=sell
+            prob_buy = (main_sig > 0) ? main_sig : 0.0;
+            prob_sell = (main_sig < 0) ? MathAbs(main_sig) : 0.0;
+            dir_flag = 2;
+           }
+     }
 
 // EXACT PYTHON SIGNAL LOGIC
-   bool buy_sig  = (dir_flag != 1) ? (prob_buy > main_threshold) : false;
-   bool sell_sig = (dir_flag != 0) ? (prob_sell > main_threshold) : false;
-   bool meta_ok  = (meta_sig > meta_threshold);
+   bool buy_sig  = (dir_flag != 1) ? (prob_buy > MAIN_THRESHOLD) : false;
+   bool sell_sig = (dir_flag != 0) ? (prob_sell > MAIN_THRESHOLD) : false;
+   bool meta_ok  = (meta_sig > META_THRESHOLD);
 
    int label = ((buy_sig || sell_sig) && meta_ok) ? 1 : 0;
    if(debug)
@@ -200,22 +261,42 @@ void OnTick()
          continue;
 
       ENUM_POSITION_TYPE ptype = (ENUM_POSITION_TYPE)PositionGetInteger(POSITION_TYPE);
-
       bool must_close = false;
-      // MATCH PYTHON: Close LONG if !buy_sig, Close SHORT if !sell_sig
-      if(ptype == POSITION_TYPE_BUY && !buy_sig)
+
+      if(LABEL_TYPE == "classification")
         {
-         must_close = true;
-         if(debug)
-            Print("🔍 DEBUG - Cerrando BUY: buy_sig=", buy_sig, " prob_buy=", prob_buy, " threshold=", main_threshold);
-        }
-      else
-         if(ptype == POSITION_TYPE_SELL && !sell_sig)
+         // CLASIFICACIÓN: Cerrar si no hay señal O meta no está OK
+         if(ptype == POSITION_TYPE_BUY && (!buy_sig || !meta_ok))
            {
             must_close = true;
             if(debug)
-               Print("🔍 DEBUG - Cerrando SELL: sell_sig=", sell_sig, " prob_sell=", prob_sell, " threshold=", main_threshold);
+               Print("🔍 DEBUG - Cerrando BUY (clasificación): buy_sig=", buy_sig, " meta_ok=", meta_ok);
            }
+         else
+            if(ptype == POSITION_TYPE_SELL && (!sell_sig || !meta_ok))
+              {
+               must_close = true;
+               if(debug)
+                  Print("🔍 DEBUG - Cerrando SELL (clasificación): sell_sig=", sell_sig, " meta_ok=", meta_ok);
+              }
+        }
+      else // "regression"
+        {
+         // REGRESIÓN: Cerrar si no hay señal O meta no está OK O signo incorrecto
+         if(ptype == POSITION_TYPE_BUY)
+           {
+            must_close = (!buy_sig || !meta_ok || main_sig <= 0);
+            if(debug && must_close)
+               Print("🔍 DEBUG - Cerrando BUY (regresión): buy_sig=", buy_sig, " meta_ok=", meta_ok, " main_sig=", main_sig);
+           }
+         else
+            if(ptype == POSITION_TYPE_SELL)
+              {
+               must_close = (!sell_sig || !meta_ok || main_sig >= 0);
+               if(debug && must_close)
+                  Print("🔍 DEBUG - Cerrando SELL (regresión): sell_sig=", sell_sig, " meta_ok=", meta_ok, " main_sig=", main_sig);
+              }
+        }
 
       if(must_close)
         {
@@ -235,40 +316,123 @@ void OnTick()
      {
       bool trade_opened_this_bar = false;
 
-      // BUY - MATCH PYTHON EXACTLY
-      if(buy_sig && (max_orders == 0 || live_pos < max_orders))
+      if(LABEL_TYPE == "classification")
         {
-         if(debug)
-            Print("🔍 DEBUG - ABRIENDO BUY");
-         double atr = m_atr.Main(0);
-         double sl_points = stoploss * atr;
-         double tp_points = takeprofit * atr;
-         double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
-         double sl_price  = sl_points == 0.0 ? 0.0 : ask - sl_points;
-         double tp_price  = tp_points == 0.0 ? 0.0 : ask + tp_points;
-         double lot = (manual_lot > 0.0) ? manual_lot : LotsOptimized(sl_points);
-         string bot_comment = string(MAGIC_NUMBER);
-         m_trade.PositionOpen(_Symbol, ORDER_TYPE_BUY, lot, ask, sl_price, tp_price, bot_comment);
-         trade_opened_this_bar = true;
-         live_pos++;
-        }
+         // CLASIFICACIÓN (lógica actual)
+         if(buy_sig && (max_orders == 0 || live_pos < max_orders))
+           {
+            if(debug)
+               Print("🔍 DEBUG - ABRIENDO BUY (clasificación)");
+            double atr = m_atr.Main(0);
+            double sl_points = stoploss * atr;
+            double tp_points = takeprofit * atr;
+            double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+            double sl_price  = sl_points == 0.0 ? 0.0 : ask - sl_points;
+            double tp_price  = tp_points == 0.0 ? 0.0 : ask + tp_points;
+            double lot = (manual_lot > 0.0) ? manual_lot : LotsOptimized(sl_points);
+            string bot_comment = string(MAGIC_NUMBER);
+            m_trade.PositionOpen(_Symbol, ORDER_TYPE_BUY, lot, ask, sl_price, tp_price, bot_comment);
+            trade_opened_this_bar = true;
+            live_pos++;
+           }
 
-      // SELL - MATCH PYTHON: Check position limit again after potential BUY opening
-      if(sell_sig && (max_orders == 0 || live_pos < max_orders))
+         if(sell_sig && (max_orders == 0 || live_pos < max_orders))
+           {
+            if(debug)
+               Print("🔍 DEBUG - ABRIENDO SELL (clasificación)");
+            double atr = m_atr.Main(0);
+            double sl_points = stoploss * atr;
+            double tp_points = takeprofit * atr;
+            double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+            double sl_price  = sl_points == 0.0 ? 0.0 : bid + sl_points;
+            double tp_price  = tp_points == 0.0 ? 0.0 : bid - tp_points;
+            double lot = (manual_lot > 0.0) ? manual_lot : LotsOptimized(sl_points);
+            string bot_comment = string(MAGIC_NUMBER);
+            m_trade.PositionOpen(_Symbol, ORDER_TYPE_SELL, lot, bid, sl_price, tp_price, bot_comment);
+            trade_opened_this_bar = true;
+            live_pos++;
+           }
+        }
+      else // "regression"
         {
-         if(debug)
-            Print("🔍 DEBUG - ABRIENDO SELL");
-         double atr = m_atr.Main(0);
-         double sl_points = stoploss * atr;
-         double tp_points = takeprofit * atr;
-         double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
-         double sl_price  = sl_points == 0.0 ? 0.0 : bid + sl_points;
-         double tp_price  = tp_points == 0.0 ? 0.0 : bid - tp_points;
-         double lot = (manual_lot > 0.0) ? manual_lot : LotsOptimized(sl_points);
-         string bot_comment = string(MAGIC_NUMBER);
-         m_trade.PositionOpen(_Symbol, ORDER_TYPE_SELL, lot, bid, sl_price, tp_price, bot_comment);
-         trade_opened_this_bar = true;
-         live_pos++;
+         // REGRESIÓN: Usar signo para determinar dirección
+         if(DIRECTION == "buy")
+           {
+            if(buy_sig && (max_orders == 0 || live_pos < max_orders))
+              {
+               if(debug)
+                  Print("🔍 DEBUG - ABRIENDO BUY (regresión)");
+               double atr = m_atr.Main(0);
+               double sl_points = stoploss * atr;
+               double tp_points = takeprofit * atr;
+               double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+               double sl_price  = sl_points == 0.0 ? 0.0 : ask - sl_points;
+               double tp_price  = tp_points == 0.0 ? 0.0 : ask + tp_points;
+               double lot = (manual_lot > 0.0) ? manual_lot : LotsOptimized(sl_points);
+               string bot_comment = string(MAGIC_NUMBER);
+               m_trade.PositionOpen(_Symbol, ORDER_TYPE_BUY, lot, ask, sl_price, tp_price, bot_comment);
+               trade_opened_this_bar = true;
+               live_pos++;
+              }
+           }
+         else
+            if(DIRECTION == "sell")
+              {
+               if(sell_sig && (max_orders == 0 || live_pos < max_orders))
+                 {
+                  if(debug)
+                     Print("🔍 DEBUG - ABRIENDO SELL (regresión)");
+                  double atr = m_atr.Main(0);
+                  double sl_points = stoploss * atr;
+                  double tp_points = takeprofit * atr;
+                  double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+                  double sl_price  = sl_points == 0.0 ? 0.0 : bid + sl_points;
+                  double tp_price  = tp_points == 0.0 ? 0.0 : bid - tp_points;
+                  double lot = (manual_lot > 0.0) ? manual_lot : LotsOptimized(sl_points);
+                  string bot_comment = string(MAGIC_NUMBER);
+                  m_trade.PositionOpen(_Symbol, ORDER_TYPE_SELL, lot, bid, sl_price, tp_price, bot_comment);
+                  trade_opened_this_bar = true;
+                  live_pos++;
+                 }
+              }
+            else // "both"
+              {
+               // Distinguir por signo del valor de regresión
+               if(main_sig > 0 && (max_orders == 0 || live_pos < max_orders))
+                 {
+                  // BUY si valor positivo
+                  if(debug)
+                     Print("🔍 DEBUG - ABRIENDO BUY (regresión both, main_sig=", main_sig, ")");
+                  double atr = m_atr.Main(0);
+                  double sl_points = stoploss * atr;
+                  double tp_points = takeprofit * atr;
+                  double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+                  double sl_price  = sl_points == 0.0 ? 0.0 : ask - sl_points;
+                  double tp_price  = tp_points == 0.0 ? 0.0 : ask + tp_points;
+                  double lot = (manual_lot > 0.0) ? manual_lot : LotsOptimized(sl_points);
+                  string bot_comment = string(MAGIC_NUMBER);
+                  m_trade.PositionOpen(_Symbol, ORDER_TYPE_BUY, lot, ask, sl_price, tp_price, bot_comment);
+                  trade_opened_this_bar = true;
+                  live_pos++;
+                 }
+               if(main_sig < 0 && (max_orders == 0 || live_pos < max_orders))
+                 {
+                  // SELL si valor negativo
+                  if(debug)
+                     Print("🔍 DEBUG - ABRIENDO SELL (regresión both, main_sig=", main_sig, ")");
+                  double atr = m_atr.Main(0);
+                  double sl_points = stoploss * atr;
+                  double tp_points = takeprofit * atr;
+                  double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+                  double sl_price  = sl_points == 0.0 ? 0.0 : bid + sl_points;
+                  double tp_price  = tp_points == 0.0 ? 0.0 : bid - tp_points;
+                  double lot = (manual_lot > 0.0) ? manual_lot : LotsOptimized(sl_points);
+                  string bot_comment = string(MAGIC_NUMBER);
+                  m_trade.PositionOpen(_Symbol, ORDER_TYPE_SELL, lot, bid, sl_price, tp_price, bot_comment);
+                  trade_opened_this_bar = true;
+                  live_pos++;
+                 }
+              }
         }
 
       // Update last_trade_bar only once per bar, regardless of how many positions opened
@@ -294,7 +458,7 @@ double OnTester()
       ulong ticket = HistoryDealGetTicket(i);
       if(HistoryDealGetInteger(ticket, DEAL_ENTRY) != DEAL_ENTRY_OUT)
          continue;
-      
+
       // CRITICAL: Filter by magic number and symbol to match Python behavior
       if(HistoryDealGetInteger(ticket, DEAL_MAGIC) != MAGIC_NUMBER)
          continue;
@@ -382,13 +546,13 @@ double OnTester()
       rdd = 0.0;
    else
       rdd = total_ret / max_dd;
-   
-   // MATCH PYTHON: Umbral más exigente para el ratio retorno/drawdown
+
+// MATCH PYTHON: Umbral más exigente para el ratio retorno/drawdown
    double min_rdd = MathMax(rdd_floor * 1.5, 2.0);  // Al menos 2.0 o 1.5 veces el floor
    if(rdd < min_rdd)
       return -1.0;
-   
-   // MATCH PYTHON: Normalización más estricta que penaliza ratios bajos
+
+// MATCH PYTHON: Normalización más estricta que penaliza ratios bajos
    double rdd_nl = 1.0 / (1.0 + MathExp(-(rdd - min_rdd) / (min_rdd * 3.0)));
 
 //── 5) Regresión lineal sobre la curva de equity - MATCH PYTHON EXACTLY
@@ -464,7 +628,7 @@ double OnTester()
                   0.05 * trade_nl +  // Número de trades (menor importancia)
                   0.45 * wf_nl;      // Consistencia temporal (máxima prioridad)
 
-   // CRITICAL: Apply same logic as Python - check for negative scores and invalid metrics
+// CRITICAL: Apply same logic as Python - check for negative scores and invalid metrics
    if(score < 0.0 || trade_nl <= -1.0 || rdd_nl <= -1.0 || r2 <= -1.0 || slope_nl <= -1.0 || wf_nl <= -1.0)
       return -1.0;
 
@@ -676,23 +840,23 @@ void print_features_debug(double &features_main[], double &features_meta[], int 
 //+------------------------------------------------------------------+
 double WalkForwardValidation(double &equity[], double &trade_profits[], int n_trades)
   {
-   // Ventanas más largas para mayor robustez
+// Ventanas más largas para mayor robustez
    int base_window = MathMax(10, n_trades / 20);  // Al menos 10, o 5% del total
-   
+
    if(n_trades < base_window)
       return 0.0;
 
-   // Evaluar múltiples escalas temporales con ventanas monótonamente crecientes
-   // Asegurar que cada ventana sea mayor que la anterior y no exceda el límite
+// Evaluar múltiples escalas temporales con ventanas monótonamente crecientes
+// Asegurar que cada ventana sea mayor que la anterior y no exceda el límite
    int window1 = base_window;
    int window2 = MathMin(window1 * 2, n_trades / 8);  // Ajustado para evitar ventanas muy pequeñas
    int window3 = MathMin(window1 * 3, n_trades / 4);  // Ajustado para evitar ventanas muy pequeñas
-   
-   // Filtrar ventanas válidas (debe ser al menos 5 trades por ventana)
+
+// Filtrar ventanas válidas (debe ser al menos 5 trades por ventana)
    int windows[];
    double weights[];
    int window_count = 0;
-   
+
    if(window1 >= 5)
      {
       ArrayResize(windows, window_count + 1);
@@ -701,7 +865,7 @@ double WalkForwardValidation(double &equity[], double &trade_profits[], int n_tr
       weights[window_count] = 0.5;
       window_count++;
      }
-   
+
    if(window2 > window1 && window2 >= 5)
      {
       ArrayResize(windows, window_count + 1);
@@ -710,7 +874,7 @@ double WalkForwardValidation(double &equity[], double &trade_profits[], int n_tr
       weights[window_count] = 0.3;
       window_count++;
      }
-   
+
    if(window3 > window2 && window3 >= 5)
      {
       ArrayResize(windows, window_count + 1);
@@ -719,8 +883,8 @@ double WalkForwardValidation(double &equity[], double &trade_profits[], int n_tr
       weights[window_count] = 0.2;
       window_count++;
      }
-   
-   // Si no hay ventanas válidas, usar solo la base
+
+// Si no hay ventanas válidas, usar solo la base
    if(window_count == 0)
      {
       ArrayResize(windows, 1);
@@ -729,8 +893,8 @@ double WalkForwardValidation(double &equity[], double &trade_profits[], int n_tr
       weights[0] = 1.0;
       window_count = 1;
      }
-   
-   // Normalizar pesos si hay menos ventanas de las esperadas
+
+// Normalizar pesos si hay menos ventanas de las esperadas
    if(window_count > 0)
      {
       double weight_sum = 0.0;
@@ -739,17 +903,17 @@ double WalkForwardValidation(double &equity[], double &trade_profits[], int n_tr
       for(int i = 0; i < window_count; i++)
          weights[i] = weights[i] / weight_sum;
      }
-   
+
    double total_score = 0.0;
-   
+
    for(int w_idx = 0; w_idx < window_count; w_idx++)
      {
       int window = windows[w_idx];
       double weight = weights[w_idx];
-      
+
       if(n_trades < window)
          continue;
-         
+
       int step = MathMax(1, window / 4);  // Solapamiento del 75%
       int wins = 0;
       int total = 0;
@@ -761,13 +925,13 @@ double WalkForwardValidation(double &equity[], double &trade_profits[], int n_tr
       for(int start = 0; start <= n_trades - window; start += step)
         {
          int end = start + window;
-         
+
          // 1) Rentabilidad de la ventana (equity)
          double r = equity[end] - equity[start];
          ArrayResize(window_returns, window_returns_count + 1);
          window_returns[window_returns_count] = r;
          window_returns_count++;
-         
+
          if(r > 0)
             wins++;
          total++;
@@ -788,10 +952,10 @@ double WalkForwardValidation(double &equity[], double &trade_profits[], int n_tr
 
       if(total == 0)
          continue;
-         
+
       double prop_ventanas_rentables = (double)wins / total;
       double avg_win_ratio = win_ratios_count > 0 ? win_ratios_sum / win_ratios_count : 0.0;
-      
+
       // 3) Penalización por volatilidad entre ventanas
       double stability_penalty = 1.0;
       if(window_returns_count >= 3)
@@ -801,7 +965,7 @@ double WalkForwardValidation(double &equity[], double &trade_profits[], int n_tr
          for(int i = 0; i < window_returns_count; i++)
             mean_return += window_returns[i];
          mean_return /= window_returns_count;
-         
+
          double variance = 0.0;
          for(int i = 0; i < window_returns_count; i++)
            {
@@ -809,7 +973,7 @@ double WalkForwardValidation(double &equity[], double &trade_profits[], int n_tr
             variance += diff * diff;
            }
          variance /= window_returns_count;
-         
+
          // Penalizar alta volatilidad (inestabilidad)
          if(variance > 0)
            {
@@ -817,16 +981,16 @@ double WalkForwardValidation(double &equity[], double &trade_profits[], int n_tr
             stability_penalty = 1.0 / (1.0 + cv * 2.0);  // Más penalización por alta volatilidad
            }
         }
-      
+
       // Score para esta ventana
       double window_score = prop_ventanas_rentables * avg_win_ratio * stability_penalty;
       total_score += window_score * weight;
      }
 
-   // Aplicar función sigmoide para mayor discriminación
-   // Penalizar más fuertemente scores bajos
+// Aplicar función sigmoide para mayor discriminación
+// Penalizar más fuertemente scores bajos
    double final_score = MathPow(total_score, 1.5);  // Exponente > 1 para penalizar más los valores bajos
-   
+
    return MathMin(1.0, final_score);
   }
 //+------------------------------------------------------------------+

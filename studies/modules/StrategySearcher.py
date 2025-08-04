@@ -415,7 +415,9 @@ class StrategySearcher:
             final_mask = base_mask & (mapie_scores == 1.0)
             
             # 4. Etiquetado universal
-            full_ds['labels_meta'] = self.get_meta_labels(full_ds, hp)
+            base_meta_mask = self.get_meta_mask(full_ds, hp)
+            meta_mask = base_meta_mask & final_mask
+            full_ds['labels_meta'] = meta_mask.astype('int8')
                 
             main_feature_cols = [col for col in full_ds.columns if col.endswith('_main_feature')]
             model_main_train_data = full_ds[final_mask][main_feature_cols + ['labels_main']].dropna(subset=main_feature_cols).copy()
@@ -477,7 +479,9 @@ class StrategySearcher:
             final_mask = base_mask & (causal_scores == 1.0)
             
             # 4. Etiquetado universal
-            full_ds['labels_meta'] = self.get_meta_labels(full_ds, hp)
+            base_meta_mask = self.get_meta_mask(full_ds, hp)
+            meta_mask = base_meta_mask & final_mask
+            full_ds['labels_meta'] = meta_mask.astype('int8')
                 
             main_feature_cols = [col for col in full_ds.columns if col.endswith('_main_feature')]
             model_main_train_data = full_ds[final_mask][main_feature_cols + ['labels_main']].dropna(subset=main_feature_cols).copy()
@@ -598,14 +602,16 @@ class StrategySearcher:
                 return -1.0
             
             # Meta: todas las muestras, etiquetas binarias (trading/no-trading)  
+            # 4. Etiquetado universal
+            base_meta_mask = self.get_meta_mask(full_ds, hp)
+            meta_mask = base_meta_mask & final_mask
+            full_ds['labels_meta'] = meta_mask.astype('int8')
+
             # 1 si hay señal de trading, 0 si neutral
             meta_feature_cols = [c for c in full_ds.columns if c.endswith('_meta_feature')]
             if not meta_feature_cols:  # Fallback: usar main features si no hay meta features
                 meta_feature_cols = main_feature_cols
-            model_meta_train_data = full_ds[meta_feature_cols].dropna(subset=meta_feature_cols).copy()
-            
-            # Etiquetado universal para consistencia
-            model_meta_train_data['labels_meta'] = self.get_meta_labels(full_ds, hp)
+            model_meta_train_data = full_ds[meta_feature_cols + ['labels_meta']].dropna(subset=meta_feature_cols).copy()
             
             if self.debug:
                 print(f"🔍 DEBUG search_reliability - Main data shape: {model_main_train_data.shape}")
@@ -666,7 +672,8 @@ class StrategySearcher:
                 print(f"🔍 DEBUG evaluate_clusters - Parámetros de validación: {validation_params}")
 
             # Extraer clusters
-            cluster_sizes = full_ds['labels_meta'].value_counts().sort_index()
+            labels_meta_orig = full_ds['labels_meta'].copy()
+            cluster_sizes = labels_meta_orig.value_counts().sort_index()
             if self.debug:
                 print(f"🔍 DEBUG: Cluster sizes:\n{cluster_sizes}")
             if -1 in cluster_sizes.index:
@@ -675,10 +682,10 @@ class StrategySearcher:
                 if self.debug:
                     print("⚠️ ERROR: No hay clusters")
                 return None, None, None, None, None
-            
+
             # Evaluar cada cluster
             for clust in cluster_sizes.index:
-                reliable_mask = full_ds['labels_meta'] == clust
+                reliable_mask = labels_meta_orig == clust
                 
                 if not reliable_mask.any():
                     if self.debug:
@@ -733,9 +740,11 @@ class StrategySearcher:
                 model_main_train_data = full_ds.loc[final_mask, main_feature_cols + ['labels_main']].dropna(subset=main_feature_cols).copy()
                 
                 # Etiquetado universal para consistencia
+                base_meta_mask = self.get_meta_mask(full_ds, hp)
+                meta_mask = final_mask
+                full_ds['labels_meta'] = meta_mask.astype('int8')
                 meta_feature_cols = [c for c in full_ds.columns if c.endswith('_meta_feature')]
-                model_meta_train_data = full_ds[meta_feature_cols].dropna(subset=meta_feature_cols).copy()
-                model_meta_train_data['labels_meta'] = self.get_meta_labels(full_ds, hp)
+                model_meta_train_data = full_ds[meta_feature_cols + ['labels_meta']].dropna(subset=meta_feature_cols).copy()
 
                 # Verificar que tenemos suficientes muestras
                 if model_main_train_data is None or model_main_train_data.empty:
@@ -2370,17 +2379,18 @@ class StrategySearcher:
         if self.label_type == 'classification':
             # Clasificación: mantener todas las clases válidas (0.0, 1.0), excluir no confiables (2.0)
             # Las etiquetas 0.0 son una clase válida en clasificación, no se deben excluir
-            return full_ds['labels_main'] != 2.0
+            base_mask = full_ds['labels_main'] != 2.0
         else:
             # Aplicar filtro según dirección
             if self.direction == 'buy':
-                return full_ds['labels_main'] > 0.0
+                base_mask = full_ds['labels_main'] > 0.0
             elif self.direction == 'sell':
-                return full_ds['labels_main'] < 0.0
+                base_mask = full_ds['labels_main'] < 0.0
             else:  # 'both'
-                return full_ds['labels_main'] != 0.0
+                base_mask = full_ds['labels_main'] != 0.0
+        return base_mask
 
-    def get_meta_labels(self, full_ds: pd.DataFrame, hp: Dict[str, Any]) -> pd.Series:
+    def get_meta_mask(self, full_ds: pd.DataFrame, hp: Dict[str, Any]) -> pd.Series:
         """
         Etiquetado meta universal para todos los métodos de búsqueda.
         
@@ -2421,7 +2431,7 @@ class StrategySearcher:
             print(f"🔍   Meta labels - total_samples: {len(full_ds)}")
             print(f"🔍   Meta labels - reduction: {len(full_ds)} -> {reliable_mask.sum()}")
         
-        return reliable_mask.astype('int8')
+        return reliable_mask
 
     def check_constant_features(self, X: pd.DataFrame, feature_cols: list, std_epsilon: float = 1e-6) -> list:
         """Return the list of columns that may cause numerical instability.

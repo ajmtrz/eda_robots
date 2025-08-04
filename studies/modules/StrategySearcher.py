@@ -351,7 +351,7 @@ class StrategySearcher:
             if self.debug:
                 print(f"🔍 DEBUG search_clusters {self.search_subtype} - Aplicando clustering híbrido")
             
-            base_mask = self.get_base_mask(full_ds)
+            base_mask = self.get_main_mask(full_ds)
             reliable_data = full_ds[base_mask].copy()
             
             # 🔍 DEBUG: Verificar distribución después del filtrado
@@ -401,7 +401,7 @@ class StrategySearcher:
             
             # FLUJO UNIVERSAL: Filtro base + filtro secundario
             # 1. Filtro base: threshold dinámico para regresión
-            base_mask = self.get_base_mask(full_ds)
+            base_mask = self.get_main_mask(full_ds)
             
             # 2. Filtro secundario: MAPIE como método principal
             mapie_scores = self.apply_mapie_filter(
@@ -465,7 +465,7 @@ class StrategySearcher:
             
             # FLUJO UNIVERSAL: Filtro base + filtro secundario
             # 1. Filtro base: threshold dinámico para regresión
-            base_mask = self.get_base_mask(full_ds)
+            base_mask = self.get_main_mask(full_ds)
             
             # 2. Filtro secundario: CAUSAL como método principal
             causal_scores = self.apply_causal_filter(
@@ -541,7 +541,7 @@ class StrategySearcher:
                 return -1.0
 
             # Main: solo muestras con señales, según label_type
-            base_mask = self.get_base_mask(full_ds)
+            base_mask = self.get_main_mask(full_ds)
 
             if not base_mask.any():
                 if self.debug:
@@ -672,8 +672,7 @@ class StrategySearcher:
                 print(f"🔍 DEBUG evaluate_clusters - Parámetros de validación: {validation_params}")
 
             # Extraer clusters
-            labels_meta_orig = full_ds['labels_meta'].copy()
-            cluster_sizes = labels_meta_orig.value_counts().sort_index()
+            cluster_sizes = full_ds['labels_meta'].value_counts().sort_index()
             if self.debug:
                 print(f"🔍 DEBUG: Cluster sizes:\n{cluster_sizes}")
             if -1 in cluster_sizes.index:
@@ -685,7 +684,7 @@ class StrategySearcher:
 
             # Evaluar cada cluster
             for clust in cluster_sizes.index:
-                reliable_mask = labels_meta_orig == clust
+                reliable_mask = full_ds['labels_meta'] == clust
                 
                 if not reliable_mask.any():
                     if self.debug:
@@ -739,12 +738,12 @@ class StrategySearcher:
                 main_feature_cols = [c for c in full_ds.columns if c.endswith('_main_feature')]
                 model_main_train_data = full_ds.loc[final_mask, main_feature_cols + ['labels_main']].dropna(subset=main_feature_cols).copy()
                 
-                # Etiquetado universal para consistencia
-                base_meta_mask = self.get_meta_mask(full_ds, hp)
-                meta_mask = final_mask
-                full_ds['labels_meta'] = meta_mask.astype('int8')
+                # Etiquetado universal: model_meta_train_data contiene TODO full_ds, labels_meta es 1.0/0.0 según final_meta_mask
                 meta_feature_cols = [c for c in full_ds.columns if c.endswith('_meta_feature')]
-                model_meta_train_data = full_ds[meta_feature_cols + ['labels_meta']].dropna(subset=meta_feature_cols).copy()
+                model_meta_train_data = full_ds[meta_feature_cols].copy()
+                model_meta_train_data = model_meta_train_data.dropna(subset=meta_feature_cols)
+                final_meta_mask = self.get_meta_mask(full_ds, hp) & final_mask
+                model_meta_train_data['labels_meta'] = final_meta_mask.loc[model_meta_train_data.index].astype(float)
 
                 # Verificar que tenemos suficientes muestras
                 if model_main_train_data is None or model_main_train_data.empty:
@@ -2364,7 +2363,7 @@ class StrategySearcher:
         
         return train_data, test_data
 
-    def get_base_mask(self, full_ds: pd.DataFrame) -> pd.Series:
+    def get_main_mask(self, full_ds: pd.DataFrame) -> pd.Series:
         """
         Obtiene máscara de trading según label_type.
         
@@ -2379,16 +2378,22 @@ class StrategySearcher:
         if self.label_type == 'classification':
             # Clasificación: mantener todas las clases válidas (0.0, 1.0), excluir no confiables (2.0)
             # Las etiquetas 0.0 son una clase válida en clasificación, no se deben excluir
-            base_mask = full_ds['labels_main'] != 2.0
+            main_mask = full_ds['labels_main'] != 2.0
         else:
             # Aplicar filtro según dirección
             if self.direction == 'buy':
-                base_mask = full_ds['labels_main'] > 0.0
+                main_mask = full_ds['labels_main'] > 0.0
             elif self.direction == 'sell':
-                base_mask = full_ds['labels_main'] < 0.0
+                main_mask = full_ds['labels_main'] < 0.0
             else:  # 'both'
-                base_mask = full_ds['labels_main'] != 0.0
-        return base_mask
+                main_mask = full_ds['labels_main'] != 0.0
+
+        if self.debug:
+            print(f"🔍   Main labels - trading_samples: {main_mask.sum()}")
+            print(f"🔍   Main labels - total_samples: {len(full_ds)}")
+            print(f"🔍   Main labels - reduction: {len(full_ds)} -> {main_mask.sum()}")
+
+        return main_mask
 
     def get_meta_mask(self, full_ds: pd.DataFrame, hp: Dict[str, Any]) -> pd.Series:
         """
@@ -2401,16 +2406,14 @@ class StrategySearcher:
         Returns:
             pd.Series: Labels meta binarios (1=significativo/confiable, 0=neutral/no confiable)
         """
-        # Usar get_base_mask que ya maneja el threshold dinámico
-        base_mask = self.get_base_mask(full_ds)
+        # Usar get_main_mask que ya maneja el threshold dinámico
+        main_mask = self.get_main_mask(full_ds)
 
         if self.label_type == 'regression':
             # Regresión: filtrar según threshold dinámico
             threshold_value, significant_samples = self.calculate_regression_threshold_cv(
                 full_ds['labels_main'], hp
             )
-            
-            # THRESHOLDS UNIFICADOS: asignar a main_threshold
             hp['main_threshold'] = threshold_value
             
             if self.debug:
@@ -2424,14 +2427,16 @@ class StrategySearcher:
                 threshold_mask = full_ds['labels_main'] < -threshold_value
             else:  # 'both'
                 threshold_mask = abs(full_ds['labels_main']) > threshold_value
-            reliable_mask = base_mask & threshold_mask
+            meta_mask = main_mask & threshold_mask
+        else:
+            meta_mask = main_mask
         
         if self.debug:
-            print(f"🔍   Meta labels - trading_samples: {reliable_mask.sum()}")
+            print(f"🔍   Meta labels - trading_samples: {meta_mask.sum()}")
             print(f"🔍   Meta labels - total_samples: {len(full_ds)}")
-            print(f"🔍   Meta labels - reduction: {len(full_ds)} -> {reliable_mask.sum()}")
+            print(f"🔍   Meta labels - reduction: {len(full_ds)} -> {meta_mask.sum()}")
         
-        return reliable_mask
+        return meta_mask
 
     def check_constant_features(self, X: pd.DataFrame, feature_cols: list, std_epsilon: float = 1e-6) -> list:
         """Return the list of columns that may cause numerical instability.

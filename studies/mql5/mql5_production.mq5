@@ -182,13 +182,7 @@ void OnTick()
      {
       // Para regresión convertida, usar acceso directo al primer elemento
       OnnxRun(ExtHandle_main, ONNX_DEFAULT, features_main, main_out);
-
-      if(debug)
-         Print("🔍 DEBUG - Regresión: main_out.Size()=", main_out.Size());
-
-      main_sig = main_out[0];  // Acceso directo al primer elemento
-      if(debug)
-         Print("🔍 DEBUG - Regresión: main_sig=", main_sig);
+      main_sig = main_out[0];
      }
 
 // EXACT PYTHON LOGIC FOR DIRECTION HANDLING
@@ -248,9 +242,8 @@ void OnTick()
    bool sell_sig = (dir_flag != 0) ? (prob_sell > MAIN_THRESHOLD) : false;
    bool meta_ok  = (meta_sig > META_THRESHOLD);
 
-   int label = ((buy_sig || sell_sig) && meta_ok) ? 1 : 0;
    if(debug)
-      print_features_debug(features_main, features_meta, label);
+      print_features_debug(features_main, features_meta, main_sig, meta_sig);
 
 //--- 1) CERRAR posiciones cuyas señales hayan desaparecido - EXACT PYTHON LOGIC
    for(int i = PositionsTotal() - 1; i >= 0; --i)
@@ -792,7 +785,7 @@ double LotsOptimized(double sl_points = 0.0)
 //+------------------------------------------------------------------+
 //| Función para imprimir features_main main y meta con timestamp
 //+------------------------------------------------------------------+
-void print_features_debug(double &features_main[], double &features_meta[], int label)
+void print_features_debug(double &features_main[], double &features_meta[], double label_main, double label_meta)
   {
    m_open.Refresh();
    m_high.Refresh();
@@ -830,7 +823,10 @@ void print_features_debug(double &features_main[], double &features_meta[], int 
    print_array[index] = NormalizeDouble(double(m_vol.GetData(1)), 0);
    index++;
    ArrayResize(print_array, index+1);
-   print_array[index] = NormalizeDouble(double(label), 1);
+   print_array[index] = NormalizeDouble(label_main, DECIMAL_PRECISION);
+   index++;
+   ArrayResize(print_array, index+1);
+   print_array[index] = NormalizeDouble(label_meta, DECIMAL_PRECISION);
    index++;
    ArrayPrint(print_array, DECIMAL_PRECISION);
   }
@@ -993,4 +989,5 @@ double WalkForwardValidation(double &equity[], double &trade_profits[], int n_tr
 
    return MathMin(1.0, final_score);
   }
+//+------------------------------------------------------------------+
 //+------------------------------------------------------------------+

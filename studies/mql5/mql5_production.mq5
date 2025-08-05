@@ -238,8 +238,34 @@ void OnTick()
      }
 
 // EXACT PYTHON SIGNAL LOGIC
-   bool buy_sig  = (dir_flag != 1) ? (prob_buy > MAIN_THRESHOLD) : false;
-   bool sell_sig = (dir_flag != 0) ? (prob_sell > MAIN_THRESHOLD) : false;
+   bool buy_sig, sell_sig;
+   if(LABEL_TYPE == "classification")
+     {
+      // CLASIFICACIÓN: usar probabilidades directamente
+      buy_sig  = (dir_flag != 1) ? (prob_buy > MAIN_THRESHOLD) : false;
+      sell_sig = (dir_flag != 0) ? (prob_sell > MAIN_THRESHOLD) : false;
+     }
+   else // "regression"
+     {
+      // REGRESIÓN: EXACT PYTHON LOGIC - usar main_sig directamente
+      if(DIRECTION == "buy")
+        {
+         buy_sig = main_sig > MAIN_THRESHOLD;
+         sell_sig = false;
+        }
+      else if(DIRECTION == "sell")
+        {
+         buy_sig = false;
+         sell_sig = MathAbs(main_sig) > MAIN_THRESHOLD;
+        }
+      else // "both"
+        {
+         // Distinguir por signo: positivo=buy, negativo=sell
+         buy_sig = (main_sig > MAIN_THRESHOLD) && (main_sig > 0);
+         sell_sig = (MathAbs(main_sig) > MAIN_THRESHOLD) && (main_sig < 0);
+        }
+     }
+   
    bool meta_ok  = (meta_sig > META_THRESHOLD);
 
    if(debug)
@@ -326,7 +352,6 @@ void OnTick()
             string bot_comment = string(MAGIC_NUMBER);
             m_trade.PositionOpen(_Symbol, ORDER_TYPE_BUY, lot, ask, sl_price, tp_price, bot_comment);
             trade_opened_this_bar = true;
-            live_pos++;
            }
 
          if(sell_sig && (max_orders == 0 || live_pos < max_orders))
@@ -343,12 +368,11 @@ void OnTick()
             string bot_comment = string(MAGIC_NUMBER);
             m_trade.PositionOpen(_Symbol, ORDER_TYPE_SELL, lot, bid, sl_price, tp_price, bot_comment);
             trade_opened_this_bar = true;
-            live_pos++;
            }
         }
       else // "regression"
         {
-         // REGRESIÓN: Usar signo para determinar dirección
+         // REGRESIÓN: Usar signo para determinar dirección - EXACT PYTHON LOGIC
          if(DIRECTION == "buy")
            {
             if(buy_sig && (max_orders == 0 || live_pos < max_orders))
@@ -365,7 +389,6 @@ void OnTick()
                string bot_comment = string(MAGIC_NUMBER);
                m_trade.PositionOpen(_Symbol, ORDER_TYPE_BUY, lot, ask, sl_price, tp_price, bot_comment);
                trade_opened_this_bar = true;
-               live_pos++;
               }
            }
          else
@@ -385,12 +408,11 @@ void OnTick()
                   string bot_comment = string(MAGIC_NUMBER);
                   m_trade.PositionOpen(_Symbol, ORDER_TYPE_SELL, lot, bid, sl_price, tp_price, bot_comment);
                   trade_opened_this_bar = true;
-                  live_pos++;
                  }
               }
             else // "both"
               {
-               // Distinguir por signo del valor de regresión
+               // EXACT PYTHON LOGIC: Distinguir por signo del valor de regresión
                if(main_sig > 0 && (max_orders == 0 || live_pos < max_orders))
                  {
                   // BUY si valor positivo
@@ -406,7 +428,6 @@ void OnTick()
                   string bot_comment = string(MAGIC_NUMBER);
                   m_trade.PositionOpen(_Symbol, ORDER_TYPE_BUY, lot, ask, sl_price, tp_price, bot_comment);
                   trade_opened_this_bar = true;
-                  live_pos++;
                  }
                if(main_sig < 0 && (max_orders == 0 || live_pos < max_orders))
                  {
@@ -423,7 +444,6 @@ void OnTick()
                   string bot_comment = string(MAGIC_NUMBER);
                   m_trade.PositionOpen(_Symbol, ORDER_TYPE_SELL, lot, bid, sl_price, tp_price, bot_comment);
                   trade_opened_this_bar = true;
-                  live_pos++;
                  }
               }
         }

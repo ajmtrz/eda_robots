@@ -319,6 +319,9 @@ class StrategySearcher:
                     print(f"🔍 DEBUG search_reliability - No hay muestras de trading")
                 return -1.0
             
+            # Meta: calcular máscara meta ANTES de filtros opcionales (establece hp['main_threshold'])
+            meta_mask = self.get_meta_mask(full_ds, hp)
+            
             # APLICAR MAPIE COMO FILTRO SECUNDARIO (opcional)
             if self.search_filter == 'mapie':
                 if self.debug:
@@ -372,11 +375,9 @@ class StrategySearcher:
                     print(f"🔍 DEBUG search_reliability - Insuficientes muestras main: {len(model_main_train_data)}")
                 return -1.0
             
-            # Meta: todas las muestras, etiquetas binarias (trading/no-trading)  
-            # 4. Etiquetado universal
-            meta_mask = self.get_meta_mask(full_ds, hp)
-            meta_mask = meta_mask & final_mask
-            full_ds['labels_meta'] = meta_mask.astype('int8')
+            # Meta: aplicar máscara meta a muestras filtradas
+            final_meta_mask = meta_mask & final_mask
+            full_ds['labels_meta'] = final_meta_mask.astype('int8')
 
             # 1 si hay señal de trading, 0 si neutral
             meta_feature_cols = [c for c in full_ds.columns if c.endswith('_meta_feature')]
@@ -544,7 +545,8 @@ class StrategySearcher:
             # FLUJO UNIVERSAL: Filtro base + filtro secundario
             # 1. Filtro base: threshold dinámico para regresión
             main_mask = self.get_main_mask(full_ds)
-            
+            meta_mask = self.get_meta_mask(full_ds, hp)
+
             # 2. Filtro secundario: MAPIE como método principal
             mapie_scores = self.apply_mapie_filter(
                 trial=trial, 
@@ -556,10 +558,9 @@ class StrategySearcher:
             # 3. Combinación: muestras que pasan AMBOS filtros
             final_mask = main_mask & (mapie_scores == 1.0)
             
-            # 4. Etiquetado universal
-            meta_mask = self.get_meta_mask(full_ds, hp)
-            meta_mask = meta_mask & final_mask
-            full_ds['labels_meta'] = meta_mask.astype('int8')
+            # Meta: aplicar máscara meta a muestras filtradas
+            final_meta_mask = meta_mask & final_mask
+            full_ds['labels_meta'] = final_meta_mask.astype('int8')
                 
             main_feature_cols = [col for col in full_ds.columns if col.endswith('_main_feature')]
             model_main_train_data = full_ds[final_mask][main_feature_cols + ['labels_main']].dropna(subset=main_feature_cols).copy()
@@ -632,6 +633,7 @@ class StrategySearcher:
             # FLUJO UNIVERSAL: Filtro base + filtro secundario
             # 1. Filtro base: threshold dinámico para regresión
             main_mask = self.get_main_mask(full_ds)
+            meta_mask = self.get_meta_mask(full_ds, hp)
             
             # 2. Filtro secundario: CAUSAL como método principal
             causal_scores = self.apply_causal_filter(
@@ -644,10 +646,9 @@ class StrategySearcher:
             # 3. Combinación: muestras que pasan AMBOS filtros
             final_mask = main_mask & (causal_scores == 1.0)
             
-            # 4. Etiquetado universal
-            meta_mask = self.get_meta_mask(full_ds, hp)
-            meta_mask = meta_mask & final_mask
-            full_ds['labels_meta'] = meta_mask.astype('int8')
+            # Meta: aplicar máscara meta a muestras filtradas
+            final_meta_mask = meta_mask & final_mask
+            full_ds['labels_meta'] = final_meta_mask.astype('int8')
                 
             main_feature_cols = [col for col in full_ds.columns if col.endswith('_main_feature')]
             model_main_train_data = full_ds[final_mask][main_feature_cols + ['labels_main']].dropna(subset=main_feature_cols).copy()
@@ -744,6 +745,8 @@ class StrategySearcher:
                         print(f"🔍   Cluster {clust} descartado: sin muestras confiables")
                     continue
                 
+                meta_mask = self.get_meta_mask(full_ds, hp)
+
                 # APLICAR MAPIE COMO FILTRO SECUNDARIO (opcional)
                 if self.search_filter == 'mapie':
                     if self.debug:
@@ -800,8 +803,8 @@ class StrategySearcher:
                 meta_feature_cols = [c for c in full_ds.columns if c.endswith('_meta_feature')]
                 model_meta_train_data = full_ds[meta_feature_cols].copy()
                 model_meta_train_data = model_meta_train_data.dropna(subset=meta_feature_cols)
-                final_meta_mask = final_mask & self.get_meta_mask(full_ds, hp)
-                model_meta_train_data['labels_meta'] = final_meta_mask.loc[model_meta_train_data.index].astype(float)
+                final_meta_mask = final_mask & meta_mask
+                model_meta_train_data['labels_meta'] = final_meta_mask.loc[model_meta_train_data.index].astype('int8')
 
                 # Verificar que tenemos suficientes muestras
                 if self.label_type == 'classification':

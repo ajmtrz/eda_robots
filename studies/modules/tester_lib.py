@@ -22,7 +22,8 @@ def tester(
         model_meta_threshold: float = 0.5,
         model_max_orders: int = 1,
         model_delay_bars: int = 1,
-        debug: bool = False) -> tuple[float, pd.DataFrame]:
+        debug: bool = False,
+        spread: float = 0.0) -> tuple[float, pd.DataFrame]:
     """
     Evalúa una estrategia para una o ambas direcciones, usando ejecución realista:
     - Las operaciones se abren y cierran al precio 'open' de la barra actual (índice t),
@@ -117,7 +118,8 @@ def tester(
             direction_int  = direction_int,
             label_type_int = label_type_int,
             max_orders = model_max_orders,
-            delay_bars = model_delay_bars
+            delay_bars = model_delay_bars,
+            spread = spread
         )
 
         # DEBUG: Resultados del backtest
@@ -260,11 +262,19 @@ def backtest(open_,
             direction_int  = 2,  # 0=buy, 1=sell, 2=both (mapeado)
             label_type_int = 0,  # 0=classification, 1=regression (mapeado)
             max_orders = 1,      # 0 → ilimitado
-            delay_bars = 1):
+            delay_bars = 1,
+            spread = 0.0):       # Diferencia bid/ask en mismas unidades de precio
     """
     Backtest realista: las operaciones se abren y cierran al precio 'open' de la barra actual (índice t),
     ya que las features y señales de t son válidas para operar en t.
-    No se usa 'close' para la ejecución de operaciones.
+    Para emular con mayor fidelidad el comportamiento del probador de estrategias de MetaTrader 5, se
+    introduce el parámetro «spread» que representa la diferencia bid/ask (constante) expresada en las
+    mismas unidades que el precio.  
+
+    - Para las posiciones LONG se entra al precio ask (bid + spread) y se sale al precio bid.  
+    - Para las posiciones SHORT se entra al precio bid y se sale al precio ask (bid + spread).  
+    De esta forma, cada operación soporta un coste fijo igual al spread y la curva de equity resultante
+    replica el impacto del spread aplicado en MT5.
     """
     LONG, SHORT = 0, 1
 
@@ -344,9 +354,11 @@ def backtest(open_,
             
             if should_close:
                 if pos_type == LONG:
+                    # Salida al precio bid (price). Coste de spread ya aplicado en la entrada
                     profit = price - open_positions_price[i]
                 else:
-                    profit = open_positions_price[i] - price
+                    # Salida al precio ask (price + spread)
+                    profit = open_positions_price[i] - (price + spread)
                 
                 report.append(report[-1] + profit)
                 trade_profits.append(profit)
@@ -367,15 +379,15 @@ def backtest(open_,
         if meta_ok and (bar - last_trade_bar) >= delay_bars:
             trade_opened_this_bar = False
             
-            # BUY
+            # BUY  -> entrar al precio ask (bid + spread)
             if buy_sig and (max_orders == 0 or n_open < max_orders):
                 open_positions_type[n_open] = LONG
-                open_positions_price[n_open] = price
+                open_positions_price[n_open] = price + spread
                 open_positions_bar[n_open] = bar
                 n_open += 1
                 trade_opened_this_bar = True
                 
-            # SELL - Check position limit again after potential BUY opening
+            # SELL -> entrar al precio bid (price tal cual)
             if sell_sig and (max_orders == 0 or n_open < max_orders):
                 open_positions_type[n_open] = SHORT
                 open_positions_price[n_open] = price
@@ -393,7 +405,7 @@ def backtest(open_,
         if pos_type == LONG:
             profit = open_[-1] - open_positions_price[i]
         else:
-            profit = open_positions_price[i] - open_[-1]
+            profit = open_positions_price[i] - (open_[-1] + spread)
         
         report.append(report[-1] + profit)
         trade_profits.append(profit)

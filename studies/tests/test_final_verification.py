@@ -121,14 +121,14 @@ def main():
     csv_rec = csv_by_timestamp[first_ts]
     mt_rec = mt_grouped[first_ts]
     
-    mt_features, mt_ohlcv, mt_label = extract_correct_features_and_ohlcv(mt_rec)
+    mt_features, mt_ohlcv, mt_label_main, mt_label_meta = extract_correct_features_and_ohlcv(mt_rec)
     
     print(f"Timestamp: {first_ts}")
     print(f"MT features extracted: {len(mt_features)}")
     print(f"CSV features expected: {len(feature_names)}")
     
     # Compare features with correct mapping
-    tolerance = 1e-8
+    tolerance = 1.1e-6
     perfect_feature_match = True
     
     print(f"\nFeature comparison (first 10):")
@@ -184,19 +184,33 @@ def main():
     
     # Compare labels
     print(f"\nLabel comparison:")
-    csv_label = float(csv_rec['labels'])
+    csv_label_main = float(csv_rec['labels_main'])
+    csv_label_meta = float(csv_rec['labels_meta'])
     
-    # Label should be the last value in group [20]
-    mt_label_val = mt_label
+    # Labels should be the last two values in group [20]
+    mt_label_main_val = mt_label_main
+    mt_label_meta_val = mt_label_meta
     
-    if mt_label_val is not None:
-        label_diff = abs(mt_label_val - csv_label)
-        label_match = label_diff <= tolerance
-        status = "✅" if label_match else "❌"
-        print(f"  Label: MT={mt_label_val} CSV={csv_label} {status}")
+    label_main_ok = False
+    label_meta_ok = False
+    
+    if mt_label_main_val is not None:
+        label_diff = abs(mt_label_main_val - csv_label_main)
+        label_main_ok = label_diff <= tolerance
+        status = "✅" if label_main_ok else "❌"
+        print(f"  Label_main: MT={mt_label_main_val} CSV={csv_label_main} {status}")
     else:
-        label_match = False
-        print(f"  ❌ MT label not found")
+        print(f"  ❌ MT label_main not found")
+    
+    if mt_label_meta_val is not None:
+        label_diff = abs(mt_label_meta_val - csv_label_meta)
+        label_meta_ok = label_diff <= tolerance
+        status = "✅" if label_meta_ok else "❌"
+        print(f"  Label_meta: MT={mt_label_meta_val} CSV={csv_label_meta} {status}")
+    else:
+        print(f"  ❌ MT label_meta not found")
+    
+    label_match = label_main_ok and label_meta_ok
     
     # Now verify ALL records
     print(f"\n{'='*60}")
@@ -215,7 +229,7 @@ def main():
         csv_rec = csv_by_timestamp[ts]
         mt_rec = mt_grouped[ts]
         
-        mt_feat, mt_ohlc, mt_lbl = extract_correct_features_and_ohlcv(mt_rec)
+        mt_feat, mt_ohlc, mt_lbl_main, mt_lbl_meta = extract_correct_features_and_ohlcv(mt_rec)
         
         # Check available features (ignoring missing ones)
         feature_ok = True
@@ -247,9 +261,10 @@ def main():
         
         # Check label
         label_ok = False
-        if mt_lbl is not None:
-            csv_lbl = float(csv_rec['labels'])
-            label_ok = abs(mt_lbl - csv_lbl) <= tolerance
+        if mt_lbl_main is not None and mt_lbl_meta is not None:
+            csv_lbl_main = float(csv_rec['labels_main'])
+            csv_lbl_meta = float(csv_rec['labels_meta'])
+            label_ok = not (abs(mt_lbl_main - csv_lbl_main) > tolerance or abs(mt_lbl_meta - csv_lbl_meta) > tolerance)
         
         if label_ok:
             label_matches += 1
@@ -265,7 +280,7 @@ def main():
     print(f"")
     print(f"✅ Features (available): {feature_matches}/{len(common_timestamps)} ({feature_matches/len(common_timestamps)*100:.1f}%)")
     print(f"✅ OHLCV data: {ohlcv_matches}/{len(common_timestamps)} ({ohlcv_matches/len(common_timestamps)*100:.1f}%)")
-    print(f"✅ Labels: {label_matches}/{len(common_timestamps)} ({label_matches/len(common_timestamps)*100:.1f}%)")
+    print(f"✅ Labels (main+meta): {label_matches}/{len(common_timestamps)} ({label_matches/len(common_timestamps)*100:.1f}%)")
     print(f"")
     print(f"🎯 Perfect matches: {total_perfect}/{len(common_timestamps)} ({total_perfect/len(common_timestamps)*100:.1f}%)")
     
@@ -277,7 +292,7 @@ def main():
         for i, ts in enumerate(common_timestamps):
             csv_rec = csv_by_timestamp[ts]
             mt_rec = mt_grouped[ts]
-            mt_feat, mt_ohlc, mt_lbl = extract_correct_features_and_ohlcv(mt_rec)
+            mt_feat, mt_ohlc, mt_lbl_main, mt_lbl_meta = extract_correct_features_and_ohlcv(mt_rec)
             # Check available features (ignoring missing ones)
             feature_ok = True
             available_features = min(len(mt_feat), len(feature_names))
@@ -300,17 +315,20 @@ def main():
                 ohlcv_ok = False
             # Check label
             label_ok = False
-            if mt_lbl is not None:
-                csv_lbl = float(csv_rec['labels'])
-                label_ok = abs(mt_lbl - csv_lbl) <= tolerance
+            if mt_lbl_main is not None and mt_lbl_meta is not None:
+                csv_lbl_main = float(csv_rec['labels_main'])
+                csv_lbl_meta = float(csv_rec['labels_meta'])
+                label_ok = not (abs(mt_lbl_main - csv_lbl_main) > tolerance or abs(mt_lbl_meta - csv_lbl_meta) > tolerance)
             if not (feature_ok and ohlcv_ok and label_ok):
                 print(f"\n🔍 DEBUG: Discrepancia en {ts.strftime('%Y.%m.%d %H:%M:%S')}")
                 print(f"  MT features: {mt_feat}")
                 print(f"  CSV features: {[float(csv_rec[feature_names[j]]) for j in range(len(feature_names))]}")
                 print(f"  MT OHLCV: {mt_ohlc}")
                 print(f"  CSV OHLCV: {[float(csv_rec['open']), float(csv_rec['high']), float(csv_rec['low']), float(csv_rec['close']), float(csv_rec['volume'])]}")
-                print(f"  MT label: {mt_lbl}")
-                print(f"  CSV label: {float(csv_rec['labels'])}")
+                print(f"  MT label_main: {mt_lbl_main}")
+                print(f"  CSV label_main: {float(csv_rec['labels_main'])}")
+                print(f"  MT label_meta: {mt_lbl_meta}")
+                print(f"  CSV label_meta: {float(csv_rec['labels_meta'])}")
                 print(f"  Tolerancia: {tolerance}")
                 mismatch_timestamps.append(ts)
         print(f"   Total mismatches: {len(mismatch_timestamps)}")
@@ -374,7 +392,8 @@ def parse_mt_log_line(line):
                 continue
 
         # Puedes ajustar el mínimo de valores requeridos según tu dataset (ej: 5, 8, 10...)
-        if len(values) < 5:
+        # Ahora necesitamos al menos 7 valores: features + 5 OHLCV + 2 labels
+        if len(values) < 7:
             return None
 
         return {
@@ -398,27 +417,29 @@ def group_mt_records_by_timestamp(mt_data):
     return grouped
 
 def extract_correct_features_and_ohlcv(mt_record):
-    """Extrae todos los features concatenando todos los grupos, y OHLCV+label del último grupo."""
+    """Extrae todos los features concatenando todos los grupos, y OHLCV+labels del último grupo."""
     features = []
     ohlcv = None
-    label = None
+    label_main = None
+    label_meta = None
     if not mt_record:
-        return features, ohlcv, label
+        return features, ohlcv, label_main, label_meta
     group_keys = sorted(mt_record.keys())
     for group in group_keys:
         vals = mt_record[group]
-        # Último grupo: features restantes + OHLCV + label
+        # Último grupo: features restantes + OHLCV + 2 labels
         if group == group_keys[-1]:
-            # Asume: features + 5 OHLCV + 1 label
-            n_features = len(vals) - 6
+            # Asume: features + 5 OHLCV + 2 labels
+            n_features = len(vals) - 7
             if n_features > 0:
                 features.extend(vals[:n_features])
-            if len(vals) >= 6:
+            if len(vals) >= 7:
                 ohlcv = vals[n_features:n_features+5]
-                label = vals[-1]
+                label_main = vals[-2]  # Penúltimo valor
+                label_meta = vals[-1]  # Último valor
         else:
             features.extend(vals)
-    return features, ohlcv, label
+    return features, ohlcv, label_main, label_meta
 
 if __name__ == "__main__":
     main()

@@ -800,7 +800,7 @@ class StrategySearcher:
                 meta_feature_cols = [c for c in full_ds.columns if c.endswith('_meta_feature')]
                 model_meta_train_data = full_ds[meta_feature_cols].copy()
                 model_meta_train_data = model_meta_train_data.dropna(subset=meta_feature_cols)
-                final_meta_mask = self.get_meta_mask(full_ds, hp) & final_mask
+                final_meta_mask = final_mask # & self.get_meta_mask(full_ds, hp)
                 model_meta_train_data['labels_meta'] = final_meta_mask.loc[model_meta_train_data.index].astype(float)
 
                 # Verificar que tenemos suficientes muestras
@@ -1122,9 +1122,6 @@ class StrategySearcher:
             
             # Preparar datos del modelo main según label_type
             if self.label_type == 'classification':
-                # Clasificación: filtrar solo 0.0 y 1.0
-                if 'labels_main' in model_main_train_data.columns:
-                    model_main_train_data = model_main_train_data[model_main_train_data['labels_main'].isin([0.0, 1.0])]
                 if model_main_train_data.empty:
                     return None, None, None, None
                 main_feature_cols = [col for col in model_main_train_data.columns if col != 'labels_main']
@@ -1134,43 +1131,27 @@ class StrategySearcher:
                 model_main_train_data, model_main_eval_data = self.get_train_test_data(dataset=model_main_train_data)
                 if model_main_train_data is None or model_main_eval_data is None:
                     return None, None, None, None
-                X_train_main = model_main_train_data[main_feature_cols]
+                X_train_main = model_main_train_data[main_feature_cols].astype('float32')
                 y_train_main = model_main_train_data['labels_main'].astype('int8')
-                X_val_main = model_main_eval_data[main_feature_cols]
+                X_val_main = model_main_eval_data[main_feature_cols].astype('float32')
                 y_val_main = model_main_eval_data['labels_main'].astype('int8')
                 if self.debug:
                     print(f"🔍 DEBUG: X_train_main shape: {X_train_main.shape}, y_train_main shape: {y_train_main.shape}")
                     print(f"🔍 DEBUG: X_val_main shape: {X_val_main.shape}, y_val_main shape: {y_val_main.shape}")
-                if len(y_train_main.value_counts()) < 2 or len(y_val_main.value_counts()) < 2:
-                    return None, None, None, None
+
             else:  # regression
-                # Regresión: usar todas las muestras con valores numéricos
-                if 'labels_main' in model_main_train_data.columns:
-                    # Filtrar solo valores numéricos (no 0.0 que es neutral)
-                    model_main_train_data = model_main_train_data[model_main_train_data['labels_main'] != 0.0]
                 if model_main_train_data.empty:
                     return None, None, None, None
                 main_feature_cols = [col for col in model_main_train_data.columns if col != 'labels_main']
                 if self.debug:
                     print(f"🔍 DEBUG: Main model data shape: {model_main_train_data.shape}")
                     print(f"🔍 DEBUG: Main feature columns: {main_feature_cols}")
-                    
-                    # 🔍 DEBUG: Verificar si hay features temporales sospechosas
-                    temporal_features = [col for col in main_feature_cols if any(x in col.lower() for x in ['time', 'date', 'bar', 'index', 'position'])]
-                    if temporal_features:
-                        print(f"🔍 DEBUG: ⚠️ FEATURES TEMPORALES DETECTADAS: {temporal_features}")
-                    
-                    # 🔍 DEBUG: Verificar correlación con el tiempo
-                    if len(model_main_train_data) > 10:
-                        time_series = pd.Series(model_main_train_data.index.astype(np.int64), index=model_main_train_data.index)
-                        time_corr = time_series.corr(model_main_train_data['labels_main'])
-                        print(f"🔍 DEBUG: Correlación tiempo-labels: {time_corr:.4f}")
                 model_main_train_data, model_main_eval_data = self.get_train_test_data(dataset=model_main_train_data)
                 if model_main_train_data is None or model_main_eval_data is None:
                     return None, None, None, None
-                X_train_main = model_main_train_data[main_feature_cols]
+                X_train_main = model_main_train_data[main_feature_cols].astype('float32')
                 y_train_main = model_main_train_data['labels_main'].astype('float32')
-                X_val_main = model_main_eval_data[main_feature_cols]
+                X_val_main = model_main_eval_data[main_feature_cols].astype('float32')
                 y_val_main = model_main_eval_data['labels_main'].astype('float32')
                 if self.debug:
                     print(f"🔍 DEBUG: X_train_main shape: {X_train_main.shape}, y_train_main shape: {y_train_main.shape}")
@@ -1188,15 +1169,14 @@ class StrategySearcher:
             model_meta_train_data, model_meta_eval_data = self.get_train_test_data(dataset=model_meta_train_data)
             if model_meta_train_data is None or model_meta_eval_data is None:
                 return None, None, None, None
-            X_train_meta = model_meta_train_data[meta_feature_cols]
+            X_train_meta = model_meta_train_data[meta_feature_cols].astype('float32')
             y_train_meta = model_meta_train_data['labels_meta'].astype('int8')
-            X_val_meta = model_meta_eval_data[meta_feature_cols]
+            X_val_meta = model_meta_eval_data[meta_feature_cols].astype('float32')
             y_val_meta = model_meta_eval_data['labels_meta'].astype('int8')
             if self.debug:
                 print(f"🔍 DEBUG: X_train_meta shape: {X_train_meta.shape}, y_train_meta shape: {y_train_meta.shape}")
                 print(f"🔍 DEBUG: X_val_meta shape: {X_val_meta.shape}, y_val_meta shape: {y_val_meta.shape}")
-            if len(y_train_meta.value_counts()) < 2 or len(y_val_meta.value_counts()) < 2:
-                return None, None, None, None
+
             # Configurar parámetros CatBoost según label_type
             if self.label_type == 'classification':
                 cat_main_params = dict(
@@ -2560,7 +2540,7 @@ class StrategySearcher:
             positive_labels = labels_main[labels_main > 0]
             if len(positive_labels) > 0:
                 # Usar percentil optimizado por Optuna
-                percentile = hp.get('model_main_percentile', 0.75)
+                percentile = hp['model_main_percentile']
                 threshold_value = positive_labels.quantile(percentile)
                 significant_samples = (labels_main > threshold_value).sum()
                 if self.debug:
@@ -2576,7 +2556,7 @@ class StrategySearcher:
             negative_labels = labels_main[labels_main < 0]
             if len(negative_labels) > 0:
                 # Usar percentil optimizado por Optuna (invertido para valores negativos)
-                percentile = hp.get('model_main_percentile', 0.25)
+                percentile = hp['model_main_percentile']
                 threshold_value = abs(negative_labels.quantile(percentile))
                 significant_samples = (labels_main < -threshold_value).sum()
                 if self.debug:
@@ -2590,7 +2570,7 @@ class StrategySearcher:
         else:  # 'both'
             # Valores absolutos significativos
             # Usar percentil optimizado por Optuna
-            percentile = hp.get('model_main_percentile', 0.75)
+            percentile = hp['model_main_percentile']
             abs_labels = abs(labels_main)
             threshold_value = abs_labels.quantile(percentile)
             significant_samples = (abs(labels_main) > threshold_value).sum()

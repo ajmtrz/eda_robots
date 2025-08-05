@@ -185,65 +185,29 @@ void OnTick()
       main_sig = main_out[0];
      }
 
-// EXACT PYTHON LOGIC FOR DIRECTION HANDLING
-   double prob_buy, prob_sell;
-   int dir_flag;
-
-   if(LABEL_TYPE == "classification")
-     {
-      // CLASIFICACIÓN (lógica actual)
-      if(DIRECTION == "buy")
-        {
-         prob_buy = main_sig;
-         prob_sell = 0.0;
-         dir_flag = 0;
-        }
-      else
-         if(DIRECTION == "sell")
-           {
-            prob_buy = 0.0;
-            prob_sell = main_sig;
-            dir_flag = 1;
-           }
-         else // "both"
-           {
-            prob_buy = main_sig;
-            prob_sell = 1.0 - main_sig;
-            dir_flag = 2;
-           }
-     }
-   else // "regression"
-     {
-      // REGRESIÓN (nueva lógica)
-      if(DIRECTION == "buy")
-        {
-         prob_buy = main_sig;
-         prob_sell = 0.0;
-         dir_flag = 0;
-        }
-      else
-         if(DIRECTION == "sell")
-           {
-            prob_buy = 0.0;
-            prob_sell = MathAbs(main_sig);  // Valor absoluto para sell
-            dir_flag = 1;
-           }
-         else // "both"
-           {
-            // Distinguir por signo: positivo=buy, negativo=sell
-            prob_buy = (main_sig > 0) ? main_sig : 0.0;
-            prob_sell = (main_sig < 0) ? MathAbs(main_sig) : 0.0;
-            dir_flag = 2;
-           }
-     }
+// Remove prob_buy/prob_sell logic - signals are generated directly from main_sig
 
 // EXACT PYTHON SIGNAL LOGIC
    bool buy_sig, sell_sig;
    if(LABEL_TYPE == "classification")
      {
-      // CLASIFICACIÓN: usar probabilidades directamente
-      buy_sig  = (dir_flag != 1) ? (prob_buy > MAIN_THRESHOLD) : false;
-      sell_sig = (dir_flag != 0) ? (prob_sell > MAIN_THRESHOLD) : false;
+      // CLASIFICACIÓN: EXACT PYTHON LOGIC - use main_sig directly for both directions
+      if(DIRECTION == "buy")
+        {
+         buy_sig = main_sig > MAIN_THRESHOLD;
+         sell_sig = false;
+        }
+      else if(DIRECTION == "sell")
+        {
+         buy_sig = false;
+         sell_sig = main_sig > MAIN_THRESHOLD;
+        }
+      else // "both"
+        {
+         // EXACT PYTHON LOGIC: Both signals use same threshold check
+         buy_sig = main_sig > MAIN_THRESHOLD;
+         sell_sig = main_sig > MAIN_THRESHOLD;
+        }
      }
    else // "regression"
      {
@@ -282,48 +246,57 @@ void OnTick()
       ENUM_POSITION_TYPE ptype = (ENUM_POSITION_TYPE)PositionGetInteger(POSITION_TYPE);
       bool must_close = false;
 
+      // EXACT PYTHON CLOSING LOGIC
       if(LABEL_TYPE == "classification")
         {
-         // CLASIFICACIÓN: Cerrar si no hay señal O meta no está OK
-         if(ptype == POSITION_TYPE_BUY && (!buy_sig || !meta_ok))
+         // CLASIFICACIÓN: EXACT PYTHON LOGIC
+         if(DIRECTION == "buy")
            {
-            must_close = true;
-            if(debug)
-               Print("🔍 DEBUG - Cerrando BUY (clasificación): buy_sig=", buy_sig, " meta_ok=", meta_ok);
+            must_close = (ptype == POSITION_TYPE_BUY && (!buy_sig || !meta_ok));
            }
-         else
-            if(ptype == POSITION_TYPE_SELL && (!sell_sig || !meta_ok))
-              {
-               must_close = true;
-               if(debug)
-                  Print("🔍 DEBUG - Cerrando SELL (clasificación): sell_sig=", sell_sig, " meta_ok=", meta_ok);
-              }
+         else if(DIRECTION == "sell")
+           {
+            must_close = (ptype == POSITION_TYPE_SELL && (!sell_sig || !meta_ok));
+           }
+         else // "both"
+           {
+            must_close = (ptype == POSITION_TYPE_BUY && (!buy_sig || !meta_ok)) || 
+                        (ptype == POSITION_TYPE_SELL && (!sell_sig || !meta_ok));
+           }
         }
       else // "regression"
         {
-         // REGRESIÓN: Cerrar si no hay señal O meta no está OK O signo incorrecto
-         if(ptype == POSITION_TYPE_BUY)
+         // REGRESIÓN: EXACT PYTHON LOGIC
+         if(DIRECTION == "buy")
            {
-            must_close = (!buy_sig || !meta_ok || main_sig <= 0);
-            if(debug && must_close)
-               Print("🔍 DEBUG - Cerrando BUY (regresión): buy_sig=", buy_sig, " meta_ok=", meta_ok, " main_sig=", main_sig);
+            must_close = (ptype == POSITION_TYPE_BUY && (!buy_sig || !meta_ok));
            }
-         else
-            if(ptype == POSITION_TYPE_SELL)
+         else if(DIRECTION == "sell")
+           {
+            must_close = (ptype == POSITION_TYPE_SELL && (!sell_sig || !meta_ok));
+           }
+         else // "both"
+           {
+            if(ptype == POSITION_TYPE_BUY)
               {
-               must_close = (!sell_sig || !meta_ok || main_sig >= 0);
-               if(debug && must_close)
-                  Print("🔍 DEBUG - Cerrando SELL (regresión): sell_sig=", sell_sig, " meta_ok=", meta_ok, " main_sig=", main_sig);
+               must_close = !buy_sig || main_sig <= 0 || !meta_ok;
               }
+            else // SHORT
+              {
+               must_close = !sell_sig || main_sig >= 0 || !meta_ok;
+              }
+           }
         }
+      
+      if(debug && must_close)
+        Print("🔍 DEBUG - Cerrando posición: tipo=", EnumToString(ptype), 
+              " buy_sig=", buy_sig, " sell_sig=", sell_sig, " meta_ok=", meta_ok, " main_sig=", main_sig);
 
-      if(must_close)
-        {
-         if(debug)
-            Print("🔍 DEBUG - CERRANDO POSICIÓN tipo: ", EnumToString(ptype));
-         m_trade.PositionClose(PositionGetString(POSITION_SYMBOL));
-         last_trade_bar_index = bar_counter;
-        }
+              if(must_close)
+         {
+          m_trade.PositionClose(PositionGetString(POSITION_SYMBOL));
+          last_trade_bar_index = bar_counter;
+         }
      }
 
 //--- 2) ABRIR nuevas posiciones - EXACT PYTHON LOGIC
@@ -335,117 +308,40 @@ void OnTick()
      {
       bool trade_opened_this_bar = false;
 
-      if(LABEL_TYPE == "classification")
+      // EXACT PYTHON OPENING LOGIC: BUY first, then SELL (checking position limits each time)
+      // BUY signal processing
+      if(buy_sig && (max_orders == 0 || live_pos < max_orders))
         {
-         // CLASIFICACIÓN (lógica actual)
-         if(buy_sig && (max_orders == 0 || live_pos < max_orders))
-           {
-            if(debug)
-               Print("🔍 DEBUG - ABRIENDO BUY (clasificación)");
-            double atr = m_atr.Main(0);
-            double sl_points = stoploss * atr;
-            double tp_points = takeprofit * atr;
-            double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
-            double sl_price  = sl_points == 0.0 ? 0.0 : ask - sl_points;
-            double tp_price  = tp_points == 0.0 ? 0.0 : ask + tp_points;
-            double lot = (manual_lot > 0.0) ? manual_lot : LotsOptimized(sl_points);
-            string bot_comment = string(MAGIC_NUMBER);
-            m_trade.PositionOpen(_Symbol, ORDER_TYPE_BUY, lot, ask, sl_price, tp_price, bot_comment);
-            trade_opened_this_bar = true;
-           }
-
-         if(sell_sig && (max_orders == 0 || live_pos < max_orders))
-           {
-            if(debug)
-               Print("🔍 DEBUG - ABRIENDO SELL (clasificación)");
-            double atr = m_atr.Main(0);
-            double sl_points = stoploss * atr;
-            double tp_points = takeprofit * atr;
-            double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
-            double sl_price  = sl_points == 0.0 ? 0.0 : bid + sl_points;
-            double tp_price  = tp_points == 0.0 ? 0.0 : bid - tp_points;
-            double lot = (manual_lot > 0.0) ? manual_lot : LotsOptimized(sl_points);
-            string bot_comment = string(MAGIC_NUMBER);
-            m_trade.PositionOpen(_Symbol, ORDER_TYPE_SELL, lot, bid, sl_price, tp_price, bot_comment);
-            trade_opened_this_bar = true;
-           }
+         if(debug)
+            Print("🔍 DEBUG - ABRIENDO BUY: main_sig=", main_sig, " threshold=", MAIN_THRESHOLD);
+         double atr = m_atr.Main(0);
+         double sl_points = stoploss * atr;
+         double tp_points = takeprofit * atr;
+         double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+         double sl_price  = sl_points == 0.0 ? 0.0 : ask - sl_points;
+         double tp_price  = tp_points == 0.0 ? 0.0 : ask + tp_points;
+         double lot = (manual_lot > 0.0) ? manual_lot : LotsOptimized(sl_points);
+         string bot_comment = string(MAGIC_NUMBER);
+         m_trade.PositionOpen(_Symbol, ORDER_TYPE_BUY, lot, ask, sl_price, tp_price, bot_comment);
+         trade_opened_this_bar = true;
+         live_pos++; // Update position count for potential SELL order
         }
-      else // "regression"
+
+      // SELL signal processing - Check position limit again after potential BUY opening
+      if(sell_sig && (max_orders == 0 || live_pos < max_orders))
         {
-         // REGRESIÓN: Usar signo para determinar dirección - EXACT PYTHON LOGIC
-         if(DIRECTION == "buy")
-           {
-            if(buy_sig && (max_orders == 0 || live_pos < max_orders))
-              {
-               if(debug)
-                  Print("🔍 DEBUG - ABRIENDO BUY (regresión)");
-               double atr = m_atr.Main(0);
-               double sl_points = stoploss * atr;
-               double tp_points = takeprofit * atr;
-               double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
-               double sl_price  = sl_points == 0.0 ? 0.0 : ask - sl_points;
-               double tp_price  = tp_points == 0.0 ? 0.0 : ask + tp_points;
-               double lot = (manual_lot > 0.0) ? manual_lot : LotsOptimized(sl_points);
-               string bot_comment = string(MAGIC_NUMBER);
-               m_trade.PositionOpen(_Symbol, ORDER_TYPE_BUY, lot, ask, sl_price, tp_price, bot_comment);
-               trade_opened_this_bar = true;
-              }
-           }
-         else
-            if(DIRECTION == "sell")
-              {
-               if(sell_sig && (max_orders == 0 || live_pos < max_orders))
-                 {
-                  if(debug)
-                     Print("🔍 DEBUG - ABRIENDO SELL (regresión)");
-                  double atr = m_atr.Main(0);
-                  double sl_points = stoploss * atr;
-                  double tp_points = takeprofit * atr;
-                  double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
-                  double sl_price  = sl_points == 0.0 ? 0.0 : bid + sl_points;
-                  double tp_price  = tp_points == 0.0 ? 0.0 : bid - tp_points;
-                  double lot = (manual_lot > 0.0) ? manual_lot : LotsOptimized(sl_points);
-                  string bot_comment = string(MAGIC_NUMBER);
-                  m_trade.PositionOpen(_Symbol, ORDER_TYPE_SELL, lot, bid, sl_price, tp_price, bot_comment);
-                  trade_opened_this_bar = true;
-                 }
-              }
-            else // "both"
-              {
-               // EXACT PYTHON LOGIC: Distinguir por signo del valor de regresión
-               if(main_sig > 0 && (max_orders == 0 || live_pos < max_orders))
-                 {
-                  // BUY si valor positivo
-                  if(debug)
-                     Print("🔍 DEBUG - ABRIENDO BUY (regresión both, main_sig=", main_sig, ")");
-                  double atr = m_atr.Main(0);
-                  double sl_points = stoploss * atr;
-                  double tp_points = takeprofit * atr;
-                  double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
-                  double sl_price  = sl_points == 0.0 ? 0.0 : ask - sl_points;
-                  double tp_price  = tp_points == 0.0 ? 0.0 : ask + tp_points;
-                  double lot = (manual_lot > 0.0) ? manual_lot : LotsOptimized(sl_points);
-                  string bot_comment = string(MAGIC_NUMBER);
-                  m_trade.PositionOpen(_Symbol, ORDER_TYPE_BUY, lot, ask, sl_price, tp_price, bot_comment);
-                  trade_opened_this_bar = true;
-                 }
-               if(main_sig < 0 && (max_orders == 0 || live_pos < max_orders))
-                 {
-                  // SELL si valor negativo
-                  if(debug)
-                     Print("🔍 DEBUG - ABRIENDO SELL (regresión both, main_sig=", main_sig, ")");
-                  double atr = m_atr.Main(0);
-                  double sl_points = stoploss * atr;
-                  double tp_points = takeprofit * atr;
-                  double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
-                  double sl_price  = sl_points == 0.0 ? 0.0 : bid + sl_points;
-                  double tp_price  = tp_points == 0.0 ? 0.0 : bid - tp_points;
-                  double lot = (manual_lot > 0.0) ? manual_lot : LotsOptimized(sl_points);
-                  string bot_comment = string(MAGIC_NUMBER);
-                  m_trade.PositionOpen(_Symbol, ORDER_TYPE_SELL, lot, bid, sl_price, tp_price, bot_comment);
-                  trade_opened_this_bar = true;
-                 }
-              }
+         if(debug)
+            Print("🔍 DEBUG - ABRIENDO SELL: main_sig=", main_sig, " threshold=", MAIN_THRESHOLD);
+         double atr = m_atr.Main(0);
+         double sl_points = stoploss * atr;
+         double tp_points = takeprofit * atr;
+         double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+         double sl_price  = sl_points == 0.0 ? 0.0 : bid + sl_points;
+         double tp_price  = tp_points == 0.0 ? 0.0 : bid - tp_points;
+         double lot = (manual_lot > 0.0) ? manual_lot : LotsOptimized(sl_points);
+         string bot_comment = string(MAGIC_NUMBER);
+         m_trade.PositionOpen(_Symbol, ORDER_TYPE_SELL, lot, bid, sl_price, tp_price, bot_comment);
+         trade_opened_this_bar = true;
         }
 
       // Update last_trade_bar only once per bar, regardless of how many positions opened

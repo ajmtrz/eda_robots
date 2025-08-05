@@ -286,6 +286,149 @@ class StrategySearcher:
     # Métodos de búsqueda específicos
     # =========================================================================
 
+    def search_reliability(self, trial: optuna.Trial) -> float:
+        """
+        Búsqueda basada en confiabilidad de patrones (esquema puro de confiabilidad).
+        
+        Este método implementa el esquema original del artículo MQL5 donde:
+        - Meta model: "¿es confiable el patrón?" (1=confiable, 0=no confiable)
+        - Main model: "¿buy o sell?" (solo en muestras confiables)
+        
+        NOTA: Con el Enfoque 4 de confiabilidad implementado, ahora cualquier 
+        método de búsqueda (clusters, mapie, causal, etc.) puede usar automáticamente
+        etiquetado fractal. Este método se mantiene para compatibilidad y como
+        referencia de la implementación original del artículo.
+        """
+        try:
+            hp = self.suggest_all_params(trial)
+            
+            # 🔍 DEBUG: Supervisar parámetros específicos de confiabilidad
+            if self.debug:
+                reliability_params = {k: v for k, v in hp.items() if k.startswith('label_')}
+                print(f"🔍 DEBUG search_reliability - Parámetros de confiabilidad: {reliability_params}")
+                
+            full_ds = self.get_labeled_full_data(hp)
+            if full_ds is None:
+                return -1.0
+
+            # Main: solo muestras con señales, según label_type
+            main_mask = self.get_main_mask(full_ds)
+
+            if not main_mask.any():
+                if self.debug:
+                    print(f"🔍 DEBUG search_reliability - No hay muestras de trading")
+                return -1.0
+            
+            # APLICAR MAPIE COMO FILTRO SECUNDARIO (opcional)
+            if self.search_filter == 'mapie':
+                if self.debug:
+                    print(f"🔍 DEBUG search_reliability - Aplicando filtrado MAPIE")
+                    print(f"🔍   main_mask.sum(): {main_mask.sum()}")
+                    print(f"🔍   main_mask.mean(): {main_mask.mean():.3f}")
+                
+                mapie_scores = self.apply_mapie_filter(trial, full_ds, hp, main_mask)
+                mapie_mask = mapie_scores == 1.0
+                final_mask = main_mask & mapie_mask
+                
+                if self.debug:
+                    print(f"🔍   mapie_mask.sum(): {mapie_mask.sum()}")
+                    print(f"🔍   mapie_mask.mean(): {mapie_mask.mean():.3f}")
+                    print(f"🔍   final_mask.sum(): {final_mask.sum()}")
+                    print(f"🔍   final_mask.mean(): {final_mask.mean():.3f}")
+                    if main_mask.sum() > 0:
+                        print(f"🔍   Reducción de muestras: {main_mask.sum()} -> {final_mask.sum()} ({final_mask.sum()/main_mask.sum()*100:.1f}%)")
+            elif self.search_filter == 'causal':
+                if self.debug:
+                    print(f"🔍 DEBUG search_reliability - Aplicando filtrado CAUSAL")
+                    print(f"🔍   main_mask.sum(): {main_mask.sum()}")
+                    print(f"🔍   main_mask.mean(): {main_mask.mean():.3f}")
+                
+                causal_scores = self.apply_causal_filter(trial, full_ds, hp, main_mask)
+                causal_mask = causal_scores == 1.0
+                final_mask = main_mask & causal_mask
+                
+                if self.debug:
+                    print(f"🔍   causal_mask.sum(): {causal_mask.sum()}")
+                    print(f"🔍   causal_mask.mean(): {causal_mask.mean():.3f}")
+                    print(f"🔍   final_mask.sum(): {final_mask.sum()}")
+                    print(f"🔍   final_mask.mean(): {final_mask.mean():.3f}")
+                    if main_mask.sum() > 0:
+                        print(f"🔍   Reducción de muestras: {main_mask.sum()} -> {final_mask.sum()} ({final_mask.sum()/main_mask.sum()*100:.1f}%)")
+            else:
+                final_mask = main_mask
+                
+                if self.debug:
+                    print(f"🔍 DEBUG search_reliability - Sin filtrado MAPIE o CAUSAL")
+                    print(f"🔍   final_mask.sum(): {final_mask.sum()}")
+                    print(f"🔍   final_mask.mean(): {final_mask.mean():.3f}")
+
+            # Crear datasets con final_mask (lógica original)
+            main_feature_cols = [c for c in full_ds.columns if c.endswith('_main_feature')]
+            model_main_train_data = full_ds.loc[final_mask, main_feature_cols + ['labels_main']].dropna(subset=main_feature_cols).copy()
+                
+            # Verificar que tenemos suficientes muestras
+            if len(model_main_train_data) < 200:
+                if self.debug:
+                    print(f"🔍 DEBUG search_reliability - Insuficientes muestras main: {len(model_main_train_data)}")
+                return -1.0
+            
+            # Meta: todas las muestras, etiquetas binarias (trading/no-trading)  
+            # 4. Etiquetado universal
+            meta_mask = self.get_meta_mask(full_ds, hp)
+            meta_mask = meta_mask & final_mask
+            full_ds['labels_meta'] = meta_mask.astype('int8')
+
+            # 1 si hay señal de trading, 0 si neutral
+            meta_feature_cols = [c for c in full_ds.columns if c.endswith('_meta_feature')]
+            if not meta_feature_cols:  # Fallback: usar main features si no hay meta features
+                meta_feature_cols = main_feature_cols
+            model_meta_train_data = full_ds[meta_feature_cols + ['labels_meta']].dropna(subset=meta_feature_cols).copy()
+            
+            if self.debug:
+                print(f"🔍 DEBUG search_reliability - Main data shape: {model_main_train_data.shape}")
+                print(f"🔍   Meta data shape: {model_meta_train_data.shape}")
+                meta_dist = model_meta_train_data['labels_meta'].value_counts()
+                print(f"🔍   Meta labels distribution: {meta_dist}")
+            
+            # Verificar distribución de clases
+            if self.label_type == 'classification':
+                if set(model_main_train_data['labels_main'].unique()) != {0.0, 1.0}:
+                    if self.debug:
+                        print(f"🔍   Search reliability - labels_main insuficientes")
+                    return -1.0
+            elif self.label_type == 'regression':
+                if set(model_main_train_data['labels_main'].unique()) == {0.0}:
+                    if self.debug:
+                        print(f"🔍   Search reliability - labels_main insuficientes")
+                    return -1.0
+            if set(model_meta_train_data['labels_meta'].unique()) != {0.0, 1.0}:
+                if self.debug:
+                    print(f"🔍   Search reliability - labels_meta insuficientes")
+                return -1.0
+                
+            # Usar pipeline existente
+            score, full_ds_with_labels_path, model_paths, models_cols = self.fit_final_models(
+                trial=trial,
+                full_ds=full_ds,
+                model_main_train_data=model_main_train_data,
+                model_meta_train_data=model_meta_train_data,
+                hp=hp.copy()
+            )
+            
+            if score is None or model_paths is None or models_cols is None or full_ds_with_labels_path is None:
+                return -1.0
+                
+            trial.set_user_attr('score', score)
+            trial.set_user_attr('model_paths', model_paths)
+            trial.set_user_attr('model_cols', models_cols)
+            trial.set_user_attr('full_ds_with_labels_path', full_ds_with_labels_path)
+            trial.set_user_attr('best_meta_threshold', hp.get('meta_threshold', 0.5))
+            return trial.user_attrs.get('score', -1.0)
+            
+        except Exception as e:
+            print(f"Error en search_reliability: {str(e)}")
+            return -1.0
+
     def search_clusters(self, trial: optuna.Trial) -> float:
         """Implementa la búsqueda de estrategias usando clustering."""
         def _clustering_method(data, hp):
@@ -351,26 +494,26 @@ class StrategySearcher:
             if self.debug:
                 print(f"🔍 DEBUG search_clusters {self.search_subtype} - Aplicando clustering híbrido")
             
-            base_mask = self.get_main_mask(full_ds)
-            reliable_data = full_ds[base_mask].copy()
+            main_mask = self.get_main_mask(full_ds)
+            reliable_data = full_ds[main_mask].copy()
+            
+            if len(reliable_data) < 200:
+                if self.debug:
+                    print(f"🔍 DEBUG search_clusters {self.search_subtype} - Insuficientes muestras confiables para hacer clustering")
+                return -1.0
             
             # 🔍 DEBUG: Verificar distribución después del filtrado
             if self.debug:
                 print(f"🔍 DEBUG search_clusters {self.search_subtype} - Filtrado por {self.label_type}:")
                 print(f"🔍   Total muestras: {len(full_ds)}")
-                print(f"🔍   Muestras confiables: {base_mask.sum()} ({base_mask.mean():.1%})")
+                print(f"🔍   Muestras confiables: {main_mask.sum()} ({main_mask.mean():.1%})")
                 print(f"🔍   Total muestras confiables: {len(reliable_data)}")
-            
-            if len(reliable_data) < 200:
-                if self.debug:
-                    print(f"🔍 DEBUG search_clusters {self.search_subtype} - Insuficientes muestras confiables para clustering")
-                return -1.0
             
             # Aplicar clustering
             reliable_data_clustered = _clustering_method(reliable_data, hp)
             # Propagar clusters a dataset completo
-            full_ds.loc[base_mask, 'labels_meta'] = reliable_data_clustered['labels_meta']
-            full_ds.loc[~base_mask, 'labels_meta'] = -1  # Muestras no confiables sin cluster
+            full_ds.loc[main_mask, 'labels_meta'] = reliable_data_clustered['labels_meta']
+            full_ds.loc[~main_mask, 'labels_meta'] = -1  # Muestras no confiables sin cluster
 
             score, full_ds_with_labels_path, model_paths, models_cols, best_main_threshold = self.evaluate_clusters(trial, full_ds, hp)
             if score is None or model_paths is None or models_cols is None or full_ds_with_labels_path is None:
@@ -380,7 +523,6 @@ class StrategySearcher:
             trial.set_user_attr('model_cols', models_cols)
             trial.set_user_attr('full_ds_with_labels_path', full_ds_with_labels_path)
             trial.set_user_attr('best_main_threshold', best_main_threshold)
-            # THRESHOLDS UNIFICADOS: guardar meta threshold
             trial.set_user_attr('best_meta_threshold', hp.get('meta_threshold', 0.5))
             return trial.user_attrs.get('score', -1.0)
         except Exception as e:
@@ -401,35 +543,60 @@ class StrategySearcher:
             
             # FLUJO UNIVERSAL: Filtro base + filtro secundario
             # 1. Filtro base: threshold dinámico para regresión
-            base_mask = self.get_main_mask(full_ds)
+            main_mask = self.get_main_mask(full_ds)
             
             # 2. Filtro secundario: MAPIE como método principal
             mapie_scores = self.apply_mapie_filter(
                 trial=trial, 
                 full_ds=full_ds, 
                 hp=hp, 
-                reliable_mask=base_mask
+                reliable_mask=main_mask
             )
             
             # 3. Combinación: muestras que pasan AMBOS filtros
-            final_mask = base_mask & (mapie_scores == 1.0)
+            final_mask = main_mask & (mapie_scores == 1.0)
             
             # 4. Etiquetado universal
-            base_meta_mask = self.get_meta_mask(full_ds, hp)
-            meta_mask = base_meta_mask & final_mask
+            meta_mask = self.get_meta_mask(full_ds, hp)
+            meta_mask = meta_mask & final_mask
             full_ds['labels_meta'] = meta_mask.astype('int8')
                 
             main_feature_cols = [col for col in full_ds.columns if col.endswith('_main_feature')]
             model_main_train_data = full_ds[final_mask][main_feature_cols + ['labels_main']].dropna(subset=main_feature_cols).copy()
-            if len(model_main_train_data) < 200:  # Mínimo razonable
+            
+            if len(model_main_train_data) < 200:
                 if self.debug:
                     print(f"🔍 DEBUG search_mapie - Insuficientes muestras main: {len(model_main_train_data)}")
                 return -1.0
+            
             # Meta model debe usar meta features, no main features
             meta_feature_cols = [col for col in full_ds.columns if col.endswith('_meta_feature')]
             if not meta_feature_cols:  # Fallback: usar main features si no hay meta features
                 meta_feature_cols = main_feature_cols
             model_meta_train_data = full_ds[meta_feature_cols + ['labels_meta']].dropna(subset=meta_feature_cols).copy()
+
+            if self.debug:
+                print(f"🔍 DEBUG search_mapie - Main data shape: {model_main_train_data.shape}")
+                print(f"🔍   Meta data shape: {model_meta_train_data.shape}")
+                meta_dist = model_meta_train_data['labels_meta'].value_counts()
+                print(f"🔍   Meta labels distribution: {meta_dist}")
+
+            # Verificar distribución de clases
+            if self.label_type == 'classification':
+                if set(model_main_train_data['labels_main'].unique()) != {0.0, 1.0}:
+                    if self.debug:
+                        print(f"🔍   Search mapie - labels_main insuficientes")
+                    return -1.0
+            elif self.label_type == 'regression':
+                if set(model_main_train_data['labels_main'].unique()) == {0.0}:
+                    if self.debug:
+                        print(f"🔍   Search mapie - labels_main insuficientes")
+                    return -1.0
+            if set(model_meta_train_data['labels_meta'].unique()) != {0.0, 1.0}:
+                if self.debug:
+                    print(f"🔍   Search mapie - labels_meta insuficientes")
+                return -1.0
+            
             score, full_ds_with_labels_path, model_paths, models_cols = self.fit_final_models(
                 trial=trial,
                 full_ds=full_ds,
@@ -444,7 +611,6 @@ class StrategySearcher:
             trial.set_user_attr('model_paths', model_paths)
             trial.set_user_attr('model_cols', models_cols)
             trial.set_user_attr('full_ds_with_labels_path', full_ds_with_labels_path)
-            # THRESHOLDS UNIFICADOS: guardar meta threshold
             trial.set_user_attr('best_meta_threshold', hp.get('meta_threshold', 0.5))
             return trial.user_attrs.get('score', -1.0)
         except Exception as e:
@@ -465,150 +631,34 @@ class StrategySearcher:
             
             # FLUJO UNIVERSAL: Filtro base + filtro secundario
             # 1. Filtro base: threshold dinámico para regresión
-            base_mask = self.get_main_mask(full_ds)
+            main_mask = self.get_main_mask(full_ds)
             
             # 2. Filtro secundario: CAUSAL como método principal
             causal_scores = self.apply_causal_filter(
                 trial=trial, 
                 full_ds=full_ds, 
                 hp=hp, 
-                reliable_mask=base_mask
+                reliable_mask=main_mask
             )
             
             # 3. Combinación: muestras que pasan AMBOS filtros
-            final_mask = base_mask & (causal_scores == 1.0)
+            final_mask = main_mask & (causal_scores == 1.0)
             
             # 4. Etiquetado universal
-            base_meta_mask = self.get_meta_mask(full_ds, hp)
-            meta_mask = base_meta_mask & final_mask
+            meta_mask = self.get_meta_mask(full_ds, hp)
+            meta_mask = meta_mask & final_mask
             full_ds['labels_meta'] = meta_mask.astype('int8')
                 
             main_feature_cols = [col for col in full_ds.columns if col.endswith('_main_feature')]
             model_main_train_data = full_ds[final_mask][main_feature_cols + ['labels_main']].dropna(subset=main_feature_cols).copy()
-            if len(model_main_train_data) < 200:  # Mínimo razonable
+            
+            if len(model_main_train_data) < 200:
                 if self.debug:
                     print(f"🔍 DEBUG search_causal - Insuficientes muestras main: {len(model_main_train_data)}")
                 return -1.0
+            
             # Meta model debe usar meta features, no main features
             meta_feature_cols = [col for col in full_ds.columns if col.endswith('_meta_feature')]
-            if not meta_feature_cols:  # Fallback: usar main features si no hay meta features
-                meta_feature_cols = main_feature_cols
-            model_meta_train_data = full_ds[meta_feature_cols + ['labels_meta']].dropna(subset=meta_feature_cols).copy()
-            score, full_ds_with_labels_path, model_paths, models_cols = self.fit_final_models(
-                trial=trial,
-                full_ds=full_ds,
-                model_main_train_data=model_main_train_data,
-                model_meta_train_data=model_meta_train_data,
-                hp=hp.copy()
-            )
-                
-            if score is None or model_paths is None or models_cols is None or full_ds_with_labels_path is None:
-                return -1.0
-            trial.set_user_attr('score', score)
-            trial.set_user_attr('model_paths', model_paths)
-            trial.set_user_attr('model_cols', models_cols)
-            trial.set_user_attr('full_ds_with_labels_path', full_ds_with_labels_path)
-            # THRESHOLDS UNIFICADOS: guardar meta threshold
-            trial.set_user_attr('best_meta_threshold', hp.get('meta_threshold', 0.5))
-            return trial.user_attrs.get('score', -1.0)
-        except Exception as e:
-            print(f"Error en search_causal: {str(e)}")
-            return -1.0
-
-    def search_reliability(self, trial: optuna.Trial) -> float:
-        """
-        Búsqueda basada en confiabilidad de patrones (esquema puro de confiabilidad).
-        
-        Este método implementa el esquema original del artículo MQL5 donde:
-        - Meta model: "¿es confiable el patrón?" (1=confiable, 0=no confiable)
-        - Main model: "¿buy o sell?" (solo en muestras confiables)
-        
-        NOTA: Con el Enfoque 4 de confiabilidad implementado, ahora cualquier 
-        método de búsqueda (clusters, mapie, causal, etc.) puede usar automáticamente
-        etiquetado fractal. Este método se mantiene para compatibilidad y como
-        referencia de la implementación original del artículo.
-        """
-        try:
-            hp = self.suggest_all_params(trial)
-            
-            # 🔍 DEBUG: Supervisar parámetros específicos de confiabilidad
-            if self.debug:
-                reliability_params = {k: v for k, v in hp.items() if k.startswith('label_')}
-                print(f"🔍 DEBUG search_reliability - Parámetros de confiabilidad: {reliability_params}")
-                
-            full_ds = self.get_labeled_full_data(hp)
-            if full_ds is None:
-                return -1.0
-
-            # Main: solo muestras con señales, según label_type
-            base_mask = self.get_main_mask(full_ds)
-
-            if not base_mask.any():
-                if self.debug:
-                    print(f"🔍 DEBUG search_reliability - No hay muestras de trading")
-                return -1.0
-            
-            # APLICAR MAPIE COMO FILTRO SECUNDARIO (opcional)
-            if self.search_filter == 'mapie':
-                if self.debug:
-                    print(f"🔍 DEBUG search_reliability - Aplicando filtrado MAPIE")
-                    print(f"🔍   base_mask.sum(): {base_mask.sum()}")
-                    print(f"🔍   base_mask.mean(): {base_mask.mean():.3f}")
-                
-                mapie_scores = self.apply_mapie_filter(trial, full_ds, hp, base_mask)
-                mapie_mask = mapie_scores == 1.0
-                final_mask = base_mask & mapie_mask
-                
-                if self.debug:
-                    print(f"🔍   mapie_mask.sum(): {mapie_mask.sum()}")
-                    print(f"🔍   mapie_mask.mean(): {mapie_mask.mean():.3f}")
-                    print(f"🔍   final_mask.sum(): {final_mask.sum()}")
-                    print(f"🔍   final_mask.mean(): {final_mask.mean():.3f}")
-                    if base_mask.sum() > 0:
-                        print(f"🔍   Reducción de muestras: {base_mask.sum()} -> {final_mask.sum()} ({final_mask.sum()/base_mask.sum()*100:.1f}%)")
-            elif self.search_filter == 'causal':
-                if self.debug:
-                    print(f"🔍 DEBUG search_reliability - Aplicando filtrado CAUSAL")
-                    print(f"🔍   base_mask.sum(): {base_mask.sum()}")
-                    print(f"🔍   base_mask.mean(): {base_mask.mean():.3f}")
-                
-                causal_scores = self.apply_causal_filter(trial, full_ds, hp, base_mask)
-                causal_mask = causal_scores == 1.0
-                final_mask = base_mask & causal_mask
-                
-                if self.debug:
-                    print(f"🔍   causal_mask.sum(): {causal_mask.sum()}")
-                    print(f"🔍   causal_mask.mean(): {causal_mask.mean():.3f}")
-                    print(f"🔍   final_mask.sum(): {final_mask.sum()}")
-                    print(f"🔍   final_mask.mean(): {final_mask.mean():.3f}")
-                    if base_mask.sum() > 0:
-                        print(f"🔍   Reducción de muestras: {base_mask.sum()} -> {final_mask.sum()} ({final_mask.sum()/base_mask.sum()*100:.1f}%)")
-            else:
-                final_mask = base_mask
-                
-                if self.debug:
-                    print(f"🔍 DEBUG search_reliability - Sin filtrado MAPIE o CAUSAL")
-                    print(f"🔍   final_mask.sum(): {final_mask.sum()}")
-                    print(f"🔍   final_mask.mean(): {final_mask.mean():.3f}")
-
-            # Crear datasets con final_mask (lógica original)
-            main_feature_cols = [c for c in full_ds.columns if c.endswith('_main_feature')]
-            model_main_train_data = full_ds.loc[final_mask, main_feature_cols + ['labels_main']].dropna(subset=main_feature_cols).copy()
-                
-            # Verificar que tenemos suficientes muestras
-            if len(model_main_train_data) < 200:
-                if self.debug:
-                    print(f"🔍 DEBUG search_reliability - Insuficientes muestras main: {len(model_main_train_data)}")
-                return -1.0
-            
-            # Meta: todas las muestras, etiquetas binarias (trading/no-trading)  
-            # 4. Etiquetado universal
-            base_meta_mask = self.get_meta_mask(full_ds, hp)
-            meta_mask = base_meta_mask & final_mask
-            full_ds['labels_meta'] = meta_mask.astype('int8')
-
-            # 1 si hay señal de trading, 0 si neutral
-            meta_feature_cols = [c for c in full_ds.columns if c.endswith('_meta_feature')]
             if not meta_feature_cols:  # Fallback: usar main features si no hay meta features
                 meta_feature_cols = main_feature_cols
             model_meta_train_data = full_ds[meta_feature_cols + ['labels_meta']].dropna(subset=meta_feature_cols).copy()
@@ -618,17 +668,23 @@ class StrategySearcher:
                 print(f"🔍   Meta data shape: {model_meta_train_data.shape}")
                 meta_dist = model_meta_train_data['labels_meta'].value_counts()
                 print(f"🔍   Meta labels distribution: {meta_dist}")
-            
-            # Verificar distribución de clases
-            main_labels_dist = model_main_train_data['labels_main'].value_counts()
-            meta_labels_dist = model_meta_train_data['labels_meta'].value_counts()
-            
-            if len(main_labels_dist) != 2 or len(meta_labels_dist) != 2:
-                if self.debug:
-                    print(f"🔍 DEBUG search_reliability - Distribución insuficiente de clases")
-                return -1.0
                 
-            # Usar pipeline existente
+            # Verificar distribución de clases
+            if self.label_type == 'classification':
+                if set(model_main_train_data['labels_main'].unique()) != {0.0, 1.0}:
+                    if self.debug:
+                        print(f"🔍   Search causal - labels_main insuficientes")
+                    return -1.0
+            elif self.label_type == 'regression':
+                if set(model_main_train_data['labels_main'].unique()) == {0.0}:
+                    if self.debug:
+                        print(f"🔍   Search causal - labels_main insuficientes")
+                    return -1.0
+            if set(model_meta_train_data['labels_meta'].unique()) != {0.0, 1.0}:
+                if self.debug:
+                    print(f"🔍   Search causal - labels_meta insuficientes")
+                return -1.0
+            
             score, full_ds_with_labels_path, model_paths, models_cols = self.fit_final_models(
                 trial=trial,
                 full_ds=full_ds,
@@ -636,20 +692,17 @@ class StrategySearcher:
                 model_meta_train_data=model_meta_train_data,
                 hp=hp.copy()
             )
-            
+                
             if score is None or model_paths is None or models_cols is None or full_ds_with_labels_path is None:
                 return -1.0
-                
             trial.set_user_attr('score', score)
             trial.set_user_attr('model_paths', model_paths)
             trial.set_user_attr('model_cols', models_cols)
             trial.set_user_attr('full_ds_with_labels_path', full_ds_with_labels_path)
-            # THRESHOLDS UNIFICADOS: guardar meta threshold
             trial.set_user_attr('best_meta_threshold', hp.get('meta_threshold', 0.5))
             return trial.user_attrs.get('score', -1.0)
-            
         except Exception as e:
-            print(f"Error en search_reliability: {str(e)}")
+            print(f"Error en search_causal: {str(e)}")
             return -1.0
 
     # =========================================================================
@@ -684,9 +737,9 @@ class StrategySearcher:
 
             # Evaluar cada cluster
             for clust in cluster_sizes.index:
-                reliable_mask = full_ds['labels_meta'] == clust
+                cluster_mask = full_ds['labels_meta'] == clust
                 
-                if not reliable_mask.any():
+                if not cluster_mask.any():
                     if self.debug:
                         print(f"🔍   Cluster {clust} descartado: sin muestras confiables")
                     continue
@@ -695,39 +748,39 @@ class StrategySearcher:
                 if self.search_filter == 'mapie':
                     if self.debug:
                         print(f"🔍 DEBUG evaluate_clusters - Aplicando filtrado MAPIE al cluster {clust}")
-                        print(f"🔍   reliable_mask.sum(): {reliable_mask.sum()}")
-                        print(f"🔍   reliable_mask.mean(): {reliable_mask.mean():.3f}")
+                        print(f"🔍   cluster_mask.sum(): {cluster_mask.sum()}")
+                        print(f"🔍   cluster_mask.mean(): {cluster_mask.mean():.3f}")
                     
-                    mapie_scores = self.apply_mapie_filter(trial, full_ds, hp, reliable_mask)
+                    mapie_scores = self.apply_mapie_filter(trial, full_ds, hp, cluster_mask)
                     mapie_mask = mapie_scores == 1.0
-                    final_mask = reliable_mask & mapie_mask
+                    final_mask = cluster_mask & mapie_mask
                     
                     if self.debug:
                         print(f"🔍   mapie_mask.sum(): {mapie_mask.sum()}")
                         print(f"🔍   mapie_mask.mean(): {mapie_mask.mean():.3f}")
                         print(f"🔍   final_mask.sum(): {final_mask.sum()}")
                         print(f"🔍   final_mask.mean(): {final_mask.mean():.3f}")
-                        if reliable_mask.sum() > 0:
-                            print(f"🔍   Reducción de muestras: {reliable_mask.sum()} -> {final_mask.sum()} ({final_mask.sum()/reliable_mask.sum()*100:.1f}%)")
+                        if cluster_mask.sum() > 0:
+                            print(f"🔍   Reducción de muestras: {cluster_mask.sum()} -> {final_mask.sum()} ({final_mask.sum()/cluster_mask.sum()*100:.1f}%)")
                 elif self.search_filter == 'causal':
                     if self.debug:
                         print(f"🔍 DEBUG evaluate_clusters - Aplicando filtrado CAUSAL al cluster {clust}")
-                        print(f"🔍   reliable_mask.sum(): {reliable_mask.sum()}")
-                        print(f"🔍   reliable_mask.mean(): {reliable_mask.mean():.3f}")
+                        print(f"🔍   cluster_mask.sum(): {cluster_mask.sum()}")
+                        print(f"🔍   cluster_mask.mean(): {cluster_mask.mean():.3f}")
                     
-                    causal_scores = self.apply_causal_filter(trial, full_ds, hp, reliable_mask)
+                    causal_scores = self.apply_causal_filter(trial, full_ds, hp, cluster_mask)
                     causal_mask = causal_scores == 1.0
-                    final_mask = reliable_mask & causal_mask
+                    final_mask = cluster_mask & causal_mask
                     
                     if self.debug:
                         print(f"🔍   causal_mask.sum(): {causal_mask.sum()}")
                         print(f"🔍   causal_mask.mean(): {causal_mask.mean():.3f}")
                         print(f"🔍   final_mask.sum(): {final_mask.sum()}")
                         print(f"🔍   final_mask.mean(): {final_mask.mean():.3f}")
-                        if reliable_mask.sum() > 0:
-                            print(f"🔍   Reducción de muestras: {reliable_mask.sum()} -> {final_mask.sum()} ({final_mask.sum()/reliable_mask.sum()*100:.1f}%)")
+                        if cluster_mask.sum() > 0:
+                            print(f"🔍   Reducción de muestras: {cluster_mask.sum()} -> {final_mask.sum()} ({final_mask.sum()/cluster_mask.sum()*100:.1f}%)")
                 else:
-                    final_mask = reliable_mask
+                    final_mask = cluster_mask
                     
                     if self.debug:
                         print(f"🔍 DEBUG evaluate_clusters - Sin filtrado MAPIE o CAUSAL al cluster {clust}")
@@ -738,6 +791,11 @@ class StrategySearcher:
                 main_feature_cols = [c for c in full_ds.columns if c.endswith('_main_feature')]
                 model_main_train_data = full_ds.loc[final_mask, main_feature_cols + ['labels_main']].dropna(subset=main_feature_cols).copy()
                 
+                if len(model_main_train_data) < 200:
+                    if self.debug:
+                        print(f"🔍 DEBUG evaluate_clusters - Insuficientes muestras main: {len(model_main_train_data)}")
+                    continue
+
                 # Etiquetado universal: model_meta_train_data contiene TODO full_ds, labels_meta es 1.0/0.0 según final_meta_mask
                 meta_feature_cols = [c for c in full_ds.columns if c.endswith('_meta_feature')]
                 model_meta_train_data = full_ds[meta_feature_cols].copy()
@@ -745,24 +803,25 @@ class StrategySearcher:
                 final_meta_mask = self.get_meta_mask(full_ds, hp) & final_mask
                 model_meta_train_data['labels_meta'] = final_meta_mask.loc[model_meta_train_data.index].astype(float)
 
+                if self.debug:
+                    print(f"🔍 DEBUG evaluate_clusters - Main data shape: {model_main_train_data.shape}")
+                    print(f"🔍   Meta data shape: {model_meta_train_data.shape}")
+                    meta_dist = model_meta_train_data['labels_meta'].value_counts()
+                    print(f"🔍   Meta labels distribution: {meta_dist}")
+
                 # Verificar que tenemos suficientes muestras
-                if model_main_train_data is None or model_main_train_data.empty:
-                    continue
-                if 'label_max_val' in hp and len(model_main_train_data) <= hp["label_max_val"]:
-                    if self.debug:
-                        print(f"🔍   Cluster {clust} descartado: {len(model_main_train_data)} <= label_max_val({hp['label_max_val']})")
-                    continue
-                if len(model_main_train_data) < 200:
-                    if self.debug:
-                        print(f"🔍 DEBUG evaluate_clusters - Insuficientes muestras main: {len(model_main_train_data)}")
-                    continue
                 if self.label_type == 'classification':
                     # Para clasificación: verificar distribución de clases
-                    if (model_main_train_data['labels_main'].value_counts() < 2).any():
+                    if set(model_main_train_data['labels_main'].unique()) != {0.0, 1.0}:
                         if self.debug:
                             print(f"🔍   Cluster {clust} descartado: labels_main insuficientes")
                         continue
-                if (model_meta_train_data['labels_meta'].value_counts() < 2).any():
+                elif self.label_type == 'regression':
+                    if set(model_main_train_data['labels_main'].unique()) == {0.0}:
+                        if self.debug:
+                            print(f"🔍   Cluster {clust} descartado: labels_main insuficientes")
+                        continue
+                if set(model_meta_train_data['labels_meta'].unique()) != {0.0, 1.0}:
                     if self.debug:
                         print(f"🔍   Cluster {clust} descartado: labels_meta insuficientes")
                     continue
@@ -799,7 +858,6 @@ class StrategySearcher:
                     best_model_paths = model_paths
                     best_full_ds_with_labels_path = full_ds_with_labels_path
                     best_models_cols = models_cols
-                    # THRESHOLDS UNIFICADOS: usar el threshold apropiado según label_type
                     if self.label_type == 'classification':
                         best_main_threshold = hp.get('main_threshold', 0.5)
                     else:  # regression
@@ -2222,7 +2280,7 @@ class StrategySearcher:
                 max(self.train_end,   self.test_end)
             ]
             if self.debug:
-                print(f"🔍 DEBUG: full_ds.shape después de recorte = {full_ds.shape}")
+                print(f"🔍 DEBUG: full_ds.shape después de recorte a rango de interés = {full_ds.shape}")
 
             if full_ds.empty:
                 return None
@@ -2311,8 +2369,7 @@ class StrategySearcher:
             if self.debug and not full_ds.empty:
                 print(f"🔍 DEBUG: Primera fila del dataset con características:")
                 print(f"🔍   Índice: {full_ds.index[0]}")
-                print(f"🔍   Columnas: {list(full_ds.columns)}")
-                print(f"🔍   Valores: {full_ds.iloc[0].to_dict()}")
+                print(f"🔍   Muestra: {full_ds.iloc[0].to_dict()}")
 
             # ──────────────────────────────────────────────────────────────
             # Chequeo de integridad: asegurar que todos los índices de base_df en el rango de full_ds están en full_ds
@@ -2389,8 +2446,8 @@ class StrategySearcher:
                 main_mask = full_ds['labels_main'] != 0.0
 
         if self.debug:
-            print(f"🔍   Main labels - trading_samples: {main_mask.sum()}")
             print(f"🔍   Main labels - total_samples: {len(full_ds)}")
+            print(f"🔍   Main labels - trading_samples: {main_mask.sum()}")
             print(f"🔍   Main labels - reduction: {len(full_ds)} -> {main_mask.sum()}")
 
         return main_mask

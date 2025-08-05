@@ -800,7 +800,7 @@ class StrategySearcher:
                 meta_feature_cols = [c for c in full_ds.columns if c.endswith('_meta_feature')]
                 model_meta_train_data = full_ds[meta_feature_cols].copy()
                 model_meta_train_data = model_meta_train_data.dropna(subset=meta_feature_cols)
-                final_meta_mask = final_mask # & self.get_meta_mask(full_ds, hp)
+                final_meta_mask = final_mask & self.get_meta_mask(full_ds, hp)
                 model_meta_train_data['labels_meta'] = final_meta_mask.loc[model_meta_train_data.index].astype(float)
 
                 # Verificar que tenemos suficientes muestras

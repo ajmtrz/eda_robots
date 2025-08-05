@@ -45,7 +45,6 @@ def convert_catboost_regression_to_mql5_compatible(model, output_path):
         # Limpiar archivo temporal
         os.remove(temp_path.name)
         
-        print(f"✅ Modelo de regresión convertido exitosamente a: {output_path}")
         return output_path
         
     except Exception as e:

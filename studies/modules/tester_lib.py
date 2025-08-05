@@ -47,26 +47,6 @@ def tester(
         ds_main = dataset[model_main_cols].to_numpy()
         ds_meta = dataset[model_meta_cols].to_numpy()
         open_ = dataset['open'].to_numpy()
-        
-        # 🔍 LIMPIEZA DE DATOS: Eliminar NaN de open_ antes del backtest
-        nan_mask = np.isnan(open_)
-        if nan_mask.any():
-            if debug:
-                print(f"🔍 DEBUG tester - NaN detectados en open_:")
-                print(f"🔍   Total NaN: {nan_mask.sum()}")
-                print(f"🔍   Posiciones NaN: {np.where(nan_mask)[0]}")
-                print(f"🔍   Porcentaje NaN: {100*nan_mask.mean():.2f}%")
-            
-            # Eliminar filas con NaN en open_
-            valid_mask = ~nan_mask
-            open_ = open_[valid_mask]
-            ds_main = ds_main[valid_mask]
-            ds_meta = ds_meta[valid_mask]
-            
-            if debug:
-                print(f"🔍   Datos después de limpieza: {len(open_)} filas")
-                print(f"🔍   open_.min(): {open_.min():.6f}, open_.max(): {open_.max():.6f}")
-                print(f"🔍   np.isnan(open_).sum(): {np.isnan(open_).sum()}")
 
         # Calcular predicciones usando ambos modelos según label_type
         if label_type == 'classification':
@@ -85,23 +65,13 @@ def tester(
         if meta.ndim > 1:
             meta = meta[0]
 
+        dataset['labels_main'] = main.astype(float)
+        dataset['labels_meta'] = meta.astype(float)
+
         # Asegurar contigüidad en memoria
         open_ = np.ascontiguousarray(open_)
         main = np.ascontiguousarray(main)
         meta = np.ascontiguousarray(meta)
-        
-        # 🔍 VERIFICACIÓN FINAL: Asegurar que no hay NaN en ningún array
-        if debug:
-            print(f"🔍 DEBUG tester - Verificación final de datos:")
-            print(f"🔍   open_.shape: {open_.shape}, NaN en open_: {np.isnan(open_).sum()}")
-            print(f"🔍   main.shape: {main.shape}, NaN en main: {np.isnan(main).sum()}")
-            print(f"🔍   meta.shape: {meta.shape}, NaN en meta: {np.isnan(meta).sum()}")
-            
-            if np.isnan(open_).any() or np.isnan(main).any() or np.isnan(meta).any():
-                print(f"🔍   ⚠️ ADVERTENCIA: NaN detectados en arrays de entrada")
-                print(f"🔍   open_ NaN pos: {np.where(np.isnan(open_))[0]}")
-                print(f"🔍   main NaN pos: {np.where(np.isnan(main))[0]}")
-                print(f"🔍   meta NaN pos: {np.where(np.isnan(meta))[0]}")
 
         # DEBUG: Información de entrada
         if debug:

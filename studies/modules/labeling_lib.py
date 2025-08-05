@@ -37,7 +37,7 @@ def get_prices(symbol, timeframe, history_path) -> pd.DataFrame:
     pFixed['volume'] = p['<TICKVOL>']
     pFixed.set_index('time', inplace=True)
     pFixed = pFixed.drop_duplicates().sort_index()
-    return pFixed
+    return pFixed.dropna()
 
 ##### FEATURE ENGINEERING #####
 

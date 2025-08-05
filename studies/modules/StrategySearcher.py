@@ -803,12 +803,6 @@ class StrategySearcher:
                 final_meta_mask = self.get_meta_mask(full_ds, hp) & final_mask
                 model_meta_train_data['labels_meta'] = final_meta_mask.loc[model_meta_train_data.index].astype(float)
 
-                if self.debug:
-                    print(f"🔍 DEBUG evaluate_clusters - Main data shape: {model_main_train_data.shape}")
-                    print(f"🔍   Meta data shape: {model_meta_train_data.shape}")
-                    meta_dist = model_meta_train_data['labels_meta'].value_counts()
-                    print(f"🔍   Meta labels distribution: {meta_dist}")
-
                 # Verificar que tenemos suficientes muestras
                 if self.label_type == 'classification':
                     # Para clasificación: verificar distribución de clases
@@ -828,14 +822,16 @@ class StrategySearcher:
 
                 # Información de debug
                 if self.debug:
-                    print(f"🔍   Evaluando cluster {clust}: {len(model_main_train_data)} filas main, {len(model_meta_train_data)} filas meta")
+                    print(f"🔍   Evaluando cluster {clust}:")
+                    print(f"🔍      Main data shape: {model_main_train_data.shape}")
                     if self.label_type == 'classification':
                         main_dist = model_main_train_data['labels_main'].value_counts()
-                        print(f"🔍     Main labels: {main_dist}")
+                        print(f"🔍      Main labels: {main_dist}")
                     else:
-                        print(f"🔍     Main labels: {model_main_train_data['labels_main'].min()}, {model_main_train_data['labels_main'].max()}")
+                        print(f"🔍      Main labels: {model_main_train_data['labels_main'].min()}, {model_main_train_data['labels_main'].max()}")
+                    print(f"🔍      Meta data shape: {model_meta_train_data.shape}")
                     meta_dist = model_meta_train_data['labels_meta'].value_counts()
-                    print(f"🔍     Meta labels: {meta_dist}")
+                    print(f"🔍      Meta labels: {meta_dist}")
                     
                 # Entrenar modelos
                 score, full_ds_with_labels_path, model_paths, models_cols = self.fit_final_models(
@@ -1450,7 +1446,23 @@ class StrategySearcher:
             full_ds_with_labels_path = export_dataset_to_csv(full_ds, self.decimal_precision)
 
             if self.debug:
-                print(f"🔍 DEBUG: Dataset con shape {full_ds.shape} guardado en {full_ds_with_labels_path}")
+                print(f"🔍   DEBUG: Dataset con shape {full_ds.shape} guardado en {full_ds_with_labels_path}")
+                # Resumen de las columnas de etiquetas
+                if 'labels_main' in full_ds.columns:
+                    labels_main = full_ds['labels_main']
+                    if self.label_type == 'classification':
+                        main_counts = labels_main.value_counts(dropna=False).to_dict()
+                        print(f"🔍      labels_main value_counts: {main_counts}")
+                        print(f"🔍      labels_main únicos: {sorted(labels_main.unique())}")
+                    else:
+                        print(f"🔍      labels_main resumen: min={labels_main.min():.6f}, max={labels_main.max():.6f}, mean={labels_main.mean():.6f}, std={labels_main.std():.6f}")
+                else:
+                    print(f"🔍      labels_main no encontrada en el dataset")
+                if 'labels_meta' in full_ds.columns:
+                    labels_meta = full_ds['labels_meta']
+                    print(f"🔍      labels_meta resumen: min={labels_meta.min():.6f}, max={labels_meta.max():.6f}, mean={labels_meta.mean():.6f}, std={labels_meta.std():.6f}")
+                else:
+                    print(f"🔍      labels_meta no encontrada en el dataset")
                 print(f"🔍 DEBUG: Modelos guardados en {model_main_path} y {model_meta_path}")
             return score, full_ds_with_labels_path, (model_main_path, model_meta_path), (main_feature_cols, meta_feature_cols)
         except Exception as e:

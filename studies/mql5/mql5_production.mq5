@@ -202,11 +202,12 @@ void OnTick()
          buy_sig = false;
          sell_sig = main_sig > MAIN_THRESHOLD;
         }
-      else // "both"
+              else // "both"
         {
-         // EXACT PYTHON LOGIC: Both signals use same threshold check
+         // Para clasificación: probabilidad alta = BUY, probabilidad baja = SELL
+         // Threshold filtra ambas señales: buy_sig cuando > threshold, sell_sig cuando < (1-threshold)
          buy_sig = main_sig > MAIN_THRESHOLD;
-         sell_sig = main_sig > MAIN_THRESHOLD;
+         sell_sig = main_sig < (1.0 - MAIN_THRESHOLD);
         }
      }
    else // "regression"
@@ -295,7 +296,6 @@ void OnTick()
               if(must_close)
          {
           m_trade.PositionClose(PositionGetString(POSITION_SYMBOL));
-          last_trade_bar_index = bar_counter;
          }
      }
 
@@ -324,7 +324,7 @@ void OnTick()
          string bot_comment = string(MAGIC_NUMBER);
          m_trade.PositionOpen(_Symbol, ORDER_TYPE_BUY, lot, ask, sl_price, tp_price, bot_comment);
          trade_opened_this_bar = true;
-         live_pos++; // Update position count for potential SELL order
+         live_pos = countOrders(MAGIC_NUMBER); // Re-count positions after opening
         }
 
       // SELL signal processing - Check position limit again after potential BUY opening
@@ -342,6 +342,7 @@ void OnTick()
          string bot_comment = string(MAGIC_NUMBER);
          m_trade.PositionOpen(_Symbol, ORDER_TYPE_SELL, lot, bid, sl_price, tp_price, bot_comment);
          trade_opened_this_bar = true;
+         live_pos = countOrders(MAGIC_NUMBER); // Re-count positions after opening
         }
 
       // Update last_trade_bar only once per bar, regardless of how many positions opened

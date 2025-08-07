@@ -306,9 +306,10 @@ def backtest(open_,
                 buy_sig = False
                 sell_sig = main_val > main_thr
             else:  # direction_int == 2 (BOTH)
-                # Usar probabilidades directamente
+                # Para clasificación: probabilidad alta = BUY, probabilidad baja = SELL
+                # Threshold filtra ambas señales: buy_sig cuando > threshold, sell_sig cuando < (1-threshold)
                 buy_sig = main_val > main_thr
-                sell_sig = main_val > main_thr
+                sell_sig = main_val < (1.0 - main_thr)
 
         # Meta siempre es clasificación
         meta_ok = meta_val > meta_thr
@@ -359,12 +360,12 @@ def backtest(open_,
                 open_positions_type[n_open - 1] = 0
                 open_positions_bar[n_open - 1] = 0
                 n_open -= 1
-                last_trade_bar = bar
                 continue
             i += 1
 
         # 2) Apertura: meta OK, señal BUY/SELL OK, delay cumplido, cupo OK
-        if meta_ok and (bar - last_trade_bar) >= delay_bars:
+        delay_ok = (bar - last_trade_bar) >= delay_bars
+        if meta_ok and delay_ok:
             trade_opened_this_bar = False
             
             # BUY

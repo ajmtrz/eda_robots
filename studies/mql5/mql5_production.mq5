@@ -252,16 +252,16 @@ void OnTick()
          // CLASIFICACIÓN: EXACT PYTHON LOGIC
          if(DIRECTION == "buy")
            {
-            must_close = (ptype == POSITION_TYPE_BUY && (!buy_sig || !meta_ok));
+            must_close = (ptype == POSITION_TYPE_BUY && !buy_sig);
            }
          else if(DIRECTION == "sell")
            {
-            must_close = (ptype == POSITION_TYPE_SELL && (!sell_sig || !meta_ok));
+            must_close = (ptype == POSITION_TYPE_SELL && !sell_sig);
            }
          else // "both"
            {
-            must_close = (ptype == POSITION_TYPE_BUY && (!buy_sig || !meta_ok)) || 
-                        (ptype == POSITION_TYPE_SELL && (!sell_sig || !meta_ok));
+            must_close = (ptype == POSITION_TYPE_BUY && !buy_sig) || 
+                        (ptype == POSITION_TYPE_SELL && !sell_sig);
            }
         }
       else // "regression"
@@ -269,21 +269,21 @@ void OnTick()
          // REGRESIÓN: EXACT PYTHON LOGIC
          if(DIRECTION == "buy")
            {
-            must_close = (ptype == POSITION_TYPE_BUY && (!buy_sig || !meta_ok));
+            must_close = (ptype == POSITION_TYPE_BUY && !buy_sig);
            }
          else if(DIRECTION == "sell")
            {
-            must_close = (ptype == POSITION_TYPE_SELL && (!sell_sig || !meta_ok));
+            must_close = (ptype == POSITION_TYPE_SELL && !sell_sig);
            }
          else // "both"
            {
             if(ptype == POSITION_TYPE_BUY)
               {
-               must_close = !buy_sig || main_sig <= 0 || !meta_ok;
+               must_close = !buy_sig || main_sig <= 0;
               }
             else // SHORT
               {
-               must_close = !sell_sig || main_sig >= 0 || !meta_ok;
+               must_close = !sell_sig || main_sig >= 0;
               }
            }
         }

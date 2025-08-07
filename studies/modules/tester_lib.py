@@ -322,25 +322,25 @@ def backtest(open_,
             should_close = False
             
             # Lógica de cierre según label_type y direction
-            # Usar meta model para cierre también (doble filtrado)
+            # Solo el main model controla el cierre de operaciones
             if label_type_int == 1:  # REGRESIÓN
                 if direction_int == 0:  # Solo BUY
-                    should_close = (pos_type == LONG and (not buy_sig or not meta_ok))
+                    should_close = (pos_type == LONG and not buy_sig)
                 elif direction_int == 1:  # Solo SELL
-                    should_close = (pos_type == SHORT and (not sell_sig or not meta_ok))
+                    should_close = (pos_type == SHORT and not sell_sig)
                 else:  # direction_int == 2 (BOTH)
                     if pos_type == LONG:
-                        should_close = not buy_sig or main_val <= 0 or not meta_ok
+                        should_close = not buy_sig or main_val <= 0
                     else:  # SHORT
-                        should_close = not sell_sig or main_val >= 0 or not meta_ok
+                        should_close = not sell_sig or main_val >= 0
             
             else:  # label_type_int == 0 (CLASIFICACIÓN)
                 if direction_int == 0:  # Solo BUY
-                    should_close = (pos_type == LONG and (not buy_sig or not meta_ok))
+                    should_close = (pos_type == LONG and not buy_sig)
                 elif direction_int == 1:  # Solo SELL
-                    should_close = (pos_type == SHORT and (not sell_sig or not meta_ok))
+                    should_close = (pos_type == SHORT and not sell_sig)
                 else:  # direction_int == 2 (BOTH)
-                    should_close = (pos_type == LONG and (not buy_sig or not meta_ok)) or (pos_type == SHORT and (not sell_sig or not meta_ok))
+                    should_close = (pos_type == LONG and not buy_sig) or (pos_type == SHORT and not sell_sig)
             
             if should_close:
                 if pos_type == LONG:

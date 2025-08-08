@@ -355,7 +355,7 @@ void OnTick()
 //+------------------------------------------------------------------+
 double OnTester()
   {
-//── 1) Recoger trades cerrados ----------------------------------
+//── 1) Recoger trades cerrados (reconstruir P&L en unidades de precio open-open como Python) ----
    HistorySelect(0, TimeCurrent());
    int total_deals = HistoryDealsTotal();
 
@@ -363,30 +363,120 @@ double OnTester()
    long   times[];
    int    n_trades = 0;
 
+   // Arrays auxiliares para mapear entradas por POSITION_ID
+   long   positionIDs[];
+   long   entryTimes[];
+   int    entryTypes[]; // DEAL_TYPE_BUY o DEAL_TYPE_SELL en la ENTRADA
+   int    posCount = 0;
+
+   // Primer recorrido: recolectar ENTRADAS para poder emparejarlas con SALIDAS
    for(int i = 0; i < total_deals; i++)
      {
       ulong ticket = HistoryDealGetTicket(i);
-      if(HistoryDealGetInteger(ticket, DEAL_ENTRY) != DEAL_ENTRY_OUT)
-         continue;
-
-      // CRITICAL: Filter by magic number and symbol to match Python behavior
-      if(HistoryDealGetInteger(ticket, DEAL_MAGIC) != MAGIC_NUMBER)
+      if(!ticket)
          continue;
       if(HistoryDealGetString(ticket, DEAL_SYMBOL) != _Symbol)
          continue;
+      if((ulong)HistoryDealGetInteger(ticket, DEAL_MAGIC) != MAGIC_NUMBER)
+         continue;
+
+      int entryFlag = (int)HistoryDealGetInteger(ticket, DEAL_ENTRY);
+      if(entryFlag == DEAL_ENTRY_IN)
+        {
+         ArrayResize(positionIDs, posCount + 1);
+         ArrayResize(entryTimes, posCount + 1);
+         ArrayResize(entryTypes, posCount + 1);
+
+         positionIDs[posCount] = (long)HistoryDealGetInteger(ticket, DEAL_POSITION_ID);
+         entryTimes[posCount]  = (long)HistoryDealGetInteger(ticket, DEAL_TIME);
+         entryTypes[posCount]  = (int)HistoryDealGetInteger(ticket, DEAL_TYPE); // BUY => posición larga; SELL => corta
+         posCount++;
+        }
+     }
+
+   // Segundo recorrido: construir profits en términos de delta de precio entre open(entry) y open(exit)
+   for(int i = 0; i < total_deals; i++)
+     {
+      ulong ticket = HistoryDealGetTicket(i);
+      if(!ticket)
+         continue;
+      if(HistoryDealGetInteger(ticket, DEAL_ENTRY) != DEAL_ENTRY_OUT)
+         continue;
+      if(HistoryDealGetString(ticket, DEAL_SYMBOL) != _Symbol)
+         continue;
+      if((ulong)HistoryDealGetInteger(ticket, DEAL_MAGIC) != MAGIC_NUMBER)
+         continue;
+
+      long posID = (long)HistoryDealGetInteger(ticket, DEAL_POSITION_ID);
+      long out_time = (long)HistoryDealGetInteger(ticket, DEAL_TIME);
+
+      // Buscar la entrada correspondiente
+      int idx = -1;
+      for(int j = 0; j < posCount; j++)
+        {
+         if(positionIDs[j] == posID)
+           {
+            idx = j;
+            break;
+           }
+        }
+      if(idx < 0)
+         continue; // entrada no encontrada; saltar
+
+      long in_time = entryTimes[idx];
+      int in_type = entryTypes[idx]; // BUY => largo; SELL => corto
+
+      // Obtener precios 'open' de las barras de entrada y salida
+      int in_shift  = iBarShift(_Symbol, PERIOD_CURRENT, (datetime)in_time, true);
+      int out_shift = iBarShift(_Symbol, PERIOD_CURRENT, (datetime)out_time, true);
+      if(in_shift < 0 || out_shift < 0)
+         continue;
+
+      double in_open  = iOpen(_Symbol, PERIOD_CURRENT, in_shift);
+      double out_open = iOpen(_Symbol, PERIOD_CURRENT, out_shift);
+
+      // Calcular profit en unidades de precio (como Python backtest)
+      double p = 0.0;
+      if(in_type == DEAL_TYPE_BUY) // posición larga
+         p = out_open - in_open;
+      else                         // posición corta
+         p = in_open - out_open;
 
       ArrayResize(profits, n_trades + 1);
       ArrayResize(times, n_trades + 1);
-
-      profits[n_trades] = HistoryDealGetDouble(ticket, DEAL_PROFIT) +
-                          HistoryDealGetDouble(ticket, DEAL_SWAP) +
-                          HistoryDealGetDouble(ticket, DEAL_COMMISSION);
-
-      times[n_trades] = HistoryDealGetInteger(ticket, DEAL_TIME);
+      profits[n_trades] = p;
+      times[n_trades]   = out_time;
       n_trades++;
      }
 
-// CRITICAL: Match Python minimum trades requirement
+// Incluir posiciones aún abiertas al final, forzando cierre al open de la última barra
+   for(int i = PositionsTotal() - 1; i >= 0; --i)
+     {
+      if(PositionGetSymbol(i) != _Symbol)
+         continue;
+      if(PositionGetInteger(POSITION_MAGIC) != MAGIC_NUMBER)
+         continue;
+
+      datetime in_time_pos = (datetime)PositionGetInteger(POSITION_TIME);
+      int in_shift = iBarShift(_Symbol, PERIOD_CURRENT, in_time_pos, true);
+      int out_shift = 0; // última barra
+      if(in_shift < 0 || out_shift < 0)
+         continue;
+
+      double in_open  = iOpen(_Symbol, PERIOD_CURRENT, in_shift);
+      double out_open = iOpen(_Symbol, PERIOD_CURRENT, out_shift);
+
+      ENUM_POSITION_TYPE ptype = (ENUM_POSITION_TYPE)PositionGetInteger(POSITION_TYPE);
+      double p = (ptype == POSITION_TYPE_BUY) ? (out_open - in_open) : (in_open - out_open);
+
+      ArrayResize(profits, n_trades + 1);
+      ArrayResize(times, n_trades + 1);
+      profits[n_trades] = p;
+      times[n_trades]   = (long)TimeCurrent();
+      n_trades++;
+     }
+
+   // CRITICAL: Match Python minimum trades requirement
    const int min_trades = 200;
    const double rdd_floor = 1.0;
 

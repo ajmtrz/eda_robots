@@ -1201,7 +1201,7 @@ class StrategySearcher:
                     depth=hp['cat_main_depth'],
                     learning_rate=hp['cat_main_learning_rate'],
                     l2_leaf_reg=hp['cat_main_l2_leaf_reg'],
-                    eval_metric='RMSE',
+                    eval_metric='MAE',
                     store_all_simple_ctr=False,
                     allow_writing_files=False,
                     thread_count=-1,
@@ -1243,7 +1243,7 @@ class StrategySearcher:
                 learning_rate=hp['cat_meta_learning_rate'],
                 l2_leaf_reg=hp['cat_meta_l2_leaf_reg'],
                 auto_class_weights='Balanced',
-                eval_metric='F1' if self.label_type == 'classification' else 'Accuracy',
+                eval_metric='F1',
                 store_all_simple_ctr=False,
                 allow_writing_files=False,
                 thread_count=-1,
@@ -1330,7 +1330,8 @@ class StrategySearcher:
                     print(f"🔍     Mean difference: {diff.mean():.6f}")
                     
                 except Exception as e:
-                    print(f"🔍   ERROR verificando ONNX: {e}")
+                    if self.debug:
+                        print(f"🔍   ERROR verificando ONNX: {e}")
 
             if self.debug:
                 print(f"🔍 DEBUG fit_final_models - Threshold para tester:")
@@ -1390,6 +1391,7 @@ class StrategySearcher:
                     direction=self.direction,
                     timeframe=self.timeframe,
                     model_main_threshold=hp.get('main_threshold', 0.5),
+                    model_meta_threshold=hp.get('meta_threshold', 0.5),
                     label_type=self.label_type,
                     debug=self.debug,
                 )
@@ -1583,7 +1585,7 @@ class StrategySearcher:
                     depth=hp['cat_main_depth'],
                     learning_rate=hp['cat_main_learning_rate'],
                     l2_leaf_reg=hp['cat_main_l2_leaf_reg'],
-                    eval_metric='RMSE',
+                    eval_metric='MAE',
                     store_all_simple_ctr=False,
                     allow_writing_files=False,
                     thread_count=-1,
@@ -1811,7 +1813,7 @@ class StrategySearcher:
                             depth=hp['cat_main_depth'],
                             learning_rate=hp['cat_main_learning_rate'],
                             l2_leaf_reg=hp['cat_main_l2_leaf_reg'],
-                            eval_metric='RMSE',
+                            eval_metric='MAE',
                             store_all_simple_ctr=False,
                             allow_writing_files=False,
                             thread_count=-1,

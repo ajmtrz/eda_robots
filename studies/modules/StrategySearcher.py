@@ -313,7 +313,6 @@ class StrategySearcher:
 
             # Main: solo muestras con señales, según label_type
             base_mask = self.get_base_mask(full_ds)
-
             if not base_mask.any():
                 if self.debug:
                     print(f"🔍 DEBUG search_reliability - No hay muestras de trading")
@@ -362,17 +361,15 @@ class StrategySearcher:
                     print(f"🔍   final_mask.sum(): {final_mask.sum()}")
                     print(f"🔍   final_mask.mean(): {final_mask.mean():.3f}")
 
-            # Crear datasets con final_mask (lógica original)
+            # Crear dataset main con final_mask
             main_feature_cols = [c for c in full_ds.columns if c.endswith('_main_feature')]
             model_main_train_data = full_ds.loc[final_mask, main_feature_cols + ['labels_main']].dropna(subset=main_feature_cols).copy()
-                
-            # Verificar que tenemos suficientes muestras
             if len(model_main_train_data) < 200:
                 if self.debug:
                     print(f"🔍 DEBUG search_reliability - Insuficientes muestras main: {len(model_main_train_data)}")
                 return -1.0
 
-            # Meta: aplicar máscara meta a muestras filtrada
+            # Crear dataset meta con final_mask + threshold
             if self.label_type == 'regression':
                 hp['main_threshold'], final_mask = self.calculate_regression_threshold_cv(
                     full_ds['labels_main'], reliability_mask=final_mask, hp=hp
@@ -491,7 +488,6 @@ class StrategySearcher:
             
             base_mask = self.get_base_mask(full_ds)
             reliable_data = full_ds[base_mask].copy()
-            
             if len(reliable_data) < 200:
                 if self.debug:
                     print(f"🔍 DEBUG search_clusters {self.search_subtype} - Insuficientes muestras confiables para hacer clustering")
@@ -513,12 +509,14 @@ class StrategySearcher:
             score, full_ds_with_labels_path, model_paths, models_cols, best_main_threshold = self.evaluate_clusters(trial, full_ds, base_mask, hp)
             if score is None or model_paths is None or models_cols is None or full_ds_with_labels_path is None:
                 return -1.0
+            
             trial.set_user_attr('score', score)
             trial.set_user_attr('model_paths', model_paths)
             trial.set_user_attr('model_cols', models_cols)
             trial.set_user_attr('full_ds_with_labels_path', full_ds_with_labels_path)
             trial.set_user_attr('best_main_threshold', best_main_threshold)
             trial.set_user_attr('best_meta_threshold', hp.get('meta_threshold', 0.5))
+
             return trial.user_attrs.get('score', -1.0)
         except Exception as e:
             print(f"Error en search_clusters: {str(e)}")
@@ -528,6 +526,7 @@ class StrategySearcher:
         """Implementa la búsqueda de estrategias usando conformal prediction (MAPIE) con CatBoost, usando el mismo conjunto de features para ambos modelos."""
         try:
             hp = self.suggest_all_params(trial)
+
             full_ds = self.get_labeled_full_data(hp)
             if full_ds is None:
                 return -1.0
@@ -553,7 +552,6 @@ class StrategySearcher:
             # Main model filtrado
             main_feature_cols = [col for col in full_ds.columns if col.endswith('_main_feature')]
             model_main_train_data = full_ds[final_mask][main_feature_cols + ['labels_main']].dropna(subset=main_feature_cols).copy()
-            
             if len(model_main_train_data) < 200:
                 if self.debug:
                     print(f"🔍 DEBUG search_mapie - Insuficientes muestras main: {len(model_main_train_data)}")
@@ -602,11 +600,13 @@ class StrategySearcher:
                 
             if score is None or model_paths is None or models_cols is None or full_ds_with_labels_path is None:
                 return -1.0
+            
             trial.set_user_attr('score', score)
             trial.set_user_attr('model_paths', model_paths)
             trial.set_user_attr('model_cols', models_cols)
             trial.set_user_attr('full_ds_with_labels_path', full_ds_with_labels_path)
             trial.set_user_attr('best_meta_threshold', hp.get('meta_threshold', 0.5))
+
             return trial.user_attrs.get('score', -1.0)
         except Exception as e:
             print(f"Error en search_mapie: {str(e)}")
@@ -616,6 +616,7 @@ class StrategySearcher:
         """Búsqueda basada en detección causal de muestras malas."""
         try:
             hp = self.suggest_all_params(trial)
+
             full_ds = self.get_labeled_full_data(hp)
             if full_ds is None:
                 return -1.0
@@ -626,14 +627,6 @@ class StrategySearcher:
             
             # Main: solo muestras con señales, según label_type
             base_mask = self.get_base_mask(full_ds)
-            
-            # Solo muestras con señales, según label_type
-            if self.label_type == 'regression':
-                hp['main_threshold'], threshold_mask = self.calculate_regression_threshold_cv(
-                    full_ds['labels_main'], reliability_mask=base_mask, hp=hp
-                )
-            else:
-                threshold_mask = base_mask
 
             # 2. Filtro secundario: CAUSAL como método principal
             causal_scores = self.apply_causal_filter(
@@ -646,15 +639,15 @@ class StrategySearcher:
             # 3. Combinación: muestras que pasan AMBOS filtros
             final_mask = base_mask & (causal_scores == 1.0)
                 
+            # Crear dataset main con final_mask
             main_feature_cols = [col for col in full_ds.columns if col.endswith('_main_feature')]
             model_main_train_data = full_ds[final_mask][main_feature_cols + ['labels_main']].dropna(subset=main_feature_cols).copy()
-            
             if len(model_main_train_data) < 200:
                 if self.debug:
                     print(f"🔍 DEBUG search_causal - Insuficientes muestras main: {len(model_main_train_data)}")
                 return -1.0
             
-            # Meta model debe usar meta features, si no hay meta features, usar main features (fallback)
+            # Crear dataset meta con final_mask + threshold
             if self.label_type == 'regression':
                 hp['main_threshold'], final_mask = self.calculate_regression_threshold_cv(
                     full_ds['labels_main'], reliability_mask=final_mask, hp=hp
@@ -697,11 +690,13 @@ class StrategySearcher:
                 
             if score is None or model_paths is None or models_cols is None or full_ds_with_labels_path is None:
                 return -1.0
+            
             trial.set_user_attr('score', score)
             trial.set_user_attr('model_paths', model_paths)
             trial.set_user_attr('model_cols', models_cols)
             trial.set_user_attr('full_ds_with_labels_path', full_ds_with_labels_path)
             trial.set_user_attr('best_meta_threshold', hp.get('meta_threshold', 0.5))
+
             return trial.user_attrs.get('score', -1.0)
         except Exception as e:
             print(f"Error en search_causal: {str(e)}")
@@ -741,7 +736,6 @@ class StrategySearcher:
             for clust in cluster_sizes.index:
                 cluster_mask = full_ds['labels_meta'] == clust
                 cluster_mask = cluster_mask & base_mask
-
                 if not cluster_mask.any():
                     if self.debug:
                         print(f"🔍   Cluster {clust} descartado: sin muestras confiables")
@@ -790,28 +784,25 @@ class StrategySearcher:
                         print(f"🔍   final_mask.sum(): {final_mask.sum()}")
                         print(f"🔍   final_mask.mean(): {final_mask.mean():.3f}")
                 
-                # Crear datasets con final_mask (lógica original)
+                # Crear dataset main con final_mask
                 main_feature_cols = [c for c in full_ds.columns if c.endswith('_main_feature')]
                 model_main_train_data = full_ds.loc[final_mask, main_feature_cols + ['labels_main']].dropna(subset=main_feature_cols).copy()
-                
                 if len(model_main_train_data) < 200:
                     if self.debug:
                         print(f"🔍 DEBUG evaluate_clusters - Insuficientes muestras main: {len(model_main_train_data)}")
                     continue
 
-                # Etiquetado universal: model_meta_train_data contiene TODO full_ds, labels_meta es 1.0/0.0 según final_meta_mask
+                # Crear dataset meta con final_mask + threshold
                 if self.label_type == 'regression':
                     hp['main_threshold'], final_mask = self.calculate_regression_threshold_cv(
                         full_ds['labels_main'], reliability_mask=final_mask, hp=hp
                     )
                 meta_feature_cols = [c for c in full_ds.columns if c.endswith('_meta_feature')]
-                model_meta_train_data = full_ds[meta_feature_cols].copy()
-                model_meta_train_data = model_meta_train_data.dropna(subset=meta_feature_cols)
+                model_meta_train_data = full_ds[meta_feature_cols].dropna(subset=meta_feature_cols).copy()
                 model_meta_train_data['labels_meta'] = final_mask.loc[model_meta_train_data.index].astype('int8')
 
-                # Verificar que tenemos suficientes muestras
+                # Verificar que tenemos suficientes muestras para main y meta
                 if self.label_type == 'classification':
-                    # Para clasificación: verificar distribución de clases
                     if set(model_main_train_data['labels_main'].unique()) != {0.0, 1.0}:
                         if self.debug:
                             print(f"🔍   Cluster {clust} descartado: labels_main insuficientes")
@@ -826,7 +817,7 @@ class StrategySearcher:
                         print(f"🔍   Cluster {clust} descartado: labels_meta insuficientes")
                     continue
 
-                # Información de debug
+                # Información de debug para cluster
                 if self.debug:
                     print(f"🔍   Evaluando cluster {clust}:")
                     print(f"🔍      Main data shape: {model_main_train_data.shape}")

@@ -2543,89 +2543,66 @@ class StrategySearcher:
             threshold_mask: Máscara que indica qué muestras superan el umbral
         """
         
-        # Filtrar labels_main usando reliability_mask si se proporciona
+        # Determinar qué datos usar para el cálculo del threshold
         if reliability_mask is not None:
-            filtered_labels = labels_main[reliability_mask]
-            if len(filtered_labels) < n_splits * 2:
-                if self.debug:
-                    print(f"🔍   CV: Datos insuficientes para {n_splits} splits, usando threshold original")
-                threshold_value, _ = self.calculate_regression_threshold(filtered_labels, hp)
-            else:
-                tscv = TimeSeriesSplit(n_splits=n_splits)
-                thresholds = []
-                performances = []
-                
-                if self.debug:
-                    print(f"🔍   CV: Iniciando validación cruzada temporal con {n_splits} splits")
-                
-                for fold, (train_idx, val_idx) in enumerate(tscv.split(filtered_labels)):
-                    train_labels = filtered_labels.iloc[train_idx]
-                    val_labels = filtered_labels.iloc[val_idx]
-                    
-                    # Calcular threshold en train
-                    train_threshold, _ = self.calculate_regression_threshold(train_labels, hp)
-                    
-                    # Validar en val
-                    val_performance = self._evaluate_threshold_performance(val_labels, train_threshold)
-                    
-                    thresholds.append(train_threshold)
-                    performances.append(val_performance)
-                    
-                    if self.debug:
-                        print(f"🔍   CV Fold {fold+1}: threshold={train_threshold:.4f}, performance={val_performance:.4f}")
-                
-                # Seleccionar threshold con mejor performance promedio
-                best_idx = np.argmax(performances)
-                threshold_value = thresholds[best_idx]
-                avg_performance = np.mean(performances)
-                
-                if self.debug:
-                    print(f"🔍   CV: Mejor threshold={threshold_value:.4f}, avg_performance={avg_performance:.4f}")
+            # Usar solo las muestras filtradas
+            data_for_calculation = labels_main[reliability_mask]
+            if self.debug:
+                print(f"🔍   CV: Usando {len(data_for_calculation)} muestras filtradas para cálculo")
         else:
-            # Comportamiento original sin filtrado
-            if len(labels_main) < n_splits * 2:
-                if self.debug:
-                    print(f"🔍   CV: Datos insuficientes para {n_splits} splits, usando threshold original")
-                threshold_value, _ = self.calculate_regression_threshold(labels_main, hp)
-            else:
-                tscv = TimeSeriesSplit(n_splits=n_splits)
-                thresholds = []
-                performances = []
-                
-                if self.debug:
-                    print(f"🔍   CV: Iniciando validación cruzada temporal con {n_splits} splits")
-                
-                for fold, (train_idx, val_idx) in enumerate(tscv.split(labels_main)):
-                    train_labels = labels_main.iloc[train_idx]
-                    val_labels = labels_main.iloc[val_idx]
-                    
-                    # Calcular threshold en train
-                    train_threshold, _ = self.calculate_regression_threshold(train_labels, hp)
-                    
-                    # Validar en val
-                    val_performance = self._evaluate_threshold_performance(val_labels, train_threshold)
-                    
-                    thresholds.append(train_threshold)
-                    performances.append(val_performance)
-                    
-                    if self.debug:
-                        print(f"🔍   CV Fold {fold+1}: threshold={train_threshold:.4f}, performance={val_performance:.4f}")
-                
-                # Seleccionar threshold con mejor performance promedio
-                best_idx = np.argmax(performances)
-                threshold_value = thresholds[best_idx]
-                avg_performance = np.mean(performances)
-                
-                if self.debug:
-                    print(f"🔍   CV: Mejor threshold={threshold_value:.4f}, avg_performance={avg_performance:.4f}")
+            # Usar todas las muestras
+            data_for_calculation = labels_main
+            if self.debug:
+                print(f"🔍   CV: Usando {len(data_for_calculation)} muestras totales para cálculo")
         
-        # Crear threshold_mask aplicando el threshold a todas las muestras originales
+        # Calcular threshold usando validación cruzada temporal
+        if len(data_for_calculation) < n_splits * 2:
+            if self.debug:
+                print(f"🔍   CV: Datos insuficientes para {n_splits} splits, usando threshold original")
+            threshold_value, _ = self.calculate_regression_threshold(data_for_calculation, hp)
+        else:
+            tscv = TimeSeriesSplit(n_splits=n_splits)
+            thresholds = []
+            performances = []
+            
+            if self.debug:
+                print(f"🔍   CV: Iniciando validación cruzada temporal con {n_splits} splits")
+            
+            for fold, (train_idx, val_idx) in enumerate(tscv.split(data_for_calculation)):
+                train_labels = data_for_calculation.iloc[train_idx]
+                val_labels = data_for_calculation.iloc[val_idx]
+                
+                # Calcular threshold en train
+                train_threshold, _ = self.calculate_regression_threshold(train_labels, hp)
+                
+                # Validar en val
+                val_performance = self._evaluate_threshold_performance(val_labels, train_threshold)
+                
+                thresholds.append(train_threshold)
+                performances.append(val_performance)
+                
+                if self.debug:
+                    print(f"🔍   CV Fold {fold+1}: threshold={train_threshold:.4f}, performance={val_performance:.4f}")
+            
+            # Seleccionar threshold con mejor performance promedio
+            best_idx = np.argmax(performances)
+            threshold_value = thresholds[best_idx]
+            avg_performance = np.mean(performances)
+            
+            if self.debug:
+                print(f"🔍   CV: Mejor threshold={threshold_value:.4f}, avg_performance={avg_performance:.4f}")
+        
+        # Crear threshold_mask aplicando el threshold
         if self.direction == 'buy':
             threshold_mask = labels_main > threshold_value
         elif self.direction == 'sell':
             threshold_mask = labels_main < -threshold_value
         else:  # 'both'
             threshold_mask = abs(labels_main) > threshold_value
+        
+        # Si se proporcionó reliability_mask, aplicar solo a esas muestras
+        if reliability_mask is not None:
+            threshold_mask = threshold_mask & reliability_mask
         
         return threshold_value, threshold_mask
 

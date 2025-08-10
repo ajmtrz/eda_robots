@@ -326,22 +326,22 @@ def backtest(open_,
             # Solo el main model controla el cierre de operaciones
             if label_type_int == 1:  # REGRESIÓN
                 if direction_int == 0:  # Solo BUY
-                    should_close = (pos_type == LONG and not buy_sig)
+                    should_close = (pos_type == LONG and not buy_sig and not meta_ok)
                 elif direction_int == 1:  # Solo SELL
-                    should_close = (pos_type == SHORT and not sell_sig)
+                    should_close = (pos_type == SHORT and not sell_sig and not meta_ok)
                 else:  # direction_int == 2 (BOTH)
                     if pos_type == LONG:
-                        should_close = not buy_sig or main_val <= 0
+                        should_close = (not buy_sig and not meta_ok)
                     else:  # SHORT
-                        should_close = not sell_sig or main_val >= 0
+                        should_close = (not sell_sig and not meta_ok)
             
             else:  # label_type_int == 0 (CLASIFICACIÓN)
                 if direction_int == 0:  # Solo BUY
-                    should_close = (pos_type == LONG and not buy_sig)
+                    should_close = (pos_type == LONG and not buy_sig and not meta_ok)
                 elif direction_int == 1:  # Solo SELL
-                    should_close = (pos_type == SHORT and not sell_sig)
+                    should_close = (pos_type == SHORT and not sell_sig and not meta_ok)
                 else:  # direction_int == 2 (BOTH)
-                    should_close = (pos_type == LONG and not buy_sig) or (pos_type == SHORT and not sell_sig)
+                    should_close = (pos_type == LONG and not buy_sig and not meta_ok) or (pos_type == SHORT and not sell_sig and not meta_ok)
             
             if should_close:
                 if pos_type == LONG:

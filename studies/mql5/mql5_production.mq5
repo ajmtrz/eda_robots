@@ -7,7 +7,7 @@
 #include <Trade\AccountInfo.mqh>
 #include <Math\Alglib\alglib.mqh>
 #include <ajmtrz/include/clsOptimalF.mqh>
-#include <ajmtrz\include\Dmitrievsky\XAUUSD_H1_buy_cl_lg_ra_re.mqh>
+#include <ajmtrz\include\Dmitrievsky\XAUUSD_H1_buy_cl_lg_ma_ra_cl.mqh>
 #include <Indicators\Indicators.mqh>
 #property strict
 #property copyright "Copyright 2025, Dmitrievsky"
@@ -253,38 +253,38 @@ void OnTick()
          // CLASIFICACIÓN: EXACT PYTHON LOGIC
          if(DIRECTION == "buy")
            {
-            must_close = (ptype == POSITION_TYPE_BUY && !buy_sig);
+            must_close = (ptype == POSITION_TYPE_BUY && !buy_sig && !meta_ok);
            }
          else if(DIRECTION == "sell")
            {
-            must_close = (ptype == POSITION_TYPE_SELL && !sell_sig);
+            must_close = (ptype == POSITION_TYPE_SELL && !sell_sig && !meta_ok);
            }
          else // "both"
            {
-            must_close = (ptype == POSITION_TYPE_BUY && !buy_sig) || 
-                        (ptype == POSITION_TYPE_SELL && !sell_sig);
+            must_close = (ptype == POSITION_TYPE_BUY && !buy_sig && !meta_ok) || 
+                        (ptype == POSITION_TYPE_SELL && !sell_sig && !meta_ok);
            }
-        }
+        } 
       else // "regression"
         {
          // REGRESIÓN: EXACT PYTHON LOGIC
          if(DIRECTION == "buy")
            {
-            must_close = (ptype == POSITION_TYPE_BUY && !buy_sig);
+            must_close = (ptype == POSITION_TYPE_BUY && !buy_sig && !meta_ok);
            }
          else if(DIRECTION == "sell")
            {
-            must_close = (ptype == POSITION_TYPE_SELL && !sell_sig);
+            must_close = (ptype == POSITION_TYPE_SELL && !sell_sig && !meta_ok);
            }
          else // "both"
            {
             if(ptype == POSITION_TYPE_BUY)
               {
-               must_close = !buy_sig || main_sig <= 0;
+               must_close = !buy_sig && !meta_ok;
               }
             else // SHORT
               {
-               must_close = !sell_sig || main_sig >= 0;
+               must_close = !sell_sig && !meta_ok;
               }
            }
         }

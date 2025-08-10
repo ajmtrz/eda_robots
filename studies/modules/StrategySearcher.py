@@ -871,11 +871,12 @@ class StrategySearcher:
     def _suggest_catboost(self, group: str, trial: optuna.Trial) -> Dict[str, float]:
         """Devuelve hiperparámetros CatBoost (main|meta) con prefijo `group`."""
         p = {}
-        p[f'{group}_iterations']      = trial.suggest_int (f'{group}_iterations',      200, 800, step=50)
-        p[f'{group}_depth']           = trial.suggest_int (f'{group}_depth',           4,   8)
-        p[f'{group}_learning_rate']   = trial.suggest_float(f'{group}_learning_rate',  1e-3, .3, log=True)
-        p[f'{group}_l2_leaf_reg']     = trial.suggest_float(f'{group}_l2_leaf_reg',    1.0,  10.0, log=True)
-        p[f'{group}_early_stopping']  = trial.suggest_int (f'{group}_early_stopping',  20,  200,  step=20)
+        # Rango más acotado para promover entrenamientos estables (menos under/overfitting) y menor diversidad
+        p[f'{group}_iterations']      = trial.suggest_int (f'{group}_iterations',      300, 600, step=50)
+        p[f'{group}_depth']           = trial.suggest_int (f'{group}_depth',           5,   7)
+        p[f'{group}_learning_rate']   = trial.suggest_float(f'{group}_learning_rate',  1e-2, 0.10, log=True)
+        p[f'{group}_l2_leaf_reg']     = trial.suggest_float(f'{group}_l2_leaf_reg',    2.0,  5.0,  log=True)
+        p[f'{group}_early_stopping']  = trial.suggest_int (f'{group}_early_stopping',  40,  120,  step=20)
         return p
 
     # ─────────────────────────  FUNCIÓN PRINCIPAL  ──────────────────────────────
@@ -937,11 +938,11 @@ class StrategySearcher:
         p["feature_main_stats"] = tuple(sorted(dict.fromkeys(feature_stats)))
 
         # ─── FEATURE META (solo ciertos search_type) ──────────────────────────
-        if self.search_type in {"clusters", "markov", "lgmm", "wkmeans"}:
+        if self.search_type in {"reliability", "clusters"}:
             # períodos meta
-            n_meta_periods = trial.suggest_int("feature_meta_n_periods", 1, 3)
+            n_meta_periods = trial.suggest_int("feature_meta_n_periods", 1, 6)
             meta_periods = [
-                trial.suggest_int(f"feature_meta_period_{i}", 4, 12, log=True)
+                trial.suggest_int(f"feature_meta_period_{i}", 5, 100, log=True)
                 for i in range(n_meta_periods)
             ]
             p["feature_meta_periods"] = tuple(sorted(set(meta_periods)))

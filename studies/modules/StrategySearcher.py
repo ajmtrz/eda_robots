@@ -1003,53 +1003,57 @@ class StrategySearcher:
         p = {}
         if self.search_type == 'clusters':
             if self.search_subtype == 'kmeans':
-                p['kmeans_n_clusters'] = trial.suggest_int ('kmeans_n_clusters', 5, 30, log=True)
-                p['kmeans_window']     = trial.suggest_int ('kmeans_window',     40, 250, log=True)
-                p['kmeans_step']       = trial.suggest_int ('kmeans_step',       10, 50, log=True)
+                # Promover clusters suficientes y ventanas estables
+                p['kmeans_n_clusters'] = trial.suggest_int ('kmeans_n_clusters', 8, 20, log=True)
+                p['kmeans_window']     = trial.suggest_int ('kmeans_window',     60, 180, log=True)
+                p['kmeans_step']       = trial.suggest_int ('kmeans_step',       5,  20)
             elif self.search_subtype == 'hdbscan':
-                p['hdbscan_min_cluster_size'] = trial.suggest_int ('hdbscan_min_cluster_size', 5, 30, log=True)
+                # Tamaño mínimo de cluster más conservador para robustez
+                p['hdbscan_min_cluster_size'] = trial.suggest_int ('hdbscan_min_cluster_size', 10, 60, log=True)
             elif self.search_subtype == 'markov':
                 p['markov_model']    = trial.suggest_categorical('markov_model', ['GMMHMM', 'HMM'])
-                p['markov_regimes']  = trial.suggest_int ('markov_regimes', 3, 8, log=True)
-                p['markov_iter']     = trial.suggest_int ('markov_iter',    50, 200, log=True)
-                p['markov_mix']      = trial.suggest_int ('markov_mix',     2, 5)
+                p['markov_regimes']  = trial.suggest_int ('markov_regimes', 3, 6, log=True)
+                p['markov_iter']     = trial.suggest_int ('markov_iter',    50, 150, log=True)
+                p['markov_mix']      = trial.suggest_int ('markov_mix',     2, 3)
             elif self.search_subtype == 'lgmm':
-                p['lgmm_components']  = trial.suggest_int ('lgmm_components',  3, 15, log=True)
+                p['lgmm_components']  = trial.suggest_int ('lgmm_components',  3, 12, log=True)
                 p['lgmm_covariance']  = trial.suggest_categorical('lgmm_covariance', ['full', 'tied', 'diag', 'spherical'])
-                p['lgmm_iter']        = trial.suggest_int ('lgmm_iter',        50, 200, log=True)
+                p['lgmm_iter']        = trial.suggest_int ('lgmm_iter',        80, 200, log=True)
             elif self.search_subtype == 'wkmeans':
-                p['wk_n_clusters']    = trial.suggest_int ('wk_n_clusters',    6, 20, log=True)
-                p['wk_bandwidth']     = trial.suggest_float('wk_bandwidth',    0.1, 5.0, log=True)
-                p['wk_window']        = trial.suggest_int ('wk_window',        30, 120, log=True)
-                p['wk_step']          = trial.suggest_int ('wk_step',          1, 10)
-                p['wk_proj']          = trial.suggest_int ('wk_proj',          50, 200, log=True)
-                p['wk_iter']          = trial.suggest_int ('wk_iter',          100, 500, log=True)
+                p['wk_n_clusters']    = trial.suggest_int ('wk_n_clusters',    6, 16, log=True)
+                p['wk_bandwidth']     = trial.suggest_float('wk_bandwidth',    0.2, 2.0, log=True)
+                p['wk_window']        = trial.suggest_int ('wk_window',        40, 100, log=True)
+                p['wk_step']          = trial.suggest_int ('wk_step',          1, 5)
+                p['wk_proj']          = trial.suggest_int ('wk_proj',          50, 150, log=True)
+                p['wk_iter']          = trial.suggest_int ('wk_iter',          100, 300, log=True)
         elif self.search_type == 'mapie':
-            p['mapie_confidence_level'] = trial.suggest_float('mapie_confidence_level', 0.8, 0.95)
-            p['mapie_cv']               = trial.suggest_int  ('mapie_cv',               3, 10)
+            # CV más bajo por coste y estabilidad, confianza moderada-alta
+            p['mapie_confidence_level'] = trial.suggest_float('mapie_confidence_level', 0.85, 0.95)
+            p['mapie_cv']               = trial.suggest_int  ('mapie_cv',               3, 5)
             # Parámetros específicos para regresión MAPIE
             if self.label_type == 'regression':
-                p['mapie_threshold_width']     = trial.suggest_int('mapie_threshold_width', 30, 70)
+                p['mapie_threshold_width']     = trial.suggest_int('mapie_threshold_width', 40, 60)
         elif self.search_type == 'causal':
-            p['causal_meta_learners'] = trial.suggest_int('causal_meta_learners', 5, 15)
-            p['causal_percentile'] = trial.suggest_int('causal_percentile', 60, 90)
+            # Bootstrap moderado y percentil en rango robusto
+            p['causal_meta_learners'] = trial.suggest_int('causal_meta_learners', 7, 11)
+            p['causal_percentile'] = trial.suggest_int('causal_percentile', 70, 85)
             # Parámetros específicos para regresión causal
             if self.label_type == 'regression':
-                p['causal_error_threshold'] = trial.suggest_float('causal_error_threshold', 0.1, 2.0, log=True)
+                p['causal_error_threshold'] = trial.suggest_float('causal_error_threshold', 0.2, 1.0, log=True)
 
         # Parámetros de filtros (independientes del search_type)
         if self.search_filter == 'mapie':
-            p['mapie_confidence_level'] = trial.suggest_float('mapie_confidence_level', 0.8, 0.95)
-            p['mapie_cv']               = trial.suggest_int  ('mapie_cv',               3, 10)
+            p['mapie_confidence_level'] = trial.suggest_float('mapie_confidence_level', 0.85, 0.95)
+            p['mapie_cv']               = trial.suggest_int  ('mapie_cv',               3, 5)
             # Parámetros específicos para regresión MAPIE
             if self.label_type == 'regression':
-                p['mapie_threshold_width']     = trial.suggest_int('mapie_threshold_width', 30, 70)
+                p['mapie_threshold_width']     = trial.suggest_int('mapie_threshold_width', 40, 60)
         elif self.search_filter == 'causal':
-            p['causal_meta_learners'] = trial.suggest_int('causal_meta_learners', 5, 15)
-            p['causal_percentile'] = trial.suggest_int('causal_percentile', 60, 90)
+            p['causal_meta_learners'] = trial.suggest_int('causal_meta_learners', 7, 11)
+            p['causal_percentile'] = trial.suggest_int('causal_percentile', 70, 85)
             # Parámetros específicos para regresión causal
             if self.label_type == 'regression':
-                p['causal_error_threshold'] = trial.suggest_float('causal_error_threshold', 0.1, 2.0, log=True)
+                p['causal_error_threshold'] = trial.suggest_float('causal_error_threshold', 0.2, 1.0, log=True)
 
         # THRESHOLDS UNIFICADOS (preparación para optimización futura)
         if self.label_type == 'classification':

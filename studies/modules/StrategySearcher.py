@@ -311,14 +311,14 @@ class StrategySearcher:
             if full_ds is None:
                 return -1.0
 
-            # Main: solo muestras con señales, según label_type
+            # Main base mask
             base_mask = self.get_base_mask(full_ds)
             if not base_mask.any():
                 if self.debug:
                     print(f"🔍 DEBUG search_reliability - No hay muestras de trading")
                 return -1.0
 
-            # APLICAR MAPIE COMO FILTRO SECUNDARIO (opcional)
+            # APLICAR FILTROS SECUNDARIOS (opcional)
             if self.search_filter == 'mapie':
                 if self.debug:
                     print(f"🔍 DEBUG search_reliability - Aplicando filtrado MAPIE")
@@ -625,7 +625,7 @@ class StrategySearcher:
             if self.debug:
                 print(f"🔍 DEBUG search_causal - Usando esquema de confiabilidad")
             
-            # Main: solo muestras con señales, según label_type
+            # Main base mask
             base_mask = self.get_base_mask(full_ds)
 
             # 2. Filtro secundario: CAUSAL como método principal
@@ -1606,15 +1606,15 @@ class StrategySearcher:
             
             # Calcular scores según label_type
             if self.label_type == 'classification':
-                # Para clasificación: predict_interval devuelve (predictions, prediction_sets)
-                predicted, y_prediction_sets = mapie.predict_interval(X)
-                y_prediction_sets = np.squeeze(y_prediction_sets, axis=-1)
-                set_sizes = np.sum(y_prediction_sets, axis=1)
-                
+                # Para clasificación: usar predict_set (conjuntos de predicción)
+                predicted, prediction_sets = mapie.predict_set(X)
+                # Calcular el tamaño del conjunto por muestra de forma robusta
+                prediction_sets_2d = prediction_sets[:, :, 0]
+                set_sizes = prediction_sets_2d.sum(axis=1)
                 # Scores de confiabilidad: 1.0 si set_size == 1 (alta confianza), 0.0 en caso contrario
                 conformal_scores = (set_sizes == 1).astype(float)
                 # Scores de precisión: 1.0 si predicted == y (predicción correcta), 0.0 en caso contrario
-                precision_scores = (predicted == y).astype(float)
+                precision_scores = (predicted == y.to_numpy()).astype(float)
                 # Combinar: solo muestras que son tanto confiables como precisas
                 combined_scores = ((conformal_scores == 1.0) & (precision_scores == 1.0)).astype(float)
             else:  # regression
@@ -2411,8 +2411,6 @@ class StrategySearcher:
             pd.Series: Máscara booleana para muestras de trading
         """
         if self.label_type == 'classification':
-            # Clasificación: mantener todas las clases válidas (0.0, 1.0), excluir no confiables (2.0)
-            # Las etiquetas 0.0 son una clase válida en clasificación, no se deben excluir
             base_mask = full_ds['labels_main'] != 2.0
         else:
             # Aplicar filtro según dirección

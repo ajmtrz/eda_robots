@@ -17,6 +17,7 @@ from catboost import CatBoostClassifier, CatBoostRegressor
 from mapie.classification import CrossConformalClassifier
 from mapie.regression import CrossConformalRegressor
 from sklearn.model_selection import TimeSeriesSplit
+from sklearn.model_selection import train_test_split
 from modules.labeling_lib import (
     get_prices, get_features, get_labels_random,
     get_labels_trend, get_labels_trend_multi, get_labels_clusters,
@@ -1184,13 +1185,13 @@ class StrategySearcher:
                 if self.debug:
                     print(f"🔍 DEBUG: Main model data shape: {model_main_train_data.shape}")
                     print(f"🔍 DEBUG: Main feature columns: {main_feature_cols}")
-                model_main_train_data, model_main_eval_data = self.get_train_test_data(dataset=model_main_train_data)
-                if model_main_train_data is None or model_main_eval_data is None:
+                train_df, val_df = train_test_split(model_main_train_data, test_size=0.25, shuffle=True)
+                if train_df.empty or val_df.empty:
                     return None, None, None, None
-                X_train_main = model_main_train_data[main_feature_cols].astype('float32')
-                y_train_main = model_main_train_data['labels_main'].astype('int8')
-                X_val_main = model_main_eval_data[main_feature_cols].astype('float32')
-                y_val_main = model_main_eval_data['labels_main'].astype('int8')
+                X_train_main = train_df[main_feature_cols].astype('float32')
+                y_train_main = train_df['labels_main'].astype('int8')
+                X_val_main = val_df[main_feature_cols].astype('float32')
+                y_val_main = val_df['labels_main'].astype('int8')
                 if self.debug:
                     print(f"🔍 DEBUG: X_train_main shape: {X_train_main.shape}, y_train_main shape: {y_train_main.shape}")
                     print(f"🔍 DEBUG: X_val_main shape: {X_val_main.shape}, y_val_main shape: {y_val_main.shape}")
@@ -1202,13 +1203,13 @@ class StrategySearcher:
                 if self.debug:
                     print(f"🔍 DEBUG: Main model data shape: {model_main_train_data.shape}")
                     print(f"🔍 DEBUG: Main feature columns: {main_feature_cols}")
-                model_main_train_data, model_main_eval_data = self.get_train_test_data(dataset=model_main_train_data)
-                if model_main_train_data is None or model_main_eval_data is None:
+                train_df, val_df = train_test_split(model_main_train_data, test_size=0.25, shuffle=True)
+                if train_df.empty or val_df.empty:
                     return None, None, None, None
-                X_train_main = model_main_train_data[main_feature_cols].astype('float32')
-                y_train_main = model_main_train_data['labels_main'].astype('float32')
-                X_val_main = model_main_eval_data[main_feature_cols].astype('float32')
-                y_val_main = model_main_eval_data['labels_main'].astype('float32')
+                X_train_main = train_df[main_feature_cols].astype('float32')
+                y_train_main = train_df['labels_main'].astype('float32')
+                X_val_main = val_df[main_feature_cols].astype('float32')
+                y_val_main = val_df['labels_main'].astype('float32')
                 if self.debug:
                     print(f"🔍 DEBUG: X_train_main shape: {X_train_main.shape}, y_train_main shape: {y_train_main.shape}")
                     print(f"🔍 DEBUG: X_val_main shape: {X_val_main.shape}, y_val_main shape: {y_val_main.shape}")
@@ -1222,13 +1223,13 @@ class StrategySearcher:
             if self.debug:
                 print(f"🔍 DEBUG: Meta model data shape: {model_meta_train_data.shape}")
                 print(f"🔍 DEBUG: Meta feature columns: {meta_feature_cols}")
-            model_meta_train_data, model_meta_eval_data = self.get_train_test_data(dataset=model_meta_train_data)
-            if model_meta_train_data is None or model_meta_eval_data is None:
+            train_df, val_df = train_test_split(model_meta_train_data, test_size=0.25, shuffle=True)
+            if train_df.empty or val_df.empty:
                 return None, None, None, None
-            X_train_meta = model_meta_train_data[meta_feature_cols].astype('float32')
-            y_train_meta = model_meta_train_data['labels_meta'].astype('int8')
-            X_val_meta = model_meta_eval_data[meta_feature_cols].astype('float32')
-            y_val_meta = model_meta_eval_data['labels_meta'].astype('int8')
+            X_train_meta = train_df[meta_feature_cols].astype('float32')
+            y_train_meta = train_df['labels_meta'].astype('int8')
+            X_val_meta = val_df[meta_feature_cols].astype('float32')
+            y_val_meta = val_df['labels_meta'].astype('int8')
             if self.debug:
                 print(f"🔍 DEBUG: X_train_meta shape: {X_train_meta.shape}, y_train_meta shape: {y_train_meta.shape}")
                 print(f"🔍 DEBUG: X_val_meta shape: {X_val_meta.shape}, y_val_meta shape: {y_val_meta.shape}")
@@ -1278,6 +1279,7 @@ class StrategySearcher:
                         print(f"🔍   {k}: {v}")
                     
                 model_main = CatBoostRegressor(**cat_main_params)
+
             t_train_main_start = time.time()
             model_main.fit(X_train_main, y_train_main, 
                            eval_set=[(X_val_main, y_val_main)],
@@ -2650,19 +2652,7 @@ class StrategySearcher:
             if self.debug:
                 print(f"🔍   CV: Mejor threshold={threshold_value:.4f}, avg_performance={avg_performance:.4f}")
         
-        # Crear threshold_mask aplicando el threshold
-        if self.direction == 'buy':
-            threshold_mask = labels_main > threshold_value
-        elif self.direction == 'sell':
-            threshold_mask = labels_main < -threshold_value
-        else:  # 'both'
-            threshold_mask = abs(labels_main) > threshold_value
-        
-        # Si se proporcionó reliability_mask, aplicar solo a esas muestras
-        if reliability_mask is not None:
-            threshold_mask = threshold_mask & reliability_mask
-        
-        return threshold_value, threshold_mask
+        return threshold_value
 
     def _evaluate_threshold_performance(self, labels: pd.Series, threshold: float) -> float:
         """

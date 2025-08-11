@@ -372,11 +372,6 @@ class StrategySearcher:
 
             # Crear dataset meta con final_mask + threshold
             if self.label_type == 'regression':
-                # Aplicar filtro según dirección
-                if self.direction == 'buy':
-                    final_mask = final_mask & (full_ds['labels_main'] > 0.0)
-                elif self.direction == 'sell':
-                    final_mask = final_mask & (full_ds['labels_main'] < 0.0)
                 hp['main_threshold'] = self.calculate_regression_threshold_cv(
                     full_ds['labels_main'], reliability_mask=final_mask, hp=hp
                 )
@@ -574,11 +569,6 @@ class StrategySearcher:
             
             # Crear dataset meta con final_mask + threshold
             if self.label_type == 'regression':
-                # Aplicar filtro según dirección
-                if self.direction == 'buy':
-                    final_mask = final_mask & (full_ds['labels_main'] > 0.0)
-                elif self.direction == 'sell':
-                    final_mask = final_mask & (full_ds['labels_main'] < 0.0)
                 hp['main_threshold'] = self.calculate_regression_threshold_cv(
                     full_ds['labels_main'], reliability_mask=final_mask, hp=hp
                 )
@@ -678,11 +668,6 @@ class StrategySearcher:
             
             # Crear dataset meta con final_mask + threshold
             if self.label_type == 'regression':
-                # Aplicar filtro según dirección
-                if self.direction == 'buy':
-                    final_mask = final_mask & (full_ds['labels_main'] > 0.0)
-                elif self.direction == 'sell':
-                    final_mask = final_mask & (full_ds['labels_main'] < 0.0)
                 hp['main_threshold'] = self.calculate_regression_threshold_cv(
                     full_ds['labels_main'], reliability_mask=final_mask, hp=hp
                 )
@@ -837,11 +822,6 @@ class StrategySearcher:
 
                 # Crear dataset meta con final_mask + threshold
                 if self.label_type == 'regression':
-                    # Aplicar filtro según dirección
-                    if self.direction == 'buy':
-                        final_mask = final_mask & (full_ds['labels_main'] > 0.0)
-                    elif self.direction == 'sell':
-                        final_mask = final_mask & (full_ds['labels_main'] < 0.0)
                     hp['main_threshold'] = self.calculate_regression_threshold_cv(
                         full_ds['labels_main'], reliability_mask=final_mask, hp=hp
                     )
@@ -2479,7 +2459,13 @@ class StrategySearcher:
         if self.label_type == 'classification':
             base_mask = full_ds['labels_main'] != 2.0
         else:
-            base_mask = full_ds['labels_main'] != 0.0
+            # Aplicar filtro según dirección
+            if self.direction == 'buy':
+                base_mask = full_ds['labels_main'] > 0.0
+            elif self.direction == 'sell':
+                base_mask = full_ds['labels_main'] < 0.0
+            else:
+                base_mask = full_ds['labels_main'] != 0.0
 
         if self.debug:
             print(f"🔍   Main labels - total_samples: {len(full_ds)}")
@@ -2580,7 +2566,7 @@ class StrategySearcher:
         
         return threshold_value, significant_samples
 
-    def calculate_regression_threshold_cv(self, labels_main: pd.Series, hp: Dict[str, Any], reliability_mask: pd.Series = None, n_splits: int = 5) -> tuple[float, pd.Series]:
+    def calculate_regression_threshold_cv(self, labels_main: pd.Series, hp: Dict[str, Any], reliability_mask: pd.Series = None, n_splits: int = 5) -> float:
         """
         Calcula threshold usando validación cruzada temporal.
         
@@ -2597,10 +2583,8 @@ class StrategySearcher:
             
         Returns
         -------
-        tuple[float, pd.Series]
-            (threshold_value, threshold_mask)
+        float
             threshold_value: Umbral optimizado por CV
-            threshold_mask: Máscara que indica qué muestras superan el umbral
         """
         
         # Determinar qué datos usar para el cálculo del threshold

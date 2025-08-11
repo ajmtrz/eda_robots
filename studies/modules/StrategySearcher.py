@@ -371,9 +371,23 @@ class StrategySearcher:
 
             # Crear dataset meta con final_mask + threshold
             if self.label_type == 'regression':
-                hp['main_threshold'], final_mask = self.calculate_regression_threshold_cv(
+                # Aplicar filtro según dirección
+                if self.direction == 'buy':
+                    final_mask = final_mask & (full_ds['labels_main'] > 0.0)
+                elif self.direction == 'sell':
+                    final_mask = final_mask & (full_ds['labels_main'] < 0.0)
+                hp['main_threshold'] = self.calculate_regression_threshold_cv(
                     full_ds['labels_main'], reliability_mask=final_mask, hp=hp
                 )
+                # Crear threshold_mask aplicando el threshold
+                if self.direction == 'buy':
+                    threshold_mask = full_ds['labels_main'] > hp['main_threshold']
+                elif self.direction == 'sell':
+                    threshold_mask = full_ds['labels_main'] < -hp['main_threshold']
+                else:  # 'both'
+                    threshold_mask = abs(full_ds['labels_main']) > hp['main_threshold']
+                final_mask = threshold_mask & final_mask
+
             full_ds['labels_meta'] = final_mask.astype('int8')
             meta_feature_cols = [c for c in full_ds.columns if c.endswith('_meta_feature')]
             if not meta_feature_cols:  # Fallback: usar main features si no hay meta features
@@ -557,11 +571,25 @@ class StrategySearcher:
                     print(f"🔍 DEBUG search_mapie - Insuficientes muestras main: {len(model_main_train_data)}")
                 return -1.0
             
-            # Meta model debe usar meta features, si no hay meta features, usar main features (fallback)
+            # Crear dataset meta con final_mask + threshold
             if self.label_type == 'regression':
-                hp['main_threshold'], final_mask = self.calculate_regression_threshold_cv(
+                # Aplicar filtro según dirección
+                if self.direction == 'buy':
+                    final_mask = final_mask & (full_ds['labels_main'] > 0.0)
+                elif self.direction == 'sell':
+                    final_mask = final_mask & (full_ds['labels_main'] < 0.0)
+                hp['main_threshold'] = self.calculate_regression_threshold_cv(
                     full_ds['labels_main'], reliability_mask=final_mask, hp=hp
                 )
+                # Crear threshold_mask aplicando el threshold
+                if self.direction == 'buy':
+                    threshold_mask = full_ds['labels_main'] > hp['main_threshold']
+                elif self.direction == 'sell':
+                    threshold_mask = full_ds['labels_main'] < -hp['main_threshold']
+                else:  # 'both'
+                    threshold_mask = abs(full_ds['labels_main']) > hp['main_threshold']
+                final_mask = threshold_mask & final_mask
+
             full_ds['labels_meta'] = final_mask.astype('int8')
             meta_feature_cols = [col for col in full_ds.columns if col.endswith('_meta_feature')]
             if not meta_feature_cols:  # Fallback: usar main features si no hay meta features
@@ -649,9 +677,23 @@ class StrategySearcher:
             
             # Crear dataset meta con final_mask + threshold
             if self.label_type == 'regression':
-                hp['main_threshold'], final_mask = self.calculate_regression_threshold_cv(
+                # Aplicar filtro según dirección
+                if self.direction == 'buy':
+                    final_mask = final_mask & (full_ds['labels_main'] > 0.0)
+                elif self.direction == 'sell':
+                    final_mask = final_mask & (full_ds['labels_main'] < 0.0)
+                hp['main_threshold'] = self.calculate_regression_threshold_cv(
                     full_ds['labels_main'], reliability_mask=final_mask, hp=hp
                 )
+                # Crear threshold_mask aplicando el threshold
+                if self.direction == 'buy':
+                    threshold_mask = full_ds['labels_main'] > hp['main_threshold']
+                elif self.direction == 'sell':
+                    threshold_mask = full_ds['labels_main'] < -hp['main_threshold']
+                else:  # 'both'
+                    threshold_mask = abs(full_ds['labels_main']) > hp['main_threshold']
+                final_mask = threshold_mask & final_mask
+
             full_ds['labels_meta'] = final_mask.astype('int8')
             meta_feature_cols = [col for col in full_ds.columns if col.endswith('_meta_feature')]
             if not meta_feature_cols:  # Fallback: usar main features si no hay meta features
@@ -794,9 +836,23 @@ class StrategySearcher:
 
                 # Crear dataset meta con final_mask + threshold
                 if self.label_type == 'regression':
-                    hp['main_threshold'], final_mask = self.calculate_regression_threshold_cv(
+                    # Aplicar filtro según dirección
+                    if self.direction == 'buy':
+                        final_mask = final_mask & (full_ds['labels_main'] > 0.0)
+                    elif self.direction == 'sell':
+                        final_mask = final_mask & (full_ds['labels_main'] < 0.0)
+                    hp['main_threshold'] = self.calculate_regression_threshold_cv(
                         full_ds['labels_main'], reliability_mask=final_mask, hp=hp
                     )
+                    # Crear threshold_mask aplicando el threshold
+                    if self.direction == 'buy':
+                        threshold_mask = full_ds['labels_main'] > hp['main_threshold']
+                    elif self.direction == 'sell':
+                        threshold_mask = full_ds['labels_main'] < -hp['main_threshold']
+                    else:  # 'both'
+                        threshold_mask = abs(full_ds['labels_main']) > hp['main_threshold']
+                    final_mask = threshold_mask & final_mask
+                    
                 meta_feature_cols = [c for c in full_ds.columns if c.endswith('_meta_feature')]
                 model_meta_train_data = full_ds[meta_feature_cols].dropna(subset=meta_feature_cols).copy()
                 model_meta_train_data['labels_meta'] = final_mask.loc[model_meta_train_data.index].astype('int8')
@@ -2421,13 +2477,7 @@ class StrategySearcher:
         if self.label_type == 'classification':
             base_mask = full_ds['labels_main'] != 2.0
         else:
-            # Aplicar filtro según dirección
-            if self.direction == 'buy':
-                base_mask = full_ds['labels_main'] > 0.0
-            elif self.direction == 'sell':
-                base_mask = full_ds['labels_main'] < 0.0
-            else:  # 'both'
-                base_mask = full_ds['labels_main'] != 0.0
+            base_mask = full_ds['labels_main'] != 0.0
 
         if self.debug:
             print(f"🔍   Main labels - total_samples: {len(full_ds)}")

@@ -861,12 +861,12 @@ class StrategySearcher:
     def _suggest_catboost(self, group: str, trial: optuna.Trial) -> Dict[str, float]:
         """Devuelve hiperparámetros CatBoost (main|meta) con prefijo `group`."""
         p = {}
-        # Rango más acotado para promover entrenamientos estables (menos under/overfitting) y menor diversidad
-        p[f'{group}_iterations']      = trial.suggest_int (f'{group}_iterations',      300, 600, step=50)
-        p[f'{group}_depth']           = trial.suggest_int (f'{group}_depth',           5,   7)
-        p[f'{group}_learning_rate']   = trial.suggest_float(f'{group}_learning_rate',  1e-2, 0.10, log=True)
-        p[f'{group}_l2_leaf_reg']     = trial.suggest_float(f'{group}_l2_leaf_reg',    2.0,  5.0,  log=True)
-        p[f'{group}_early_stopping']  = trial.suggest_int (f'{group}_early_stopping',  40,  120,  step=20)
+        # Rangos ampliados para mayor exploración del espacio de hiperparámetros
+        p[f'{group}_iterations']      = trial.suggest_int (f'{group}_iterations',      200, 1000, step=50)
+        p[f'{group}_depth']           = trial.suggest_int (f'{group}_depth',           3,   12)
+        p[f'{group}_learning_rate']   = trial.suggest_float(f'{group}_learning_rate',  5e-3, 0.25, log=True)
+        p[f'{group}_l2_leaf_reg']     = trial.suggest_float(f'{group}_l2_leaf_reg',    1.0,  10.0,  log=True)
+        p[f'{group}_early_stopping']  = trial.suggest_int (f'{group}_early_stopping',  30,  200,  step=10)
         return p
 
     # ─────────────────────────  FUNCIÓN PRINCIPAL  ──────────────────────────────
@@ -911,15 +911,15 @@ class StrategySearcher:
         p: Dict[str, Any] = {}
 
         # ─── FEATURE MAIN - PERÍODOS ────────────────────────────────────────────────
-        n_periods = trial.suggest_int("feature_main_n_periods", 1, 12)
+        n_periods = trial.suggest_int("feature_main_n_periods", 1, 20)
         feature_periods = [
-            trial.suggest_int(f"feature_main_period_{i}", 5, 200, log=True)
+            trial.suggest_int(f"feature_main_period_{i}", 3, 500, log=True)
             for i in range(n_periods)
         ]
         p["feature_main_periods"] = tuple(sorted(set(feature_periods)))
 
         # ─── FEATURE MAIN - ESTADÍSTICAS ───────────────────────────────────────────
-        n_stats = trial.suggest_int("feature_main_n_stats", 1, 6)
+        n_stats = trial.suggest_int("feature_main_n_stats", 1, 8)
         feature_stats = [
             trial.suggest_categorical(f"feature_main_stat_{i}", ALL_STATS)
             for i in range(n_stats)
@@ -930,15 +930,15 @@ class StrategySearcher:
         # ─── FEATURE META (solo ciertos search_type) ──────────────────────────
         if self.search_type in {"reliability", "clusters"}:
             # períodos meta
-            n_meta_periods = trial.suggest_int("feature_meta_n_periods", 1, 6)
+            n_meta_periods = trial.suggest_int("feature_meta_n_periods", 1, 10)
             meta_periods = [
-                trial.suggest_int(f"feature_meta_period_{i}", 5, 100, log=True)
+                trial.suggest_int(f"feature_meta_period_{i}", 3, 300, log=True)
                 for i in range(n_meta_periods)
             ]
             p["feature_meta_periods"] = tuple(sorted(set(meta_periods)))
 
             # estadísticas meta
-            n_meta_stats = trial.suggest_int("feature_meta_n_stats", 1, 3)
+            n_meta_stats = trial.suggest_int("feature_meta_n_stats", 1, 5)
             meta_stats = [
                 trial.suggest_categorical(f"feature_meta_stat_{i}", ALL_STATS)
                 for i in range(n_meta_stats)
@@ -951,33 +951,33 @@ class StrategySearcher:
     def _suggest_label(self, trial: optuna.Trial) -> Dict[str, float]:
         """Hiperparámetros de etiquetado dependientes de la función label_method."""
         label_search_space = {
-            'label_markup':     lambda t: t.suggest_float('label_markup',     0.20, 0.80, log=True),
-            'label_n_clusters': lambda t: t.suggest_int('label_n_clusters', 4, 20, log=True),
-            'label_polyorder':  lambda t: t.suggest_int('label_polyorder',    2, 4),
-            'label_threshold':  lambda t: t.suggest_float('label_threshold',  0.20, 0.60),
-            'label_corr_threshold': lambda t: t.suggest_float('label_corr_threshold', 0.70, 0.90),
-            'label_rolling':    lambda t: t.suggest_int  ('label_rolling',    50, 400, log=True),
-            'label_rolling2':  lambda t: t.suggest_int  ('label_rolling2',   50, 400, log=True),
-            'label_rolling_periods_small': lambda t: [t.suggest_int(f'label_rolling_periods_small_{i}', 10, 60, log=True) for i in range(3)],
-            'label_rolling_periods_big': lambda t: [t.suggest_int(f'label_rolling_periods_big_{i}', 150, 800, log=True) for i in range(3)],
-            'label_atr_period': lambda t: t.suggest_int  ('label_atr_period', 14, 28, log=True),
-            'label_min_val':    lambda t: t.suggest_int  ('label_min_val',    5,  20, log=True),
-            'label_max_val':    lambda t: t.suggest_int  ('label_max_val',    20, 60, log=True),
+            'label_markup':     lambda t: t.suggest_float('label_markup',     0.15, 1.20, log=True),
+            'label_n_clusters': lambda t: t.suggest_int('label_n_clusters', 3, 30, log=True),
+            'label_polyorder':  lambda t: t.suggest_int('label_polyorder',    1, 6),
+            'label_threshold':  lambda t: t.suggest_float('label_threshold',  0.15, 0.80),
+            'label_corr_threshold': lambda t: t.suggest_float('label_corr_threshold', 0.60, 0.95),
+            'label_rolling':    lambda t: t.suggest_int  ('label_rolling',    30, 800, log=True),
+            'label_rolling2':  lambda t: t.suggest_int  ('label_rolling2',   30, 800, log=True),
+            'label_rolling_periods_small': lambda t: [t.suggest_int(f'label_rolling_periods_small_{i}', 5, 100, log=True) for i in range(3)],
+            'label_rolling_periods_big': lambda t: [t.suggest_int(f'label_rolling_periods_big_{i}', 100, 1200, log=True) for i in range(3)],
+            'label_atr_period': lambda t: t.suggest_int  ('label_atr_period', 10, 50, log=True),
+            'label_min_val':    lambda t: t.suggest_int  ('label_min_val',    3,  30, log=True),
+            'label_max_val':    lambda t: t.suggest_int  ('label_max_val',    15, 80, log=True),
             'label_method_trend':     lambda t: t.suggest_categorical('label_method_trend', ['normal', 'inverse']),
             'label_method_random':     lambda t: t.suggest_categorical('label_method_random', ['first', 'last', 'mean', 'max', 'min', 'random']),
             'label_filter':     lambda t: t.suggest_categorical('label_filter', ['savgol', 'spline', 'sma', 'ema']),
             'label_filter_mean':     lambda t: t.suggest_categorical('label_filter_mean', ['savgol', 'spline', 'mean']),
-            'label_window_size': lambda t: t.suggest_int('label_window_size', 20, 120, log=True),
-            'label_window_sizes_int': lambda t: [t.suggest_int(f'label_window_sizes_{i}', 20, 150, log=True) for i in range(3)],
-            'label_window_sizes_float': lambda t: [t.suggest_float(f'label_window_sizes_{i}', 0.10, 0.60) for i in range(3)],
-            'label_min_window': lambda t: t.suggest_int('label_min_window', 6, 30, log=True),
-            'label_max_window': lambda t: t.suggest_int('label_max_window', 30, 120, log=True),
-            'label_vol_window': lambda t: t.suggest_int('label_vol_window', 20, 150, log=True),
-            'label_min_touches': lambda t: t.suggest_int('label_min_touches', 2, 6),
-            'label_peak_prominence': lambda t: t.suggest_float('label_peak_prominence', 0.08, 0.35),
-            'label_quantiles': lambda t: [t.suggest_float(f'label_quantiles_{i}', 0.30, 0.70) for i in range(2)],
-            'label_decay_factor': lambda t: t.suggest_float('label_decay_factor', 0.90, 0.99),
-            'label_shift': lambda t: t.suggest_int('label_shift', 0, 5),
+            'label_window_size': lambda t: t.suggest_int('label_window_size', 15, 200, log=True),
+            'label_window_sizes_int': lambda t: [t.suggest_int(f'label_window_sizes_{i}', 10, 200, log=True) for i in range(3)],
+            'label_window_sizes_float': lambda t: [t.suggest_float(f'label_window_sizes_{i}', 0.05, 0.80) for i in range(3)],
+            'label_min_window': lambda t: t.suggest_int('label_min_window', 3, 50, log=True),
+            'label_max_window': lambda t: t.suggest_int('label_max_window', 20, 200, log=True),
+            'label_vol_window': lambda t: t.suggest_int('label_vol_window', 15, 200, log=True),
+            'label_min_touches': lambda t: t.suggest_int('label_min_touches', 1, 8),
+            'label_peak_prominence': lambda t: t.suggest_float('label_peak_prominence', 0.05, 0.50),
+            'label_quantiles': lambda t: [t.suggest_float(f'label_quantiles_{i}', 0.20, 0.80) for i in range(2)],
+            'label_decay_factor': lambda t: t.suggest_float('label_decay_factor', 0.85, 0.995),
+            'label_shift': lambda t: t.suggest_int('label_shift', 0, 10),
         }
         p = {}
         label_func = self.LABEL_FUNCS[self.label_method]
@@ -993,57 +993,58 @@ class StrategySearcher:
         p = {}
         if self.search_type == 'clusters':
             if self.search_subtype == 'kmeans':
-                # Promover clusters suficientes y ventanas estables
-                p['kmeans_n_clusters'] = trial.suggest_int ('kmeans_n_clusters', 8, 20, log=True)
-                p['kmeans_window']     = trial.suggest_int ('kmeans_window',     60, 180, log=True)
-                p['kmeans_step']       = trial.suggest_int ('kmeans_step',       5,  20)
+                # Rangos ampliados para clusters más diversos
+                p['kmeans_n_clusters'] = trial.suggest_int ('kmeans_n_clusters', 5, 30, log=True)
+                p['kmeans_window']     = trial.suggest_int ('kmeans_window',     40, 300, log=True)
+                p['kmeans_step']       = trial.suggest_int ('kmeans_step',       3,  40)
             elif self.search_subtype == 'hdbscan':
-                # Tamaño mínimo de cluster más conservador para robustez
-                p['hdbscan_min_cluster_size'] = trial.suggest_int ('hdbscan_min_cluster_size', 10, 60, log=True)
+                # Tamaño mínimo de cluster más flexible
+                p['hdbscan_min_cluster_size'] = trial.suggest_int ('hdbscan_min_cluster_size', 5, 100, log=True)
             elif self.search_subtype == 'markov':
                 p['markov_model']    = trial.suggest_categorical('markov_model', ['GMMHMM', 'HMM'])
-                p['markov_regimes']  = trial.suggest_int ('markov_regimes', 3, 6, log=True)
-                p['markov_iter']     = trial.suggest_int ('markov_iter',    50, 150, log=True)
-                p['markov_mix']      = trial.suggest_int ('markov_mix',     2, 3)
+                p['markov_regimes']  = trial.suggest_int ('markov_regimes', 2, 10, log=True)
+                p['markov_iter']     = trial.suggest_int ('markov_iter',    30, 300, log=True)
+                p['markov_mix']      = trial.suggest_int ('markov_mix',     2, 5)
             elif self.search_subtype == 'lgmm':
-                p['lgmm_components']  = trial.suggest_int ('lgmm_components',  3, 12, log=True)
+                # Rangos ampliados para Gaussian Mixture Models
+                p['lgmm_components']  = trial.suggest_int ('lgmm_components',  2, 20, log=True)
                 p['lgmm_covariance']  = trial.suggest_categorical('lgmm_covariance', ['full', 'tied', 'diag', 'spherical'])
-                p['lgmm_iter']        = trial.suggest_int ('lgmm_iter',        80, 200, log=True)
+                p['lgmm_iter']        = trial.suggest_int ('lgmm_iter',        50, 500, log=True)
             elif self.search_subtype == 'wkmeans':
-                p['wk_n_clusters']    = trial.suggest_int ('wk_n_clusters',    6, 16, log=True)
-                p['wk_bandwidth']     = trial.suggest_float('wk_bandwidth',    0.2, 2.0, log=True)
-                p['wk_window']        = trial.suggest_int ('wk_window',        40, 100, log=True)
-                p['wk_step']          = trial.suggest_int ('wk_step',          1, 5)
-                p['wk_proj']          = trial.suggest_int ('wk_proj',          50, 150, log=True)
-                p['wk_iter']          = trial.suggest_int ('wk_iter',          100, 300, log=True)
+                p['wk_n_clusters']    = trial.suggest_int ('wk_n_clusters',    4, 25, log=True)
+                p['wk_bandwidth']     = trial.suggest_float('wk_bandwidth',    0.1, 5.0, log=True)
+                p['wk_window']        = trial.suggest_int ('wk_window',        30, 150, log=True)
+                p['wk_step']          = trial.suggest_int ('wk_step',          1, 10)
+                p['wk_proj']          = trial.suggest_int ('wk_proj',          30, 300, log=True)
+                p['wk_iter']          = trial.suggest_int ('wk_iter',          50, 500, log=True)
         elif self.search_type == 'mapie':
-            # CV más bajo por coste y estabilidad, confianza moderada-alta
-            p['mapie_confidence_level'] = trial.suggest_float('mapie_confidence_level', 0.85, 0.95)
-            p['mapie_cv']               = trial.suggest_int  ('mapie_cv',               3, 5)
+            # Rangos ampliados para conformal prediction
+            p['mapie_confidence_level'] = trial.suggest_float('mapie_confidence_level', 0.75, 0.98)
+            p['mapie_cv']               = trial.suggest_int  ('mapie_cv',               2, 8)
             # Parámetros específicos para regresión MAPIE
             if self.label_type == 'regression':
-                p['mapie_threshold_width']     = trial.suggest_int('mapie_threshold_width', 40, 60)
+                p['mapie_threshold_width']     = trial.suggest_int('mapie_threshold_width', 25, 80)
         elif self.search_type == 'causal':
-            # Bootstrap moderado y percentil en rango robusto
-            p['causal_meta_learners'] = trial.suggest_int('causal_meta_learners', 7, 11)
-            p['causal_percentile'] = trial.suggest_int('causal_percentile', 70, 85)
+            # Rangos ampliados para detección causal
+            p['causal_meta_learners'] = trial.suggest_int('causal_meta_learners', 5, 20)
+            p['causal_percentile'] = trial.suggest_int('causal_percentile', 60, 95)
             # Parámetros específicos para regresión causal
             if self.label_type == 'regression':
-                p['causal_error_threshold'] = trial.suggest_float('causal_error_threshold', 0.2, 1.0, log=True)
+                p['causal_error_threshold'] = trial.suggest_float('causal_error_threshold', 0.1, 2.0, log=True)
 
         # Parámetros de filtros (independientes del search_type)
         if self.search_filter == 'mapie':
-            p['mapie_confidence_level'] = trial.suggest_float('mapie_confidence_level', 0.85, 0.95)
-            p['mapie_cv']               = trial.suggest_int  ('mapie_cv',               3, 5)
+            p['mapie_confidence_level'] = trial.suggest_float('mapie_confidence_level', 0.75, 0.98)
+            p['mapie_cv']               = trial.suggest_int  ('mapie_cv',               2, 8)
             # Parámetros específicos para regresión MAPIE
             if self.label_type == 'regression':
-                p['mapie_threshold_width']     = trial.suggest_int('mapie_threshold_width', 40, 60)
+                p['mapie_threshold_width']     = trial.suggest_int('mapie_threshold_width', 25, 80)
         elif self.search_filter == 'causal':
-            p['causal_meta_learners'] = trial.suggest_int('causal_meta_learners', 7, 11)
-            p['causal_percentile'] = trial.suggest_int('causal_percentile', 70, 85)
+            p['causal_meta_learners'] = trial.suggest_int('causal_meta_learners', 5, 20)
+            p['causal_percentile'] = trial.suggest_int('causal_percentile', 60, 95)
             # Parámetros específicos para regresión causal
             if self.label_type == 'regression':
-                p['causal_error_threshold'] = trial.suggest_float('causal_error_threshold', 0.2, 1.0, log=True)
+                p['causal_error_threshold'] = trial.suggest_float('causal_error_threshold', 0.1, 2.0, log=True)
 
         # THRESHOLDS UNIFICADOS (preparación para optimización futura)
         if self.label_type == 'classification':
@@ -1053,9 +1054,8 @@ class StrategySearcher:
         else:  # regression
             # Regresión: meta threshold fijo por ahora (futuro optimizable), main se calcula dinámicamente
             p['meta_threshold'] = 0.5  # FUTURO: trial.suggest_float('meta_threshold', 0.1, 0.9)
-            p['model_main_percentile'] = trial.suggest_float('model_main_percentile', 0.6, 0.8)
-            p['oof_resid_percentile'] = trial.suggest_int('oof_resid_percentile', 60, 80)
-            # main_threshold se calcula dinámicamente en calculate_regression_threshold_cv
+            p['model_main_percentile'] = trial.suggest_float('model_main_percentile', 0.55, 0.85)
+            p['oof_resid_percentile'] = trial.suggest_int('oof_resid_percentile', 50, 90)
 
         return p
 

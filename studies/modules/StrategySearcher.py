@@ -313,7 +313,7 @@ class StrategySearcher:
                 return -1.0
 
             # Main base mask
-            base_mask = self.get_base_mask(full_ds)
+            base_mask = self.get_base_mask(full_ds, hp)
             if not base_mask.any():
                 if self.debug:
                     print(f"🔍 DEBUG search_reliability - No hay muestras de trading")
@@ -485,7 +485,7 @@ class StrategySearcher:
             if full_ds is None:
                 return -1.0
             
-            base_mask = self.get_base_mask(full_ds)
+            base_mask = self.get_base_mask(full_ds, hp)
             reliable_data = full_ds[base_mask].copy()
             if len(reliable_data) < 200:
                 if self.debug:
@@ -535,7 +535,7 @@ class StrategySearcher:
                 print(f"🔍 DEBUG search_mapie - Usando esquema de confiabilidad")
 
             # Main: solo muestras con señales, según label_type
-            base_mask = self.get_base_mask(full_ds)
+            base_mask = self.get_base_mask(full_ds, hp)
 
             # 2. Filtro secundario: MAPIE como método principal
             mapie_scores = self.apply_mapie_filter(
@@ -623,7 +623,7 @@ class StrategySearcher:
                 print(f"🔍 DEBUG search_causal - Usando esquema de confiabilidad")
             
             # Main base mask
-            base_mask = self.get_base_mask(full_ds)
+            base_mask = self.get_base_mask(full_ds, hp)
 
             # 2. Filtro secundario: CAUSAL como método principal
             causal_scores = self.apply_causal_filter(
@@ -786,19 +786,6 @@ class StrategySearcher:
                     if self.debug:
                         print(f"🔍 DEBUG evaluate_clusters - Insuficientes muestras main: {len(model_main_train_data)}")
                     continue
-
-                meta_feature_cols = [c for c in full_ds.columns if c.endswith('_meta_feature')]
-                model_meta_train_data = full_ds[meta_feature_cols].dropna(subset=meta_feature_cols).copy()
-                if self.label_type == 'classification':
-                    model_meta_train_data['labels_meta'] = final_mask.loc[model_meta_train_data.index].astype('int8')
-                    if model_meta_train_data is None or model_meta_train_data.empty:
-                        continue
-                    if set(model_meta_train_data['labels_meta'].unique()) != {0, 1}:
-                        if self.debug:
-                            print(f"🔍   Cluster {clust} descartado: labels_meta insuficientes")
-                        continue
-
-                # Verificar que tenemos suficientes muestras para main y meta
                 if self.label_type == 'classification':
                     if set(model_main_train_data['labels_main'].unique()) != {0.0, 1.0}:
                         if self.debug:
@@ -808,6 +795,18 @@ class StrategySearcher:
                     if set(model_main_train_data['labels_main'].unique()) == {0.0}:
                         if self.debug:
                             print(f"🔍   Cluster {clust} descartado: labels_main insuficientes")
+                        continue
+
+                # Crear dataset meta
+                meta_feature_cols = [c for c in full_ds.columns if c.endswith('_meta_feature')]
+                model_meta_train_data = full_ds[meta_feature_cols].dropna(subset=meta_feature_cols).copy()
+                if self.label_type == 'classification':
+                    model_meta_train_data['labels_meta'] = final_mask.loc[model_meta_train_data.index].astype('int8')
+                    if model_meta_train_data is None or model_meta_train_data.empty:
+                        continue
+                    if set(model_meta_train_data['labels_meta'].unique()) != {0, 1}:
+                        if self.debug:
+                            print(f"🔍   Cluster {clust} descartado: labels_meta insuficientes")
                         continue
 
                 # Información de debug para cluster
@@ -1219,6 +1218,7 @@ class StrategySearcher:
                 val_pred = model_main.predict(X_val_main)
                 print(f"🔍 DEBUG: Train predictions - min: {train_pred.min():.4f}, max: {train_pred.max():.4f}, mean: {train_pred.mean():.4f}")
                 print(f"🔍 DEBUG: Val predictions - min: {val_pred.min():.4f}, max: {val_pred.max():.4f}, mean: {val_pred.mean():.4f}")
+
             # Si estamos en regresión, generar labels_meta OOF antes de preparar el meta
             if self.label_type == 'regression':
                 # 1) Predicciones OOF del main (una sola vez)
@@ -1233,7 +1233,7 @@ class StrategySearcher:
                     labels_main=pd.Series(main_oof_pred, index=main_oof_pred.index),
                     hp=hp,
                     reliability_mask=None,
-                    n_splits=3,
+                    n_splits=5,
                 )
 
                 # 3) Construir dataset meta a partir de residuales OOF del main
@@ -2429,7 +2429,7 @@ class StrategySearcher:
         
         return train_data, test_data
 
-    def get_base_mask(self, full_ds: pd.DataFrame) -> pd.Series:
+    def get_base_mask(self, full_ds: pd.DataFrame, hp: Dict[str, Any]) -> pd.Series:
         """
         Obtiene máscara de trading según label_type.
         
@@ -2447,11 +2447,17 @@ class StrategySearcher:
             # Aplicar filtro según dirección
             if self.direction == 'buy':
                 base_mask = full_ds['labels_main'] > 0.0
+                threshold_value = self.calculate_regression_threshold_cv(full_ds['labels_main'], hp, base_mask, n_splits=5)
+                base_mask = full_ds['labels_main'] >= threshold_value
             elif self.direction == 'sell':
                 base_mask = full_ds['labels_main'] < 0.0
+                threshold_value = self.calculate_regression_threshold_cv(full_ds['labels_main'], hp, base_mask, n_splits=5)
+                base_mask = full_ds['labels_main'] <= threshold_value
             else:
                 base_mask = full_ds['labels_main'] != 0.0
-
+                threshold_value = self.calculate_regression_threshold_cv(full_ds['labels_main'], hp, base_mask, n_splits=5)
+                base_mask = abs(full_ds['labels_main']) >= threshold_value
+                
         if self.debug:
             print(f"🔍   Main labels - total_samples: {len(full_ds)}")
             print(f"🔍   Main labels - trading_samples: {base_mask.sum()}")
@@ -2719,7 +2725,7 @@ class StrategySearcher:
 
         Xm = X_main.astype('float32')
         ym = y_main.astype('float32')
-        default_splits = 3
+        default_splits = 5
         n_splits = int(hp.get('oof_n_splits', default_splits))
         n_splits = max(2, min(n_splits, max(2, len(Xm) - 1)))
         tscv = TimeSeriesSplit(n_splits=n_splits)

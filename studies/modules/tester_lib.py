@@ -320,30 +320,30 @@ def backtest(open_,
             pos_type = open_positions_type[i]
             
             # Determinar si cerrar según tipo y dirección
-            should_close = False
+            must_close = False
             
             # Lógica de cierre según label_type y direction
             # Solo el main model controla el cierre de operaciones
             if label_type_int == 1:  # REGRESIÓN
                 if direction_int == 0:  # Solo BUY
-                    should_close = (pos_type == LONG and not buy_sig and not meta_ok)
+                    must_close = (pos_type == LONG and not buy_sig)
                 elif direction_int == 1:  # Solo SELL
-                    should_close = (pos_type == SHORT and not sell_sig and not meta_ok)
+                    must_close = (pos_type == SHORT and not sell_sig)
                 else:  # direction_int == 2 (BOTH)
                     if pos_type == LONG:
-                        should_close = (not buy_sig and not meta_ok)
+                        must_close = (not buy_sig)
                     else:  # SHORT
-                        should_close = (not sell_sig and not meta_ok)
+                        must_close = (not sell_sig)
             
             else:  # label_type_int == 0 (CLASIFICACIÓN)
                 if direction_int == 0:  # Solo BUY
-                    should_close = (pos_type == LONG and not buy_sig and not meta_ok)
+                    must_close = (pos_type == LONG and not buy_sig)
                 elif direction_int == 1:  # Solo SELL
-                    should_close = (pos_type == SHORT and not sell_sig and not meta_ok)
+                    must_close = (pos_type == SHORT and not sell_sig)
                 else:  # direction_int == 2 (BOTH)
-                    should_close = (pos_type == LONG and not buy_sig and not meta_ok) or (pos_type == SHORT and not sell_sig and not meta_ok)
+                    must_close = (pos_type == LONG and not buy_sig) or (pos_type == SHORT and not sell_sig)
             
-            if should_close:
+            if must_close:
                 if pos_type == LONG:
                     profit = price - open_positions_price[i]
                 else:

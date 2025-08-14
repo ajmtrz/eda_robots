@@ -505,7 +505,7 @@ class StrategySearcher:
             full_ds.loc[base_mask, 'labels_meta'] = reliable_data_clustered['labels_meta']
             full_ds.loc[~base_mask, 'labels_meta'] = -1  # Muestras no confiables sin cluster
 
-            score, full_ds_with_labels_path, model_paths, models_cols, best_main_threshold = self.evaluate_clusters(trial, full_ds, base_mask, hp)
+            score, full_ds_with_labels_path, model_paths, models_cols, best_main_threshold = self.evaluate_clusters(trial, full_ds, hp)
             if score is None or model_paths is None or models_cols is None or full_ds_with_labels_path is None:
                 return -1.0
             
@@ -701,7 +701,7 @@ class StrategySearcher:
     # Métodos auxiliares
     # =========================================================================
     
-    def evaluate_clusters(self, trial: optuna.trial, full_ds: pd.DataFrame, base_mask: pd.Series, hp: Dict[str, Any]) -> tuple[float, tuple, tuple]:
+    def evaluate_clusters(self, trial: optuna.trial, full_ds: pd.DataFrame, hp: Dict[str, Any]) -> tuple[float, tuple, tuple]:
         """Función helper para evaluar clusters y entrenar modelos."""
         try:
             # Esquema tradicional de clusters
@@ -730,7 +730,7 @@ class StrategySearcher:
             # Evaluar cada cluster
             for clust in cluster_sizes.index:
                 cluster_mask = full_ds['labels_meta'] == clust
-                cluster_mask = cluster_mask & base_mask
+                cluster_mask = cluster_mask
                 if not cluster_mask.any():
                     if self.debug:
                         print(f"🔍   Cluster {clust} descartado: sin muestras confiables")
@@ -1120,7 +1120,7 @@ class StrategySearcher:
                 if self.debug:
                     print(f"🔍 DEBUG: Main model data shape: {model_main_train_data.shape}")
                     print(f"🔍 DEBUG: Main feature columns: {main_feature_cols}")
-                train_df, val_df = train_test_split(model_main_train_data, test_size=0.25, shuffle=True)
+                train_df, val_df = self.get_train_test_data(model_main_train_data)
                 if train_df.empty or val_df.empty:
                     return None, None, None, None, None
                 X_train_main = train_df[main_feature_cols].astype('float32')
@@ -1138,7 +1138,7 @@ class StrategySearcher:
                 if self.debug:
                     print(f"🔍 DEBUG: Main model data shape: {model_main_train_data.shape}")
                     print(f"🔍 DEBUG: Main feature columns: {main_feature_cols}")
-                train_df, val_df = train_test_split(model_main_train_data, test_size=0.25, shuffle=True)
+                train_df, val_df = self.get_train_test_data(model_main_train_data)
                 if train_df.empty or val_df.empty:
                     return None, None, None, None, None
                 X_train_main = train_df[main_feature_cols].astype('float32')
@@ -1255,7 +1255,7 @@ class StrategySearcher:
                 print(f"🔍   Meta labels distribution: {meta_dist}")
             # Recalcular splits para meta tras crear labels_meta
             meta_feature_cols = [col for col in model_meta_train_data.columns if col != 'labels_meta']
-            train_df, val_df = train_test_split(model_meta_train_data, test_size=0.25, shuffle=True)
+            train_df, val_df = self.get_train_test_data(model_meta_train_data)
             if train_df.empty or val_df.empty:
                 return None, None, None, None, None
             X_train_meta = train_df[meta_feature_cols].astype('float32')

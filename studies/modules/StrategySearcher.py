@@ -1637,19 +1637,16 @@ class StrategySearcher:
             # Calcular scores según label_type
             if self.label_type == 'classification':
                 # Para clasificación: usar predict_set (conjuntos de predicción)
-                predicted, prediction_sets = mapie.predict_set(X)
+                _, prediction_sets = mapie.predict_set(X)
                 # Calcular el tamaño del conjunto por muestra de forma robusta
                 prediction_sets_2d = prediction_sets[:, :, 0]
                 set_sizes = prediction_sets_2d.sum(axis=1)
                 # Scores de confiabilidad: 1.0 si set_size == 1 (alta confianza), 0.0 en caso contrario
-                conformal_scores = (set_sizes == 1).astype(float)
-                # Scores de precisión: 1.0 si predicted == y (predicción correcta), 0.0 en caso contrario
-                precision_scores = (predicted == y.to_numpy()).astype(float)
-                # Combinar: solo muestras que son tanto confiables como precisas
-                combined_scores = ((conformal_scores == 1.0) & (precision_scores == 1.0)).astype(float)
+                # Solo filtrado por confiabilidad, sin considerar precisión
+                combined_scores = (set_sizes == 1).astype(float)
             else:  # regression
                 # Para regresión: predict_interval devuelve (predictions, prediction_intervals)
-                predicted, y_prediction_intervals = mapie.predict_interval(X)
+                _, y_prediction_intervals = mapie.predict_interval(X)
                 
                 # Para regresión: analizar intervalos de confianza
                 # Según documentación MAPIE: prediction_intervals tiene shape (n_samples, 2, n_confidence_levels)
@@ -1694,25 +1691,18 @@ class StrategySearcher:
                     print(f"🔍   threshold_width (valor): {threshold_width_value:.4f}")
                     print(f"🔍   interval_width.min(): {interval_width.min():.4f}, interval_width.max(): {interval_width.max():.4f}")
                     print(f"🔍   interval_width.mean(): {interval_width.mean():.4f}, interval_width.std(): {interval_width.std():.4f}")
-                    print(f"🔍   predicted.min(): {predicted.min():.4f}, predicted.max(): {predicted.max():.4f}")
-                    print(f"🔍   predicted.mean(): {predicted.mean():.4f}, predicted.std(): {predicted.std():.4f}")
-                    print(f"🔍   abs(predicted).min(): {abs(predicted).min():.4f}, abs(predicted).max(): {abs(predicted).max():.4f}")
                     print(f"🔍   width_confidence.sum(): {width_confidence.sum()}")
                     print(f"🔍   width_confidence.mean(): {width_confidence.mean():.4f}")
                     
                     # Debug adicional: mostrar algunos ejemplos
                     print(f"🔍   === EJEMPLOS DE INTERVALOS ===")
                     for i in range(min(5, len(intervals))):
-                        print(f"🔍     Muestra {i}: intervalo=[{intervals[i,0]:.4f}, {intervals[i,1]:.4f}], width={interval_width[i]:.4f}, predicted={predicted[i]:.4f}")
+                        print(f"🔍     Muestra {i}: intervalo=[{intervals[i,0]:.4f}, {intervals[i,1]:.4f}], width={interval_width[i]:.4f}")
                         print(f"🔍       width_confidence: {width_confidence[i]}")
                     
                     # Debug: distribución de interval_width
                     width_percentiles = np.percentile(interval_width, [10, 25, 50, 75, 90])
                     print(f"🔍   interval_width percentiles: {width_percentiles}")
-                    
-                    # Debug: distribución de abs(predicted)
-                    pred_percentiles = np.percentile(abs(predicted), [10, 25, 50, 75, 90])
-                    print(f"🔍   abs(predicted) percentiles: {pred_percentiles}")
                 
                 # MAPIE solo evalúa confiabilidad del modelo (width_confidence)
                 # La magnitud de la señal se evalúa en el backtest
@@ -1721,13 +1711,11 @@ class StrategySearcher:
             if self.debug:
                 if self.label_type == 'classification':
                     print(f"🔍   set_sizes.min(): {set_sizes.min()}, set_sizes.max(): {set_sizes.max()}")
-                    print(f"🔍   conformal_scores.sum(): {conformal_scores.sum()}")
-                    print(f"🔍   precision_scores.sum(): {precision_scores.sum()}")
+                    print(f"🔍   conformal_scores.sum(): {(set_sizes == 1).sum()}")
                 else:  # regression
                     print(f"🔍   threshold_width (valor): {threshold_width_value:.4f}")
                     print(f"🔍   interval_width.min(): {interval_width.min():.4f}, interval_width.max(): {interval_width.max():.4f}")
                     print(f"🔍   width_confidence.sum(): {width_confidence.sum()}")
-                    print(f"🔍   predicted range: [{predicted.min():.4f}, {predicted.max():.4f}]")
                 print(f"🔍   combined_scores.sum(): {combined_scores.sum()}")
                 print(f"🔍   combined_scores.mean(): {combined_scores.mean():.3f}")
                 

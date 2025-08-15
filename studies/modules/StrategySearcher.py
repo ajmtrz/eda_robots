@@ -384,6 +384,24 @@ class StrategySearcher:
                     return -1.0
             else:
                 model_meta_train_data = full_ds[meta_feature_cols].dropna(subset=meta_feature_cols).copy()
+                meta_mask = self.create_meta_labels(
+                    model_main_train_data=model_main_train_data,
+                    model_meta_train_data=model_meta_train_data,
+                    hp=hp
+                )
+                if meta_mask is None or meta_mask.empty:
+                    return -1.0
+                meta_mask = meta_mask & final_mask
+                model_meta_train_data['labels_meta'] = meta_mask.astype('int8')
+                if model_meta_train_data is None or model_meta_train_data.empty:
+                    return -1.0
+                if set(model_meta_train_data['labels_meta'].unique()) != {0, 1}:
+                    if self.debug:
+                        print(f"🔍   Search reliability - labels_meta insuficientes")
+                    return -1.0
+                if self.debug:
+                    meta_dist = model_meta_train_data['labels_meta'].value_counts()
+                    print(f"🔍   Meta labels distribution: {meta_dist}")
             
             if self.debug:
                 print(f"🔍 DEBUG search_reliability - Main data shape: {model_main_train_data.shape}")
@@ -570,6 +588,24 @@ class StrategySearcher:
                     return -1.0
             else:
                 model_meta_train_data = full_ds[meta_feature_cols].dropna(subset=meta_feature_cols).copy()
+                meta_mask = self.create_meta_labels(
+                    model_main_train_data=model_main_train_data,
+                    model_meta_train_data=model_meta_train_data,
+                    hp=hp
+                )
+                if meta_mask is None or meta_mask.empty:
+                    return -1.0
+                meta_mask = meta_mask & final_mask
+                model_meta_train_data['labels_meta'] = meta_mask.astype('int8')
+                if model_meta_train_data is None or model_meta_train_data.empty:
+                    return -1.0
+                if set(model_meta_train_data['labels_meta'].unique()) != {0, 1}:
+                    if self.debug:
+                        print(f"🔍   Search reliability - labels_meta insuficientes")
+                    return -1.0
+                if self.debug:
+                    meta_dist = model_meta_train_data['labels_meta'].value_counts()
+                    print(f"🔍   Meta labels distribution: {meta_dist}")
 
             if self.debug:
                 print(f"🔍 DEBUG search_mapie - Main data shape: {model_main_train_data.shape}")
@@ -658,6 +694,24 @@ class StrategySearcher:
                     return -1.0
             else:
                 model_meta_train_data = full_ds[meta_feature_cols].dropna(subset=meta_feature_cols).copy()
+                meta_mask = self.create_meta_labels(
+                    model_main_train_data=model_main_train_data,
+                    model_meta_train_data=model_meta_train_data,
+                    hp=hp
+                )
+                if meta_mask is None or meta_mask.empty:
+                    return -1.0
+                meta_mask = meta_mask & final_mask
+                model_meta_train_data['labels_meta'] = meta_mask.astype('int8')
+                if model_meta_train_data is None or model_meta_train_data.empty:
+                    return -1.0
+                if set(model_meta_train_data['labels_meta'].unique()) != {0, 1}:
+                    if self.debug:
+                        print(f"🔍   Search reliability - labels_meta insuficientes")
+                    return -1.0
+                if self.debug:
+                    meta_dist = model_meta_train_data['labels_meta'].value_counts()
+                    print(f"🔍   Meta labels distribution: {meta_dist}")
             
             if self.debug:
                 print(f"🔍 DEBUG search_reliability - Main data shape: {model_main_train_data.shape}")
@@ -808,6 +862,25 @@ class StrategySearcher:
                         if self.debug:
                             print(f"🔍   Cluster {clust} descartado: labels_meta insuficientes")
                         continue
+                else:
+                    meta_mask = self.create_meta_labels(
+                        model_main_train_data=model_main_train_data,
+                        model_meta_train_data=model_meta_train_data,
+                        hp=hp
+                    )
+                    if meta_mask is None or meta_mask.empty:
+                        continue
+                    meta_mask = meta_mask & final_mask
+                    model_meta_train_data['labels_meta'] = meta_mask.astype('int8')
+                    if model_meta_train_data is None or model_meta_train_data.empty:
+                        continue
+                    if set(model_meta_train_data['labels_meta'].unique()) != {0, 1}:
+                        if self.debug:
+                            print(f"🔍   Search reliability - labels_meta insuficientes")
+                        continue
+                    if self.debug:
+                        meta_dist = model_meta_train_data['labels_meta'].value_counts()
+                        print(f"🔍   Meta labels distribution: {meta_dist}")
 
                 # Información de debug para cluster
                 if self.debug:
@@ -1219,40 +1292,7 @@ class StrategySearcher:
                 print(f"🔍 DEBUG: Train predictions - min: {train_pred.min():.4f}, max: {train_pred.max():.4f}, mean: {train_pred.mean():.4f}")
                 print(f"🔍 DEBUG: Val predictions - min: {val_pred.min():.4f}, max: {val_pred.max():.4f}, mean: {val_pred.mean():.4f}")
 
-            # Si estamos en regresión, generar labels_meta OOF antes de preparar el meta
-            if self.label_type == 'regression':
-                # 1) Predicciones OOF del main (una sola vez)
-                main_oof_pred = self._compute_main_oof_predictions(
-                    X_main=model_main_train_data[main_feature_cols],
-                    y_main=model_main_train_data['labels_main'],
-                    hp=hp,
-                )
-
-                # 2) Calcular umbral operativo del main sobre predicciones OOF
-                hp['main_threshold'] = self.calculate_regression_threshold_cv(
-                    labels_main=pd.Series(main_oof_pred, index=main_oof_pred.index),
-                    hp=hp,
-                    reliability_mask=None,
-                    n_splits=5,
-                )
-
-                # 3) Construir dataset meta a partir de residuales OOF del main
-                model_meta_train_data = self._compute_meta_labels_oof(
-                    X_main=model_main_train_data[main_feature_cols],
-                    y_main=model_main_train_data['labels_main'],
-                    meta_features_frame=model_meta_train_data,
-                    hp=hp,
-                    oof_pred=main_oof_pred,
-                )
-            if model_meta_train_data is None or model_meta_train_data.empty:
-                return None, None, None, None
-            if set(model_meta_train_data['labels_meta'].unique()) != {0, 1}:
-                if self.debug:
-                    print(f"🔍   Search reliability - labels_meta insuficientes")
-                return None, None, None, None
-            if self.debug:
-                meta_dist = model_meta_train_data['labels_meta'].value_counts()
-                print(f"🔍   Meta labels distribution: {meta_dist}")
+            
             # Recalcular splits para meta tras crear labels_meta
             meta_feature_cols = [col for col in model_meta_train_data.columns if col != 'labels_meta']
             train_df, val_df = self.get_train_test_data(model_meta_train_data)
@@ -1481,7 +1521,7 @@ class StrategySearcher:
             reliable_mask: Máscara opcional para filtrar muestras confiables
             
         Returns:
-            np.ndarray: combined_scores con 1.0 para muestras confiables y precisas, 0.0 para el resto
+            np.ndarray: reliability_scores con 1.0 para muestras confiables y precisas, 0.0 para el resto
         """
         try:
             if self.debug:
@@ -1643,7 +1683,7 @@ class StrategySearcher:
                 set_sizes = prediction_sets_2d.sum(axis=1)
                 # Scores de confiabilidad: 1.0 si set_size == 1 (alta confianza), 0.0 en caso contrario
                 # Solo filtrado por confiabilidad, sin considerar precisión
-                combined_scores = (set_sizes == 1).astype(float)
+                reliability_scores = (set_sizes == 1).astype(float)
             else:  # regression
                 # Para regresión: predict_interval devuelve (predictions, prediction_intervals)
                 _, y_prediction_intervals = mapie.predict_interval(X)
@@ -1704,9 +1744,7 @@ class StrategySearcher:
                     width_percentiles = np.percentile(interval_width, [10, 25, 50, 75, 90])
                     print(f"🔍   interval_width percentiles: {width_percentiles}")
                 
-                # MAPIE solo evalúa confiabilidad del modelo (width_confidence)
-                # La magnitud de la señal se evalúa en el backtest
-                combined_scores = width_confidence.astype(float)
+                reliability_scores = width_confidence.astype(float)
             
             if self.debug:
                 if self.label_type == 'classification':
@@ -1716,31 +1754,31 @@ class StrategySearcher:
                     print(f"🔍   threshold_width (valor): {threshold_width_value:.4f}")
                     print(f"🔍   interval_width.min(): {interval_width.min():.4f}, interval_width.max(): {interval_width.max():.4f}")
                     print(f"🔍   width_confidence.sum(): {width_confidence.sum()}")
-                print(f"🔍   combined_scores.sum(): {combined_scores.sum()}")
-                print(f"🔍   combined_scores.mean(): {combined_scores.mean():.3f}")
+                print(f"🔍   reliability_scores.sum(): {reliability_scores.sum()}")
+                print(f"🔍   reliability_scores.mean(): {reliability_scores.mean():.3f}")
                 
                 # Debug adicional para regresión
                 if self.label_type == 'regression':
                     print(f"🔍   === RESULTADO FINAL MAPIE ===")
-                    print(f"🔍   combined_scores.shape: {combined_scores.shape}")
-                    print(f"🔍   combined_scores.dtype: {combined_scores.dtype}")
-                    print(f"🔍   combined_scores.unique(): {np.unique(combined_scores)}")
-                    print(f"🔍   combined_scores == 1.0: {(combined_scores == 1.0).sum()}")
-                    print(f"🔍   combined_scores == 0.0: {(combined_scores == 0.0).sum()}")
+                    print(f"🔍   reliability_scores.shape: {reliability_scores.shape}")
+                    print(f"🔍   reliability_scores.dtype: {reliability_scores.dtype}")
+                    print(f"🔍   reliability_scores.unique(): {np.unique(reliability_scores)}")
+                    print(f"🔍   reliability_scores == 1.0: {(reliability_scores == 1.0).sum()}")
+                    print(f"🔍   reliability_scores == 0.0: {(reliability_scores == 0.0).sum()}")
                 
                 print(f"🔍 DEBUG apply_mapie_filter - Filtrado MAPIE completado ({self.label_type})")
             
             if reliable_mask is not None:
-                full_combined_scores = np.zeros(len(full_ds))
-                full_combined_scores[reliable_mask] = combined_scores
+                full_reliability_scores = np.zeros(len(full_ds))
+                full_reliability_scores[reliable_mask] = reliability_scores
                 
                 if self.debug:
                     print(f"🔍   reliable_mask.sum(): {reliable_mask.sum()}")
-                    print(f"🔍   combined_scores.shape: {combined_scores.shape}")
+                    print(f"🔍   reliability_scores.shape: {reliability_scores.shape}")
                 
-                return full_combined_scores
+                return full_reliability_scores
             else:
-                return combined_scores
+                return reliability_scores
             
         except Exception as e:
             if self.debug:
@@ -2658,22 +2696,18 @@ class StrategySearcher:
     # ---------------- OOF meta labels helper (solo para regression) -------------
     def _compute_meta_labels_oof(
         self,
-        X_main: pd.DataFrame,
         y_main: pd.Series,
         meta_features_frame: pd.DataFrame,
         hp: Dict[str, Any],
         oof_pred: pd.Series | None = None,
-    ) -> pd.DataFrame:
+    ) -> pd.Series:
         """
-        Genera labels_meta (0/1) a partir de residuales OOF del modelo main usando
-        TimeSeriesSplit. Retorna un DataFrame con las mismas filas de meta_features_frame
-        alineadas y una columna 'labels_meta'.
+        Genera una máscara booleana (pd.Series) donde la etiqueta meta es 1.0,
+        a partir de residuales OOF del modelo main usando TimeSeriesSplit.
+        La máscara está alineada con meta_features_frame.
         """
-        if X_main is None or y_main is None or X_main.empty or y_main.empty:
-            return pd.DataFrame()
 
         # Tipos
-        Xm = X_main.astype('float32')
         ym = y_main.astype('float32')
 
         # Validar y alinear oof_pred con ym
@@ -2691,15 +2725,19 @@ class StrategySearcher:
         magnitude_mask = (oof.abs() >= main_thr) if main_thr > 0.0 else pd.Series(True, index=oof.index)
         labels_meta = (reliability_mask & magnitude_mask).astype('int8')
 
-        # Construir meta dataset sobre TODAS las muestras meta: fuera de main => 0
-        meta_X = meta_features_frame.copy().dropna()
-        labels_full = pd.Series(0, index=meta_X.index, dtype='int8')
+        # Construir máscara booleana alineada con meta_features_frame
+        meta_X = meta_features_frame.copy()
+        mask = pd.Series(False, index=meta_X.index)
         common_idx = labels_meta.index.intersection(meta_X.index)
         if len(common_idx) > 0:
-            labels_full.loc[common_idx] = labels_meta.loc[common_idx].astype('int8')
-        meta_ds = meta_X.copy()
-        meta_ds['labels_meta'] = labels_full
-        return meta_ds
+            mask.loc[common_idx] = labels_meta.loc[common_idx] == 1
+
+        if self.debug:
+            n_true = mask.sum()
+            n_total = len(mask)
+            print(f"🔍 DEBUG: _compute_meta_labels_oof - {n_true}/{n_total} muestras con etiqueta meta=1.0 ({n_true/n_total:.2%})")
+
+        return mask
 
     def _compute_main_oof_predictions(
         self,
@@ -2750,3 +2788,37 @@ class StrategySearcher:
         if oof.isna().any():
             oof = oof.fillna(oof.median())
         return oof
+    
+    def create_meta_labels(
+            self, 
+            model_main_train_data: pd.DataFrame, 
+            model_meta_train_data: pd.DataFrame, 
+            hp: Dict[str, Any]
+            ) -> pd.Series:
+        """
+        Crea labels meta a partir de predicciones OOF del main.
+        """
+        main_feature_cols = [col for col in model_main_train_data.columns if col not in ['labels_main']]
+        # 1) Predicciones OOF del main (una sola vez)
+        main_oof_pred = self._compute_main_oof_predictions(
+            X_main=model_main_train_data[main_feature_cols],
+            y_main=model_main_train_data['labels_main'],
+            hp=hp,
+        )
+
+        # 2) Calcular umbral operativo del main sobre predicciones OOF
+        hp['main_threshold'] = self.calculate_regression_threshold_cv(
+            labels_main=pd.Series(main_oof_pred, index=main_oof_pred.index),
+            hp=hp,
+            reliability_mask=None,
+            n_splits=5,
+        )
+
+        # 3) Construir dataset meta a partir de residuales OOF del main
+        model_meta_train_mask = self._compute_meta_labels_oof(
+            y_main=model_main_train_data['labels_main'],
+            meta_features_frame=model_meta_train_data,
+            hp=hp,
+            oof_pred=main_oof_pred,
+        )
+        return model_meta_train_mask

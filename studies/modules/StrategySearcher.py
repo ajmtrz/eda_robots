@@ -375,13 +375,11 @@ class StrategySearcher:
                 meta_feature_cols = main_feature_cols
             # Etiquetado META unificado por OOF (para clasificación y regresión)
             model_meta_train_data = full_ds[meta_feature_cols].dropna(subset=meta_feature_cols).copy()
-            meta_mask = self.create_meta_labels(
+            meta_mask, hp = self.create_meta_labels(
                 model_main_train_data=model_main_train_data,
                 model_meta_train_data=model_meta_train_data,
                 hp=hp
             )
-            if meta_mask is None or meta_mask.empty:
-                return -1.0
             meta_mask = meta_mask & final_mask
             model_meta_train_data['labels_meta'] = meta_mask.astype('int8')
             if model_meta_train_data is None or model_meta_train_data.empty:
@@ -426,7 +424,9 @@ class StrategySearcher:
             trial.set_user_attr('model_paths', model_paths)
             trial.set_user_attr('model_cols', models_cols)
             trial.set_user_attr('full_ds_with_labels_path', full_ds_with_labels_path)
-            trial.set_user_attr('best_meta_threshold', hp.get('meta_threshold', 0.5))
+            trial.set_user_attr('best_main_threshold', hp['main_threshold'])
+            trial.set_user_attr('best_meta_threshold', hp['meta_threshold'])
+
             return trial.user_attrs.get('score', -1.0)
             
         except Exception as e:
@@ -523,7 +523,6 @@ class StrategySearcher:
             trial.set_user_attr('model_cols', models_cols)
             trial.set_user_attr('full_ds_with_labels_path', full_ds_with_labels_path)
             trial.set_user_attr('best_main_threshold', best_main_threshold)
-            trial.set_user_attr('best_meta_threshold', hp.get('meta_threshold', 0.5))
 
             return trial.user_attrs.get('score', -1.0)
         except Exception as e:
@@ -570,13 +569,11 @@ class StrategySearcher:
                 meta_feature_cols = main_feature_cols
             # Etiquetado META unificado por OOF
             model_meta_train_data = full_ds[meta_feature_cols].dropna(subset=meta_feature_cols).copy()
-            meta_mask = self.create_meta_labels(
+            meta_mask, hp = self.create_meta_labels(
                 model_main_train_data=model_main_train_data,
                 model_meta_train_data=model_meta_train_data,
                 hp=hp
             )
-            if meta_mask is None or meta_mask.empty:
-                return -1.0
             meta_mask = meta_mask & final_mask
             model_meta_train_data['labels_meta'] = meta_mask.astype('int8')
             if model_meta_train_data is None or model_meta_train_data.empty:
@@ -620,7 +617,8 @@ class StrategySearcher:
             trial.set_user_attr('model_paths', model_paths)
             trial.set_user_attr('model_cols', models_cols)
             trial.set_user_attr('full_ds_with_labels_path', full_ds_with_labels_path)
-            trial.set_user_attr('best_meta_threshold', hp.get('meta_threshold', 0.5))
+            trial.set_user_attr('best_main_threshold', hp['main_threshold'])
+            trial.set_user_attr('best_meta_threshold', hp['meta_threshold'])
 
             return trial.user_attrs.get('score', -1.0)
         except Exception as e:
@@ -667,13 +665,11 @@ class StrategySearcher:
                 meta_feature_cols = main_feature_cols
             # Etiquetado META unificado por OOF
             model_meta_train_data = full_ds[meta_feature_cols].dropna(subset=meta_feature_cols).copy()
-            meta_mask = self.create_meta_labels(
+            meta_mask, hp = self.create_meta_labels(
                 model_main_train_data=model_main_train_data,
                 model_meta_train_data=model_meta_train_data,
                 hp=hp
             )
-            if meta_mask is None or meta_mask.empty:
-                return -1.0
             meta_mask = meta_mask & final_mask
             model_meta_train_data['labels_meta'] = meta_mask.astype('int8')
             if model_meta_train_data is None or model_meta_train_data.empty:
@@ -717,7 +713,8 @@ class StrategySearcher:
             trial.set_user_attr('model_paths', model_paths)
             trial.set_user_attr('model_cols', models_cols)
             trial.set_user_attr('full_ds_with_labels_path', full_ds_with_labels_path)
-            trial.set_user_attr('best_meta_threshold', hp.get('meta_threshold', 0.5))
+            trial.set_user_attr('best_main_threshold', hp['main_threshold'])
+            trial.set_user_attr('best_meta_threshold', hp['meta_threshold'])
 
             return trial.user_attrs.get('score', -1.0)
         except Exception as e:
@@ -828,13 +825,11 @@ class StrategySearcher:
                 meta_feature_cols = [c for c in full_ds.columns if c.endswith('_meta_feature')]
                 model_meta_train_data = full_ds[meta_feature_cols].dropna(subset=meta_feature_cols).copy()
                 # Etiquetado META unificado por OOF
-                meta_mask = self.create_meta_labels(
+                meta_mask, hp = self.create_meta_labels(
                     model_main_train_data=model_main_train_data,
                     model_meta_train_data=model_meta_train_data,
                     hp=hp
                 )
-                if meta_mask is None or meta_mask.empty:
-                    continue
                 meta_mask = meta_mask & final_mask
                 model_meta_train_data['labels_meta'] = meta_mask.astype('int8')
                 if model_meta_train_data is None or model_meta_train_data.empty:
@@ -859,7 +854,7 @@ class StrategySearcher:
                     print(f"🔍      Meta data shape: {model_meta_train_data.shape}")
                     
                 # Entrenar modelos
-                score, full_ds_with_labels_path, model_paths, models_cols, main_threshold = self.fit_final_models(
+                score, full_ds_with_labels_path, model_paths, models_cols = self.fit_final_models(
                     trial=trial,
                     full_ds=full_ds,
                     model_main_train_data=model_main_train_data,
@@ -876,7 +871,7 @@ class StrategySearcher:
                     if best_full_ds_with_labels_path and os.path.exists(best_full_ds_with_labels_path):
                         os.remove(best_full_ds_with_labels_path)
                     best_score = score
-                    best_main_threshold = main_threshold
+                    best_main_threshold = hp['main_threshold']
                     best_model_paths = model_paths
                     best_full_ds_with_labels_path = full_ds_with_labels_path
                     best_models_cols = models_cols
@@ -1084,16 +1079,12 @@ class StrategySearcher:
                 p['causal_error_threshold'] = trial.suggest_float('causal_error_threshold', 0.2, 1.0, log=True)
 
         # THRESHOLDS UNIFICADOS (preparación para optimización futura)
+        p['meta_threshold'] = trial.suggest_float('meta_threshold', 0.2, 0.8)
         p['oof_resid_percentile'] = trial.suggest_int('oof_resid_percentile', 60, 80)
         if self.label_type == 'classification':
-            # Clasificación: ambos thresholds fijos por ahora (futuro optimizables)
-            p['main_threshold'] = 0.5  # FUTURO: trial.suggest_float('main_threshold', 0.1, 0.9)
-            p['meta_threshold'] = 0.5  # FUTURO: trial.suggest_float('meta_threshold', 0.1, 0.9)
+            p['main_threshold'] = trial.suggest_float('main_threshold', 0.2, 0.8)
         else:  # regression
-            # Regresión: meta threshold fijo por ahora (futuro optimizable), main se calcula dinámicamente
-            p['meta_threshold'] = 0.5  # FUTURO: trial.suggest_float('meta_threshold', 0.1, 0.9)
             p['model_main_percentile'] = trial.suggest_float('model_main_percentile', 0.6, 0.8)
-            # main_threshold se calcula dinámicamente en calculate_regression_threshold_cv
 
         return p
 
@@ -1138,7 +1129,7 @@ class StrategySearcher:
                          full_ds: pd.DataFrame,
                          model_main_train_data: pd.DataFrame,
                          model_meta_train_data: pd.DataFrame,
-                         hp: Dict[str, Any]) -> tuple[float, tuple, tuple, float]:
+                         hp: Dict[str, Any]) -> tuple[float, str, tuple, tuple]:
         """Ajusta los modelos finales y devuelve rutas a archivos temporales."""
         try:
             # 🔍 DEBUG: Supervisar parámetros CatBoost
@@ -1152,14 +1143,14 @@ class StrategySearcher:
             # Preparar datos del modelo main según label_type
             if self.label_type == 'classification':
                 if model_main_train_data.empty:
-                    return None, None, None, None, None
+                    return None, None, None, None
                 main_feature_cols = [col for col in model_main_train_data.columns if col != 'labels_main']
                 if self.debug:
                     print(f"🔍 DEBUG: Main model data shape: {model_main_train_data.shape}")
                     print(f"🔍 DEBUG: Main feature columns: {main_feature_cols}")
                 train_df, val_df = self.get_train_test_data(model_main_train_data)
                 if train_df.empty or val_df.empty:
-                    return None, None, None, None, None
+                    return None, None, None, None
                 X_train_main = train_df[main_feature_cols].astype('float32')
                 y_train_main = train_df['labels_main'].astype('int8')
                 X_val_main = val_df[main_feature_cols].astype('float32')
@@ -1170,14 +1161,14 @@ class StrategySearcher:
 
             else:  # regression
                 if model_main_train_data.empty:
-                    return None, None, None, None, None
+                    return None, None, None, None
                 main_feature_cols = [col for col in model_main_train_data.columns if col != 'labels_main']
                 if self.debug:
                     print(f"🔍 DEBUG: Main model data shape: {model_main_train_data.shape}")
                     print(f"🔍 DEBUG: Main feature columns: {main_feature_cols}")
                 train_df, val_df = self.get_train_test_data(model_main_train_data)
                 if train_df.empty or val_df.empty:
-                    return None, None, None, None, None
+                    return None, None, None, None
                 X_train_main = train_df[main_feature_cols].astype('float32')
                 y_train_main = train_df['labels_main'].astype('float32')
                 X_val_main = val_df[main_feature_cols].astype('float32')
@@ -1262,7 +1253,7 @@ class StrategySearcher:
             meta_feature_cols = [col for col in model_meta_train_data.columns if col != 'labels_meta']
             train_df, val_df = self.get_train_test_data(model_meta_train_data)
             if train_df.empty or val_df.empty:
-                return None, None, None, None, None
+                return None, None, None, None
             X_train_meta = train_df[meta_feature_cols].astype('float32')
             y_train_meta = train_df['labels_meta'].astype('int8')
             X_val_meta = val_df[meta_feature_cols].astype('float32')
@@ -1468,10 +1459,10 @@ class StrategySearcher:
                 else:
                     print(f"🔍      labels_meta no encontrada en el dataset")
                 print(f"🔍 DEBUG: Modelos guardados en {model_main_path} y {model_meta_path}")
-            return score, full_ds_with_labels_path, (model_main_path, model_meta_path), (main_feature_cols, meta_feature_cols), hp['main_threshold']
+            return score, full_ds_with_labels_path, (model_main_path, model_meta_path), (main_feature_cols, meta_feature_cols)
         except Exception as e:
             print(f"Error en función de entrenamiento y test: {str(e)}")
-            return None, None, None, None, None
+            return None, None, None, None
         finally:
             clear_onnx_session_cache()
 
@@ -2437,14 +2428,11 @@ class StrategySearcher:
         else:
             # Aplicar filtro según dirección
             if self.direction == 'buy':
-                threshold_value = self.calculate_regression_threshold_cv(full_ds['labels_main'], hp, (full_ds['labels_main'] > 0.0), n_splits=5)
-                base_mask = full_ds['labels_main'] >= threshold_value
+                base_mask = full_ds['labels_main'] >= 0.0
             elif self.direction == 'sell':
-                threshold_value = self.calculate_regression_threshold_cv(full_ds['labels_main'], hp, (full_ds['labels_main'] < 0.0), n_splits=5)
-                base_mask = full_ds['labels_main'] <= -threshold_value
+                base_mask = full_ds['labels_main'] <= 0.0
             else:
-                threshold_value = self.calculate_regression_threshold_cv(full_ds['labels_main'], hp, (full_ds['labels_main'] != 0.0), n_splits=5)
-                base_mask = abs(full_ds['labels_main']) >= threshold_value
+                base_mask = abs(full_ds['labels_main']) >= 0.0
                 
         if self.debug:
             print(f"🔍   Main labels - total_samples: {len(full_ds)}")
@@ -2683,8 +2671,7 @@ class StrategySearcher:
         perc = hp['oof_resid_percentile']
         tau = float(np.nanpercentile(resid.values, perc)) if len(resid) > 0 else float(resid.median() if len(resid) else 0.0)
         reliability_mask = (resid <= tau)
-        main_thr = hp['main_threshold']
-        magnitude_mask = (oof.abs() >= main_thr) if main_thr > 0.0 else pd.Series(True, index=oof.index)
+        magnitude_mask = (oof.abs() >= hp['main_threshold']) if hp['main_threshold'] > 0.0 else pd.Series(True, index=oof.index)
         labels_meta = (reliability_mask & magnitude_mask).astype('int8')
 
         # Construir máscara booleana alineada con meta_features_frame
@@ -2826,13 +2813,11 @@ class StrategySearcher:
             # Confianza = max(p, 1-p)
             confidence = main_oof_proba.copy()
             confidence = pd.Series(np.maximum(confidence.values, 1.0 - confidence.values), index=confidence.index)
-            hp['main_threshold'] = float(hp.get('main_threshold', 0.5))
             
             # 3) Confiabilidad por residuo de probabilidad
             y_true = model_main_train_data['labels_main'].astype('float32')
             prob_resid = (main_oof_proba - y_true).abs()
-            perc = hp.get('oof_resid_percentile', 60.0)
-            tau = float(np.nanpercentile(prob_resid.values, perc)) if len(prob_resid) > 0 else float(prob_resid.median() if len(prob_resid) else 0.0)
+            tau = float(np.nanpercentile(prob_resid.values, hp['oof_resid_percentile'])) if len(prob_resid) > 0 else float(prob_resid.median() if len(prob_resid) else 0.0)
             reliability_mask = (prob_resid <= tau)
             magnitude_mask = (confidence >= hp['main_threshold'])
             labels_meta = (reliability_mask & magnitude_mask).astype('int8')
@@ -2853,7 +2838,7 @@ class StrategySearcher:
                 print(f"🔍   prob_resid range: [{prob_resid.min():.3f}, {prob_resid.max():.3f}]")
                 print(f"🔍   tau: {tau:.3f}")
 
-            return mask
+            return mask, hp
 
         # ---------------- Regression camino existente ----------------
         # 1) Predicciones OOF del main (una sola vez)
@@ -2872,10 +2857,10 @@ class StrategySearcher:
         )
 
         # 3) Construir dataset meta a partir de residuales OOF del main
-        model_meta_train_mask = self._compute_meta_labels_oof_reg(
+        mask = self._compute_meta_labels_oof_reg(
             y_main=model_main_train_data['labels_main'],
             meta_features_frame=model_meta_train_data,
             hp=hp,
             oof_pred=main_oof_pred,
         )
-        return model_meta_train_mask
+        return mask, hp

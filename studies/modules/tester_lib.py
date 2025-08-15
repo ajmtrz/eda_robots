@@ -300,16 +300,15 @@ def backtest(open_,
         
         else:  # label_type_int == 0 (CLASIFICACIÓN)
             if direction_int == 0:  # Solo BUY
-                buy_sig = main_val > main_thr
+                buy_sig = main_val > main_thr  # P(éxito BUY) > thr
                 sell_sig = False
             elif direction_int == 1:  # Solo SELL
                 buy_sig = False
-                sell_sig = main_val > main_thr
+                sell_sig = main_val > main_thr  # P(éxito SELL) > thr
             else:  # direction_int == 2 (BOTH)
-                # Para clasificación: probabilidad alta = BUY, probabilidad baja = SELL
-                # Threshold filtra ambas señales: buy_sig cuando > threshold, sell_sig cuando < (1-threshold)
-                buy_sig = main_val > main_thr
-                sell_sig = main_val < (1.0 - main_thr)
+                # main_val es P(clase=1)=SELL; BUY cuando P(SELL) < (1 - thr), SELL cuando P(SELL) > thr
+                buy_sig = (1.0 - main_val) > main_thr
+                sell_sig = main_val > main_thr
 
         # Meta siempre es clasificación
         meta_ok = meta_val > meta_thr

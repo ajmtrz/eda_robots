@@ -225,9 +225,9 @@ void OnTick()
         }
       else // "both"
         {
-         // Distinguir por signo: positivo=buy, negativo=sell
-         buy_sig = (main_sig > MAIN_THRESHOLD) && (main_sig > 0);
-         sell_sig = (MathAbs(main_sig) > MAIN_THRESHOLD) && (main_sig < 0);
+         // main_sig es P(clase=1)=SELL; BUY cuando P(SELL) < (1 - MAIN_THRESHOLD), SELL cuando P(SELL) > MAIN_THRESHOLD
+         buy_sig = (1.0 - main_sig) > MAIN_THRESHOLD;
+         sell_sig = main_sig > MAIN_THRESHOLD;
         }
      }
    

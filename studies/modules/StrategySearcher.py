@@ -373,35 +373,26 @@ class StrategySearcher:
             meta_feature_cols = [c for c in full_ds.columns if c.endswith('_meta_feature')]
             if not meta_feature_cols:  # Fallback: usar main features si no hay meta features
                 meta_feature_cols = main_feature_cols
-            if self.label_type == 'classification':
-                full_ds['labels_meta'] = final_mask.astype('int8')
-                model_meta_train_data = full_ds[meta_feature_cols + ['labels_meta']].dropna(subset=meta_feature_cols).copy()
-                if model_meta_train_data is None or model_meta_train_data.empty:
-                    return -1.0
-                if set(model_meta_train_data['labels_meta'].unique()) != {0, 1}:
-                    if self.debug:
-                        print(f"🔍   Search reliability - labels_meta insuficientes")
-                    return -1.0
-            else:
-                model_meta_train_data = full_ds[meta_feature_cols].dropna(subset=meta_feature_cols).copy()
-                meta_mask = self.create_meta_labels(
-                    model_main_train_data=model_main_train_data,
-                    model_meta_train_data=model_meta_train_data,
-                    hp=hp
-                )
-                if meta_mask is None or meta_mask.empty:
-                    return -1.0
-                meta_mask = meta_mask & final_mask
-                model_meta_train_data['labels_meta'] = meta_mask.astype('int8')
-                if model_meta_train_data is None or model_meta_train_data.empty:
-                    return -1.0
-                if set(model_meta_train_data['labels_meta'].unique()) != {0, 1}:
-                    if self.debug:
-                        print(f"🔍   Search reliability - labels_meta insuficientes")
-                    return -1.0
+            # Etiquetado META unificado por OOF (para clasificación y regresión)
+            model_meta_train_data = full_ds[meta_feature_cols].dropna(subset=meta_feature_cols).copy()
+            meta_mask = self.create_meta_labels(
+                model_main_train_data=model_main_train_data,
+                model_meta_train_data=model_meta_train_data,
+                hp=hp
+            )
+            if meta_mask is None or meta_mask.empty:
+                return -1.0
+            meta_mask = meta_mask & final_mask
+            model_meta_train_data['labels_meta'] = meta_mask.astype('int8')
+            if model_meta_train_data is None or model_meta_train_data.empty:
+                return -1.0
+            if set(model_meta_train_data['labels_meta'].unique()) != {0, 1}:
                 if self.debug:
-                    meta_dist = model_meta_train_data['labels_meta'].value_counts()
-                    print(f"🔍   Meta labels distribution: {meta_dist}")
+                    print(f"🔍   Search reliability - labels_meta insuficientes")
+                return -1.0
+            if self.debug:
+                meta_dist = model_meta_train_data['labels_meta'].value_counts()
+                print(f"🔍   Meta labels distribution: {meta_dist}")
             
             if self.debug:
                 print(f"🔍 DEBUG search_reliability - Main data shape: {model_main_train_data.shape}")
@@ -577,35 +568,26 @@ class StrategySearcher:
             meta_feature_cols = [col for col in full_ds.columns if col.endswith('_meta_feature')]
             if not meta_feature_cols:  # Fallback: usar main features si no hay meta features
                 meta_feature_cols = main_feature_cols
-            if self.label_type == 'classification':
-                full_ds['labels_meta'] = final_mask.astype('int8')
-                model_meta_train_data = full_ds[meta_feature_cols + ['labels_meta']].dropna(subset=meta_feature_cols).copy()
-                if model_meta_train_data is None or model_meta_train_data.empty:
-                    return -1.0
-                if set(model_meta_train_data['labels_meta'].unique()) != {0, 1}:
-                    if self.debug:
-                        print(f"🔍   Search mapie - labels_meta insuficientes")
-                    return -1.0
-            else:
-                model_meta_train_data = full_ds[meta_feature_cols].dropna(subset=meta_feature_cols).copy()
-                meta_mask = self.create_meta_labels(
-                    model_main_train_data=model_main_train_data,
-                    model_meta_train_data=model_meta_train_data,
-                    hp=hp
-                )
-                if meta_mask is None or meta_mask.empty:
-                    return -1.0
-                meta_mask = meta_mask & final_mask
-                model_meta_train_data['labels_meta'] = meta_mask.astype('int8')
-                if model_meta_train_data is None or model_meta_train_data.empty:
-                    return -1.0
-                if set(model_meta_train_data['labels_meta'].unique()) != {0, 1}:
-                    if self.debug:
-                        print(f"🔍   Search reliability - labels_meta insuficientes")
-                    return -1.0
+            # Etiquetado META unificado por OOF
+            model_meta_train_data = full_ds[meta_feature_cols].dropna(subset=meta_feature_cols).copy()
+            meta_mask = self.create_meta_labels(
+                model_main_train_data=model_main_train_data,
+                model_meta_train_data=model_meta_train_data,
+                hp=hp
+            )
+            if meta_mask is None or meta_mask.empty:
+                return -1.0
+            meta_mask = meta_mask & final_mask
+            model_meta_train_data['labels_meta'] = meta_mask.astype('int8')
+            if model_meta_train_data is None or model_meta_train_data.empty:
+                return -1.0
+            if set(model_meta_train_data['labels_meta'].unique()) != {0, 1}:
                 if self.debug:
-                    meta_dist = model_meta_train_data['labels_meta'].value_counts()
-                    print(f"🔍   Meta labels distribution: {meta_dist}")
+                    print(f"🔍   Search mapie - labels_meta insuficientes")
+                return -1.0
+            if self.debug:
+                meta_dist = model_meta_train_data['labels_meta'].value_counts()
+                print(f"🔍   Meta labels distribution: {meta_dist}")
 
             if self.debug:
                 print(f"🔍 DEBUG search_mapie - Main data shape: {model_main_train_data.shape}")
@@ -683,35 +665,26 @@ class StrategySearcher:
             meta_feature_cols = [col for col in full_ds.columns if col.endswith('_meta_feature')]
             if not meta_feature_cols:  # Fallback: usar main features si no hay meta features
                 meta_feature_cols = main_feature_cols
-            if self.label_type == 'classification':
-                full_ds['labels_meta'] = final_mask.astype('int8')
-                model_meta_train_data = full_ds[meta_feature_cols + ['labels_meta']].dropna(subset=meta_feature_cols).copy()
-                if model_meta_train_data is None or model_meta_train_data.empty:
-                    return -1.0
-                if set(model_meta_train_data['labels_meta'].unique()) != {0, 1}:
-                    if self.debug:
-                        print(f"🔍   Search causal - labels_meta insuficientes")
-                    return -1.0
-            else:
-                model_meta_train_data = full_ds[meta_feature_cols].dropna(subset=meta_feature_cols).copy()
-                meta_mask = self.create_meta_labels(
-                    model_main_train_data=model_main_train_data,
-                    model_meta_train_data=model_meta_train_data,
-                    hp=hp
-                )
-                if meta_mask is None or meta_mask.empty:
-                    return -1.0
-                meta_mask = meta_mask & final_mask
-                model_meta_train_data['labels_meta'] = meta_mask.astype('int8')
-                if model_meta_train_data is None or model_meta_train_data.empty:
-                    return -1.0
-                if set(model_meta_train_data['labels_meta'].unique()) != {0, 1}:
-                    if self.debug:
-                        print(f"🔍   Search reliability - labels_meta insuficientes")
-                    return -1.0
+            # Etiquetado META unificado por OOF
+            model_meta_train_data = full_ds[meta_feature_cols].dropna(subset=meta_feature_cols).copy()
+            meta_mask = self.create_meta_labels(
+                model_main_train_data=model_main_train_data,
+                model_meta_train_data=model_meta_train_data,
+                hp=hp
+            )
+            if meta_mask is None or meta_mask.empty:
+                return -1.0
+            meta_mask = meta_mask & final_mask
+            model_meta_train_data['labels_meta'] = meta_mask.astype('int8')
+            if model_meta_train_data is None or model_meta_train_data.empty:
+                return -1.0
+            if set(model_meta_train_data['labels_meta'].unique()) != {0, 1}:
                 if self.debug:
-                    meta_dist = model_meta_train_data['labels_meta'].value_counts()
-                    print(f"🔍   Meta labels distribution: {meta_dist}")
+                    print(f"🔍   Search causal - labels_meta insuficientes")
+                return -1.0
+            if self.debug:
+                meta_dist = model_meta_train_data['labels_meta'].value_counts()
+                print(f"🔍   Meta labels distribution: {meta_dist}")
             
             if self.debug:
                 print(f"🔍 DEBUG search_reliability - Main data shape: {model_main_train_data.shape}")
@@ -854,33 +827,25 @@ class StrategySearcher:
                 # Crear dataset meta
                 meta_feature_cols = [c for c in full_ds.columns if c.endswith('_meta_feature')]
                 model_meta_train_data = full_ds[meta_feature_cols].dropna(subset=meta_feature_cols).copy()
-                if self.label_type == 'classification':
-                    model_meta_train_data['labels_meta'] = final_mask.loc[model_meta_train_data.index].astype('int8')
-                    if model_meta_train_data is None or model_meta_train_data.empty:
-                        continue
-                    if set(model_meta_train_data['labels_meta'].unique()) != {0, 1}:
-                        if self.debug:
-                            print(f"🔍   Cluster {clust} descartado: labels_meta insuficientes")
-                        continue
-                else:
-                    meta_mask = self.create_meta_labels(
-                        model_main_train_data=model_main_train_data,
-                        model_meta_train_data=model_meta_train_data,
-                        hp=hp
-                    )
-                    if meta_mask is None or meta_mask.empty:
-                        continue
-                    meta_mask = meta_mask & final_mask
-                    model_meta_train_data['labels_meta'] = meta_mask.astype('int8')
-                    if model_meta_train_data is None or model_meta_train_data.empty:
-                        continue
-                    if set(model_meta_train_data['labels_meta'].unique()) != {0, 1}:
-                        if self.debug:
-                            print(f"🔍   Search reliability - labels_meta insuficientes")
-                        continue
+                # Etiquetado META unificado por OOF
+                meta_mask = self.create_meta_labels(
+                    model_main_train_data=model_main_train_data,
+                    model_meta_train_data=model_meta_train_data,
+                    hp=hp
+                )
+                if meta_mask is None or meta_mask.empty:
+                    continue
+                meta_mask = meta_mask & final_mask
+                model_meta_train_data['labels_meta'] = meta_mask.astype('int8')
+                if model_meta_train_data is None or model_meta_train_data.empty:
+                    continue
+                if set(model_meta_train_data['labels_meta'].unique()) != {0, 1}:
                     if self.debug:
-                        meta_dist = model_meta_train_data['labels_meta'].value_counts()
-                        print(f"🔍   Meta labels distribution: {meta_dist}")
+                        print(f"🔍   Cluster {clust} descartado: labels_meta insuficientes")
+                    continue
+                if self.debug:
+                    meta_dist = model_meta_train_data['labels_meta'].value_counts()
+                    print(f"🔍   Meta labels distribution: {meta_dist}")
 
                 # Información de debug para cluster
                 if self.debug:
@@ -1123,6 +1088,7 @@ class StrategySearcher:
             # Clasificación: ambos thresholds fijos por ahora (futuro optimizables)
             p['main_threshold'] = 0.5  # FUTURO: trial.suggest_float('main_threshold', 0.1, 0.9)
             p['meta_threshold'] = 0.5  # FUTURO: trial.suggest_float('meta_threshold', 0.1, 0.9)
+            p['oof_resid_percentile'] = trial.suggest_int('oof_resid_percentile', 60, 80)
         else:  # regression
             # Regresión: meta threshold fijo por ahora (futuro optimizable), main se calcula dinámicamente
             p['meta_threshold'] = 0.5  # FUTURO: trial.suggest_float('meta_threshold', 0.1, 0.9)
@@ -2472,16 +2438,13 @@ class StrategySearcher:
         else:
             # Aplicar filtro según dirección
             if self.direction == 'buy':
-                base_mask = full_ds['labels_main'] > 0.0
-                threshold_value = self.calculate_regression_threshold_cv(full_ds['labels_main'], hp, base_mask, n_splits=5)
+                threshold_value = self.calculate_regression_threshold_cv(full_ds['labels_main'], hp, (full_ds['labels_main'] > 0.0), n_splits=5)
                 base_mask = full_ds['labels_main'] >= threshold_value
             elif self.direction == 'sell':
-                base_mask = full_ds['labels_main'] < 0.0
-                threshold_value = self.calculate_regression_threshold_cv(full_ds['labels_main'], hp, base_mask, n_splits=5)
-                base_mask = full_ds['labels_main'] <= threshold_value
+                threshold_value = self.calculate_regression_threshold_cv(full_ds['labels_main'], hp, (full_ds['labels_main'] < 0.0), n_splits=5)
+                base_mask = full_ds['labels_main'] <= -threshold_value
             else:
-                base_mask = full_ds['labels_main'] != 0.0
-                threshold_value = self.calculate_regression_threshold_cv(full_ds['labels_main'], hp, base_mask, n_splits=5)
+                threshold_value = self.calculate_regression_threshold_cv(full_ds['labels_main'], hp, (full_ds['labels_main'] != 0.0), n_splits=5)
                 base_mask = abs(full_ds['labels_main']) >= threshold_value
                 
         if self.debug:
@@ -2739,12 +2702,12 @@ class StrategySearcher:
 
         return mask
 
-    def _compute_main_oof_predictions(
-        self,
-        X_main: pd.DataFrame,
-        y_main: pd.Series,
-        hp: Dict[str, Any],
-    ) -> pd.Series:
+        def _compute_main_oof_predictions(
+            self,
+            X_main: pd.DataFrame,
+            y_main: pd.Series,
+            hp: Dict[str, Any],
+        ) -> pd.Series:
         """Devuelve predicciones OOF del modelo main (regression) usando TimeSeriesSplit."""
         if X_main is None or y_main is None or X_main.empty or y_main.empty:
             return pd.Series(dtype='float32')
@@ -2788,6 +2751,57 @@ class StrategySearcher:
         if oof.isna().any():
             oof = oof.fillna(oof.median())
         return oof
+
+    def _compute_main_oof_predictions_cls(
+        self,
+        X_main: pd.DataFrame,
+        y_main: pd.Series,
+        hp: Dict[str, Any],
+    ) -> pd.Series:
+        """Devuelve probabilidades OOF del modelo main (classification) usando TimeSeriesSplit."""
+        if X_main is None or y_main is None or X_main.empty or y_main.empty:
+            return pd.Series(dtype='float32')
+
+        Xm = X_main.astype('float32')
+        ym = y_main.astype('int8')
+        default_splits = 5
+        n_splits = int(hp.get('oof_n_splits', default_splits))
+        n_splits = max(2, min(n_splits, max(2, len(Xm) - 1)))
+        tscv = TimeSeriesSplit(n_splits=n_splits)
+
+        cat_params = dict(
+            iterations=hp['cat_main_iterations'],
+            depth=hp['cat_main_depth'],
+            learning_rate=hp['cat_main_learning_rate'],
+            l2_leaf_reg=hp['cat_main_l2_leaf_reg'],
+            auto_class_weights='Balanced',
+            eval_metric='Accuracy',
+            store_all_simple_ctr=False,
+            allow_writing_files=False,
+            thread_count=-1,
+            task_type='CPU',
+            verbose=False,
+        )
+
+        oof = pd.Series(np.nan, index=ym.index, dtype='float32')
+        for tr_idx, va_idx in tscv.split(Xm):
+            X_tr, X_va = Xm.iloc[tr_idx], Xm.iloc[va_idx]
+            y_tr = ym.iloc[tr_idx]
+            model = CatBoostClassifier(**cat_params)
+            model.fit(
+                X_tr,
+                y_tr,
+                eval_set=[(X_va, ym.iloc[va_idx])],
+                early_stopping_rounds=hp.get('cat_main_early_stopping', 80),
+                use_best_model=True,
+                verbose=False,
+            )
+            # Probabilidad de la clase positiva (1)
+            oof.iloc[va_idx] = model.predict_proba(X_va)[:, 1].astype('float32')
+
+        if oof.isna().any():
+            oof = oof.fillna(oof.median())
+        return oof
     
     def create_meta_labels(
             self, 
@@ -2797,8 +2811,48 @@ class StrategySearcher:
             ) -> pd.Series:
         """
         Crea labels meta a partir de predicciones OOF del main.
+        - Regression: usa residuales |pred - y| mas magnitud
+        - Classification: usa error de probabilidad |p - y| y confianza max(p, 1-p)
         """
         main_feature_cols = [col for col in model_main_train_data.columns if col not in ['labels_main']]
+        
+        if self.label_type == 'classification':
+            # 1) Probabilidades OOF del main (clase 1)
+            main_oof_proba = self._compute_main_oof_predictions_cls(
+                X_main=model_main_train_data[main_feature_cols],
+                y_main=model_main_train_data['labels_main'],
+                hp=hp,
+            )
+            # 2) Definir umbral operativo como confianza mínima
+            # Confianza = max(p, 1-p)
+            confidence = main_oof_proba.copy()
+            confidence = pd.Series(np.maximum(confidence.values, 1.0 - confidence.values), index=confidence.index)
+            hp['main_threshold'] = float(hp.get('main_threshold', 0.5))
+            
+            # 3) Confiabilidad por residuo de probabilidad
+            y_true = model_main_train_data['labels_main'].astype('float32')
+            prob_resid = (main_oof_proba - y_true).abs()
+            perc = hp.get('oof_resid_percentile', 60.0)
+            tau = float(np.nanpercentile(prob_resid.values, perc)) if len(prob_resid) > 0 else float(prob_resid.median() if len(prob_resid) else 0.0)
+            reliability_mask = (prob_resid <= tau)
+            magnitude_mask = (confidence >= hp['main_threshold'])
+            labels_meta = (reliability_mask & magnitude_mask).astype('int8')
+
+            # Construir máscara booleana alineada con meta_features_frame
+            meta_X = model_meta_train_data.copy()
+            mask = pd.Series(False, index=meta_X.index)
+            common_idx = labels_meta.index.intersection(meta_X.index)
+            if len(common_idx) > 0:
+                mask.loc[common_idx] = labels_meta.loc[common_idx] == 1
+
+            if self.debug:
+                n_true = mask.sum()
+                n_total = len(mask)
+                print(f"🔍 DEBUG: create_meta_labels (cls) - {n_true}/{n_total} muestras con etiqueta meta=1.0 ({n_true/n_total:.2%})")
+
+            return mask
+
+        # ---------------- Regression camino existente ----------------
         # 1) Predicciones OOF del main (una sola vez)
         main_oof_pred = self._compute_main_oof_predictions(
             X_main=model_main_train_data[main_feature_cols],

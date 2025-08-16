@@ -30,6 +30,7 @@ from modules.export_lib import export_models_to_ONNX, export_dataset_to_csv, exp
 
 class StrategySearcher:
     LABEL_FUNCS = {
+
         "random": get_labels_random,
         "filter": get_labels_filter,
         "filter_binary": get_labels_filter_binary,
@@ -301,7 +302,7 @@ class StrategySearcher:
                 return -1.0
 
             # Main base mask
-            base_mask = self.get_base_mask(full_ds, hp)
+            base_mask = full_ds['labels_main'] != 2.0
             if not base_mask.any():
                 if self.debug:
                     print(f"🔍 DEBUG search_reliability - No hay muestras de trading")
@@ -462,7 +463,7 @@ class StrategySearcher:
             if full_ds is None:
                 return -1.0
             
-            base_mask = self.get_base_mask(full_ds, hp)
+            base_mask = full_ds['labels_main'] != 2.0
             reliable_data = full_ds[base_mask].copy()
             if len(reliable_data) < 200:
                 if self.debug:
@@ -1777,27 +1778,6 @@ class StrategySearcher:
             print(f"🔍 DEBUG: test_data.shape final = {test_data.shape}")
         
         return train_data, test_data
-
-    def get_base_mask(self, full_ds: pd.DataFrame, hp: Dict[str, Any]) -> pd.Series:
-        """
-        Obtiene máscara de trading.
-        
-        Args:
-            full_ds: Dataset completo con labels_main
-            hp: Hiperparámetros para calcular threshold dinámico (opcional)
-            use_cv: Si usar validación cruzada temporal para regresión
-            
-        Returns:
-            pd.Series: Máscara booleana para muestras de trading
-        """
-        base_mask = full_ds['labels_main'] != 2.0
-                
-        if self.debug:
-            print(f"🔍   Main labels - total_samples: {len(full_ds)}")
-            print(f"🔍   Main labels - trading_samples: {base_mask.sum()}")
-            print(f"🔍   Main labels - reduction: {len(full_ds)} -> {base_mask.sum()}")
-
-        return base_mask
 
     def check_constant_features(self, X: pd.DataFrame, feature_cols: list, std_epsilon: float = 1e-6) -> list:
         """Return the list of columns that may cause numerical instability.

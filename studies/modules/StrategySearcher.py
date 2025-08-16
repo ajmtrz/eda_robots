@@ -23,9 +23,7 @@ from modules.labeling_lib import (
     get_labels_mean_reversion_multi, get_labels_mean_reversion_vol,
     get_labels_filter, get_labels_filter_multi, get_labels_trend_filters,
     get_labels_filter_binary, get_labels_fractal_patterns, get_labels_zigzag,
-    clustering_kmeans, clustering_hdbscan,
-    clustering_markov, clustering_lgmm,
-    wkmeans_clustering,
+    clustering_kmeans, clustering_hdbscan, clustering_markov, clustering_lgmm
 )
 from modules.tester_lib import tester, clear_onnx_session_cache
 from modules.export_lib import export_models_to_ONNX, export_dataset_to_csv, export_to_mql5
@@ -423,40 +421,29 @@ class StrategySearcher:
                 if self.search_subtype == 'kmeans':
                     reliable_data = clustering_kmeans(
                         data,
-                        n_clusters=hp['kmeans_n_clusters'],
-                        window_size=hp['kmeans_window'],
-                        step=hp.get('kmeans_step', None)
+                        n_clusters=hp['cluster_kmeans_n_clusters'],
+                        window_size=hp['cluster_kmeans_window'],
+                        step=hp.get('cluster_kmeans_step', None)
                     )
                 elif self.search_subtype == 'hdbscan':
                     reliable_data = clustering_hdbscan(
                         data,
-                        n_clusters=hp['hdbscan_min_cluster_size']
+                        n_clusters=hp['cluster_hdbscan_min_cluster_size']
                     )
                 elif self.search_subtype == 'markov':
                     reliable_data = clustering_markov(
                         data,
-                        model_type=hp['markov_model'],
-                        n_regimes=hp['markov_regimes'],
-                        n_iter=hp.get('markov_iter', 100),
-                        n_mix=hp.get('markov_mix', 3)
+                        model_type=hp['cluster_markov_model'],
+                        n_regimes=hp['cluster_markov_regimes'],
+                        n_iter=hp.get('cluster_markov_iter', 100),
+                        n_mix=hp.get('cluster_markov_mix', 3)
                     )
                 elif self.search_subtype == 'lgmm':
                     reliable_data = clustering_lgmm(
                         data,
-                        n_components=hp['lgmm_components'],
-                        covariance_type=hp.get('lgmm_covariance', 'full'),
-                        max_iter=hp.get('lgmm_iter', 100),
-                    )
-                elif self.search_subtype == 'wkmeans':
-                    reliable_data = wkmeans_clustering(
-                        data,
-                        n_clusters=hp["wk_n_clusters"],
-                        window_size=hp["wk_window"],
-                        metric="wasserstein",
-                        step=hp.get("wk_step", 1),
-                        bandwidth=hp.get("wk_bandwidth", 1.0),
-                        n_proj=hp.get("wk_proj", 100),
-                        max_iter=hp.get("wk_iter", 300),
+                        n_components=hp['cluster_lgmm_components'],
+                        covariance_type=hp.get('cluster_lgmm_covariance', 'full'),
+                        max_iter=hp.get('cluster_lgmm_iter', 100),
                     )
 
                 return reliable_data
@@ -470,8 +457,8 @@ class StrategySearcher:
             
             # 🔍 DEBUG: Supervisar parámetros específicos de clusters
             if self.debug:
-                clust_params = {k: v for k, v in hp.items() if k.startswith('clust_')}
-                print(f"🔍 DEBUG search_clusters {self.search_subtype} - Parámetros clusters: {clust_params}")
+                cluster_params = {k: v for k, v in hp.items() if k.startswith('cluster_')}
+                print(f"🔍 DEBUG search_clusters {self.search_subtype} - Parámetros clusters: {cluster_params}")
                 
             full_ds = self.get_labeled_full_data(hp)
             if full_ds is None:
@@ -805,36 +792,21 @@ class StrategySearcher:
         if self.search_type == 'clusters':
             if self.search_subtype == 'kmeans':
                 # Promover clusters suficientes y ventanas estables
-                p['kmeans_n_clusters'] = trial.suggest_int ('kmeans_n_clusters', 8, 20, log=True)
-                p['kmeans_window']     = trial.suggest_int ('kmeans_window',     60, 180, log=True)
-                p['kmeans_step']       = trial.suggest_int ('kmeans_step',       5,  20)
+                p['cluster_kmeans_n_clusters'] = trial.suggest_int ('cluster_kmeans_n_clusters', 8, 20, log=True)
+                p['cluster_kmeans_window']     = trial.suggest_int ('cluster_kmeans_window',     60, 180, log=True)
+                p['cluster_kmeans_step']       = trial.suggest_int ('cluster_kmeans_step',       5,  20)
             elif self.search_subtype == 'hdbscan':
                 # Tamaño mínimo de cluster más conservador para robustez
-                p['hdbscan_min_cluster_size'] = trial.suggest_int ('hdbscan_min_cluster_size', 10, 60, log=True)
+                p['cluster_hdbscan_min_cluster_size'] = trial.suggest_int ('cluster_hdbscan_min_cluster_size', 10, 60, log=True)
             elif self.search_subtype == 'markov':
-                p['markov_model']    = trial.suggest_categorical('markov_model', ['GMMHMM', 'HMM'])
-                p['markov_regimes']  = trial.suggest_int ('markov_regimes', 3, 6, log=True)
-                p['markov_iter']     = trial.suggest_int ('markov_iter',    50, 150, log=True)
-                p['markov_mix']      = trial.suggest_int ('markov_mix',     2, 3)
+                p['cluster_markov_model']    = trial.suggest_categorical('cluster_markov_model', ['GMMHMM', 'HMM'])
+                p['cluster_markov_regimes']  = trial.suggest_int ('cluster_markov_regimes', 3, 6, log=True)
+                p['cluster_markov_iter']     = trial.suggest_int ('cluster_markov_iter',    50, 150, log=True)
+                p['cluster_markov_mix']      = trial.suggest_int ('cluster_markov_mix',     2, 3)
             elif self.search_subtype == 'lgmm':
-                p['lgmm_components']  = trial.suggest_int ('lgmm_components',  3, 12, log=True)
-                p['lgmm_covariance']  = trial.suggest_categorical('lgmm_covariance', ['full', 'tied', 'diag', 'spherical'])
-                p['lgmm_iter']        = trial.suggest_int ('lgmm_iter',        80, 200, log=True)
-            elif self.search_subtype == 'wkmeans':
-                p['wk_n_clusters']    = trial.suggest_int ('wk_n_clusters',    6, 16, log=True)
-                p['wk_bandwidth']     = trial.suggest_float('wk_bandwidth',    0.2, 2.0, log=True)
-                p['wk_window']        = trial.suggest_int ('wk_window',        40, 100, log=True)
-                p['wk_step']          = trial.suggest_int ('wk_step',          1, 5)
-                p['wk_proj']          = trial.suggest_int ('wk_proj',          50, 150, log=True)
-                p['wk_iter']          = trial.suggest_int ('wk_iter',          100, 300, log=True)
-        elif self.search_type == 'mapie':
-            # CV más bajo por coste y estabilidad, confianza moderada-alta
-            p['mapie_confidence_level'] = trial.suggest_float('mapie_confidence_level', 0.65, 0.95)
-            p['mapie_cv']               = trial.suggest_int  ('mapie_cv',               3, 5)
-        elif self.search_type == 'causal':
-            # Bootstrap moderado y percentil en rango robusto
-            p['causal_meta_learners'] = trial.suggest_int('causal_meta_learners', 7, 11)
-            p['causal_percentile'] = trial.suggest_int('causal_percentile', 65, 85)
+                p['cluster_lgmm_components']  = trial.suggest_int ('cluster_lgmm_components',  3, 12, log=True)
+                p['cluster_lgmm_covariance']  = trial.suggest_categorical('cluster_lgmm_covariance', ['full', 'tied', 'diag', 'spherical'])
+                p['cluster_lgmm_iter']        = trial.suggest_int ('cluster_lgmm_iter',        80, 200, log=True)
 
         # Parámetros de filtros (independientes del search_type)
         if self.search_filter == 'mapie':

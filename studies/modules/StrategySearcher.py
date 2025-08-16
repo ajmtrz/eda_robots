@@ -1293,34 +1293,39 @@ class StrategySearcher:
             
             mapie.fit_conformalize(X, y)
             
-            # Calcular scores
-            _, prediction_sets = mapie.predict_set(X)
+            # Para clasificación: usar predict_set (conjuntos de predicción)
+            predicted, prediction_sets = mapie.predict_set(X)
             # Calcular el tamaño del conjunto por muestra de forma robusta
             prediction_sets_2d = prediction_sets[:, :, 0]
             set_sizes = prediction_sets_2d.sum(axis=1)
             # Scores de confiabilidad: 1.0 si set_size == 1 (alta confianza), 0.0 en caso contrario
-            # Solo filtrado por confiabilidad, sin considerar precisión
-            reliability_scores = (set_sizes == 1).astype(float)
+            conformal_scores = (set_sizes == 1).astype(float)
+            # Scores de precisión: 1.0 si predicted == y (predicción correcta), 0.0 en caso contrario
+            precision_scores = (predicted == y.to_numpy()).astype(float)
+            # Combinar: solo muestras que son tanto confiables como precisas
+            combined_scores = ((conformal_scores == 1.0) & (precision_scores == 1.0)).astype(float)
             
             if self.debug:
                 print(f"🔍   set_sizes.min(): {set_sizes.min()}, set_sizes.max(): {set_sizes.max()}")
                 print(f"🔍   conformal_scores.sum(): {(set_sizes == 1).sum()}")
-                print(f"🔍   reliability_scores.sum(): {reliability_scores.sum()}")
-                print(f"🔍   reliability_scores.mean(): {reliability_scores.mean():.3f}")
-                
+                print(f"🔍   conformal_scores.mean(): {conformal_scores.mean():.3f}")
+                print(f"🔍   precision_scores.sum(): {precision_scores.sum()}")
+                print(f"🔍   precision_scores.mean(): {precision_scores.mean():.3f}")
+                print(f"🔍   reliability_scores.sum(): {combined_scores.sum()}")
+                print(f"🔍   reliability_scores.mean(): {combined_scores.mean():.3f}")
                 print(f"🔍 DEBUG apply_mapie_filter - Filtrado MAPIE completado")
             
             if reliable_mask is not None:
                 full_reliability_scores = np.zeros(len(full_ds))
-                full_reliability_scores[reliable_mask] = reliability_scores
+                full_reliability_scores[reliable_mask] = combined_scores
                 
                 if self.debug:
                     print(f"🔍   reliable_mask.sum(): {reliable_mask.sum()}")
-                    print(f"🔍   reliability_scores.shape: {reliability_scores.shape}")
+                    print(f"🔍   reliability_scores.shape: {combined_scores.shape}")
                 
                 return full_reliability_scores
             else:
-                return reliability_scores
+                return combined_scores
             
         except Exception as e:
             if self.debug:

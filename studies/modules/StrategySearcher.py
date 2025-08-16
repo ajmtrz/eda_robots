@@ -364,7 +364,7 @@ class StrategySearcher:
 
             # Crear dataset main con final_mask
             main_feature_cols = [c for c in full_ds.columns if c.endswith('_main_feature')]
-            model_main_train_data = full_ds.loc[final_mask, main_feature_cols + ['labels_main']].dropna(subset=main_feature_cols).copy()
+            model_main_train_data = full_ds.loc[base_mask, main_feature_cols + ['labels_main']].dropna(subset=main_feature_cols).copy()
             if len(model_main_train_data) < 200:
                 if self.debug:
                     print(f"🔍 DEBUG search_reliability - Insuficientes muestras main: {len(model_main_train_data)}")
@@ -376,11 +376,10 @@ class StrategySearcher:
             # Etiquetado META unificado por OOF (para clasificación y regresión)
             model_meta_train_data = full_ds[meta_feature_cols].dropna(subset=meta_feature_cols).copy()
             meta_mask, hp = self.create_meta_labels(
-                model_main_train_data=model_main_train_data,
+                model_main_train_data=full_ds.loc[final_mask, main_feature_cols + ['labels_main']],
                 model_meta_train_data=model_meta_train_data,
                 hp=hp
             )
-            meta_mask = meta_mask & final_mask
             model_meta_train_data['labels_meta'] = meta_mask.astype('int8')
             if model_meta_train_data is None or model_meta_train_data.empty:
                 return -1.0
@@ -556,9 +555,9 @@ class StrategySearcher:
             # 3. Combinación: muestras que pasan AMBOS filtros
             final_mask = base_mask & (mapie_scores == 1.0)
 
-            # Main model filtrado
+            # Main model: base_mask (todas las muestras con señales)
             main_feature_cols = [col for col in full_ds.columns if col.endswith('_main_feature')]
-            model_main_train_data = full_ds[final_mask][main_feature_cols + ['labels_main']].dropna(subset=main_feature_cols).copy()
+            model_main_train_data = full_ds.loc[base_mask, main_feature_cols + ['labels_main']].dropna(subset=main_feature_cols).copy()
             if len(model_main_train_data) < 200:
                 if self.debug:
                     print(f"🔍 DEBUG search_mapie - Insuficientes muestras main: {len(model_main_train_data)}")
@@ -567,14 +566,18 @@ class StrategySearcher:
             meta_feature_cols = [col for col in full_ds.columns if col.endswith('_meta_feature')]
             if not meta_feature_cols:  # Fallback: usar main features si no hay meta features
                 meta_feature_cols = main_feature_cols
-            # Etiquetado META unificado por OOF
+            
+            # Meta model: TODAS las muestras (con y sin señales)
             model_meta_train_data = full_ds[meta_feature_cols].dropna(subset=meta_feature_cols).copy()
+            
+            # Etiquetado META: cálculos OOF con muestras filtradas, pero etiquetas para todas
             meta_mask, hp = self.create_meta_labels(
-                model_main_train_data=model_main_train_data,
-                model_meta_train_data=model_meta_train_data,
+                model_main_train_data=full_ds.loc[final_mask, main_feature_cols + ['labels_main']],  # Solo para OOF
+                model_meta_train_data=model_meta_train_data,  # TODAS las muestras
                 hp=hp
             )
-            meta_mask = meta_mask & final_mask
+            
+            # Aplicar etiquetas meta a todas las muestras
             model_meta_train_data['labels_meta'] = meta_mask.astype('int8')
             if model_meta_train_data is None or model_meta_train_data.empty:
                 return -1.0
@@ -587,8 +590,11 @@ class StrategySearcher:
                 print(f"🔍   Meta labels distribution: {meta_dist}")
 
             if self.debug:
-                print(f"🔍 DEBUG search_mapie - Main data shape: {model_main_train_data.shape}")
-                print(f"🔍   Meta data shape: {model_meta_train_data.shape}")
+                print(f"🔍 DEBUG search_mapie - Arquitectura de responsabilidades separadas:")
+                print(f"🔍   Main model: {len(model_main_train_data)} muestras (base_mask - solo con señales)")
+                print(f"🔍   Meta model: {len(model_meta_train_data)} muestras (TODAS las muestras)")
+                print(f"🔍   Cálculos OOF: {final_mask.sum()} muestras filtradas (final_mask)")
+                print(f"🔍   Filtro aplicado: MAPIE")
 
             # Verificar distribución de clases
             if self.label_type == 'classification':
@@ -652,9 +658,9 @@ class StrategySearcher:
             # 3. Combinación: muestras que pasan AMBOS filtros
             final_mask = base_mask & (causal_scores == 1.0)
                 
-            # Crear dataset main con final_mask
+            # Main model: base_mask (todas las muestras con señales)
             main_feature_cols = [col for col in full_ds.columns if col.endswith('_main_feature')]
-            model_main_train_data = full_ds[final_mask][main_feature_cols + ['labels_main']].dropna(subset=main_feature_cols).copy()
+            model_main_train_data = full_ds.loc[base_mask, main_feature_cols + ['labels_main']].dropna(subset=main_feature_cols).copy()
             if len(model_main_train_data) < 200:
                 if self.debug:
                     print(f"🔍 DEBUG search_causal - Insuficientes muestras main: {len(model_main_train_data)}")
@@ -663,14 +669,18 @@ class StrategySearcher:
             meta_feature_cols = [col for col in full_ds.columns if col.endswith('_meta_feature')]
             if not meta_feature_cols:  # Fallback: usar main features si no hay meta features
                 meta_feature_cols = main_feature_cols
-            # Etiquetado META unificado por OOF
+            
+            # Meta model: TODAS las muestras (con y sin señales)
             model_meta_train_data = full_ds[meta_feature_cols].dropna(subset=meta_feature_cols).copy()
+            
+            # Etiquetado META: cálculos OOF con muestras filtradas, pero etiquetas para todas
             meta_mask, hp = self.create_meta_labels(
-                model_main_train_data=model_main_train_data,
-                model_meta_train_data=model_meta_train_data,
+                model_main_train_data=full_ds.loc[final_mask, main_feature_cols + ['labels_main']],  # Solo para OOF
+                model_meta_train_data=model_meta_train_data,  # TODAS las muestras
                 hp=hp
             )
-            meta_mask = meta_mask & final_mask
+            
+            # Aplicar etiquetas meta a todas las muestras
             model_meta_train_data['labels_meta'] = meta_mask.astype('int8')
             if model_meta_train_data is None or model_meta_train_data.empty:
                 return -1.0
@@ -683,8 +693,11 @@ class StrategySearcher:
                 print(f"🔍   Meta labels distribution: {meta_dist}")
             
             if self.debug:
-                print(f"🔍 DEBUG search_reliability - Main data shape: {model_main_train_data.shape}")
-                print(f"🔍   Meta data shape: {model_meta_train_data.shape}")
+                print(f"🔍 DEBUG search_causal - Arquitectura de responsabilidades separadas:")
+                print(f"🔍   Main model: {len(model_main_train_data)} muestras (base_mask - solo con señales)")
+                print(f"🔍   Meta model: {len(model_meta_train_data)} muestras (TODAS las muestras)")
+                print(f"🔍   Cálculos OOF: {final_mask.sum()} muestras filtradas (final_mask)")
+                print(f"🔍   Filtro aplicado: CAUSAL")
                 
             # Verificar distribución de clases
             if self.label_type == 'classification':
@@ -754,7 +767,6 @@ class StrategySearcher:
             # Evaluar cada cluster
             for clust in cluster_sizes.index:
                 cluster_mask = full_ds['labels_meta'] == clust
-                cluster_mask = cluster_mask
                 if not cluster_mask.any():
                     if self.debug:
                         print(f"🔍   Cluster {clust} descartado: sin muestras confiables")
@@ -803,9 +815,9 @@ class StrategySearcher:
                         print(f"🔍   final_mask.sum(): {final_mask.sum()}")
                         print(f"🔍   final_mask.mean(): {final_mask.mean():.3f}")
                     
-                # Crear dataset main con final_mask
+                # Main model: cluster_mask (todas las muestras del cluster con señales)
                 main_feature_cols = [c for c in full_ds.columns if c.endswith('_main_feature')]
-                model_main_train_data = full_ds.loc[final_mask, main_feature_cols + ['labels_main']].dropna(subset=main_feature_cols).copy()
+                model_main_train_data = full_ds.loc[cluster_mask, main_feature_cols + ['labels_main']].dropna(subset=main_feature_cols).copy()
                 if len(model_main_train_data) < 200:
                     if self.debug:
                         print(f"🔍 DEBUG evaluate_clusters - Insuficientes muestras main: {len(model_main_train_data)}")
@@ -821,16 +833,18 @@ class StrategySearcher:
                             print(f"🔍   Cluster {clust} descartado: labels_main insuficientes")
                         continue
 
-                # Crear dataset meta
+                # Meta model: TODAS las muestras (con y sin señales)
                 meta_feature_cols = [c for c in full_ds.columns if c.endswith('_meta_feature')]
                 model_meta_train_data = full_ds[meta_feature_cols].dropna(subset=meta_feature_cols).copy()
-                # Etiquetado META unificado por OOF
+                
+                # Etiquetado META: cálculos OOF con muestras filtradas, pero etiquetas para todas
                 meta_mask, hp = self.create_meta_labels(
-                    model_main_train_data=model_main_train_data,
-                    model_meta_train_data=model_meta_train_data,
+                    model_main_train_data=full_ds.loc[final_mask, main_feature_cols + ['labels_main']],  # Solo para OOF
+                    model_meta_train_data=model_meta_train_data,  # TODAS las muestras
                     hp=hp
                 )
-                meta_mask = meta_mask & final_mask
+                
+                # Aplicar etiquetas meta a todas las muestras
                 model_meta_train_data['labels_meta'] = meta_mask.astype('int8')
                 if model_meta_train_data is None or model_meta_train_data.empty:
                     continue
@@ -844,14 +858,16 @@ class StrategySearcher:
 
                 # Información de debug para cluster
                 if self.debug:
-                    print(f"🔍   Evaluando cluster {clust}:")
-                    print(f"🔍      Main data shape: {model_main_train_data.shape}")
+                    print(f"🔍   Evaluando cluster {clust} - Arquitectura de responsabilidades separadas:")
+                    print(f"🔍      Main model: {len(model_main_train_data)} muestras (cluster_mask - solo cluster con señales)")
                     if self.label_type == 'classification':
                         main_dist = model_main_train_data['labels_main'].value_counts()
                         print(f"🔍      Main labels: {main_dist}")
                     else:
                         print(f"🔍      Main labels: {model_main_train_data['labels_main'].min()}, {model_main_train_data['labels_main'].max()}")
-                    print(f"🔍      Meta data shape: {model_meta_train_data.shape}")
+                    print(f"🔍      Meta model: {len(model_meta_train_data)} muestras (TODAS las muestras)")
+                    print(f"🔍      Cálculos OOF: {final_mask.sum()} muestras filtradas (final_mask)")
+                    print(f"🔍      Filtro aplicado: {self.search_filter if self.search_filter else 'ninguno'}")
                     
                 # Entrenar modelos
                 score, full_ds_with_labels_path, model_paths, models_cols = self.fit_final_models(

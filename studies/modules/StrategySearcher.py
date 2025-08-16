@@ -14,8 +14,21 @@ import optuna
 from optuna.pruners import HyperbandPruner, SuccessiveHalvingPruner
 # from optuna.integration import CatBoostPruningCallback
 from catboost import CatBoostClassifier, CatBoostRegressor
-from mapie.classification import CrossConformalClassifier
-from mapie.regression import CrossConformalRegressor
+try:
+    from mapie.classification import CrossConformalClassifier
+    from mapie.regression import CrossConformalRegressor
+    _MAPIE_MODE = 'cross'
+except Exception:
+    try:
+        from mapie.classification import MapieClassifier
+        from mapie.regression import MapieRegressor
+        _MAPIE_MODE = 'mapie'
+    except Exception:
+        _MAPIE_MODE = 'none'
+        CrossConformalClassifier = None
+        CrossConformalRegressor = None
+        MapieClassifier = None
+        MapieRegressor = None
 from sklearn.model_selection import TimeSeriesSplit
 from sklearn.model_selection import train_test_split
 from modules.labeling_lib import (
@@ -376,6 +389,8 @@ class StrategySearcher:
             # Etiquetado META unificado por OOF (para clasificación y regresión)
             model_meta_train_data = full_ds[meta_feature_cols].dropna(subset=meta_feature_cols).copy()
             meta_mask, hp = self.create_meta_labels(
+                trial=trial,
+                full_ds=full_ds,
                 model_main_train_data=model_main_train_data,
                 model_meta_train_data=model_meta_train_data,
                 hp=hp
@@ -570,6 +585,8 @@ class StrategySearcher:
             # Etiquetado META unificado por OOF
             model_meta_train_data = full_ds[meta_feature_cols].dropna(subset=meta_feature_cols).copy()
             meta_mask, hp = self.create_meta_labels(
+                trial=trial,
+                full_ds=full_ds,
                 model_main_train_data=model_main_train_data,
                 model_meta_train_data=model_meta_train_data,
                 hp=hp
@@ -666,6 +683,8 @@ class StrategySearcher:
             # Etiquetado META unificado por OOF
             model_meta_train_data = full_ds[meta_feature_cols].dropna(subset=meta_feature_cols).copy()
             meta_mask, hp = self.create_meta_labels(
+                trial=trial,
+                full_ds=full_ds,
                 model_main_train_data=model_main_train_data,
                 model_meta_train_data=model_meta_train_data,
                 hp=hp
@@ -826,6 +845,8 @@ class StrategySearcher:
                 model_meta_train_data = full_ds[meta_feature_cols].dropna(subset=meta_feature_cols).copy()
                 # Etiquetado META unificado por OOF
                 meta_mask, hp = self.create_meta_labels(
+                    trial=trial,
+                    full_ds=full_ds,
                     model_main_train_data=model_main_train_data,
                     model_meta_train_data=model_meta_train_data,
                     hp=hp
@@ -1085,6 +1106,9 @@ class StrategySearcher:
             p['main_threshold'] = trial.suggest_float('main_threshold', 0.2, 0.8)
         else:  # regression
             p['model_main_percentile'] = trial.suggest_float('model_main_percentile', 0.6, 0.8)
+        # Fusión de confiabilidad para el modelo meta
+        p['meta_reliability_fusion'] = trial.suggest_categorical('meta_reliability_fusion', ['none', 'and', 'or', 'weighted'])
+        p['meta_reliability_alpha'] = trial.suggest_float('meta_reliability_alpha', 0.2, 0.8)
 
         return p
 
@@ -1598,12 +1622,23 @@ class StrategySearcher:
                 )
                 catboost_params = _randomize_catboost_params(catboost_params)
                 base_estimator = CatBoostClassifier(**catboost_params)
-                mapie = CrossConformalClassifier(
-                    estimator=base_estimator,
-                    confidence_level=hp['mapie_confidence_level'],
-                    conformity_score='lac',
-                    cv=hp['mapie_cv'],
-                )
+                if _MAPIE_MODE == 'cross' and CrossConformalClassifier is not None:
+                    mapie = CrossConformalClassifier(
+                        estimator=base_estimator,
+                        confidence_level=hp['mapie_confidence_level'],
+                        conformity_score='lac',
+                        cv=hp['mapie_cv'],
+                    )
+                elif _MAPIE_MODE == 'mapie' and 'MapieClassifier' in globals() and MapieClassifier is not None:
+                    mapie = MapieClassifier(
+                        estimator=base_estimator,
+                        method='score',
+                        cv=hp['mapie_cv'],
+                    )
+                else:
+                    if self.debug:
+                        print("🔍 MAPIE no disponible; devolviendo máscara neutra")
+                    return np.ones(len(full_ds)) if reliable_mask is None else np.ones(len(full_ds))
             else:  # regression
                 catboost_params = dict(
                     iterations=hp['cat_main_iterations'],
@@ -1620,41 +1655,53 @@ class StrategySearcher:
                 )
                 catboost_params = _randomize_catboost_params(catboost_params)
                 base_estimator = CatBoostRegressor(**catboost_params)
-                mapie = CrossConformalRegressor(
-                    estimator=base_estimator,
-                    confidence_level=hp['mapie_confidence_level'],
-                    conformity_score='absolute',  # Método de conformidad
-                    method='plus',  # Método de predicción
-                    cv=hp['mapie_cv'],
-                )
+                if _MAPIE_MODE == 'cross' and CrossConformalRegressor is not None:
+                    mapie = CrossConformalRegressor(
+                        estimator=base_estimator,
+                        confidence_level=hp['mapie_confidence_level'],
+                        conformity_score='absolute',  # Método de conformidad
+                        method='plus',  # Método de predicción
+                        cv=hp['mapie_cv'],
+                    )
+                elif _MAPIE_MODE == 'mapie' and 'MapieRegressor' in globals() and MapieRegressor is not None:
+                    mapie = MapieRegressor(
+                        estimator=base_estimator,
+                        method='plus',
+                        cv=hp['mapie_cv'],
+                    )
+                else:
+                    if self.debug:
+                        print("🔍 MAPIE no disponible; devolviendo máscara neutra")
+                    return np.ones(len(full_ds)) if reliable_mask is None else np.ones(len(full_ds))
             
-            mapie.fit_conformalize(X, y)
+            # Ajustar según API
+            if _MAPIE_MODE == 'cross':
+                mapie.fit_conformalize(X, y)
+            else:
+                mapie.fit(X, y)
             
             # Calcular scores según label_type
             if self.label_type == 'classification':
-                # Para clasificación: usar predict_set (conjuntos de predicción)
-                _, prediction_sets = mapie.predict_set(X)
-                # Calcular el tamaño del conjunto por muestra de forma robusta
-                prediction_sets_2d = prediction_sets[:, :, 0]
-                set_sizes = prediction_sets_2d.sum(axis=1)
-                # Scores de confiabilidad: 1.0 si set_size == 1 (alta confianza), 0.0 en caso contrario
-                # Solo filtrado por confiabilidad, sin considerar precisión
-                reliability_scores = (set_sizes == 1).astype(float)
-            else:  # regression
-                # Para regresión: predict_interval devuelve (predictions, prediction_intervals)
-                _, y_prediction_intervals = mapie.predict_interval(X)
-                
-                # Para regresión: analizar intervalos de confianza
-                # Según documentación MAPIE: prediction_intervals tiene shape (n_samples, 2, n_confidence_levels)
-                # Necesitamos extraer el primer (y único) nivel de confianza
-                if y_prediction_intervals.ndim == 3:
-                    # Shape: (n_samples, 2, n_confidence_levels) -> extraer primer nivel
-                    intervals = y_prediction_intervals[:, :, 0]  # Shape: (n_samples, 2)
+                if _MAPIE_MODE == 'cross':
+                    _, prediction_sets = mapie.predict_set(X)
+                    prediction_sets_2d = prediction_sets[:, :, 0]
+                    set_sizes = prediction_sets_2d.sum(axis=1)
+                    reliability_scores = (set_sizes == 1).astype(float)
                 else:
-                    # Shape: (n_samples, 2) -> usar directamente
-                    intervals = y_prediction_intervals
-                
-                interval_width = intervals[:, 1] - intervals[:, 0]
+                    # Para MapieClassifier: usar incertidumbre de intervalos de probabilidad
+                    y_pred, y_pis = mapie.predict(X, alpha=1.0 - hp['mapie_confidence_level'])
+                    # y_pis shape: (n_samples, 2)
+                    width = (y_pis[:, 1] - y_pis[:, 0]).astype(float)
+                    thr = np.percentile(width, 50)
+                    reliability_scores = (width < thr).astype(float)
+            else:  # regression
+                if _MAPIE_MODE == 'cross':
+                    _, y_prediction_intervals = mapie.predict_interval(X)
+                    intervals = y_prediction_intervals[:, :, 0] if y_prediction_intervals.ndim == 3 else y_prediction_intervals
+                    interval_width = intervals[:, 1] - intervals[:, 0]
+                else:
+                    y_pred, y_pis = mapie.predict(X, alpha=1.0 - hp['mapie_confidence_level'])
+                    interval_width = (y_pis[:, 1] - y_pis[:, 0]).astype(float)
                 
                 # Criterios de confiabilidad para regresión (optimizados por Optuna)
                 # MAPIE solo evalúa confiabilidad del modelo, no magnitud de la señal
@@ -2790,9 +2837,11 @@ class StrategySearcher:
         return oof
     
     def create_meta_labels(
-            self, 
-            model_main_train_data: pd.DataFrame, 
-            model_meta_train_data: pd.DataFrame, 
+            self,
+            trial: optuna.Trial,
+            full_ds: pd.DataFrame,
+            model_main_train_data: pd.DataFrame,
+            model_meta_train_data: pd.DataFrame,
             hp: Dict[str, Any]
             ) -> pd.Series:
         """
@@ -2802,6 +2851,37 @@ class StrategySearcher:
         """
         main_feature_cols = [col for col in model_main_train_data.columns if col not in ['labels_main']]
         
+        # Preparar fusión de confiabilidad externa si se solicita
+        fusion_mode = str(hp.get('meta_reliability_fusion', 'none')).lower()
+        alpha = float(hp.get('meta_reliability_alpha', 0.5))
+        ext_rel_aligned = None
+        if fusion_mode != 'none':
+            try:
+                base_mask = self.get_base_mask(full_ds, hp)
+                # MAPIE
+                mapie_scores = self.apply_mapie_filter(trial, full_ds, hp, reliable_mask=base_mask)
+                mapie_series = pd.Series(mapie_scores, index=full_ds.index).astype(float)
+            except Exception:
+                mapie_series = None
+            try:
+                # CAUSAL
+                causal_scores = self.apply_causal_filter(trial, full_ds, hp, reliable_mask=base_mask)
+                causal_series = pd.Series(causal_scores, index=full_ds.index).astype(float)
+            except Exception:
+                causal_series = None
+
+            if mapie_series is not None or causal_series is not None:
+                concat_list = []
+                if mapie_series is not None:
+                    concat_list.append(mapie_series)
+                if causal_series is not None:
+                    concat_list.append(causal_series)
+                ext_rel_full = pd.concat(concat_list, axis=1).mean(axis=1)
+            else:
+                ext_rel_full = pd.Series(1.0, index=full_ds.index)
+            # Alinear a los índices de entrenamiento del main
+            ext_rel_aligned = ext_rel_full.reindex(model_main_train_data.index).fillna(0.0)
+
         if self.label_type == 'classification':
             # 1) Probabilidades OOF del main (clase 1)
             main_oof_proba = self._compute_main_oof_predictions_cls(
@@ -2809,18 +2889,33 @@ class StrategySearcher:
                 y_main=model_main_train_data['labels_main'],
                 hp=hp,
             )
-            # 2) Definir umbral operativo como confianza mínima
-            # Confianza = max(p, 1-p)
-            confidence = main_oof_proba.copy()
-            confidence = pd.Series(np.maximum(confidence.values, 1.0 - confidence.values), index=confidence.index)
-            
+            # 2) Confianza = max(p, 1-p)
+            confidence = pd.Series(
+                np.maximum(main_oof_proba.values, 1.0 - main_oof_proba.values),
+                index=main_oof_proba.index,
+            )
+
             # 3) Confiabilidad por residuo de probabilidad
             y_true = model_main_train_data['labels_main'].astype('float32')
             prob_resid = (main_oof_proba - y_true).abs()
             tau = float(np.nanpercentile(prob_resid.values, hp['oof_resid_percentile'])) if len(prob_resid) > 0 else float(prob_resid.median() if len(prob_resid) else 0.0)
             reliability_mask = (prob_resid <= tau)
             magnitude_mask = (confidence >= hp['main_threshold'])
-            labels_meta = (reliability_mask & magnitude_mask).astype('int8')
+
+            if fusion_mode == 'none' or ext_rel_aligned is None:
+                final_mask = reliability_mask & magnitude_mask
+            elif fusion_mode == 'and':
+                ext_bool = (ext_rel_aligned == 1.0)
+                final_mask = reliability_mask & magnitude_mask & ext_bool
+            elif fusion_mode == 'or':
+                ext_bool = (ext_rel_aligned >= hp.get('meta_threshold', 0.5))
+                final_mask = (reliability_mask & magnitude_mask) | (ext_bool & magnitude_mask)
+            else:  # weighted
+                oof_rel_float = reliability_mask.astype(float)
+                combined_score = alpha * oof_rel_float + (1.0 - alpha) * ext_rel_aligned
+                final_mask = (combined_score >= hp.get('meta_threshold', 0.5)) & magnitude_mask
+
+            labels_meta = final_mask.astype('int8')
 
             # Construir máscara booleana alineada con meta_features_frame
             meta_X = model_meta_train_data.copy()
@@ -2840,7 +2935,7 @@ class StrategySearcher:
 
             return mask, hp
 
-        # ---------------- Regression camino existente ----------------
+        # ---------------- Regression ----------------
         # 1) Predicciones OOF del main (una sola vez)
         main_oof_pred = self._compute_main_oof_predictions_reg(
             X_main=model_main_train_data[main_feature_cols],
@@ -2856,11 +2951,28 @@ class StrategySearcher:
             n_splits=5,
         )
 
-        # 3) Construir dataset meta a partir de residuales OOF del main
-        mask = self._compute_meta_labels_oof_reg(
+        # 3) Construir dataset meta a partir de residuales OOF del main (base)
+        base_mask = self._compute_meta_labels_oof_reg(
             y_main=model_main_train_data['labels_main'],
             meta_features_frame=model_meta_train_data,
             hp=hp,
             oof_pred=main_oof_pred,
         )
+
+        if fusion_mode == 'none' or ext_rel_aligned is None:
+            mask = base_mask
+        else:
+            ext_bool = (ext_rel_aligned >= hp.get('meta_threshold', 0.5))
+            if fusion_mode == 'or':
+                fused = base_mask.reindex(ext_bool.index).fillna(False) | ext_bool
+            else:  # 'and' y 'weighted' tratan igual en regresión
+                fused = base_mask.reindex(ext_bool.index).fillna(False) & ext_bool
+
+            # Alinear a índice de meta
+            meta_X = model_meta_train_data.copy()
+            mask = pd.Series(False, index=meta_X.index)
+            common_idx = fused.index.intersection(meta_X.index)
+            if len(common_idx) > 0:
+                mask.loc[common_idx] = fused.loc[common_idx]
+
         return mask, hp

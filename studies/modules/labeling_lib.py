@@ -2,7 +2,10 @@ import os
 import logging
 import numpy as np
 import pandas as pd
-import cupy as cp
+try:
+	import cupy as cp
+except Exception:
+	cp = np
 #import ot
 import bottleneck as bn
 from numba import njit, prange

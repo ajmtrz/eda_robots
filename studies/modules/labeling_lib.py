@@ -1638,8 +1638,6 @@ def calculate_future_outcome_labels_for_patterns(
                     # Si no hay movimiento significativo, mantiene 2.0 (no confiable)
     
     return labels
-    
-    return labels
 
 def get_labels_fractal_patterns(
     dataset,
@@ -2814,6 +2812,185 @@ def get_labels_validated_levels(
     dataset['labels_main'] = labels
     dataset['labels_main'] = dataset['labels_main'].fillna(2.0)
     return dataset
+
+@njit(cache=True)
+def calculate_labels_zigzag(peaks, troughs, close, atr, label_markup, label_min_val, label_max_val, direction=2, label_type=0, method_int=5):
+    """
+    Generates labels based on peaks and troughs with profit target validation using ATR * markup.
+    
+    Methodology:
+    - Detects peaks and troughs using prominence-based identification
+    - Validates signals using ATR * markup as profit target
+    - For classification: 0.0=buy, 1.0=sell, 2.0=no signal
+    - For regression: normalized magnitude by ATR (positive for buy, negative for sell, 0.0 if not reliable)
+    
+    Signal Generation Logic:
+    - Peaks (highs) → Sell signals when future price <= current_price - ATR*markup
+    - Troughs (lows) → Buy signals when future price >= current_price + ATR*markup
+    - Only generates signals at detected extremes (peaks/troughs)
+    - Regression: assigns magnitude only when profit target is met
+    - Classification: assigns binary labels based on profit validation
+
+    Args:
+        peaks (np.array): Indices of the peaks in the data.
+        troughs (np.array): Indices of the troughs in the data.
+        close (np.array): Array of close prices.
+        atr (np.array): Array of ATR values.
+        label_markup (float): Markup multiplier for ATR.
+        label_min_val (int): Minimum bars for future validation.
+        label_max_val (int): Maximum bars for future validation.
+        direction (int): 0=solo buy, 1=solo sell, 2=ambas
+        label_type (int): 0=clasificación, 1=regresión
+        method_int (int): 0=first, 1=last, 2=mean, 3=max, 4=min, 5=random
+
+    Returns:
+        np.array: An array of labels with profit validation:
+                  - Clasificación: 0.0=buy, 1.0=sell, 2.0=sin señal
+                  - Regresión: Magnitud normalizada por ATR (positiva para buy, negativa para sell, 0.0 si no confiable)
+    """
+    len_close = len(close) - label_max_val
+    labels = np.empty(len_close, dtype=np.float64)
+    labels.fill(2.0)  # Initialize all labels to 2.0 (no signal)
+    
+    last_peak_type = -1  # -1 for the start, 1 for peak, 0 for trough
+    
+    for i in range(len_close):
+        is_peak = False
+        is_trough = False
+        
+        # Check if current index is a peak
+        for j in range(len(peaks)):
+            if i == peaks[j]:
+                is_peak = True
+                break
+        
+        # Check if current index is a trough
+        for j in range(len(troughs)):
+            if i == troughs[j]:
+                is_trough = True
+                break
+
+        dyn_mk = label_markup * atr[i]
+        
+        # Selección del precio objetivo según method_int
+        if method_int == 0:  # first
+            future_price = close[i + label_min_val]
+        elif method_int == 1:  # last
+            future_price = close[i + label_max_val]
+        elif method_int == 2:  # mean
+            window = close[i + label_min_val : i + label_max_val + 1]
+            if window.size > 0:
+                future_price = np.mean(window)
+            else:
+                future_price = close[i + label_min_val]
+        elif method_int == 3:  # max
+            window = close[i + label_min_val : i + label_max_val + 1]
+            if window.size > 0:
+                future_price = np.max(window)
+            else:
+                future_price = close[i + label_min_val]
+        elif method_int == 4:  # min
+            window = close[i + label_min_val : i + label_max_val + 1]
+            if window.size > 0:
+                future_price = np.min(window)
+            else:
+                future_price = close[i + label_min_val]
+        else:  # random/otro
+            rand = np.random.randint(label_min_val, label_max_val + 1)
+            future_price = close[i + rand]
+            
+        current_price = close[i]
+
+        if label_type == 1:  # Regresión - magnitud normalizada por ATR
+            magnitude = (future_price - current_price) / (atr[i] + 1e-12)
+            is_buy = future_price > current_price + dyn_mk
+            is_sell = future_price < current_price - dyn_mk
+            
+            # ✅ ESTRATEGIA HÍBRIDA: Validación + Continuidad
+            if is_peak:
+                if is_sell and not is_buy:
+                    labels[i] = magnitude  # Magnitud negativa para sell en picos
+                    last_peak_type = 1
+                else:
+                    labels[i] = 0.0  # No confiable
+                    last_peak_type = -1  # Reset
+            elif is_trough:
+                if is_buy and not is_sell:
+                    labels[i] = magnitude  # Magnitud positiva para buy en valles
+                    last_peak_type = 0
+                else:
+                    labels[i] = 0.0  # No confiable
+                    last_peak_type = -1  # Reset
+            else:
+                # ✅ PUNTOS INTERMEDIOS: Continuar señal SOLO si cumple profit target
+                if last_peak_type == 1:  # Último fue pico válido
+                    if is_sell and not is_buy:
+                        labels[i] = magnitude  # Magnitud negativa para sell
+                    else:
+                        labels[i] = 0.0  # No confiable
+                elif last_peak_type == 0:  # Último fue valle válido
+                    if is_buy and not is_sell:
+                        labels[i] = magnitude  # Magnitud positiva para buy
+                    else:
+                        labels[i] = 0.0  # No confiable
+                else:
+                    labels[i] = 0.0  # No confiable
+        else:  # Clasificación - etiquetas binarias (funcionalidad original)
+            if direction == 2:  # both
+                if is_peak and future_price <= current_price - dyn_mk:
+                    labels[i] = 1.0  # Sell signal at peaks with profit validation
+                    last_peak_type = 1
+                elif is_trough and future_price >= current_price + dyn_mk:
+                    labels[i] = 0.0  # Buy signal at troughs with profit validation
+                    last_peak_type = 0
+                else:
+                    # ✅ PUNTOS INTERMEDIOS: Continuar señal SOLO si cumple profit target
+                    if last_peak_type == 1:  # Último fue pico válido
+                        if future_price <= current_price - dyn_mk:
+                            labels[i] = 1.0  # Sell
+                        else:
+                            labels[i] = 2.0  # Sin señal
+                    elif last_peak_type == 0:  # Último fue valle válido
+                        if future_price >= current_price + dyn_mk:
+                            labels[i] = 0.0  # Buy
+                        else:
+                            labels[i] = 2.0  # Sin señal
+                    else:
+                        labels[i] = 2.0  # Sin señal
+            elif direction == 0:  # solo buy
+                if is_trough and future_price >= current_price + dyn_mk:
+                    labels[i] = 1.0  # Éxito direccional (señal de compra)
+                    last_peak_type = 0
+                elif is_trough:
+                    labels[i] = 0.0  # Fracaso direccional (no profit)
+                    last_peak_type = -1  # Reset
+                else:
+                    # ✅ PUNTOS INTERMEDIOS: Continuar señal SOLO si cumple profit target
+                    if last_peak_type == 0:  # Último fue valle válido
+                        if future_price >= current_price + dyn_mk:
+                            labels[i] = 1.0  # Éxito direccional (buy)
+                        else:
+                            labels[i] = 2.0  # Patrón no confiable
+                    else:
+                        labels[i] = 2.0  # Patrón no confiable
+            elif direction == 1:  # solo sell
+                if is_peak and future_price <= current_price - dyn_mk:
+                    labels[i] = 1.0  # Éxito direccional (señal de venta)
+                    last_peak_type = 1
+                elif is_peak:
+                    labels[i] = 0.0  # Fracaso direccional (no profit)
+                    last_peak_type = -1  # Reset
+                else:
+                    # ✅ PUNTOS INTERMEDIOS: Continuar señal SOLO si cumple profit target
+                    if last_peak_type == 1:  # Último fue pico válido
+                        if future_price <= current_price - dyn_mk:
+                            labels[i] = 1.0  # Éxito direccional (sell)
+                        else:
+                            labels[i] = 2.0  # Patrón no confiable
+                    else:
+                        labels[i] = 2.0  # Patrón no confiable
+                
+    return labels
 
 def get_labels_zigzag(
     dataset, 

@@ -63,27 +63,14 @@ int OnInit()
       OnnxRelease(ExtHandle_main);
       return(INIT_FAILED);
      }
-   if(LABEL_TYPE == "classification")
-     {
-      // Clasificación: salida con probabilidades
-      const ulong output_shape_main[] = {1};
+   // Clasificación: salida con probabilidades
+   const ulong output_shape_main[] = {1};
 
-      if(!OnnxSetOutputShape(ExtHandle_main, 0, output_shape_main))
-        {
-         Print("OnnxSetOutputShape main (classification) failed, error ", GetLastError());
-         return(INIT_FAILED);
-        }
-     }
-   else // "regression"
-     {
-      const ulong output_shape_main[] = {1, 1};
-
-      if(!OnnxSetOutputShape(ExtHandle_main, 0, output_shape_main))
-        {
-         Print("OnnxSetOutputShape main (regression) failed, error  ", GetLastError());
-         return(INIT_FAILED);
-        }
-     }
+   if(!OnnxSetOutputShape(ExtHandle_main, 0, output_shape_main))
+      {
+      Print("OnnxSetOutputShape main (classification) failed, error ", GetLastError());
+      return(INIT_FAILED);
+      }
    if(!OnnxSetInputShape(ExtHandle_meta, 0, ExtInputShape_meta))
      {
       Print("OnnxSetInputShape meta failed, error ", GetLastError());
@@ -173,63 +160,31 @@ void OnTick()
    meta_sig = meta_out2[0].proba[1];
 
 // Ejecutar modelo main según tipo
-   if(LABEL_TYPE == "classification")
-     {
-      OnnxRun(ExtHandle_main, ONNX_DEFAULT, features_main, main_out, main_out2);
-      main_sig = main_out2[0].proba[1];
-     }
-   else // "regression"
-     {
-      // Para regresión convertida, usar acceso directo al primer elemento
-      OnnxRun(ExtHandle_main, ONNX_DEFAULT, features_main, main_out);
-      main_sig = main_out[0];
-     }
+   OnnxRun(ExtHandle_main, ONNX_DEFAULT, features_main, main_out, main_out2);
+   main_sig = main_out2[0].proba[1];
 
 // Remove prob_buy/prob_sell logic - signals are generated directly from main_sig
 
 // EXACT PYTHON SIGNAL LOGIC
    bool buy_sig, sell_sig;
-   if(LABEL_TYPE == "classification")
-     {
-      // CLASIFICACIÓN: EXACT PYTHON LOGIC - use main_sig directly for both directions
-      if(DIRECTION == "buy")
-        {
-         buy_sig = main_sig > MAIN_THRESHOLD;
-         sell_sig = false;
-        }
-      else if(DIRECTION == "sell")
-        {
-         buy_sig = false;
-         sell_sig = main_sig > MAIN_THRESHOLD;
-        }
-              else // "both"
-        {
-         // Para clasificación: probabilidad alta = BUY, probabilidad baja = SELL
-         // Threshold filtra ambas señales: buy_sig cuando > threshold, sell_sig cuando < (1-threshold)
-         buy_sig = main_sig > MAIN_THRESHOLD;
-         sell_sig = main_sig < (1.0 - MAIN_THRESHOLD);
-        }
-     }
-   else // "regression"
-     {
-      // REGRESIÓN: EXACT PYTHON LOGIC - usar main_sig directamente
-      if(DIRECTION == "buy")
-        {
-         buy_sig = main_sig > MAIN_THRESHOLD;
-         sell_sig = false;
-        }
-      else if(DIRECTION == "sell")
-        {
-         buy_sig = false;
-         sell_sig = MathAbs(main_sig) > MAIN_THRESHOLD;
-        }
-      else // "both"
-        {
-         // main_sig es P(clase=1)=SELL; BUY cuando P(SELL) < (1 - MAIN_THRESHOLD), SELL cuando P(SELL) > MAIN_THRESHOLD
-         buy_sig = (1.0 - main_sig) > MAIN_THRESHOLD;
-         sell_sig = main_sig > MAIN_THRESHOLD;
-        }
-     }
+   // CLASIFICACIÓN: EXACT PYTHON LOGIC - use main_sig directly for both directions
+   if(DIRECTION == "buy")
+      {
+      buy_sig = main_sig > MAIN_THRESHOLD;
+      sell_sig = false;
+      }
+   else if(DIRECTION == "sell")
+      {
+      buy_sig = false;
+      sell_sig = main_sig > MAIN_THRESHOLD;
+      }
+            else // "both"
+      {
+      // Para clasificación: probabilidad alta = BUY, probabilidad baja = SELL
+      // Threshold filtra ambas señales: buy_sig cuando > threshold, sell_sig cuando < (1-threshold)
+      buy_sig = main_sig > MAIN_THRESHOLD;
+      sell_sig = main_sig < (1.0 - MAIN_THRESHOLD);
+      }
    
    bool meta_ok  = (meta_sig > META_THRESHOLD);
 
@@ -248,46 +203,20 @@ void OnTick()
       bool must_close = false;
 
       // EXACT PYTHON CLOSING LOGIC
-      if(LABEL_TYPE == "classification")
-        {
-         // CLASIFICACIÓN: EXACT PYTHON LOGIC
-         if(DIRECTION == "buy")
-           {
-            must_close = (ptype == POSITION_TYPE_BUY && !buy_sig);
-           }
-         else if(DIRECTION == "sell")
-           {
-            must_close = (ptype == POSITION_TYPE_SELL && !sell_sig);
-           }
-         else // "both"
-           {
-            must_close = (ptype == POSITION_TYPE_BUY && !buy_sig) || 
-                        (ptype == POSITION_TYPE_SELL && !sell_sig);
-           }
-        } 
-      else // "regression"
-        {
-         // REGRESIÓN: EXACT PYTHON LOGIC
-         if(DIRECTION == "buy")
-           {
-            must_close = (ptype == POSITION_TYPE_BUY && !buy_sig);
-           }
-         else if(DIRECTION == "sell")
-           {
-            must_close = (ptype == POSITION_TYPE_SELL && !sell_sig);
-           }
-         else // "both"
-           {
-            if(ptype == POSITION_TYPE_BUY)
-              {
-               must_close = !buy_sig;
-              }
-            else // SHORT
-              {
-               must_close = !sell_sig;
-              }
-           }
-        }
+      // CLASIFICACIÓN: EXACT PYTHON LOGIC
+      if(DIRECTION == "buy")
+         {
+         must_close = (ptype == POSITION_TYPE_BUY && !buy_sig);
+         }
+      else if(DIRECTION == "sell")
+         {
+         must_close = (ptype == POSITION_TYPE_SELL && !sell_sig);
+         }
+      else // "both"
+         {
+         must_close = (ptype == POSITION_TYPE_BUY && !buy_sig) || 
+                     (ptype == POSITION_TYPE_SELL && !sell_sig);
+         }
       
       if(debug && must_close)
         Print("🔍 DEBUG - Cerrando posición: tipo=", EnumToString(ptype), 

@@ -17,7 +17,6 @@ def tester(
         model_meta_cols: list[str],
         direction: str = 'both',
         timeframe: str = 'H1',
-        label_type: str = 'classification',
         model_main_threshold: float = 0.5,
         model_meta_threshold: float = 0.5,
         model_max_orders: int = 1,
@@ -31,10 +30,6 @@ def tester(
 
     Parameters
     ----------
-    label_type : str, default='classification'
-        Tipo de modelo main: 'classification' o 'regression'.
-        El modelo meta siempre es de clasificación.
-
     Returns
     -------
     tuple
@@ -48,13 +43,8 @@ def tester(
         ds_meta = dataset[model_meta_cols].to_numpy()
         open_ = dataset['open'].to_numpy()
 
-        # Calcular predicciones usando ambos modelos según label_type
-        if label_type == 'classification':
-            # Modelo main: clasificación (probabilidades)
-            main = predict_proba_onnx_models(model_main, ds_main)
-        else:  # regression
-            # Modelo main: regresión (valores continuos)
-            main = predict_regression_onnx_models(model_main, ds_main)
+        # Calcular predicciones usando ambos modelos
+        main = predict_proba_onnx_models(model_main, ds_main)
         
         # Modelo meta: siempre clasificación (probabilidades)
         meta = predict_proba_onnx_models(model_meta, ds_meta)
@@ -76,7 +66,6 @@ def tester(
         # DEBUG: Información de entrada
         if debug:
             print(f"🔍 DEBUG tester - Información de entrada:")
-            print(f"🔍   label_type: {label_type}")
             print(f"🔍   direction: {direction}")
             print(f"🔍   model_main_threshold: {model_main_threshold}")
             print(f"🔍   model_meta_threshold: {model_meta_threshold}")
@@ -98,7 +87,6 @@ def tester(
         # ── BACKTEST ────────────────────────────────────────────────
         # Mapeo para jit
         direction_int = {"buy": 0, "sell": 1, "both": 2}[direction]
-        label_type_int = {"classification": 0, "regression": 1}[label_type]
 
         # DEBUG: Señales antes del backtest
         if debug:
@@ -115,7 +103,6 @@ def tester(
             main_thr   = model_main_threshold,
             meta_thr   = model_meta_threshold,
             direction_int  = direction_int,
-            label_type_int = label_type_int,
             max_orders = model_max_orders,
             delay_bars = model_delay_bars
         )
@@ -166,7 +153,7 @@ def tester(
                 print(f"🔍 DEBUG tester - Score < 0.0 ({score:.6f}), retornando -1.0")
             return -1.0
         if debug:
-            print(f"🔍 DEBUG - Label type: {label_type}, Main threshold: {model_main_threshold}, Meta threshold: {model_meta_threshold}, Max orders: {model_max_orders}, Delay bars: {model_delay_bars}")
+            print(f"🔍 DEBUG - Main threshold: {model_main_threshold}, Meta threshold: {model_meta_threshold}, Max orders: {model_max_orders}, Delay bars: {model_delay_bars}")
             print(f"🔍 DEBUG - Métricas de evaluación: SCORE: {score}, trade_nl: {trade_nl}, rdd_nl: {rdd_nl}, r2: {r2}, slope_nl: {slope_nl}, wf_nl: {wf_nl}")
             print(f"🔍 DEBUG - Trade stats: n_trades: {trade_stats[0]}, n_positivos: {trade_stats[1]}, n_negativos: {trade_stats[2]}")
             plt.figure(figsize=(10, 6))
@@ -258,7 +245,6 @@ def backtest(open_,
             main_thr   = 0.5,
             meta_thr   = 0.5,
             direction_int  = 2,  # 0=buy, 1=sell, 2=both (mapeado)
-            label_type_int = 0,  # 0=classification, 1=regression (mapeado)
             max_orders = 1,      # 0 → ilimitado
             delay_bars = 1):
     """
@@ -285,30 +271,17 @@ def backtest(open_,
         
         # Los datos ya están limpios de NaN en tester(), no necesitamos verificar aquí
 
-        # Generación de señales según tipo y dirección
-        if label_type_int == 1:  # REGRESIÓN
-            if direction_int == 0:  # Solo BUY
-                buy_sig = main_val > main_thr
-                sell_sig = False
-            elif direction_int == 1:  # Solo SELL
-                buy_sig = False
-                sell_sig = abs(main_val) > main_thr
-            else:  # direction_int == 2 (BOTH)
-                # Distinguir por signo: positivo=buy, negativo=sell
-                buy_sig = (main_val > main_thr) and (main_val > 0)
-                sell_sig = (abs(main_val) > main_thr) and (main_val < 0)
-        
-        else:  # label_type_int == 0 (CLASIFICACIÓN)
-            if direction_int == 0:  # Solo BUY
-                buy_sig = main_val > main_thr  # P(éxito BUY) > thr
-                sell_sig = False
-            elif direction_int == 1:  # Solo SELL
-                buy_sig = False
-                sell_sig = main_val > main_thr  # P(éxito SELL) > thr
-            else:  # direction_int == 2 (BOTH)
-                # main_val es P(clase=1)=SELL; BUY cuando P(SELL) < (1 - thr), SELL cuando P(SELL) > thr
-                buy_sig = (1.0 - main_val) > main_thr
-                sell_sig = main_val > main_thr
+        # Generación de señales según dirección
+        if direction_int == 0:  # Solo BUY
+            buy_sig = main_val > main_thr  # P(éxito BUY) > thr
+            sell_sig = False
+        elif direction_int == 1:  # Solo SELL
+            buy_sig = False
+            sell_sig = main_val > main_thr  # P(éxito SELL) > thr
+        else:  # direction_int == 2 (BOTH)
+            # main_val es P(clase=1)=SELL; BUY cuando P(SELL) < (1 - thr), SELL cuando P(SELL) > thr
+            buy_sig = (1.0 - main_val) > main_thr
+            sell_sig = main_val > main_thr
 
         # Meta siempre es clasificación
         meta_ok = meta_val > meta_thr
@@ -321,26 +294,14 @@ def backtest(open_,
             # Determinar si cerrar según tipo y dirección
             must_close = False
             
-            # Lógica de cierre según label_type y direction
+            # Lógica de cierre según direction
             # Solo el main model controla el cierre de operaciones
-            if label_type_int == 1:  # REGRESIÓN
-                if direction_int == 0:  # Solo BUY
-                    must_close = (pos_type == LONG and not buy_sig)
-                elif direction_int == 1:  # Solo SELL
-                    must_close = (pos_type == SHORT and not sell_sig)
-                else:  # direction_int == 2 (BOTH)
-                    if pos_type == LONG:
-                        must_close = (not buy_sig)
-                    else:  # SHORT
-                        must_close = (not sell_sig)
-            
-            else:  # label_type_int == 0 (CLASIFICACIÓN)
-                if direction_int == 0:  # Solo BUY
-                    must_close = (pos_type == LONG and not buy_sig)
-                elif direction_int == 1:  # Solo SELL
-                    must_close = (pos_type == SHORT and not sell_sig)
-                else:  # direction_int == 2 (BOTH)
-                    must_close = (pos_type == LONG and not buy_sig) or (pos_type == SHORT and not sell_sig)
+            if direction_int == 0:  # Solo BUY
+                must_close = (pos_type == LONG and not buy_sig)
+            elif direction_int == 1:  # Solo SELL
+                must_close = (pos_type == SHORT and not sell_sig)
+            else:  # direction_int == 2 (BOTH)
+                must_close = (pos_type == LONG and not buy_sig) or (pos_type == SHORT and not sell_sig)
             
             if must_close:
                 if pos_type == LONG:

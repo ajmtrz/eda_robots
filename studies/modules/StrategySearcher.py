@@ -30,12 +30,10 @@ from modules.export_lib import export_models_to_ONNX, export_dataset_to_csv, exp
 
 class StrategySearcher:
     LABEL_FUNCS = {
-        # No usan confiabilidad
         "random": get_labels_random,
         "filter": get_labels_filter,
         "filter_binary": get_labels_filter_binary,
         "filter_multi": get_labels_filter_multi,
-        # Usan confiabilidad
         "fractal": get_labels_fractal_patterns,
         "trend": get_labels_trend,
         "trend_multi": get_labels_trend_multi,
@@ -811,15 +809,14 @@ class StrategySearcher:
         # Parámetros de filtros (independientes del search_type)
         if self.search_filter == 'mapie':
             p['mapie_confidence_level'] = trial.suggest_float('mapie_confidence_level', 0.65, 0.95)
-            p['mapie_cv']               = trial.suggest_int  ('mapie_cv',               3, 5)
+            p['mapie_cv']               = trial.suggest_int  ('mapie_cv', 3, 5)
         elif self.search_filter == 'causal':
             p['causal_meta_learners'] = trial.suggest_int('causal_meta_learners', 7, 11)
-            p['causal_percentile'] = trial.suggest_int('causal_percentile', 65, 85)
+            p['causal_percentile'] = trial.suggest_int('causal_percentile', 65, 95)
 
         # THRESHOLDS UNIFICADOS (preparación para optimización futura)
-        p['meta_threshold'] = trial.suggest_float('meta_threshold', 0.2, 0.8)
-        p['oof_resid_percentile'] = trial.suggest_int('oof_resid_percentile', 60, 80)
-        p['main_threshold'] = trial.suggest_float('main_threshold', 0.2, 0.8)
+        p['meta_threshold'] = trial.suggest_float('meta_threshold', 0.3, 0.7)
+        p['main_threshold'] = trial.suggest_float('main_threshold', 0.3, 0.7)
 
         return p
 
@@ -925,16 +922,6 @@ class StrategySearcher:
                            verbose=False
             )
             t_train_main_end = time.time()
-
-            if self.debug:
-                print(f"🔍 DEBUG: Tiempo de entrenamiento modelo main: {t_train_main_end - t_train_main_start:.2f} segundos")
-                
-                # 🔍 DEBUG: Verificar predicciones del modelo en datos de entrenamiento
-                train_pred = model_main.predict(X_train_main)
-                val_pred = model_main.predict(X_val_main)
-                print(f"🔍 DEBUG: Train predictions - min: {train_pred.min():.4f}, max: {train_pred.max():.4f}, mean: {train_pred.mean():.4f}")
-                print(f"🔍 DEBUG: Val predictions - min: {val_pred.min():.4f}, max: {val_pred.max():.4f}, mean: {val_pred.mean():.4f}")
-
             
             # Recalcular splits para meta tras crear labels_meta
             meta_feature_cols = [col for col in model_meta_train_data.columns if col != 'labels_meta']
@@ -979,116 +966,11 @@ class StrategySearcher:
                            verbose=False
             )
             t_train_meta_end = time.time()
-            
-            # DEBUG: Verificar entrenamiento del modelo meta
             if self.debug:
+                print(f"🔍 DEBUG: Tiempo de entrenamiento modelo main: {t_train_main_end - t_train_main_start:.2f} segundos")
                 print(f"🔍 DEBUG: Tiempo de entrenamiento modelo meta: {t_train_meta_end - t_train_meta_start:.2f} segundos")
-                
-                # Debug de datos de entrenamiento meta
-                print(f"🔍 DEBUG fit_final_models - Datos de entrenamiento meta:")
-                print(f"🔍   X_train_meta.shape: {X_train_meta.shape}")
-                print(f"🔍   y_train_meta.shape: {y_train_meta.shape}")
-                print(f"🔍   y_train_meta.value_counts(): {y_train_meta.value_counts().to_dict()}")
-                print(f"🔍   y_train_meta.mean(): {y_train_meta.mean():.6f}")
-                
-                # Debug de predicciones del modelo meta en validación
-                meta_predictions_train = model_meta.predict_proba(X_train_meta)[:, 1]
-                meta_predictions_val = model_meta.predict_proba(X_val_meta)[:, 1]
-                
-                print(f"🔍 DEBUG fit_final_models - Predicciones modelo meta:")
-                print(f"🔍   Train predictions - min: {meta_predictions_train.min():.6f}, max: {meta_predictions_train.max():.6f}, mean: {meta_predictions_train.mean():.6f}")
-                print(f"🔍   Val predictions - min: {meta_predictions_val.min():.6f}, max: {meta_predictions_val.max():.6f}, mean: {meta_predictions_val.mean():.6f}")
-                
-                # Debug de métricas de entrenamiento
-                train_accuracy = (meta_predictions_train > 0.5) == y_train_meta
-                val_accuracy = (meta_predictions_val > 0.5) == y_val_meta
-                print(f"🔍   Train accuracy: {train_accuracy.mean():.6f}")
-                print(f"🔍   Val accuracy: {val_accuracy.mean():.6f}")
-            # DEBUG: Verificar tipos de modelos antes de exportar
-            if self.debug:
-                print(f"🔍 DEBUG fit_final_models - Tipos de modelos:")
-                print(f"🔍   model_main.__class__: {model_main.__class__}")
-                print(f"🔍   model_meta.__class__: {model_meta.__class__}")
-                print(f"🔍   model_main.get_params(): {model_main.get_params()}")
-                print(f"🔍   model_meta.get_params(): {model_meta.get_params()}")
-            
-            model_main_path, model_meta_path = export_models_to_ONNX(models=(model_main, model_meta))
-            
-            # DEBUG: Verificar exportación ONNX y predicciones
-            if self.debug:
-                print(f"🔍 DEBUG fit_final_models - Verificación ONNX:")
-                print(f"🔍   model_main_path: {model_main_path}")
-                print(f"🔍   model_meta_path: {model_meta_path}")
-                
-                # Verificar predicciones ONNX del modelo meta
-                try:
-                    from modules.tester_lib import predict_proba_onnx_models
-                    # Convertir DataFrame a numpy array
-                    X_val_meta_np = X_val_meta.to_numpy().astype(np.float32)
-                    meta_onnx_predictions = predict_proba_onnx_models(model_meta_path, X_val_meta_np)
-                    print(f"🔍   ONNX meta predictions - min: {meta_onnx_predictions.min():.6f}, max: {meta_onnx_predictions.max():.6f}, mean: {meta_onnx_predictions.mean():.6f}")
-                    
-                    # Comparar predicciones originales vs ONNX
-                    original_predictions = model_meta.predict_proba(X_val_meta)[:, 1]
-                    onnx_predictions = meta_onnx_predictions
-                    
-                    print(f"🔍   Original vs ONNX comparison:")
-                    print(f"🔍     Original - min: {original_predictions.min():.6f}, max: {original_predictions.max():.6f}, mean: {original_predictions.mean():.6f}")
-                    print(f"🔍     ONNX - min: {onnx_predictions.min():.6f}, max: {onnx_predictions.max():.6f}, mean: {onnx_predictions.mean():.6f}")
-                    
-                    # Verificar si hay diferencias significativas
-                    diff = np.abs(original_predictions - onnx_predictions)
-                    print(f"🔍     Max difference: {diff.max():.6f}")
-                    print(f"🔍     Mean difference: {diff.mean():.6f}")
-                    
-                except Exception as e:
-                    if self.debug:
-                        print(f"🔍   ERROR verificando ONNX: {e}")
 
-            if self.debug:
-                print(f"🔍 DEBUG fit_final_models - Threshold para tester:")
-                print(f"🔍   main_threshold: {hp.get('main_threshold', 0.5)}")
-                
-                # DEBUG: Verificar predicciones del modelo meta en el dataset completo
-                print(f"🔍 DEBUG fit_final_models - Verificación predicciones meta en dataset completo:")
-                
-                # Obtener features meta del dataset completo
-                meta_feature_cols = [col for col in full_ds.columns if col.endswith('_meta_feature')]
-                if meta_feature_cols:
-                    X_full_meta = full_ds[meta_feature_cols].dropna(subset=meta_feature_cols)
-                    print(f"🔍   meta_feature_cols: {meta_feature_cols}")
-                    print(f"🔍   X_full_meta.shape: {X_full_meta.shape}")
-                    
-                    # Predicciones originales del modelo meta
-                    meta_predictions_full = model_meta.predict_proba(X_full_meta)[:, 1]
-                    print(f"🔍   Meta predictions full dataset:")
-                    print(f"🔍     min: {meta_predictions_full.min():.6f}")
-                    print(f"🔍     max: {meta_predictions_full.max():.6f}")
-                    print(f"🔍     mean: {meta_predictions_full.mean():.6f}")
-                    print(f"🔍     std: {meta_predictions_full.std():.6f}")
-                    
-                    # Verificar distribución de predicciones
-                    predictions_above_05 = (meta_predictions_full > 0.5).sum()
-                    print(f"🔍     predictions > 0.5: {predictions_above_05} ({predictions_above_05/len(meta_predictions_full)*100:.2f}%)")
-                    
-                    # Predicciones ONNX del dataset completo
-                    try:
-                        # Convertir DataFrame a numpy array
-                        X_full_meta_np = X_full_meta.to_numpy().astype(np.float32)
-                        meta_onnx_full = predict_proba_onnx_models(model_meta_path, X_full_meta_np)
-                        print(f"🔍   ONNX predictions full dataset:")
-                        print(f"🔍     min: {meta_onnx_full.min():.6f}")
-                        print(f"🔍     max: {meta_onnx_full.max():.6f}")
-                        print(f"🔍     mean: {meta_onnx_full.mean():.6f}")
-                        print(f"🔍     std: {meta_onnx_full.std():.6f}")
-                        
-                        onnx_above_05 = (meta_onnx_full > 0.5).sum()
-                        print(f"🔍     ONNX > 0.5: {onnx_above_05} ({onnx_above_05/len(meta_onnx_full)*100:.2f}%)")
-                        
-                    except Exception as e:
-                        print(f"🔍   ERROR en predicciones ONNX full dataset: {e}")
-                else:
-                    print(f"🔍   No se encontraron meta features en el dataset")
+            model_main_path, model_meta_path = export_models_to_ONNX(models=(model_main, model_meta))
             
             try:
                 # Inicializar score con valor por defecto

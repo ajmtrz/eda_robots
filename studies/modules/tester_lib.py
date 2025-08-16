@@ -71,30 +71,12 @@ def tester(
             print(f"🔍   model_meta_threshold: {model_meta_threshold}")
             print(f"🔍   main.shape: {main.shape}, main.dtype: {main.dtype}")
             print(f"🔍   meta.shape: {meta.shape}, meta.dtype: {meta.dtype}")
-            print(f"🔍   open_.shape: {open_.shape}, open_.dtype: {open_.dtype}")
             print(f"🔍   main.min(): {main.min():.6f}, main.max(): {main.max():.6f}")
             print(f"🔍   meta.min(): {meta.min():.6f}, meta.max(): {meta.max():.6f}")
-            
-            # 🔍 DEBUG: Análisis detallado de predicciones
-            print(f"🔍 DEBUG tester - Análisis de predicciones:")
-            print(f"🔍   main percentiles: {np.percentile(main, [10, 25, 50, 75, 90])}")
-            print(f"🔍   main > threshold: {(main > model_main_threshold).sum()}/{len(main)} ({100*(main > model_main_threshold).mean():.1f}%)")
-            print(f"🔍   main > threshold*1.5: {(main > model_main_threshold*1.5).sum()}/{len(main)} ({100*(main > model_main_threshold*1.5).mean():.1f}%)")
-            print(f"🔍   main > threshold*2.0: {(main > model_main_threshold*2.0).sum()}/{len(main)} ({100*(main > model_main_threshold*2.0).mean():.1f}%)")
-            print(f"🔍   Gap mínimo: {main.min() - model_main_threshold:.4f}")
-            print(f"🔍   Gap promedio: {main.mean() - model_main_threshold:.4f}")
 
         # ── BACKTEST ────────────────────────────────────────────────
         # Mapeo para jit
         direction_int = {"buy": 0, "sell": 1, "both": 2}[direction]
-
-        # DEBUG: Señales antes del backtest
-        if debug:
-            print(f"🔍 DEBUG tester - Señales generadas:")
-            print(f"🔍   main.min(): {main.min():.6f}, main.max(): {main.max():.6f}")
-            print(f"🔍   meta.min(): {meta.min():.6f}, meta.max(): {meta.max():.6f}")
-            print(f"🔍   main > main_thr: {(main > model_main_threshold).sum()}")
-            print(f"🔍   meta > meta_thr: {(meta > model_meta_threshold).sum()}")
 
         rpt, trade_stats, trade_profits = backtest(
             open_,
@@ -739,53 +721,3 @@ def predict_proba_onnx_models(
             raise RuntimeError(f"Número inesperado de outputs ONNX: {len(outputs)}")
 
     return probs
-
-def predict_regression_onnx_models(
-    onnx_paths: Union[str, List[str]],
-    X: np.ndarray,
-) -> np.ndarray:
-    """
-    Devuelve las predicciones de regresión para uno o varios modelos ONNX.
-    
-    Parameters
-    ----------
-    onnx_paths : str o list[str]
-        Ruta o rutas a los ficheros .onnx.
-    X : np.ndarray  shape (n_samples, n_features)
-        Matriz de características.
-
-    Returns
-    -------
-    np.ndarray
-        Si se pasa una sola ruta → shape (n_samples,)
-        Si se pasa una lista → shape (n_models, n_samples)
-    """
-    X = X.astype(np.float32, copy=False)
-
-    # Caso: un solo modelo (str)
-    if isinstance(onnx_paths, str):
-        sess, inp = _get_ort_session(onnx_paths)
-        try:
-            raw = sess.run(['predictions'], {inp: X})[0]
-        except Exception:
-            raw = sess.run(None, {inp: X})[0]
-        
-        # Aplanar la salida a 1D independientemente de su forma original
-        return raw.ravel()
-
-    # Caso: múltiples modelos (lista)
-    n_models = len(onnx_paths)
-    n_samples = X.shape[0]
-    predictions = np.empty((n_models, n_samples), dtype=np.float32)
-
-    for k, path in enumerate(onnx_paths):
-        sess, inp = _get_ort_session(path)
-        try:
-            raw = sess.run(['predictions'], {inp: X})[0]
-        except Exception:
-            raw = sess.run(None, {inp: X})[0]
-        
-        # Aplanar y almacenar
-        predictions[k] = raw.ravel()
-        
-    return predictions

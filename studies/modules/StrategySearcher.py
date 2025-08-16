@@ -128,7 +128,7 @@ class StrategySearcher:
                 # Inicializar estudio de Optuna con objetivo único
                 pruners = {
                     'hyperband': HyperbandPruner(max_resource='auto'),
-                    'sucessive': SuccessiveHalvingPruner(min_resource='auto')
+                    'successive': SuccessiveHalvingPruner(min_resource='auto')
                 }
                 study = optuna.create_study(
                     study_name=self.tag,
@@ -358,6 +358,16 @@ class StrategySearcher:
                 if self.debug:
                     print(f"🔍 DEBUG search_reliability - Insuficientes muestras main: {len(model_main_train_data)}")
                 return -1.0
+            if set(model_main_train_data['labels_main'].unique()) != {0.0, 1.0}:
+                if self.debug:
+                    print(f"🔍   Search reliability - labels_main insuficientes")
+                return -1.0
+            if self.debug:
+                print(f"🔍 DEBUG search_reliability - Main data shape: {model_main_train_data.shape}")
+                print(f"🔍   Main data shape: {model_main_train_data.shape}")
+            if self.debug:
+                main_dist = model_main_train_data['labels_main'].value_counts()
+                print(f"🔍   Main labels distribution: {main_dist}")
 
             # Crear dataset meta con final_mask
             meta_feature_cols = [c for c in full_ds.columns if c.endswith('_meta_feature')]
@@ -370,23 +380,16 @@ class StrategySearcher:
             model_meta_train_data['labels_meta'] = labels_meta
             if model_meta_train_data is None or model_meta_train_data.empty:
                 return -1.0
-            if set(model_meta_train_data['labels_meta'].unique()) != {0, 1}:
+            if set(model_meta_train_data['labels_meta'].unique()) != {0.0, 1.0}:
                 if self.debug:
                     print(f"🔍   Search reliability - labels_meta insuficientes")
                 return -1.0
             if self.debug:
+                print(f"🔍 DEBUG search_reliability - Meta data shape: {model_meta_train_data.shape}")
+                print(f"🔍   Meta data shape: {model_meta_train_data.shape}")
+            if self.debug:
                 meta_dist = model_meta_train_data['labels_meta'].value_counts()
                 print(f"🔍   Meta labels distribution: {meta_dist}")
-            
-            if self.debug:
-                print(f"🔍 DEBUG search_reliability - Main data shape: {model_main_train_data.shape}")
-                print(f"🔍   Meta data shape: {model_meta_train_data.shape}")
-            
-            # Verificar distribución de clases
-            if set(model_main_train_data['labels_main'].unique()) != {0.0, 1.0}:
-                if self.debug:
-                    print(f"🔍   Search reliability - labels_main insuficientes")
-                return -1.0
                 
             # Usar pipeline existente
             score, full_ds_with_labels_path, model_paths, models_cols = self.fit_final_models(
@@ -590,6 +593,12 @@ class StrategySearcher:
                     if self.debug:
                         print(f"🔍   Cluster {clust} descartado: labels_main insuficientes")
                     continue
+                if self.debug:
+                    print(f"🔍 DEBUG evaluate_clusters - Main data shape: {model_main_train_data.shape}")
+                    print(f"🔍   Main data shape: {model_main_train_data.shape}")
+                if self.debug:
+                    main_dist = model_main_train_data['labels_main'].value_counts()
+                    print(f"🔍   Main labels distribution: {main_dist}")
 
                 # Crear dataset meta con final_mask
                 meta_feature_cols = [c for c in full_ds.columns if c.endswith('_meta_feature')]
@@ -599,10 +608,13 @@ class StrategySearcher:
                 model_meta_train_data['labels_meta'] = labels_meta
                 if model_meta_train_data is None or model_meta_train_data.empty:
                     continue
-                if set(model_meta_train_data['labels_meta'].unique()) != {0, 1}:
+                if set(model_meta_train_data['labels_meta'].unique()) != {0.0, 1.0}:
                     if self.debug:
                         print(f"🔍   Cluster {clust} descartado: labels_meta insuficientes")
                     continue
+                if self.debug:
+                    print(f"🔍 DEBUG evaluate_clusters - Meta data shape: {model_meta_train_data.shape}")
+                    print(f"🔍   Meta data shape: {model_meta_train_data.shape}")
                 if self.debug:
                     meta_dist = model_meta_train_data['labels_meta'].value_counts()
                     print(f"🔍   Meta labels distribution: {meta_dist}")

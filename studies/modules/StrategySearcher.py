@@ -1293,16 +1293,11 @@ class StrategySearcher:
             
             mapie.fit_conformalize(X, y)
             
-            # Para clasificación: usar predict_set (conjuntos de predicción)
             predicted, prediction_sets = mapie.predict_set(X)
-            # Calcular el tamaño del conjunto por muestra de forma robusta
             prediction_sets_2d = prediction_sets[:, :, 0]
             set_sizes = prediction_sets_2d.sum(axis=1)
-            # Scores de confiabilidad: 1.0 si set_size == 1 (alta confianza), 0.0 en caso contrario
             conformal_scores = (set_sizes == 1).astype(float)
-            # Scores de precisión: 1.0 si predicted == y (predicción correcta), 0.0 en caso contrario
             precision_scores = (predicted == y.to_numpy()).astype(float)
-            # Combinar: solo muestras que son tanto confiables como precisas
             combined_scores = ((conformal_scores == 1.0) & (precision_scores == 1.0)).astype(float)
             
             if self.debug:

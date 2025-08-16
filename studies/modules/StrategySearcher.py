@@ -1051,7 +1051,7 @@ class StrategySearcher:
                 p['wk_iter']          = trial.suggest_int ('wk_iter',          100, 300, log=True)
         elif self.search_type == 'mapie':
             # CV más bajo por coste y estabilidad, confianza moderada-alta
-            p['mapie_confidence_level'] = trial.suggest_float('mapie_confidence_level', 0.85, 0.95)
+            p['mapie_confidence_level'] = trial.suggest_float('mapie_confidence_level', 0.65, 0.95)
             p['mapie_cv']               = trial.suggest_int  ('mapie_cv',               3, 5)
             # Parámetros específicos para regresión MAPIE
             if self.label_type == 'regression':
@@ -1059,21 +1059,21 @@ class StrategySearcher:
         elif self.search_type == 'causal':
             # Bootstrap moderado y percentil en rango robusto
             p['causal_meta_learners'] = trial.suggest_int('causal_meta_learners', 7, 11)
-            p['causal_percentile'] = trial.suggest_int('causal_percentile', 70, 85)
+            p['causal_percentile'] = trial.suggest_int('causal_percentile', 65, 85)
             # Parámetros específicos para regresión causal
             if self.label_type == 'regression':
                 p['causal_error_threshold'] = trial.suggest_float('causal_error_threshold', 0.2, 1.0, log=True)
 
         # Parámetros de filtros (independientes del search_type)
         if self.search_filter == 'mapie':
-            p['mapie_confidence_level'] = trial.suggest_float('mapie_confidence_level', 0.85, 0.95)
+            p['mapie_confidence_level'] = trial.suggest_float('mapie_confidence_level', 0.65, 0.95)
             p['mapie_cv']               = trial.suggest_int  ('mapie_cv',               3, 5)
             # Parámetros específicos para regresión MAPIE
             if self.label_type == 'regression':
                 p['mapie_threshold_width']     = trial.suggest_int('mapie_threshold_width', 40, 60)
         elif self.search_filter == 'causal':
             p['causal_meta_learners'] = trial.suggest_int('causal_meta_learners', 7, 11)
-            p['causal_percentile'] = trial.suggest_int('causal_percentile', 70, 85)
+            p['causal_percentile'] = trial.suggest_int('causal_percentile', 65, 85)
             # Parámetros específicos para regresión causal
             if self.label_type == 'regression':
                 p['causal_error_threshold'] = trial.suggest_float('causal_error_threshold', 0.2, 1.0, log=True)

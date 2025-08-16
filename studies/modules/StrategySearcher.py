@@ -2842,7 +2842,8 @@ class StrategySearcher:
             full_ds: pd.DataFrame,
             model_main_train_data: pd.DataFrame,
             model_meta_train_data: pd.DataFrame,
-            hp: Dict[str, Any]
+            hp: Dict[str, Any],
+            ext_reliability: pd.Series | np.ndarray | None = None
             ) -> pd.Series:
         """
         Crea labels meta a partir de predicciones OOF del main.
@@ -2856,31 +2857,39 @@ class StrategySearcher:
         alpha = float(hp.get('meta_reliability_alpha', 0.5))
         ext_rel_aligned = None
         if fusion_mode != 'none':
-            try:
-                base_mask = self.get_base_mask(full_ds, hp)
-                # MAPIE
-                mapie_scores = self.apply_mapie_filter(trial, full_ds, hp, reliable_mask=base_mask)
-                mapie_series = pd.Series(mapie_scores, index=full_ds.index).astype(float)
-            except Exception:
-                mapie_series = None
-            try:
-                # CAUSAL
-                causal_scores = self.apply_causal_filter(trial, full_ds, hp, reliable_mask=base_mask)
-                causal_series = pd.Series(causal_scores, index=full_ds.index).astype(float)
-            except Exception:
-                causal_series = None
-
-            if mapie_series is not None or causal_series is not None:
-                concat_list = []
-                if mapie_series is not None:
-                    concat_list.append(mapie_series)
-                if causal_series is not None:
-                    concat_list.append(causal_series)
-                ext_rel_full = pd.concat(concat_list, axis=1).mean(axis=1)
+            if ext_reliability is not None:
+                # Usar confiabilidad externa precomputada
+                if isinstance(ext_reliability, np.ndarray):
+                    ext_rel_full = pd.Series(ext_reliability.astype(float), index=full_ds.index)
+                else:
+                    ext_rel_full = pd.Series(ext_reliability, index=full_ds.index).astype(float)
+                ext_rel_aligned = ext_rel_full.reindex(model_main_train_data.index).fillna(0.0)
             else:
-                ext_rel_full = pd.Series(1.0, index=full_ds.index)
-            # Alinear a los índices de entrenamiento del main
-            ext_rel_aligned = ext_rel_full.reindex(model_main_train_data.index).fillna(0.0)
+                try:
+                    base_mask = self.get_base_mask(full_ds, hp)
+                    # MAPIE
+                    mapie_scores = self.apply_mapie_filter(trial, full_ds, hp, reliable_mask=base_mask)
+                    mapie_series = pd.Series(mapie_scores, index=full_ds.index).astype(float)
+                except Exception:
+                    mapie_series = None
+                try:
+                    # CAUSAL
+                    causal_scores = self.apply_causal_filter(trial, full_ds, hp, reliable_mask=base_mask)
+                    causal_series = pd.Series(causal_scores, index=full_ds.index).astype(float)
+                except Exception:
+                    causal_series = None
+
+                if mapie_series is not None or causal_series is not None:
+                    concat_list = []
+                    if mapie_series is not None:
+                        concat_list.append(mapie_series)
+                    if causal_series is not None:
+                        concat_list.append(causal_series)
+                    ext_rel_full = pd.concat(concat_list, axis=1).mean(axis=1)
+                else:
+                    ext_rel_full = pd.Series(1.0, index=full_ds.index)
+                # Alinear a los índices de entrenamiento del main
+                ext_rel_aligned = ext_rel_full.reindex(model_main_train_data.index).fillna(0.0)
 
         if self.label_type == 'classification':
             # 1) Probabilidades OOF del main (clase 1)

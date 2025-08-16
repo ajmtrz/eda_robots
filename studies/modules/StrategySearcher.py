@@ -128,13 +128,20 @@ class StrategySearcher:
                 # Inicializar estudio de Optuna con objetivo único
                 pruners = {
                     'hyperband': HyperbandPruner(max_resource='auto'),
+                    'successive': SuccessiveHalvingPruner(min_resource='auto'),
                     'sucessive': SuccessiveHalvingPruner(min_resource='auto')
                 }
+                storage_arg = None
+                load_if_exists = False
+                if self.tag:
+                    os.makedirs("optuna_dbs", exist_ok=True)
+                    storage_arg = f"sqlite:///optuna_dbs/{self.tag}.db"
+                    load_if_exists = True
                 study = optuna.create_study(
-                    study_name=self.tag,
+                    study_name=self.tag if self.tag else None,
                     direction='maximize',
-                    storage=f"sqlite:///optuna_dbs/{self.tag}.db",
-                    load_if_exists=True,
+                    storage=storage_arg,
+                    load_if_exists=load_if_exists,
                     pruner=pruners[self.pruner_type],
                     sampler=optuna.samplers.TPESampler(
                         n_startup_trials=int(np.sqrt(self.n_trials)*1.5),
@@ -363,7 +370,6 @@ class StrategySearcher:
             meta_feature_cols = [c for c in full_ds.columns if c.endswith('_meta_feature')]
             if not meta_feature_cols:  # Fallback: usar main features si no hay meta features
                 meta_feature_cols = main_feature_cols
-            meta_feature_cols = [c for c in full_ds.columns if c.endswith('_meta_feature')]
             model_meta_train_data = full_ds[meta_feature_cols].dropna(subset=meta_feature_cols).copy()
             labels_meta = np.zeros(len(full_ds), dtype=float)
             labels_meta[final_mask] = 1.0
@@ -502,7 +508,7 @@ class StrategySearcher:
     # Métodos auxiliares
     # =========================================================================
     
-    def evaluate_clusters(self, trial: optuna.trial, full_ds: pd.DataFrame, hp: Dict[str, Any]) -> tuple[float, tuple, tuple]:
+    def evaluate_clusters(self, trial: optuna.trial, full_ds: pd.DataFrame, hp: Dict[str, Any]) -> tuple[float, str, tuple, tuple, float]:
         """Función helper para evaluar clusters y entrenar modelos."""
         try:
             # Esquema tradicional de clusters
@@ -593,6 +599,8 @@ class StrategySearcher:
 
                 # Crear dataset meta con final_mask
                 meta_feature_cols = [c for c in full_ds.columns if c.endswith('_meta_feature')]
+                if not meta_feature_cols:
+                    meta_feature_cols = [c for c in full_ds.columns if c.endswith('_main_feature')]
                 model_meta_train_data = full_ds[meta_feature_cols].dropna(subset=meta_feature_cols).copy()
                 labels_meta = np.zeros(len(full_ds), dtype=float)
                 labels_meta[final_mask] = 1.0
@@ -977,8 +985,12 @@ class StrategySearcher:
                 # Inicializar score con valor por defecto
                 score = -1.0
                 test_train_time_start = time.time()
+                test_mask = (full_ds.index >= self.test_start) & (full_ds.index <= self.test_end)
+                test_subset = full_ds.loc[test_mask].copy()
+                if test_subset is None or test_subset.empty:
+                    raise RuntimeError("Empty test subset for scoring")
                 score = tester(
-                    dataset=full_ds,
+                    dataset=test_subset,
                     model_main=model_main_path,
                     model_meta=model_meta_path,
                     model_main_cols=main_feature_cols,
@@ -989,6 +1001,22 @@ class StrategySearcher:
                     model_meta_threshold=hp.get('meta_threshold', 0.5),
                     debug=self.debug,
                 )
+                # Populate predictions on full dataset for export (ignore score)
+                try:
+                    _ = tester(
+                        dataset=full_ds,
+                        model_main=model_main_path,
+                        model_meta=model_meta_path,
+                        model_main_cols=main_feature_cols,
+                        model_meta_cols=meta_feature_cols,
+                        direction=self.direction,
+                        timeframe=self.timeframe,
+                        model_main_threshold=hp.get('main_threshold', 0.5),
+                        model_meta_threshold=hp.get('meta_threshold', 0.5),
+                        debug=False,
+                    )
+                except Exception:
+                    pass
             except Exception as tester_error:
                 if self.debug:
                     print(f"🔍 DEBUG: Error en tester: {tester_error}")
@@ -1752,32 +1780,32 @@ class StrategySearcher:
             return None
 
     def get_train_test_data(self, dataset) -> tuple[pd.DataFrame, pd.DataFrame]:
-        """Genera los DataFrames de entrenamiento y prueba a partir del DataFrame completo."""
+        """Genera train y validación in-sample (sin usar el periodo de test para early stopping)."""
         if dataset is None or dataset.empty:
             return None, None
         
-        # Máscaras de train / test
-        test_mask  = (dataset.index >= self.test_start)  & (dataset.index <= self.test_end)
+        # Máscara de entrenamiento (periodo designado de train)
         train_mask = (dataset.index >= self.train_start) & (dataset.index <= self.train_end)
-
-        if not test_mask.any() or not train_mask.any():
+        if not train_mask.any():
             return None, None
-
-        # Evitar solapamiento
-        if self.test_start <= self.train_end and self.test_end >= self.train_start:
-            train_mask &= ~test_mask
-            if self.debug:
-                print(f"🔍 DEBUG: train_mask.sum() después de evitar solapamiento = {train_mask.sum()}")
-
-        # DataFrames finales, ordenados cronológicamente
-        train_data = dataset[train_mask].sort_index().copy()
-        test_data  = dataset[test_mask].sort_index().copy()
-
-        if self.debug:
-            print(f"🔍 DEBUG: train_data.shape final = {train_data.shape}")
-            print(f"🔍 DEBUG: test_data.shape final = {test_data.shape}")
         
-        return train_data, test_data
+        train_full = dataset[train_mask].sort_index().copy()
+        if len(train_full) < 10:
+            return None, None
+        
+        # Split temporal 80/20 dentro del periodo de entrenamiento
+        split_idx = int(len(train_full) * 0.8)
+        train_data = train_full.iloc[:split_idx].copy()
+        val_data   = train_full.iloc[split_idx:].copy()
+        
+        if train_data.empty or val_data.empty:
+            return None, None
+        
+        if self.debug:
+            print(f"🔍 DEBUG: train_data.shape (in-sample) = {train_data.shape}")
+            print(f"🔍 DEBUG: val_data.shape   (in-sample) = {val_data.shape}")
+        
+        return train_data, val_data
 
     def check_constant_features(self, X: pd.DataFrame, feature_cols: list, std_epsilon: float = 1e-6) -> list:
         """Return the list of columns that may cause numerical instability.

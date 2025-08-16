@@ -21,12 +21,12 @@ def tester(
         model_meta_threshold: float = 0.5,
         model_max_orders: int = 1,
         model_delay_bars: int = 1,
-        debug: bool = False) -> tuple[float, pd.DataFrame]:
+        debug: bool = False) -> float:
     """
     Evalúa una estrategia para una o ambas direcciones, usando ejecución realista:
-    - Las operaciones se abren y cierran al precio 'open' de la barra actual (índice t),
-      ya que las features y señales de t son válidas para operar en t.
-    - Solo se pasan los arrays estrictamente necesarios a la función jiteada backtest.
+         - Las operaciones se abren y cierran al precio 'open' de la barra siguiente (t+1),
+       porque las predicciones de t solo pueden ejecutarse en t+1 (sin lookahead).
+     - Solo se pasan los arrays estrictamente necesarios a la función jiteada backtest.
 
     Parameters
     ----------
@@ -54,6 +54,14 @@ def tester(
             main = main[0]
         if meta.ndim > 1:
             meta = meta[0]
+
+        # Shift predictions by 1 bar to avoid lookahead
+        if main.shape[0] > 0:
+            main = np.roll(main, 1)
+            main[0] = 0.0
+        if meta.shape[0] > 0:
+            meta = np.roll(meta, 1)
+            meta[0] = 0.0
 
         dataset['labels_main'] = main.astype(float)
         dataset['labels_meta'] = meta.astype(float)

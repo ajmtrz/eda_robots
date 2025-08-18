@@ -206,16 +206,16 @@ void OnTick()
       // CLASIFICACIÓN: EXACT PYTHON LOGIC
       if(DIRECTION == "buy")
          {
-         must_close = (ptype == POSITION_TYPE_BUY && !buy_sig);
+         must_close = (ptype == POSITION_TYPE_BUY && (!buy_sig || !meta_ok));
          }
       else if(DIRECTION == "sell")
          {
-         must_close = (ptype == POSITION_TYPE_SELL && !sell_sig);
+         must_close = (ptype == POSITION_TYPE_SELL && (!sell_sig || !meta_ok));
          }
       else // "both"
          {
-         must_close = (ptype == POSITION_TYPE_BUY && !buy_sig) || 
-                     (ptype == POSITION_TYPE_SELL && !sell_sig);
+         must_close = (ptype == POSITION_TYPE_BUY && (!buy_sig || !meta_ok)) || 
+                     (ptype == POSITION_TYPE_SELL && (!sell_sig || !meta_ok));
          }
       
       if(debug && must_close)

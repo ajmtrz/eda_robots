@@ -13,6 +13,7 @@ from typing import Dict, Any
 import optuna
 from optuna.pruners import HyperbandPruner, SuccessiveHalvingPruner
 # from optuna.integration import CatBoostPruningCallback
+from sklearn.model_selection import TimeSeriesSplit
 from catboost import CatBoostClassifier
 from mapie.classification import CrossConformalClassifier
 from modules.labeling_lib import (
@@ -130,10 +131,17 @@ class StrategySearcher:
                     'hyperband': HyperbandPruner(max_resource='auto'),
                     'successive': SuccessiveHalvingPruner(min_resource='auto')
                 }
+                # Asegurar carpeta para bases de datos de Optuna
+                try:
+                    os.makedirs("optuna_dbs", exist_ok=True)
+                except Exception as e:
+                    print(f"🔍 DEBUG: No se pudo crear carpeta optuna_dbs: {e}")
+
+                db_url = f"sqlite:///optuna_dbs/{self.tag}.db"
                 study = optuna.create_study(
                     study_name=self.tag,
                     direction='maximize',
-                    storage=f"sqlite:///optuna_dbs/{self.tag}.db",
+                    storage=db_url,
                     load_if_exists=True,
                     pruner=pruners[self.pruner_type],
                     sampler=optuna.samplers.TPESampler(
@@ -677,18 +685,6 @@ class StrategySearcher:
         p[f'{group}_early_stopping']  = trial.suggest_int (f'{group}_early_stopping',  50,  150,  step=20)
         return p
 
-    def _suggest_catboost(self, group: str, trial: optuna.Trial) -> Dict[str, float]:
-        """Devuelve hiperparámetros CatBoost (main|meta) con prefijo `group`."""
-        p = {}
-        # Rangos ampliados para mayor exploración del espacio de hiperparámetros
-        p[f'{group}_iterations']      = trial.suggest_int (f'{group}_iterations',      200, 1000, step=50)
-        p[f'{group}_depth']           = trial.suggest_int (f'{group}_depth',           3,   12)
-        p[f'{group}_learning_rate']   = trial.suggest_float(f'{group}_learning_rate',  5e-3, 0.25, log=True)
-        p[f'{group}_l2_leaf_reg']     = trial.suggest_float(f'{group}_l2_leaf_reg',    1.0,  10.0,  log=True)
-        p[f'{group}_early_stopping']  = trial.suggest_int (f'{group}_early_stopping',  30,  200,  step=10)
-        return p
-
-    # ─────────────────────────  FUNCIÓN PRINCIPAL  ──────────────────────────────
     def _suggest_feature(self, trial: optuna.Trial) -> Dict[str, Any]:
         """
         Sugiere períodos y estadísticas de la matriz de features
@@ -751,7 +747,7 @@ class StrategySearcher:
             # períodos meta
             n_meta_periods = trial.suggest_int("feature_meta_n_periods", 1, 5)
             meta_periods = [
-                trial.suggest_int(f"feature_meta_period_{i}", 5, 50, log=True)
+                trial.suggest_int(f"feature_meta_period_{i}", 5, 25, log=True)
                 for i in range(n_meta_periods)
             ]
             p["feature_meta_periods"] = tuple(sorted(set(meta_periods)))
@@ -837,7 +833,7 @@ class StrategySearcher:
             p['causal_meta_learners'] = trial.suggest_int('causal_meta_learners', 5, 20)
             p['causal_percentile'] = trial.suggest_int('causal_percentile', 60, 95)
 
-        # THRESHOLDS UNIFICADOS (preparación para optimización futura)
+        p['oof_resid_percentile'] = trial.suggest_int('oof_resid_percentile', 75, 95)
         p['meta_threshold'] = 0.5 # trial.suggest_float('meta_threshold', 0.3, 0.7)
         p['main_threshold'] = 0.5 # trial.suggest_float('main_threshold', 0.3, 0.7)
 

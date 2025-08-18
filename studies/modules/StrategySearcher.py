@@ -375,7 +375,12 @@ class StrategySearcher:
                 meta_feature_cols = main_feature_cols
             meta_feature_cols = [c for c in full_ds.columns if c.endswith('_meta_feature')]
             model_meta_train_data = full_ds[meta_feature_cols].dropna(subset=meta_feature_cols).copy()
-            model_meta_train_data['labels_meta'] = final_mask.astype('int8')
+            meta_mask = self.create_oof_meta_mask(model_main_train_data, model_meta_train_data, hp)
+            meta_mask_full = meta_mask.reindex(full_ds.index).fillna(False)
+            final_mask = (final_mask & meta_mask_full).astype(bool)
+            model_meta_train_data['labels_meta'] = (
+                final_mask.reindex(model_meta_train_data.index).fillna(False).astype('int8')
+            )
             if model_meta_train_data is None or model_meta_train_data.empty:
                 return -1.0
             if set(model_meta_train_data['labels_meta'].unique()) != {0.0, 1.0}:
@@ -600,8 +605,16 @@ class StrategySearcher:
 
                 # Crear dataset meta con final_mask
                 meta_feature_cols = [c for c in full_ds.columns if c.endswith('_meta_feature')]
+                if not meta_feature_cols:  # Fallback: usar main features si no hay meta features
+                    meta_feature_cols = main_feature_cols
+                meta_feature_cols = [c for c in full_ds.columns if c.endswith('_meta_feature')]
                 model_meta_train_data = full_ds[meta_feature_cols].dropna(subset=meta_feature_cols).copy()
-                model_meta_train_data['labels_meta'] = final_mask.astype('int8')
+                meta_mask = self.create_oof_meta_mask(model_main_train_data, model_meta_train_data, hp)
+                meta_mask_full = meta_mask.reindex(full_ds.index).fillna(False)
+                final_mask = (final_mask & meta_mask_full).astype(bool)
+                model_meta_train_data['labels_meta'] = (
+                    final_mask.reindex(model_meta_train_data.index).fillna(False).astype('int8')
+                )
                 if model_meta_train_data is None or model_meta_train_data.empty:
                     continue
                 if set(model_meta_train_data['labels_meta'].unique()) != {0.0, 1.0}:
@@ -1814,3 +1827,104 @@ class StrategySearcher:
                 problematic_cols.append(col)
                 
         return problematic_cols
+    
+    def _compute_main_oof_predictions_cls(
+        self,
+        X_main: pd.DataFrame,
+        y_main: pd.Series,
+        hp: Dict[str, Any],
+    ) -> pd.Series:
+        """Devuelve probabilidades OOF del modelo main (classification) usando TimeSeriesSplit."""
+        if X_main is None or y_main is None or X_main.empty or y_main.empty:
+            return pd.Series(dtype='float32')
+
+        Xm = X_main.astype('float32')
+        ym = y_main.astype('int8')
+        default_splits = 5
+        n_splits = int(hp.get('oof_n_splits', default_splits))
+        n_splits = max(2, min(n_splits, max(2, len(Xm) - 1)))
+        tscv = TimeSeriesSplit(n_splits=n_splits)
+
+        cat_params = dict(
+            iterations=hp['cat_main_iterations'],
+            depth=hp['cat_main_depth'],
+            learning_rate=hp['cat_main_learning_rate'],
+            l2_leaf_reg=hp['cat_main_l2_leaf_reg'],
+            auto_class_weights='Balanced',
+            eval_metric='Accuracy',
+            store_all_simple_ctr=False,
+            allow_writing_files=False,
+            thread_count=-1,
+            task_type='CPU',
+            verbose=False,
+        )
+
+        oof = pd.Series(np.nan, index=ym.index, dtype='float32')
+        for tr_idx, va_idx in tscv.split(Xm):
+            X_tr, X_va = Xm.iloc[tr_idx], Xm.iloc[va_idx]
+            y_tr = ym.iloc[tr_idx]
+            model = CatBoostClassifier(**cat_params)
+            model.fit(
+                X_tr,
+                y_tr,
+                eval_set=[(X_va, ym.iloc[va_idx])],
+                early_stopping_rounds=hp.get('cat_main_early_stopping', 80),
+                use_best_model=True,
+                verbose=False,
+            )
+            # Probabilidad de la clase positiva (1)
+            oof.iloc[va_idx] = model.predict_proba(X_va)[:, 1].astype('float32')
+
+        if oof.isna().any():
+            oof = oof.fillna(oof.median())
+        return oof
+    
+    def create_oof_meta_mask(
+            self, 
+            model_main_train_data: pd.DataFrame, 
+            model_meta_train_data: pd.DataFrame, 
+            hp: Dict[str, Any]
+            ) -> pd.Series:
+        """
+        Crea labels meta a partir de predicciones OOF del main.
+        - Regression: usa residuales |pred - y| mas magnitud
+        - Classification: usa error de probabilidad |p - y| y confianza max(p, 1-p)
+        """
+        main_feature_cols = [col for col in model_main_train_data.columns if col not in ['labels_main']]
+    
+        # 1) Probabilidades OOF del main (clase 1)
+        main_oof_proba = self._compute_main_oof_predictions_cls(
+            X_main=model_main_train_data[main_feature_cols],
+            y_main=model_main_train_data['labels_main'],
+            hp=hp,
+        )
+        # 2) Definir umbral operativo como confianza mínima
+        # Confianza = max(p, 1-p)
+        confidence = main_oof_proba.copy()
+        confidence = pd.Series(np.maximum(confidence.values, 1.0 - confidence.values), index=confidence.index)
+        
+        # 3) Confiabilidad por residuo de probabilidad
+        y_true = model_main_train_data['labels_main'].astype('float32')
+        prob_resid = (main_oof_proba - y_true).abs()
+        tau = float(np.nanpercentile(prob_resid.values, hp['oof_resid_percentile'])) if len(prob_resid) > 0 else float(prob_resid.median() if len(prob_resid) else 0.0)
+        reliability_mask = (prob_resid <= tau)
+        magnitude_mask = (confidence >= hp['main_threshold'])
+        labels_meta = (reliability_mask & magnitude_mask).astype('int8')
+
+        # Construir máscara booleana alineada con meta_features_frame
+        meta_X = model_meta_train_data.copy()
+        mask = pd.Series(False, index=meta_X.index)
+        common_idx = labels_meta.index.intersection(meta_X.index)
+        if len(common_idx) > 0:
+            mask.loc[common_idx] = labels_meta.loc[common_idx] == 1
+
+        if self.debug:
+            n_true = mask.sum()
+            n_total = len(mask)
+            print(f"🔍 DEBUG: create_meta_labels (cls) - {n_true}/{n_total} muestras con etiqueta meta=1.0 ({n_true/n_total:.2%})")
+            print(f"🔍   main_oof_proba range: [{main_oof_proba.min():.3f}, {main_oof_proba.max():.3f}]")
+            print(f"🔍   confidence range: [{confidence.min():.3f}, {confidence.max():.3f}]")
+            print(f"🔍   prob_resid range: [{prob_resid.min():.3f}, {prob_resid.max():.3f}]")
+            print(f"🔍   tau: {tau:.3f}")
+
+        return mask

@@ -276,8 +276,7 @@ def backtest(open_,
             # Determinar si cerrar según tipo y dirección
             must_close = False
             
-            # Lógica de cierre según direction
-            # Solo el main model controla el cierre de operaciones
+            # Lógica de cierre según direction y meta
             if direction_int == 0:  # Solo BUY
                 must_close = (pos_type == LONG and (not buy_sig or not meta_ok))
             elif direction_int == 1:  # Solo SELL

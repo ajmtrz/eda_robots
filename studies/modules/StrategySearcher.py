@@ -717,15 +717,15 @@ class StrategySearcher:
         p: Dict[str, Any] = {}
 
         # ─── FEATURE MAIN - PERÍODOS ────────────────────────────────────────────────
-        n_periods = trial.suggest_int("feature_main_n_periods", 1, 20)
+        n_periods = trial.suggest_int("feature_main_n_periods", 1, 10)
         feature_periods = [
-            trial.suggest_int(f"feature_main_period_{i}", 3, 500, log=True)
+            trial.suggest_int(f"feature_main_period_{i}", 5, 200, log=True)
             for i in range(n_periods)
         ]
         p["feature_main_periods"] = tuple(sorted(set(feature_periods)))
 
         # ─── FEATURE MAIN - ESTADÍSTICAS ───────────────────────────────────────────
-        n_stats = trial.suggest_int("feature_main_n_stats", 1, 8)
+        n_stats = trial.suggest_int("feature_main_n_stats", 1, 5)
         feature_stats = [
             trial.suggest_categorical(f"feature_main_stat_{i}", ALL_STATS)
             for i in range(n_stats)
@@ -736,15 +736,15 @@ class StrategySearcher:
         # ─── FEATURE META (solo ciertos search_type) ──────────────────────────
         if self.search_type in {"reliability", "clusters"}:
             # períodos meta
-            n_meta_periods = trial.suggest_int("feature_meta_n_periods", 1, 10)
+            n_meta_periods = trial.suggest_int("feature_meta_n_periods", 1, 5)
             meta_periods = [
-                trial.suggest_int(f"feature_meta_period_{i}", 3, 300, log=True)
+                trial.suggest_int(f"feature_meta_period_{i}", 5, 50, log=True)
                 for i in range(n_meta_periods)
             ]
             p["feature_meta_periods"] = tuple(sorted(set(meta_periods)))
 
             # estadísticas meta
-            n_meta_stats = trial.suggest_int("feature_meta_n_stats", 1, 5)
+            n_meta_stats = trial.suggest_int("feature_meta_n_stats", 1, 3)
             meta_stats = [
                 trial.suggest_categorical(f"feature_meta_stat_{i}", ALL_STATS)
                 for i in range(n_meta_stats)
@@ -757,7 +757,7 @@ class StrategySearcher:
     def _suggest_label(self, trial: optuna.Trial) -> Dict[str, float]:
         """Hiperparámetros de etiquetado dependientes de la función label_method."""
         label_search_space = {
-            'label_markup':     lambda t: t.suggest_float('label_markup',     0.15, 1.50, log=True),
+            'label_markup':     lambda t: t.suggest_float('label_markup',     0.5, 5.0, log=True),
             'label_n_clusters': lambda t: t.suggest_int('label_n_clusters', 3, 30, log=True),
             'label_polyorder':  lambda t: t.suggest_int('label_polyorder',    1, 5),
             'label_threshold':  lambda t: t.suggest_float('label_threshold',  0.15, 0.80),
@@ -825,8 +825,8 @@ class StrategySearcher:
             p['causal_percentile'] = trial.suggest_int('causal_percentile', 60, 95)
 
         # THRESHOLDS UNIFICADOS (preparación para optimización futura)
-        p['meta_threshold'] = trial.suggest_float('meta_threshold', 0.3, 0.7)
-        p['main_threshold'] = trial.suggest_float('main_threshold', 0.3, 0.7)
+        p['meta_threshold'] = 0.5 # trial.suggest_float('meta_threshold', 0.3, 0.7)
+        p['main_threshold'] = 0.5 # trial.suggest_float('main_threshold', 0.3, 0.7)
 
         return p
 

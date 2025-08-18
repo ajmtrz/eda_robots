@@ -495,7 +495,7 @@ class StrategySearcher:
             full_ds.loc[base_mask, 'labels_meta'] = reliable_data_clustered['labels_meta']
             full_ds.loc[~base_mask, 'labels_meta'] = -1  # Muestras no confiables sin cluster
 
-            score, full_ds_with_labels_path, model_paths, models_cols, best_main_threshold = self.evaluate_clusters(trial, full_ds, hp)
+            score, full_ds_with_labels_path, model_paths, models_cols = self.evaluate_clusters(trial, full_ds, hp)
             if score is None or model_paths is None or models_cols is None or full_ds_with_labels_path is None:
                 return -1.0
             
@@ -503,7 +503,8 @@ class StrategySearcher:
             trial.set_user_attr('model_paths', model_paths)
             trial.set_user_attr('model_cols', models_cols)
             trial.set_user_attr('full_ds_with_labels_path', full_ds_with_labels_path)
-            trial.set_user_attr('best_main_threshold', best_main_threshold)
+            trial.set_user_attr('best_main_threshold', hp['main_threshold'])
+            trial.set_user_attr('best_meta_threshold', hp['meta_threshold'])
 
             return trial.user_attrs.get('score', -1.0)
         except Exception as e:
@@ -514,7 +515,7 @@ class StrategySearcher:
     # Métodos auxiliares
     # =========================================================================
     
-    def evaluate_clusters(self, trial: optuna.trial, full_ds: pd.DataFrame, hp: Dict[str, Any]) -> tuple[float, tuple, tuple]:
+    def evaluate_clusters(self, trial: optuna.trial, full_ds: pd.DataFrame, hp: Dict[str, Any]) -> tuple[float, tuple, tuple, str]:
         """Función helper para evaluar clusters y entrenar modelos."""
         try:
             # Esquema tradicional de clusters
@@ -522,7 +523,6 @@ class StrategySearcher:
             best_model_paths = (None, None)
             best_models_cols = (None, None)
             best_full_ds_with_labels_path = None
-            best_main_threshold = None
 
             # 🔍 DEBUG: Supervisar parámetros
             if self.debug:
@@ -538,7 +538,7 @@ class StrategySearcher:
             if cluster_sizes.empty:
                 if self.debug:
                     print("⚠️ ERROR: No hay clusters")
-                return None, None, None, None, None
+                return None, None, None, None
 
             # Evaluar cada cluster
             for clust in cluster_sizes.index:
@@ -652,7 +652,6 @@ class StrategySearcher:
                     if best_full_ds_with_labels_path and os.path.exists(best_full_ds_with_labels_path):
                         os.remove(best_full_ds_with_labels_path)
                     best_score = score
-                    best_main_threshold = hp['main_threshold']
                     best_model_paths = model_paths
                     best_full_ds_with_labels_path = full_ds_with_labels_path
                     best_models_cols = models_cols
@@ -666,17 +665,17 @@ class StrategySearcher:
                     if full_ds_with_labels_path and os.path.exists(full_ds_with_labels_path):
                         os.remove(full_ds_with_labels_path)
             if best_score == -math.inf or best_model_paths == (None, None):
-                return None, None, None, None, None
-            return best_score, best_full_ds_with_labels_path, best_model_paths, best_models_cols, best_main_threshold
+                return None, None, None, None
+            return best_score, best_full_ds_with_labels_path, best_model_paths, best_models_cols
         except Exception as e:
             print(f"⚠️ ERROR en evaluación de clusters: {str(e)}")
-            return None, None, None, None, None
+            return None, None, None, None
     
     def _suggest_catboost(self, group: str, trial: optuna.Trial) -> Dict[str, float]:
         """Devuelve hiperparámetros CatBoost (main|meta) con prefijo `group`."""
         p = {}
         # Rango más acotado para promover entrenamientos estables (menos under/overfitting) y menor diversidad
-        p[f'{group}_iterations']      = trial.suggest_int (f'{group}_iterations',      300, 600, step=50)
+        p[f'{group}_iterations']      = trial.suggest_int (f'{group}_iterations',      400, 800, step=50)
         p[f'{group}_depth']           = trial.suggest_int (f'{group}_depth',           5,   10)
         p[f'{group}_learning_rate']   = trial.suggest_float(f'{group}_learning_rate',  1e-2, 0.10, log=True)
         p[f'{group}_l2_leaf_reg']     = trial.suggest_float(f'{group}_l2_leaf_reg',    2.0,  5.0,  log=True)
@@ -724,7 +723,7 @@ class StrategySearcher:
         p: Dict[str, Any] = {}
 
         # ─── FEATURE MAIN - PERÍODOS ────────────────────────────────────────────────
-        n_periods = trial.suggest_int("feature_main_n_periods", 1, 10)
+        n_periods = trial.suggest_int("feature_main_n_periods", 1, 15)
         feature_periods = [
             trial.suggest_int(f"feature_main_period_{i}", 5, 200, log=True)
             for i in range(n_periods)
@@ -745,7 +744,7 @@ class StrategySearcher:
             # períodos meta
             n_meta_periods = trial.suggest_int("feature_meta_n_periods", 1, 5)
             meta_periods = [
-                trial.suggest_int(f"feature_meta_period_{i}", 5, 25, log=True)
+                trial.suggest_int(f"feature_meta_period_{i}", 5, 15, log=True)
                 for i in range(n_meta_periods)
             ]
             p["feature_meta_periods"] = tuple(sorted(set(meta_periods)))
@@ -764,7 +763,7 @@ class StrategySearcher:
     def _suggest_label(self, trial: optuna.Trial) -> Dict[str, float]:
         """Hiperparámetros de etiquetado dependientes de la función label_method."""
         label_search_space = {
-            'label_markup':     lambda t: t.suggest_float('label_markup',     0.20, 0.80, log=True),
+            'label_markup':     lambda t: t.suggest_float('label_markup',     0.15, 1.50, log=True),
             'label_n_clusters': lambda t: t.suggest_int('label_n_clusters', 4, 20, log=True),
             'label_polyorder':  lambda t: t.suggest_int('label_polyorder',    2, 4),
             'label_threshold':  lambda t: t.suggest_float('label_threshold',  0.20, 0.60),

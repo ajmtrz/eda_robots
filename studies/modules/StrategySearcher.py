@@ -379,7 +379,6 @@ class StrategySearcher:
             meta_feature_cols = [c for c in full_ds.columns if c.endswith('_meta_feature')]
             if not meta_feature_cols:  # Fallback: usar main features si no hay meta features
                 meta_feature_cols = main_feature_cols
-            meta_feature_cols = [c for c in full_ds.columns if c.endswith('_meta_feature')]
             model_meta_train_data = full_ds[meta_feature_cols].dropna(subset=meta_feature_cols).copy()
             model_meta_train_data['labels_meta'] = final_mask.reindex(model_meta_train_data.index).fillna(False).astype('int8')
             if model_meta_train_data is None or model_meta_train_data.empty:
@@ -608,7 +607,6 @@ class StrategySearcher:
                 meta_feature_cols = [c for c in full_ds.columns if c.endswith('_meta_feature')]
                 if not meta_feature_cols:  # Fallback: usar main features si no hay meta features
                     meta_feature_cols = main_feature_cols
-                meta_feature_cols = [c for c in full_ds.columns if c.endswith('_meta_feature')]
                 model_meta_train_data = full_ds[meta_feature_cols].dropna(subset=meta_feature_cols).copy()
                 model_meta_train_data['labels_meta'] = final_mask.reindex(model_meta_train_data.index).fillna(False).astype('int8')
                 if model_meta_train_data is None or model_meta_train_data.empty:

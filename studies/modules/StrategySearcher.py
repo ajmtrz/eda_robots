@@ -20,7 +20,7 @@ from modules.labeling_lib import (
     get_prices, get_features, get_labels_trend, 
     get_labels_trend_multi, get_labels_clusters,
     get_labels_multi_window, get_labels_validated_levels,
-    get_labels_mean_reversion,
+    get_labels_mean_reversion, get_labels_random,
     get_labels_mean_reversion_multi, get_labels_mean_reversion_vol,
     get_labels_filter, get_labels_filter_multi, get_labels_trend_filters,
     get_labels_filter_binary, get_labels_fractal_patterns, get_labels_zigzag,
@@ -31,6 +31,7 @@ from modules.export_lib import export_models_to_ONNX, export_dataset_to_csv, exp
 
 class StrategySearcher:
     LABEL_FUNCS = {
+        "random": get_labels_random,
         "filter": get_labels_filter,
         "filter_binary": get_labels_filter_binary,
         "filter_multi": get_labels_filter_multi,

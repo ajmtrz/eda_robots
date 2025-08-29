@@ -698,6 +698,109 @@ def calculate_atr_simple(high, low, close, period=14):
     return atr
 
 @njit(cache=True)
+def calculate_labels_random(close, atr, label_markup, label_min_val, label_max_val, direction_int, method_int=5, label_type=0):
+    """
+    Etiquetado random con soporte para bidireccional (2) y unidireccional (0=buy, 1=sell) siguiendo la convención:
+    - Direcciones únicas: 1.0=éxito direccional, 0.0=fracaso, 2.0=no confiable
+    - Ambas: 0.0=buy, 1.0=sell, 2.0=no confiable
+    
+    label_type: 0=clasificación, 1=regresión (magnitud)
+    """
+    n = len(close)
+    if n <= label_max_val:
+        return np.full(0, 2.0, dtype=np.float64)
+    result = np.full(n - label_max_val, 2.0, dtype=np.float64)
+    for i in range(n - label_max_val):
+        window = close[i + label_min_val : i + label_max_val + 1]
+        if window.size == 0:
+            continue
+        if method_int == 0:  # first
+            future_price = close[i + label_min_val]
+        elif method_int == 1:  # last
+            future_price = close[i + label_max_val]
+        elif method_int == 2:  # mean
+            future_price = np.mean(window)
+        elif method_int == 3:  # max
+            future_price = np.max(window)
+        elif method_int == 4:  # min
+            future_price = np.min(window)
+        else:  # random/otro
+            rand = np.random.randint(label_min_val, label_max_val + 1)
+            future_price = close[i + rand]
+        dyn_mk = label_markup * atr[i]
+        
+        if label_type == 1:  # Regresión - magnitud normalizada por ATR
+            magnitude = (future_price - close[i]) / (atr[i] + 1e-12)
+            is_buy = future_price > close[i] + dyn_mk
+            is_sell = future_price < close[i] - dyn_mk
+            if is_buy and not is_sell:
+                result[i] = magnitude  # Magnitud positiva para buy
+            elif is_sell and not is_buy:
+                result[i] = magnitude  # Magnitud negativa para sell
+            else:
+                result[i] = 0.0  # No confiable
+        else:  # Clasificación - etiquetas binarias (funcionalidad original)
+            if direction_int == 2:
+                # Bidireccional: 0.0=buy, 1.0=sell, 2.0=no confiable
+                is_buy = future_price > close[i] + dyn_mk
+                is_sell = future_price < close[i] - dyn_mk
+                if is_buy and not is_sell:
+                    result[i] = 0.0
+                elif is_sell and not is_buy:
+                    result[i] = 1.0
+                else:
+                    result[i] = 2.0
+            elif direction_int == 0:
+                # Solo buy: 1.0=éxito, 0.0=fracaso, 2.0=no confiable
+                if future_price > close[i] + dyn_mk:
+                    result[i] = 1.0
+                elif future_price < close[i] - dyn_mk:
+                    result[i] = 0.0
+                else:
+                    result[i] = 2.0
+            elif direction_int == 1:
+                # Solo sell: 1.0=éxito, 0.0=fracaso, 2.0=no confiable
+                if future_price < close[i] - dyn_mk:
+                    result[i] = 1.0
+                elif future_price > close[i] + dyn_mk:
+                    result[i] = 0.0
+                else:
+                    result[i] = 2.0
+            else:
+                result[i] = 2.0  # fallback
+    return result
+
+def get_labels_random(dataset, label_markup=0.5, label_min_val=1, label_max_val=5,
+                        label_atr_period=14, label_method_random='random', direction=2, label_type='classification') -> pd.DataFrame:
+    """
+    Etiquetado random con soporte para bidireccional (2) y unidireccional (0=buy, 1=sell) siguiendo la convención:
+    - Direcciones únicas: 1.0=éxito direccional, 0.0=fracaso, 2.0=no confiable
+    - Ambas: 0.0=buy, 1.0=sell, 2.0=no confiable
+
+    direction debe venir ya mapeada a int: 0=buy, 1=sell, 2=both
+    label_type: 'classification' o 'regression'
+    """
+    close = dataset['close'].values
+    high = dataset['high'].values
+    low = dataset['low'].values
+    atr = calculate_atr_simple(high, low, close, period=label_atr_period)
+    method_map = {'first': 0, 'last': 1, 'mean': 2, 'max': 3, 'min': 4, 'random': 5}
+    method_int = method_map.get(label_method_random, 5)
+    label_type_int = 1 if label_type == 'regression' else 0
+    labels = calculate_labels_random(
+        close, atr,
+        label_markup, label_min_val, label_max_val, direction,
+        method_int, label_type_int
+    )
+    # ✅ CORRECCIÓN CRÍTICA: Alineación correcta de etiquetas
+    # El array de etiquetas tiene longitud (n - label_max_val), debe alinearse correctamente
+    labels_series = pd.Series(labels, index=dataset.index[:len(labels)])
+    labels_aligned = labels_series.reindex(dataset.index, fill_value=2.0)
+    dataset['labels_main'] = labels_aligned
+    dataset['labels_main'] = dataset['labels_main'].fillna(2.0)
+    return dataset
+
+@njit(cache=True)
 def calculate_labels_filter(close, atr, lvl, q, direction=2, method_int=5, 
                           label_markup=0.5, label_min_val=1, label_max_val=15):
     """

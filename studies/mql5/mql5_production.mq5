@@ -180,10 +180,10 @@ void OnTick()
       }
             else // "both"
       {
-      // Para clasificación: probabilidad alta = BUY, probabilidad baja = SELL
-      // Threshold filtra ambas señales: buy_sig cuando > threshold, sell_sig cuando < (1-threshold)
-      buy_sig = main_sig > MAIN_THRESHOLD;
-      sell_sig = main_sig < (1.0 - MAIN_THRESHOLD);
+      // MATCH PYTHON: main_sig es P(SELL)
+      // BUY cuando (1 - P(SELL)) > threshold, SELL cuando P(SELL) > threshold
+      buy_sig = (1.0 - main_sig) > MAIN_THRESHOLD;
+      sell_sig = main_sig > MAIN_THRESHOLD;
       }
    
    bool meta_ok  = (meta_sig > META_THRESHOLD);

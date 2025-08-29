@@ -381,12 +381,7 @@ class StrategySearcher:
                 meta_feature_cols = main_feature_cols
             meta_feature_cols = [c for c in full_ds.columns if c.endswith('_meta_feature')]
             model_meta_train_data = full_ds[meta_feature_cols].dropna(subset=meta_feature_cols).copy()
-            meta_mask = self.create_oof_meta_mask(model_main_train_data, model_meta_train_data, hp)
-            meta_mask_full = meta_mask.reindex(full_ds.index).fillna(False)
-            final_mask = (final_mask & meta_mask_full).astype(bool)
-            model_meta_train_data['labels_meta'] = (
-                final_mask.reindex(model_meta_train_data.index).fillna(False).astype('int8')
-            )
+            model_meta_train_data['labels_meta'] = final_mask.reindex(model_meta_train_data.index).fillna(False).astype('int8')
             if model_meta_train_data is None or model_meta_train_data.empty:
                 return -1.0
             if set(model_meta_train_data['labels_meta'].unique()) != {0.0, 1.0}:
@@ -615,12 +610,7 @@ class StrategySearcher:
                     meta_feature_cols = main_feature_cols
                 meta_feature_cols = [c for c in full_ds.columns if c.endswith('_meta_feature')]
                 model_meta_train_data = full_ds[meta_feature_cols].dropna(subset=meta_feature_cols).copy()
-                meta_mask = self.create_oof_meta_mask(model_main_train_data, model_meta_train_data, hp)
-                meta_mask_full = meta_mask.reindex(full_ds.index).fillna(False)
-                final_mask = (final_mask & meta_mask_full).astype(bool)
-                model_meta_train_data['labels_meta'] = (
-                    final_mask.reindex(model_meta_train_data.index).fillna(False).astype('int8')
-                )
+                model_meta_train_data['labels_meta'] = final_mask.reindex(model_meta_train_data.index).fillna(False).astype('int8')
                 if model_meta_train_data is None or model_meta_train_data.empty:
                     continue
                 if set(model_meta_train_data['labels_meta'].unique()) != {0.0, 1.0}:

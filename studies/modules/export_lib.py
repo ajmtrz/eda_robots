@@ -1,7 +1,10 @@
 import os
 import tempfile
 import hashlib
-from catboost import CatBoostClassifier
+import numpy as np
+import onnx
+from onnx import helper, numpy_helper
+from catboost import CatBoostClassifier, CatBoostRegressor
 
 def export_models_to_ONNX(models):
     """
@@ -27,6 +30,72 @@ def export_models_to_ONNX(models):
         onnx_models.append(tmp.name)
 
     return onnx_models
+
+def convert_catboost_regression_to_mql5_compatible(model: CatBoostRegressor, output_path: str) -> None:
+    """
+    Convierte un CatBoostRegressor a un modelo ONNX con salida (N, 1),
+    conservando las predicciones (equivalentes al modelo original).
+
+    - Exporta el modelo a ONNX
+    - Si la salida no es 2D con segunda dimensión = 1, inserta un nodo Reshape a (N,1)
+    - Ajusta el metadato de forma de salida a (N,1)
+    - Guarda en output_path
+    """
+    # 1) Exportar a ONNX temporal
+    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".onnx")
+    tmp.close()
+    try:
+        model.save_model(tmp.name, format="onnx")
+        model_onnx = onnx.load(tmp.name)
+
+        # 2) Detectar forma actual de salida
+        out_vi = model_onnx.graph.output[0]
+        out_name = out_vi.name
+
+        # Helper para establecer metadatos de forma (N,1)
+        def _force_output_shape_nx1(vi):
+            shape = vi.type.tensor_type.shape
+            # Limpiar dims actuales
+            while len(shape.dim) > 0:
+                shape.dim.pop()
+            # Añadir dims: N x 1
+            dim_n = helper.make_tensor_value_info("N", onnx.TensorProto.FLOAT, None)
+            # Solo para crear un objeto DimParam simbólico
+            shape.dim.add().dim_param = "N"
+            shape.dim.add().dim_value = 1
+
+        # Verificar si ya es (N,1)
+        dims = out_vi.type.tensor_type.shape.dim
+        already_nx1 = (len(dims) == 2 and dims[1].dim_value == 1)
+
+        if not already_nx1:
+            # 3) Insertar nodo Reshape con shape [-1, 1]
+            shape_name = "reshape_to_nx1_shape__const"
+            shape_tensor = numpy_helper.from_array(np.array([-1, 1], dtype=np.int64), name=shape_name)
+            model_onnx.graph.initializer.append(shape_tensor)
+
+            reshaped_out = out_name + "__nx1"
+            reshape_node = helper.make_node(
+                "Reshape",
+                inputs=[out_name, shape_name],
+                outputs=[reshaped_out],
+                name="Reshape_Output_To_Nx1",
+            )
+            model_onnx.graph.node.append(reshape_node)
+
+            # 4) Redirigir la salida del grafo al tensor re-shapeado
+            out_vi.name = reshaped_out
+
+        # 5) Forzar metadatos de forma (N,1)
+        _force_output_shape_nx1(out_vi)
+
+        # 6) Guardar
+        onnx.save(model_onnx, output_path)
+    finally:
+        try:
+            os.remove(tmp.name)
+        except Exception:
+            pass
 
 def export_dataset_to_csv(dataset, decimal_precision=6):
     tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".csv")

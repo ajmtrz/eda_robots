@@ -78,6 +78,11 @@ class StrategySearcher:
         tag: str = "",
         debug: bool = False,
         decimal_precision: int = 6,
+        # Costes de ejecución (en unidades del precio, p.ej. USD si open_ está en USD)
+        spread_abs: float = 0.0,
+        slippage_abs: float = 0.0,
+        commission_abs: float = 0.0,
+        financing_per_bar_abs: float = 0.0,
     ):
         self.symbol = symbol
         self.timeframe = timeframe
@@ -103,6 +108,11 @@ class StrategySearcher:
         self.debug = debug
         self.base_df = get_prices(symbol, timeframe, history_path)
         self.decimal_precision = decimal_precision  # NUEVO ATRIBUTO
+        # Costes de ejecución
+        self.spread_abs = spread_abs
+        self.slippage_abs = slippage_abs
+        self.commission_abs = commission_abs
+        self.financing_per_bar_abs = financing_per_bar_abs
 
         # Configuración de logging para optuna
         optuna.logging.set_verbosity(optuna.logging.WARNING)
@@ -376,12 +386,22 @@ class StrategySearcher:
                 main_dist = model_main_train_data['labels_main'].value_counts()
                 print(f"🔍   Main labels distribution: {main_dist}")
 
-            # Crear dataset meta con final_mask
+            # Crear dataset meta con final_mask (o OOF si se solicita)
             meta_feature_cols = [c for c in full_ds.columns if c.endswith('_meta_feature')]
             if not meta_feature_cols:  # Fallback: usar main features si no hay meta features
                 meta_feature_cols = main_feature_cols
             model_meta_train_data = full_ds[meta_feature_cols].dropna(subset=meta_feature_cols).copy()
-            model_meta_train_data['labels_meta'] = final_mask.reindex(model_meta_train_data.index).fillna(False).astype('int8')
+            if self.search_filter == 'oof':
+                if self.debug:
+                    print(f"🔍 DEBUG search_reliability - Generando labels_meta via OOF")
+                oof_mask = self.create_oof_meta_mask(
+                    model_main_train_data=model_main_train_data,
+                    model_meta_train_data=model_meta_train_data,
+                    hp=hp,
+                )
+                model_meta_train_data['labels_meta'] = oof_mask.astype('int8')
+            else:
+                model_meta_train_data['labels_meta'] = final_mask.reindex(model_meta_train_data.index).fillna(False).astype('int8')
             if model_meta_train_data is None or model_meta_train_data.empty:
                 return -1.0
             if set(model_meta_train_data['labels_meta'].unique()) != {0.0, 1.0}:
@@ -981,8 +1001,10 @@ class StrategySearcher:
                 # Inicializar score con valor por defecto
                 score = -1.0
                 test_train_time_start = time.time()
+                # Evaluar SOLO sobre el rango de test para evitar sobreajuste
+                full_ds_eval = full_ds.loc[self.test_start:self.test_end]
                 score = tester(
-                    dataset=full_ds,
+                    dataset=full_ds_eval,
                     model_main=model_main_path,
                     model_meta=model_meta_path,
                     model_main_cols=main_feature_cols,
@@ -991,6 +1013,10 @@ class StrategySearcher:
                     timeframe=self.timeframe,
                     model_main_threshold=hp.get('main_threshold', 0.5),
                     model_meta_threshold=hp.get('meta_threshold', 0.5),
+                    spread_abs=self.spread_abs,
+                    slippage_abs=self.slippage_abs,
+                    commission_abs=self.commission_abs,
+                    financing_per_bar_abs=self.financing_per_bar_abs,
                     debug=self.debug,
                 )
             except Exception as tester_error:

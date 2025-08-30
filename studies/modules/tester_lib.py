@@ -21,6 +21,10 @@ def tester(
         model_meta_threshold: float = 0.5,
         model_max_orders: int = 1,
         model_delay_bars: int = 1,
+        spread_abs: float = 0.0,
+        slippage_abs: float = 0.0,
+        commission_abs: float = 0.0,
+        financing_per_bar_abs: float = 0.0,
         debug: bool = False) -> tuple[float, pd.DataFrame]:
     """
     Evalúa una estrategia para una o ambas direcciones, usando ejecución realista:
@@ -51,9 +55,10 @@ def tester(
 
         # Asegurarse de que main y meta sean arrays 1D (n_samples,)
         if main.ndim > 1:
-            main = main[0]
+            # Promediar probabilidades de múltiples modelos (ensembles)
+            main = main.mean(axis=0)
         if meta.ndim > 1:
-            meta = meta[0]
+            meta = meta.mean(axis=0)
 
         dataset['labels_main'] = main.astype(float)
         dataset['labels_meta'] = meta.astype(float)
@@ -86,7 +91,11 @@ def tester(
             meta_thr   = model_meta_threshold,
             direction_int  = direction_int,
             max_orders = model_max_orders,
-            delay_bars = model_delay_bars
+            delay_bars = model_delay_bars,
+            spread_abs = spread_abs,
+            slippage_abs = slippage_abs,
+            commission_abs = commission_abs,
+            financing_per_bar_abs = financing_per_bar_abs
         )
 
         # DEBUG: Resultados del backtest
@@ -228,7 +237,11 @@ def backtest(open_,
             meta_thr   = 0.5,
             direction_int  = 2,  # 0=buy, 1=sell, 2=both (mapeado)
             max_orders = 1,      # 0 → ilimitado
-            delay_bars = 1):
+            delay_bars = 1,
+            spread_abs = 0.0,          # coste absoluto por round-turn (bid-ask), mismas unidades que open_
+            slippage_abs = 0.0,        # slippage por lado (se aplica 2x por trade), mismas unidades que open_
+            commission_abs = 0.0,      # comisión fija por trade (round-turn), mismas unidades que open_
+            financing_per_bar_abs = 0.0):  # coste absoluto por barra mantenida, mismas unidades que open_
     """
     Backtest realista: las operaciones se abren y cierran al precio 'open' de la barra actual (índice t),
     ya que las features y señales de t son válidas para operar en t.
@@ -290,6 +303,13 @@ def backtest(open_,
                 else:
                     profit = open_positions_price[i] - price
                 
+                # Costes: spread + 2*slippage + comisión + financiación por tiempo mantenido
+                holding_bars = bar - open_positions_bar[i]
+                if holding_bars < 0:
+                    holding_bars = 0
+                total_cost = spread_abs + (2.0 * slippage_abs) + commission_abs + (financing_per_bar_abs * holding_bars)
+                profit -= total_cost
+
                 report.append(report[-1] + profit)
                 trade_profits.append(profit)
                 if i != n_open - 1:
@@ -305,7 +325,9 @@ def backtest(open_,
             i += 1
 
         # 2) Apertura: meta OK, señal BUY/SELL OK, delay cumplido, cupo OK
-        delay_ok = (bar - last_trade_bar) >= delay_bars
+        # Requerir al menos 'delay_bars' barras COMPLETAS entre operaciones
+        # Si last_trade_bar = t, y delay_bars = 1, la próxima apertura será a partir de t+2
+        delay_ok = (bar - last_trade_bar) > delay_bars
         if meta_ok and delay_ok:
             trade_opened_this_bar = False
             
@@ -337,6 +359,13 @@ def backtest(open_,
         else:
             profit = open_positions_price[i] - open_[-1]
         
+        # Costes también al cierre forzoso
+        holding_bars = (open_.size - 1) - open_positions_bar[i]
+        if holding_bars < 0:
+            holding_bars = 0
+        total_cost = spread_abs + (2.0 * slippage_abs) + commission_abs + (financing_per_bar_abs * holding_bars)
+        profit -= total_cost
+
         report.append(report[-1] + profit)
         trade_profits.append(profit)
 

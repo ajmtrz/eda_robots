@@ -11,7 +11,7 @@ import tempfile
 import os
 
 # Importar nuestro convertidor
-from modules.export_lib import convert_catboost_regression_to_mql5_compatible
+from studies.modules.export_lib import convert_catboost_regression_to_mql5_compatible
 
 def test_onnx_converter():
     """

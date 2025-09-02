@@ -258,8 +258,7 @@ class StrategySearcher:
                     n_trials=self.n_trials,
                     gc_after_trial=True,
                     show_progress_bar=False,
-                    callbacks=[log_trial],
-                    n_jobs=self.n_jobs,
+                    callbacks=[log_trial]
                 )
                 
                 # 🔍 DEBUG: Verificar por qué se paró el estudio
@@ -915,7 +914,7 @@ class StrategySearcher:
                 eval_metric='Accuracy',
                 store_all_simple_ctr=False,
                 allow_writing_files=False,
-                thread_count=-1,
+                thread_count=self.n_jobs,
                 task_type='CPU',
                 verbose=False,
             )
@@ -960,7 +959,7 @@ class StrategySearcher:
                 eval_metric='F1',
                 store_all_simple_ctr=False,
                 allow_writing_files=False,
-                thread_count=-1,
+                thread_count=self.n_jobs,
                 task_type='CPU',
                 verbose=False,
             )
@@ -1148,7 +1147,7 @@ class StrategySearcher:
                 eval_metric='Accuracy',
                 store_all_simple_ctr=False,
                 allow_writing_files=False,
-                thread_count=-1,
+                thread_count=self.n_jobs,
                 task_type='CPU',
                 verbose=False,
             )
@@ -1255,7 +1254,7 @@ class StrategySearcher:
                         eval_metric='Accuracy',
                         store_all_simple_ctr=False,
                         allow_writing_files=False,
-                        thread_count=-1,
+                        thread_count=self.n_jobs,
                         task_type='CPU',
                         verbose=False,
                     )
@@ -1848,7 +1847,7 @@ class StrategySearcher:
             eval_metric='Accuracy',
             store_all_simple_ctr=False,
             allow_writing_files=False,
-            thread_count=-1,
+            thread_count=self.n_jobs,
             task_type='CPU',
             verbose=False,
         )

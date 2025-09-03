@@ -16,12 +16,14 @@ def tester(
         model_main_cols: list[str],
         model_meta_cols: list[str],
         direction: str = 'both',
-        timeframe: str = 'H1',
         model_main_threshold: float = 0.5,
         model_meta_threshold: float = 0.5,
         model_max_orders: int = 1,
         model_delay_bars: int = 1,
-        debug: bool = False) -> tuple[float, pd.DataFrame]:
+        return_equity: bool = False,
+        debug: bool = False,
+        plot: bool = False,
+        ) -> tuple[float, pd.DataFrame]:
     """
     Evalúa una estrategia para una o ambas direcciones, usando ejecución realista:
     - Las operaciones se abren y cierran al precio 'open' de la barra actual (índice t),
@@ -119,7 +121,7 @@ def tester(
         if (trade_nl <= -1.0 and rdd_nl <= -1.0 and r2 <= -1.0 and slope_nl <= -1.0 and wf_nl <= -1.0):
             if debug:
                 print(f"🔍 DEBUG tester - TODAS las métricas son -1.0, retornando -1.0")
-            return -1.0
+            return (-1.0, np.array([], dtype=np.float64)) if return_equity else -1.0
         
         # Pesos optimizados para favorecer estabilidad temporal y linealidad constante
         # Prioriza: 1) Consistencia temporal (45%), 2) Linealidad+Pendiente (40%), 3) Otros (15%)
@@ -133,26 +135,29 @@ def tester(
         if score < 0.0:
             if debug:
                 print(f"🔍 DEBUG tester - Score < 0.0 ({score:.6f}), retornando -1.0")
-            return -1.0
+            return (-1.0, np.array([], dtype=np.float64)) if return_equity else -1.0
         if debug:
             print(f"🔍 DEBUG - Main threshold: {model_main_threshold}, Meta threshold: {model_meta_threshold}, Max orders: {model_max_orders}, Delay bars: {model_delay_bars}")
             print(f"🔍 DEBUG - Métricas de evaluación: SCORE: {score}, trade_nl: {trade_nl}, rdd_nl: {rdd_nl}, r2: {r2}, slope_nl: {slope_nl}, wf_nl: {wf_nl}")
             print(f"🔍 DEBUG - Trade stats: n_trades: {trade_stats[0]}, n_positivos: {trade_stats[1]}, n_negativos: {trade_stats[2]}")
-            plt.figure(figsize=(10, 6))
-            plt.plot(rpt, label='Equity Curve', linewidth=1.5)
-            plt.title(f"Score: {score:.6f}")
-            plt.xlabel("Trades")
-            plt.ylabel("Cumulative P&L")
-            plt.legend()
-            plt.grid(alpha=0.3)
-            plt.show()
-            plt.close()
+            if plot:
+                plt.figure(figsize=(10, 6))
+                plt.plot(rpt, label='Equity Curve', linewidth=1.5)
+                plt.title(f"Score: {score:.6f}")
+                plt.xlabel("Trades")
+                plt.ylabel("Cumulative P&L")
+                plt.legend()
+                plt.grid(alpha=0.3)
+                plt.show()
+                plt.close()
 
+        if return_equity:
+            return score, np.asarray(rpt, dtype=np.float64)
         return score
 
     except Exception as e:
         print(f"🔍 DEBUG: Error en tester: {e}")
-        return -1.0
+        return (-1.0, np.array([], dtype=np.float64)) if return_equity else -1.0
 
 @njit(cache=True)
 def evaluate_report(
@@ -720,3 +725,66 @@ def predict_proba_onnx_models(
             raise RuntimeError(f"Número inesperado de outputs ONNX: {len(outputs)}")
 
     return probs
+
+# ───── Monkey Test (Null Hypothesis Benchmark) ─────────────────────────────
+@njit(cache=True)
+def _simulate_monkey_strategy(close: np.ndarray, n_simulations: int = 1000) -> np.ndarray:
+    """
+    Ejecuta el Monkey Test (Null Hypothesis Benchmark) de forma vectorizada.
+    Simula estrategias aleatorias para establecer una línea base estadística.
+    """
+    n_periods = close.size
+    monkey_returns = np.zeros(n_simulations, dtype=np.float64)
+    signal_probs = np.array([0.3, 0.7])  # 30% short, 70% long signals
+    for sim in range(n_simulations):
+        np.random.seed(sim + 42)
+        signals = np.random.choice(np.array([0, 1]), size=n_periods, p=signal_probs)
+        position = 0.0
+        last_price = close[0]
+        total_return = 0.0
+        for i in range(1, n_periods):
+            if signals[i - 1] == 1 and position <= 0:  # Long
+                if position < 0:
+                    total_return += (last_price - close[i - 1]) / (last_price + 1e-12)
+                position = 1.0
+                last_price = close[i - 1]
+            elif signals[i - 1] == 0 and position >= 0:  # Short
+                if position > 0:
+                    total_return += (close[i - 1] - last_price) / (last_price + 1e-12)
+                position = -1.0
+                last_price = close[i - 1]
+        if position > 0:
+            total_return += (close[-1] - last_price) / (last_price + 1e-12)
+        elif position < 0:
+            total_return += (last_price - close[-1]) / (last_price + 1e-12)
+        monkey_returns[sim] = total_return
+    return monkey_returns
+
+def run_monkey_test(equity_curve: np.ndarray, close_prices: np.ndarray | None = None, n_simulations: int = 1000) -> dict:
+    """
+    Ejecuta el Monkey Test (Null Hypothesis Benchmark).
+    Devuelve dict con p_value e indicadores de significancia.
+    """
+    try:
+        if equity_curve is None or len(equity_curve) < 2:
+            return {'p_value': 1.0, 'is_significant': False, 'percentile': 0.0}
+        if close_prices is None or len(close_prices) < len(equity_curve):
+            # Generar precios sintéticos basados en la equity curve
+            diffs = np.diff(equity_curve)
+            std = float(np.std(diffs)) if diffs.size > 0 else 1e-6
+            rng = np.random.default_rng(42)
+            noise = rng.normal(0.0, std, size=len(equity_curve))
+            close_prices = equity_curve + noise
+        strategy_return = (equity_curve[-1] - equity_curve[0]) / (abs(equity_curve[0]) + 1e-12)
+        monkey_returns = _simulate_monkey_strategy(close_prices.astype(np.float64), n_simulations)
+        p_value = float(np.sum(monkey_returns >= strategy_return) / max(1, n_simulations))
+        return {
+            'strategy_return': float(strategy_return),
+            'monkey_returns_mean': float(np.mean(monkey_returns)),
+            'monkey_returns_std': float(np.std(monkey_returns)),
+            'p_value': p_value,
+            'is_significant': bool(p_value < 0.05),
+            'percentile': float((1.0 - p_value) * 100.0)
+        }
+    except Exception:
+        return {'p_value': 1.0, 'is_significant': False, 'percentile': 0.0}

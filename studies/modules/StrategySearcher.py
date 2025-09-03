@@ -26,7 +26,7 @@ from modules.labeling_lib import (
     get_labels_filter_binary, get_labels_fractal_patterns, get_labels_zigzag,
     clustering_kmeans, clustering_hdbscan, clustering_markov, clustering_lgmm
 )
-from modules.tester_lib import tester, clear_onnx_session_cache
+from modules.tester_lib import tester, clear_onnx_session_cache, run_monkey_test
 from modules.export_lib import export_models_to_ONNX, export_dataset_to_csv, export_to_mql5
 
 class StrategySearcher:
@@ -78,6 +78,8 @@ class StrategySearcher:
         tag: str = "",
         debug: bool = False,
         decimal_precision: int = 6,
+        monkey_n_simulations: int = 1000,
+        monkey_alpha: float = 0.05,
     ):
         self.symbol = symbol
         self.timeframe = timeframe
@@ -103,6 +105,8 @@ class StrategySearcher:
         self.debug = debug
         self.base_df = get_prices(symbol, timeframe, history_path)
         self.decimal_precision = decimal_precision  # NUEVO ATRIBUTO
+        self.monkey_n_simulations = monkey_n_simulations
+        self.monkey_alpha = monkey_alpha
 
         # Configuración de logging para optuna
         optuna.logging.set_verbosity(optuna.logging.WARNING)
@@ -400,7 +404,7 @@ class StrategySearcher:
                 print(f"🔍   Meta labels distribution: {meta_dist}")
                 
             # Usar pipeline existente
-            score, full_ds_with_labels_path, model_paths, models_cols = self.fit_final_models(
+            score, full_ds_with_labels_path, model_paths, models_cols, monkey_info = self.fit_final_models(
                 trial=trial,
                 full_ds=full_ds,
                 model_main_train_data=model_main_train_data,
@@ -417,6 +421,10 @@ class StrategySearcher:
             trial.set_user_attr('full_ds_with_labels_path', full_ds_with_labels_path)
             trial.set_user_attr('best_main_threshold', hp['main_threshold'])
             trial.set_user_attr('best_meta_threshold', hp['meta_threshold'])
+            if isinstance(monkey_info, dict) and monkey_info:
+                trial.set_user_attr('monkey_p_value', monkey_info.get('monkey_p_value'))
+                trial.set_user_attr('monkey_percentile', monkey_info.get('monkey_percentile'))
+                trial.set_user_attr('monkey_pass', monkey_info.get('monkey_pass'))
 
             return trial.user_attrs.get('score', -1.0)
             
@@ -494,7 +502,7 @@ class StrategySearcher:
             full_ds.loc[base_mask, 'labels_meta'] = reliable_data_clustered['labels_meta']
             full_ds.loc[~base_mask, 'labels_meta'] = -1  # Muestras no confiables sin cluster
 
-            score, full_ds_with_labels_path, model_paths, models_cols = self.evaluate_clusters(trial, full_ds, hp)
+            score, full_ds_with_labels_path, model_paths, models_cols, monkey_info = self.evaluate_clusters(trial, full_ds, hp)
             if score is None or model_paths is None or models_cols is None or full_ds_with_labels_path is None:
                 return -1.0
             
@@ -504,6 +512,10 @@ class StrategySearcher:
             trial.set_user_attr('full_ds_with_labels_path', full_ds_with_labels_path)
             trial.set_user_attr('best_main_threshold', hp['main_threshold'])
             trial.set_user_attr('best_meta_threshold', hp['meta_threshold'])
+            if isinstance(monkey_info, dict) and monkey_info:
+                trial.set_user_attr('monkey_p_value', monkey_info.get('monkey_p_value'))
+                trial.set_user_attr('monkey_percentile', monkey_info.get('monkey_percentile'))
+                trial.set_user_attr('monkey_pass', monkey_info.get('monkey_pass'))
 
             return trial.user_attrs.get('score', -1.0)
         except Exception as e:
@@ -514,7 +526,7 @@ class StrategySearcher:
     # Métodos auxiliares
     # =========================================================================
     
-    def evaluate_clusters(self, trial: optuna.trial, full_ds: pd.DataFrame, hp: Dict[str, Any]) -> tuple[float, tuple, tuple, str]:
+    def evaluate_clusters(self, trial: optuna.trial, full_ds: pd.DataFrame, hp: Dict[str, Any]) -> tuple[float, tuple, tuple, str, dict]:
         """Función helper para evaluar clusters y entrenar modelos."""
         try:
             # Esquema tradicional de clusters
@@ -522,6 +534,7 @@ class StrategySearcher:
             best_model_paths = (None, None)
             best_models_cols = (None, None)
             best_full_ds_with_labels_path = None
+            best_monkey_info: dict | None = None
 
             # 🔍 DEBUG: Supervisar parámetros
             if self.debug:
@@ -633,7 +646,7 @@ class StrategySearcher:
                     print(f"🔍   Meta labels distribution: {meta_dist}")
                     
                 # Entrenar modelos
-                score, full_ds_with_labels_path, model_paths, models_cols = self.fit_final_models(
+                score, full_ds_with_labels_path, model_paths, models_cols, monkey_info = self.fit_final_models(
                     trial=trial,
                     full_ds=full_ds,
                     model_main_train_data=model_main_train_data,
@@ -653,6 +666,7 @@ class StrategySearcher:
                     best_model_paths = model_paths
                     best_full_ds_with_labels_path = full_ds_with_labels_path
                     best_models_cols = models_cols
+                    best_monkey_info = monkey_info
 
                     if self.debug:
                         print(f"🔍   Nuevo mejor cluster {clust}: score = {score}")
@@ -663,8 +677,8 @@ class StrategySearcher:
                     if full_ds_with_labels_path and os.path.exists(full_ds_with_labels_path):
                         os.remove(full_ds_with_labels_path)
             if best_score == -math.inf or best_model_paths == (None, None):
-                return None, None, None, None
-            return best_score, best_full_ds_with_labels_path, best_model_paths, best_models_cols
+                return None, None, None, None, None
+            return best_score, best_full_ds_with_labels_path, best_model_paths, best_models_cols, (best_monkey_info or {})
         except Exception as e:
             print(f"⚠️ ERROR en evaluación de clusters: {str(e)}")
             return None, None, None, None
@@ -875,7 +889,7 @@ class StrategySearcher:
                          full_ds: pd.DataFrame,
                          model_main_train_data: pd.DataFrame,
                          model_meta_train_data: pd.DataFrame,
-                         hp: Dict[str, Any]) -> tuple[float, str, tuple, tuple]:
+                         hp: Dict[str, Any]) -> tuple[float, str, tuple, tuple, dict]:
         """Ajusta los modelos finales y devuelve rutas a archivos temporales."""
         try:
             # 🔍 DEBUG: Supervisar parámetros CatBoost
@@ -990,7 +1004,7 @@ class StrategySearcher:
                 # Inicializar score con valor por defecto
                 score = -1.0
                 test_train_time_start = time.time()
-                score = tester(
+                score, equity_curve, returns_series, pos_series = tester(
                     dataset=full_ds,
                     model_main=model_main_path,
                     model_meta=model_meta_path,
@@ -1001,11 +1015,13 @@ class StrategySearcher:
                     model_main_threshold=hp.get('main_threshold', 0.5),
                     model_meta_threshold=hp.get('meta_threshold', 0.5),
                     debug=self.debug,
+                    return_equity=True,
+                    plot=False
                 )
             except Exception as tester_error:
                 if self.debug:
                     print(f"🔍 DEBUG: Error en tester: {tester_error}")
-                score = -1.0
+                score, equity_curve, returns_series, pos_series = -1.0, None, None, None
             test_train_time_end = time.time()
             if self.debug:
                 print(f"🔍 DEBUG: Tiempo de test in-sample: {test_train_time_end - test_train_time_start:.2f} segundos")
@@ -1013,6 +1029,81 @@ class StrategySearcher:
             
             if not np.isfinite(score):
                 score = -1.0
+
+            # ── Gating Optuna -> Monkey -> score final ─────────────────────────
+            # 1) Determinar best actual de Optuna (solo score óptimo de estudio)
+            current_best = None
+            try:
+                if trial.study is not None and hasattr(trial.study, 'best_value'):
+                    current_best = trial.study.best_value
+            except Exception:
+                current_best = None
+
+            # 2) Decidir si ejecutar Monkey Test
+            must_run_monkey = False
+            if score > 0.0:
+                if current_best is None:
+                    must_run_monkey = True
+                else:
+                    must_run_monkey = score > float(current_best)
+
+            monkey_pass = None
+            monkey_p_value = None
+            monkey_percentile = None
+            if must_run_monkey and equity_curve is not None and len(equity_curve) > 1:
+                try:
+                    test_monkey_time_start = time.time()
+                    # Preparar inputs para Monkey: retornos por barra y proporción tiempo-en-mercado
+                    in_market_ratio = 0.0
+                    if pos_series is not None and len(pos_series) > 0:
+                        in_market_ratio = float((pos_series != 0).sum()) / float(len(pos_series))
+                    price_series = full_ds['open'].to_numpy(dtype='float64') if 'open' in full_ds.columns else None
+                    monkey_res = run_monkey_test(
+                        actual_returns=returns_series if returns_series is not None else None,
+                        price_series=price_series,
+                        in_market_ratio=in_market_ratio,
+                        n_simulations=self.monkey_n_simulations,
+                    )
+                    test_monkey_time_end = time.time()
+                    if self.debug:
+                        print(f"🔍 DEBUG: Tiempo de test Monkey: {test_monkey_time_end - test_monkey_time_start:.2f} segundos")
+                        print(f"🔍 DEBUG: Resultado Monkey: {monkey_res}")
+                    monkey_p_value = float(monkey_res.get('p_value', 1.0))
+                    monkey_percentile = float(monkey_res.get('percentile', 0.0))
+                    monkey_pass = bool(monkey_p_value < self.monkey_alpha)
+                    if self.debug:
+                        print(f"🔍 DEBUG: Monkey p_value: {monkey_p_value}")
+                        print(f"🔍 DEBUG: Monkey percentile: {monkey_percentile}")
+                        print(f"🔍 DEBUG: Monkey pass: {monkey_pass}")
+                except Exception as e_monkey:
+                    if self.debug:
+                        print(f"🔍 DEBUG: Error en Monkey Test: {e_monkey}")
+                    monkey_pass = False
+                    monkey_p_value = 1.0
+                    monkey_percentile = 0.0
+
+                # 3) Si falla, forzar score -1.0 para evitar autoengaño
+                if not monkey_pass:
+                    if self.debug:
+                        print(f"🔍 DEBUG: Monkey Test NO superado (p={monkey_p_value:.4f} >= {self.monkey_alpha}) → score := -1.0")
+                    score = -1.0
+
+            # Guardar info de Monkey en trial attrs si existe
+            if monkey_pass is not None:
+                try:
+                    trial.set_user_attr('monkey_p_value', monkey_p_value)
+                    trial.set_user_attr('monkey_pass', monkey_pass)
+                    trial.set_user_attr('monkey_percentile', monkey_percentile)
+                except Exception:
+                    pass
+
+            monkey_info = {}
+            if monkey_pass is not None:
+                monkey_info = {
+                    'monkey_pass': monkey_pass,
+                    'monkey_p_value': monkey_p_value,
+                    'monkey_percentile': monkey_percentile,
+                }
 
             # Desplazar columnas OHLCV una posición hacia atrás
             ohlcv_cols = ["open", "high", "low", "close", "volume"]
@@ -1038,10 +1129,10 @@ class StrategySearcher:
                 else:
                     print(f"🔍      labels_meta no encontrada en el dataset")
                 print(f"🔍 DEBUG: Modelos guardados en {model_main_path} y {model_meta_path}")
-            return score, full_ds_with_labels_path, (model_main_path, model_meta_path), (main_feature_cols, meta_feature_cols)
+            return score, full_ds_with_labels_path, (model_main_path, model_meta_path), (main_feature_cols, meta_feature_cols), monkey_info
         except Exception as e:
             print(f"Error en función de entrenamiento y test: {str(e)}")
-            return None, None, None, None
+            return None, None, None, None, None
         finally:
             clear_onnx_session_cache()
 

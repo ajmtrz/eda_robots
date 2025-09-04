@@ -177,6 +177,9 @@ class StrategySearcher:
                                             os.remove(study.user_attrs["best_full_ds_with_labels_path"])
                                     # Guardar nuevas rutas de modelos
                                     study.set_user_attr("best_score", trial.user_attrs['score'])
+                                    study.set_user_attr('monkey_p_value', trial.user_attrs.get('monkey_p_value'))
+                                    study.set_user_attr('monkey_percentile', trial.user_attrs.get('monkey_percentile'))
+                                    study.set_user_attr('monkey_pass', trial.user_attrs.get('monkey_pass'))
                                     study.set_user_attr("best_model_paths", trial.user_attrs['model_paths'])
                                     study.set_user_attr("best_full_ds_with_labels_path", trial.user_attrs['full_ds_with_labels_path'])
                                     study.set_user_attr("best_periods_main", trial.user_attrs.get('feature_main_periods'))
@@ -195,6 +198,9 @@ class StrategySearcher:
                                         "models_export_path": self.models_export_path,
                                         "include_export_path": self.include_export_path,
                                         "best_score": study.user_attrs["best_score"],
+                                        "monkey_p_value": study.user_attrs.get('monkey_p_value'),
+                                        "monkey_percentile": study.user_attrs.get('monkey_percentile'),
+                                        "monkey_pass": study.user_attrs.get('monkey_pass'),
                                         "best_full_ds_with_labels_path": study.user_attrs["best_full_ds_with_labels_path"],
                                         "best_model_paths": study.user_attrs["best_model_paths"],
                                         "best_model_cols": study.user_attrs["best_model_cols"],
@@ -1028,15 +1034,13 @@ class StrategySearcher:
             if must_run_monkey and equity_curve is not None and len(equity_curve) > 1:
                 try:
                     test_monkey_time_start = time.time()
-                    # Preparar inputs para Monkey: retornos por barra y proporción tiempo-en-mercado
-                    in_market_ratio = 0.0
-                    if pos_series is not None and len(pos_series) > 0:
-                        in_market_ratio = float((pos_series != 0).sum()) / float(len(pos_series))
+                    # Preparar inputs para Monkey: retornos por barra, precios, posiciones y direccionalidad
                     price_series = full_ds['open'].to_numpy(dtype='float64') if 'open' in full_ds.columns else None
                     monkey_res = run_monkey_test(
                         actual_returns=returns_series if returns_series is not None else None,
                         price_series=price_series,
-                        in_market_ratio=in_market_ratio,
+                        pos_series=pos_series if pos_series is not None else None,
+                        direction=self.direction,
                         n_simulations=self.monkey_n_simulations,
                     )
                     test_monkey_time_end = time.time()

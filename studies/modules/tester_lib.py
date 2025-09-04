@@ -761,74 +761,163 @@ def _compute_sharpe(returns: np.ndarray) -> float:
     return float(mu / sigma)
 
 @njit(cache=True)
-def _monkey_test_core(actual_returns: np.ndarray,
-                      price_series: np.ndarray,
-                      in_market_ratio: float,
-                      n_simulations: int
-                      ) -> tuple:
-    if actual_returns.size < 2 or price_series.size < 2 or n_simulations <= 0:
-        return 1.0, 0.0, 0.0, 0.0
+def _sanitize_positions_for_direction_code(pos: np.ndarray, direction_code: int) -> np.ndarray:
+    # direction_code: 0=buy-only, 1=sell-only, 2=both
+    if pos.size == 0:
+        return np.zeros(0, dtype=np.int8)
+    out = pos.astype(np.int8)
+    if direction_code == 0:
+        for i in range(out.size):
+            if out[i] < 0:
+                out[i] = 0
+    elif direction_code == 1:
+        for i in range(out.size):
+            if out[i] > 0:
+                out[i] = 0
+    # direction_code==2 no cambia
+    return out
+
+@njit(cache=True)
+def _estimate_block_size_jit(pos: np.ndarray) -> int:
+    # Estima tamaño de bloque como mediana de longitudes de racha con mínimo 5, máximo 64
+    n = pos.size
+    if n < 10:
+        return max(2, n)
+    # Primera pasada: contar número de rachas
+    last = pos[0]
+    cnt = 1
+    n_runs = 0
+    for i in range(1, n):
+        v = pos[i]
+        if v == last:
+            cnt += 1
+        else:
+            n_runs += 1
+            last = v
+            cnt = 1
+    n_runs += 1  # última racha
+    # Segunda pasada: almacenar longitudes
+    runs = np.empty(n_runs, dtype=np.int64)
+    last = pos[0]
+    cnt = 1
+    idx = 0
+    for i in range(1, n):
+        v = pos[i]
+        if v == last:
+            cnt += 1
+        else:
+            runs[idx] = cnt
+            idx += 1
+            last = v
+            cnt = 1
+    runs[idx] = cnt
+    # Mediana discreta
+    runs_sorted = np.sort(runs)
+    m = runs_sorted.size
+    if m % 2 == 1:
+        med = runs_sorted[m // 2]
+    else:
+        a = runs_sorted[m // 2 - 1]
+        b = runs_sorted[m // 2]
+        med = (a + b) // 2 if ((a + b) % 2 == 0) else (a + b) // 2
+    if med < 5:
+        med = 5
+    if med > 64:
+        med = 64
+    return int(med)
+
+@njit(cache=True)
+def _block_bootstrap_positions(base_pos: np.ndarray, length: int, block_size: int) -> np.ndarray:
+    # Circular block bootstrap: concatena bloques contiguos con wrap-around
+    if length <= 0:
+        return np.zeros(0, dtype=np.int8)
+    n = base_pos.size
+    if n == 0:
+        return np.zeros(length, dtype=np.int8)
+    if block_size <= 0:
+        block_size = 1
+    if block_size > n:
+        block_size = n
+    out = np.empty(length, dtype=np.int8)
+    i = 0
+    while i < length:
+        start = np.random.randint(0, n)
+        take_total = min(block_size, length - i)
+        end = start + take_total
+        if end <= n:
+            out[i:i+take_total] = base_pos[start:end]
+        else:
+            first = n - start
+            out[i:i+first] = base_pos[start:n]
+            out[i+first:i+take_total] = base_pos[0:end - n]
+        i += take_total
+    return out
+
+@njit(cache=True)
+def _simulate_returns_from_positions(price_series: np.ndarray,
+                                     pos_series_sim: np.ndarray) -> np.ndarray:
+    # Calcula retornos por barra usando la posición previa (sin comisiones)
     n = price_series.size
-    sr_actual = _compute_sharpe(actual_returns)
-    sim_count_ge = 0
-    sum_sr = 0.0
-    sum_sr2 = 0.0
-    thr_long = in_market_ratio * 0.5
-    thr_any = in_market_ratio
-    for k in range(n_simulations):
-        sim_returns = np.zeros(n, dtype=np.float64)
-        prev_pos = 0
-        u = np.random.random(n)
-        for t in range(n):
-            rv = u[t]
-            pos = 0
-            if rv < thr_long:
-                pos = 1
-            elif rv < thr_any:
-                pos = -1
-            if t > 0:
-                prev_price = price_series[t - 1]
-                if prev_price != 0.0:
-                    sim_returns[t] = prev_pos * ((price_series[t] - prev_price) / prev_price)
-            prev_pos = pos
-        sr = _compute_sharpe(sim_returns)
-        sum_sr += sr
-        sum_sr2 += sr * sr
-        if sr >= sr_actual:
-            sim_count_ge += 1
-    mean_sr = sum_sr / n_simulations
-    var_sr = (sum_sr2 / n_simulations) - (mean_sr * mean_sr)
-    std_sr = 0.0 if var_sr < 0.0 else np.sqrt(var_sr)
-    p_value = sim_count_ge / n_simulations
-    return float(p_value), float(sr_actual), float(mean_sr), float(std_sr)
+    ret = np.zeros(n, dtype=np.float64)
+    prev_pos = 0
+    for t in range(1, n):
+        prev_price = price_series[t - 1]
+        pos = pos_series_sim[t - 1]
+        if prev_price != 0.0 and pos != 0:
+            ret[t] = pos * ((price_series[t] - prev_price) / prev_price)
+        prev_pos = pos
+    return ret
 
 def run_monkey_test(actual_returns: np.ndarray,
                     price_series: np.ndarray,
-                    in_market_ratio: float,
-                    n_simulations: int = 1000
+                    pos_series: np.ndarray,
+                    direction: str,
+                    n_simulations: int = 1000,
                     ) -> dict:
     """
-    Monkey Test basado en Sharpe y preservando proporción tiempo-en-mercado.
-    - actual_returns: retornos por barra de la estrategia (alineados con price_series, len>=2)
-    - price_series: serie de precios usada para calcular retornos (open)
-    - in_market_ratio: proporción esperada de tiempo en mercado (0..1)
+    Monkey Test basado en Sharpe con:
+    - Direccionalidad: respeta buy/ sell/ both eliminando estados no permitidos
+    - Block bootstrap de posiciones: preserva rachas/autocorrelación de la serie de posiciones
+    - p-valor estable: (k+1)/(N+1) y percentile = 100*(1-p)
     """
     try:
-        if actual_returns is None or price_series is None:
+        if actual_returns is None or price_series is None or pos_series is None:
             return {'p_value': 1.0, 'is_significant': False, 'percentile': 0.0}
-        p_value, sr_actual, mean_sr, std_sr = _monkey_test_core(
-            actual_returns.astype(np.float64),
-            price_series.astype(np.float64),
-            float(in_market_ratio),
-            int(n_simulations),
-        )
+        price_series = price_series.astype(np.float64)
+        pos_series = pos_series.astype(np.int8)
+
+        # Sanitizar posiciones según direccionalidad
+        direction_code = 2
+        if direction == 'buy':
+            direction_code = 0
+        elif direction == 'sell':
+            direction_code = 1
+        base_pos = _sanitize_positions_for_direction_code(pos_series, direction_code)
+        # Estimar tamaño de bloque y preparar simulaciones
+        block_size = _estimate_block_size_jit(base_pos)
+
+        # Sharpe real (por barra, sin anualizar)
+        sr_actual = _compute_sharpe(actual_returns.astype(np.float64))
+
+        # Simulaciones
+        sharpes = np.zeros(int(n_simulations), dtype=np.float64)
+        for k in range(int(n_simulations)):
+            sim_pos = _block_bootstrap_positions(base_pos, price_series.size, block_size)
+            sim_ret = _simulate_returns_from_positions(price_series, sim_pos)
+            sharpes[k] = _compute_sharpe(sim_ret)
+
+        # p-valor estabilizado y percentil
+        count_ge = int(np.sum(sharpes >= sr_actual))
+        p_value = (count_ge + 1.0) / (sharpes.size + 1.0)
+        percentile = (1.0 - p_value) * 100.0
+
         return {
             'actual_sharpe': float(sr_actual),
-            'monkey_sharpes_mean': float(mean_sr),
-            'monkey_sharpes_std': float(std_sr),
+            'monkey_sharpes_mean': float(np.mean(sharpes)) if sharpes.size else 0.0,
+            'monkey_sharpes_std': float(np.std(sharpes)) if sharpes.size else 0.0,
             'p_value': float(p_value),
             'is_significant': bool(p_value < 0.05),
-            'percentile': float((1.0 - p_value) * 100.0)
+            'percentile': float(percentile)
         }
     except Exception:
         return {'p_value': 1.0, 'is_significant': False, 'percentile': 0.0}

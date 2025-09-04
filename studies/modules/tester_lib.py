@@ -5,6 +5,7 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import onnxruntime as ort
 from typing import List, Tuple, Union
+from numba import njit
 
 # Suprimir warnings temporalmente (nivel ERROR=3)
 ort.set_default_logger_severity(3)
@@ -20,9 +21,8 @@ def tester(
         model_meta_threshold: float = 0.5,
         model_max_orders: int = 1,
         model_delay_bars: int = 1,
-        return_equity: bool = False,
         debug: bool = False,
-        plot: bool = False,
+        plot: bool = False
         ) -> tuple[float, pd.DataFrame]:
     """
     Evalúa una estrategia para una o ambas direcciones, usando ejecución realista:
@@ -80,7 +80,7 @@ def tester(
         # Mapeo para jit
         direction_int = {"buy": 0, "sell": 1, "both": 2}[direction]
 
-        rpt, trade_stats, trade_profits = backtest(
+        rpt, trade_stats, trade_profits, pos_series, returns_series = backtest(
             open_,
             main_predictions = main,
             meta_predictions = meta,
@@ -121,21 +121,21 @@ def tester(
         if (trade_nl <= -1.0 and rdd_nl <= -1.0 and r2 <= -1.0 and slope_nl <= -1.0 and wf_nl <= -1.0):
             if debug:
                 print(f"🔍 DEBUG tester - TODAS las métricas son -1.0, retornando -1.0")
-            return (-1.0, np.array([], dtype=np.float64)) if return_equity else -1.0
+            return (-1.0, np.array([], dtype=np.float64), np.array([], dtype=np.float64), np.array([], dtype=np.int8))
         
         # Pesos optimizados para favorecer estabilidad temporal y linealidad constante
         # Prioriza: 1) Consistencia temporal (45%), 2) Linealidad+Pendiente (40%), 3) Otros (15%)
         score = (
-                0.20 * r2 +        # Linealidad de la curva (R²)
+                0.25 * r2 +        # Linealidad de la curva (R²)
                 0.20 * slope_nl +  # Pendiente positiva consistente
                 0.10 * rdd_nl +    # Ratio retorno/drawdown
                 0.05 * trade_nl +  # Número de trades (menor importancia)
-                0.45 * wf_nl       # Consistencia temporal (máxima prioridad)
+                0.40 * wf_nl       # Consistencia temporal (máxima prioridad)
         )
         if score < 0.0:
             if debug:
                 print(f"🔍 DEBUG tester - Score < 0.0 ({score:.6f}), retornando -1.0")
-            return (-1.0, np.array([], dtype=np.float64)) if return_equity else -1.0
+            return (-1.0, np.array([], dtype=np.float64), np.array([], dtype=np.float64), np.array([], dtype=np.int8))
         if debug:
             print(f"🔍 DEBUG - Main threshold: {model_main_threshold}, Meta threshold: {model_meta_threshold}, Max orders: {model_max_orders}, Delay bars: {model_delay_bars}")
             print(f"🔍 DEBUG - Métricas de evaluación: SCORE: {score}, trade_nl: {trade_nl}, rdd_nl: {rdd_nl}, r2: {r2}, slope_nl: {slope_nl}, wf_nl: {wf_nl}")
@@ -151,13 +151,11 @@ def tester(
                 plt.show()
                 plt.close()
 
-        if return_equity:
-            return score, np.asarray(rpt, dtype=np.float64)
-        return score
+        return score, np.asarray(rpt, dtype=np.float64), returns_series, pos_series
 
     except Exception as e:
         print(f"🔍 DEBUG: Error en tester: {e}")
-        return (-1.0, np.array([], dtype=np.float64)) if return_equity else -1.0
+        return (-1.0, np.array([], dtype=np.float64), np.array([], dtype=np.float64), np.array([], dtype=np.int8))
 
 @njit(cache=True)
 def evaluate_report(
@@ -248,6 +246,8 @@ def backtest(open_,
 
     report = [0.0]
     trade_profits = []
+    pos_series = np.zeros(open_.size, dtype=np.int8)  # -1 short, 0 flat, 1 long
+    returns_series = np.zeros(open_.size, dtype=np.float64)
 
     last_trade_bar = -delay_bars-1
 
@@ -309,6 +309,17 @@ def backtest(open_,
                 continue
             i += 1
 
+        # Actualizar serie de posición (antes de abrir nuevas posiciones)
+        current_pos = 0
+        for j in range(n_open):
+            if open_positions_type[j] == LONG:
+                current_pos = 1
+                break
+            elif open_positions_type[j] == SHORT:
+                current_pos = -1
+                break
+        pos_series[bar] = current_pos
+
         # 2) Apertura: meta OK, señal BUY/SELL OK, delay cumplido, cupo OK
         delay_ok = (bar - last_trade_bar) >= delay_bars
         if meta_ok and delay_ok:
@@ -334,6 +345,18 @@ def backtest(open_,
             if trade_opened_this_bar:
                 last_trade_bar = bar
 
+    # 3b) Calcular retornos por barra basados en posición previa
+    for bar in range(1, open_.size):
+        prev_pos = pos_series[bar - 1]
+        if prev_pos == 0:
+            returns_series[bar] = 0.0
+        else:
+            prev_price = open_[bar - 1]
+            if prev_price == 0.0:
+                returns_series[bar] = 0.0
+            else:
+                returns_series[bar] = prev_pos * ((open_[bar] - prev_price) / prev_price)
+
     # 4) Cierre forzoso al final de todas las posiciones abiertas
     for i in range(n_open):
         pos_type = open_positions_type[i]
@@ -356,7 +379,7 @@ def backtest(open_,
 
     stats = (n_trades, n_positivos, n_negativos)
 
-    return np.asarray(report, dtype=np.float64), stats, np.asarray(trade_profits, dtype=np.float64)
+    return np.asarray(report, dtype=np.float64), stats, np.asarray(trade_profits, dtype=np.float64), pos_series, returns_series
 
 # ────────── helpers ──────────────────────────────────────────────────────────
 
@@ -728,61 +751,82 @@ def predict_proba_onnx_models(
 
 # ───── Monkey Test (Null Hypothesis Benchmark) ─────────────────────────────
 @njit(cache=True)
-def _simulate_monkey_strategy(close: np.ndarray, n_simulations: int = 1000) -> np.ndarray:
-    """
-    Ejecuta el Monkey Test (Null Hypothesis Benchmark) de forma vectorizada.
-    Simula estrategias aleatorias para establecer una línea base estadística.
-    """
-    n_periods = close.size
-    monkey_returns = np.zeros(n_simulations, dtype=np.float64)
-    signal_probs = np.array([0.3, 0.7])  # 30% short, 70% long signals
-    for sim in range(n_simulations):
-        np.random.seed(sim + 42)
-        signals = np.random.choice(np.array([0, 1]), size=n_periods, p=signal_probs)
-        position = 0.0
-        last_price = close[0]
-        total_return = 0.0
-        for i in range(1, n_periods):
-            if signals[i - 1] == 1 and position <= 0:  # Long
-                if position < 0:
-                    total_return += (last_price - close[i - 1]) / (last_price + 1e-12)
-                position = 1.0
-                last_price = close[i - 1]
-            elif signals[i - 1] == 0 and position >= 0:  # Short
-                if position > 0:
-                    total_return += (close[i - 1] - last_price) / (last_price + 1e-12)
-                position = -1.0
-                last_price = close[i - 1]
-        if position > 0:
-            total_return += (close[-1] - last_price) / (last_price + 1e-12)
-        elif position < 0:
-            total_return += (last_price - close[-1]) / (last_price + 1e-12)
-        monkey_returns[sim] = total_return
-    return monkey_returns
+def _compute_sharpe(returns: np.ndarray) -> float:
+    if returns.size < 2:
+        return 0.0
+    mu = np.nanmean(returns)
+    sigma = np.nanstd(returns)
+    if sigma <= 0.0:
+        return 0.0
+    return float(mu / sigma)
 
-def run_monkey_test(equity_curve: np.ndarray, close_prices: np.ndarray | None = None, n_simulations: int = 1000) -> dict:
+@njit(cache=True)
+def _monkey_test_core(actual_returns: np.ndarray,
+                      price_series: np.ndarray,
+                      in_market_ratio: float,
+                      n_simulations: int
+                      ) -> tuple:
+    if actual_returns.size < 2 or price_series.size < 2 or n_simulations <= 0:
+        return 1.0, 0.0, 0.0, 0.0
+    n = price_series.size
+    sr_actual = _compute_sharpe(actual_returns)
+    sim_count_ge = 0
+    sum_sr = 0.0
+    sum_sr2 = 0.0
+    thr_long = in_market_ratio * 0.5
+    thr_any = in_market_ratio
+    for k in range(n_simulations):
+        sim_returns = np.zeros(n, dtype=np.float64)
+        prev_pos = 0
+        u = np.random.random(n)
+        for t in range(n):
+            rv = u[t]
+            pos = 0
+            if rv < thr_long:
+                pos = 1
+            elif rv < thr_any:
+                pos = -1
+            if t > 0:
+                prev_price = price_series[t - 1]
+                if prev_price != 0.0:
+                    sim_returns[t] = prev_pos * ((price_series[t] - prev_price) / prev_price)
+            prev_pos = pos
+        sr = _compute_sharpe(sim_returns)
+        sum_sr += sr
+        sum_sr2 += sr * sr
+        if sr >= sr_actual:
+            sim_count_ge += 1
+    mean_sr = sum_sr / n_simulations
+    var_sr = (sum_sr2 / n_simulations) - (mean_sr * mean_sr)
+    std_sr = 0.0 if var_sr < 0.0 else np.sqrt(var_sr)
+    p_value = sim_count_ge / n_simulations
+    return float(p_value), float(sr_actual), float(mean_sr), float(std_sr)
+
+def run_monkey_test(actual_returns: np.ndarray,
+                    price_series: np.ndarray,
+                    in_market_ratio: float,
+                    n_simulations: int = 1000
+                    ) -> dict:
     """
-    Ejecuta el Monkey Test (Null Hypothesis Benchmark).
-    Devuelve dict con p_value e indicadores de significancia.
+    Monkey Test basado en Sharpe y preservando proporción tiempo-en-mercado.
+    - actual_returns: retornos por barra de la estrategia (alineados con price_series, len>=2)
+    - price_series: serie de precios usada para calcular retornos (open)
+    - in_market_ratio: proporción esperada de tiempo en mercado (0..1)
     """
     try:
-        if equity_curve is None or len(equity_curve) < 2:
+        if actual_returns is None or price_series is None:
             return {'p_value': 1.0, 'is_significant': False, 'percentile': 0.0}
-        if close_prices is None or len(close_prices) < len(equity_curve):
-            # Generar precios sintéticos basados en la equity curve
-            diffs = np.diff(equity_curve)
-            std = float(np.std(diffs)) if diffs.size > 0 else 1e-6
-            rng = np.random.default_rng(42)
-            noise = rng.normal(0.0, std, size=len(equity_curve))
-            close_prices = equity_curve + noise
-        strategy_return = (equity_curve[-1] - equity_curve[0]) / (abs(equity_curve[0]) + 1e-12)
-        monkey_returns = _simulate_monkey_strategy(close_prices.astype(np.float64), n_simulations)
-        p_value = float(np.sum(monkey_returns >= strategy_return) / max(1, n_simulations))
+        p_value, sr_actual, mean_sr, std_sr = _monkey_test_core(
+            actual_returns.astype(np.float64),
+            price_series.astype(np.float64),
+            float(in_market_ratio),
+            int(n_simulations),
+        )
         return {
-            'strategy_return': float(strategy_return),
-            'monkey_returns_mean': float(np.mean(monkey_returns)),
-            'monkey_returns_std': float(np.std(monkey_returns)),
-            'p_value': p_value,
+            'actual_sharpe': float(sr_actual),
+            'monkey_sharpes_mean': float(mean_sr),
+            'monkey_sharpes_std': float(std_sr),
+            'p_value': float(p_value),
             'is_significant': bool(p_value < 0.05),
             'percentile': float((1.0 - p_value) * 100.0)
         }

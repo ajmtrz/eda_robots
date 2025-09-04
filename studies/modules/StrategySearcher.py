@@ -73,7 +73,6 @@ class StrategySearcher:
         history_path: str = r"/mnt/c/Users/Administrador/AppData/Roaming/MetaQuotes/Terminal/Common/Files/",
         search_type: str = 'clusters',
         search_subtype: str = 'kmeans',
-        search_filter: str = '',
         label_method: str = 'random',
         tag: str = "",
         debug: bool = False,
@@ -95,7 +94,6 @@ class StrategySearcher:
         self.history_path = history_path
         self.search_type = search_type
         self.search_subtype = search_subtype
-        self.search_filter = search_filter
         self.label_method = label_method
         self.pruner_type = pruner_type
         self.n_trials = n_trials
@@ -318,48 +316,38 @@ class StrategySearcher:
                     print(f"🔍 DEBUG search_reliability - No hay muestras de trading")
                 return -1.0
 
-            # APLICAR FILTROS SECUNDARIOS (opcional)
-            if self.search_filter == 'mapie':
-                if self.debug:
-                    print(f"🔍 DEBUG search_reliability - Aplicando filtrado MAPIE")
-                    print(f"🔍   base_mask.sum(): {base_mask.sum()}")
-                    print(f"🔍   base_mask.mean(): {base_mask.mean():.3f}")
-                
-                mapie_scores = self.apply_mapie_filter(trial, full_ds, hp, base_mask)
-                mapie_mask = mapie_scores == 1.0
-                final_mask = base_mask & mapie_mask
-                
-                if self.debug:
-                    print(f"🔍   mapie_mask.sum(): {mapie_mask.sum()}")
-                    print(f"🔍   mapie_mask.mean(): {mapie_mask.mean():.3f}")
-                    print(f"🔍   final_mask.sum(): {final_mask.sum()}")
-                    print(f"🔍   final_mask.mean(): {final_mask.mean():.3f}")
-                    if base_mask.sum() > 0:
-                        print(f"🔍   Reducción de muestras: {base_mask.sum()} -> {final_mask.sum()} ({final_mask.sum()/base_mask.sum()*100:.1f}%)")
-            elif self.search_filter == 'causal':
-                if self.debug:
-                    print(f"🔍 DEBUG search_reliability - Aplicando filtrado CAUSAL")
-                    print(f"🔍   base_mask.sum(): {base_mask.sum()}")
-                    print(f"🔍   base_mask.mean(): {base_mask.mean():.3f}")
-                
-                causal_scores = self.apply_causal_filter(trial, full_ds, hp, base_mask)
-                causal_mask = causal_scores == 1.0
-                final_mask = base_mask & causal_mask
-                
-                if self.debug:
-                    print(f"🔍   causal_mask.sum(): {causal_mask.sum()}")
-                    print(f"🔍   causal_mask.mean(): {causal_mask.mean():.3f}")
-                    print(f"🔍   final_mask.sum(): {final_mask.sum()}")
-                    print(f"🔍   final_mask.mean(): {final_mask.mean():.3f}")
-                    if base_mask.sum() > 0:
-                        print(f"🔍   Reducción de muestras: {base_mask.sum()} -> {final_mask.sum()} ({final_mask.sum()/base_mask.sum()*100:.1f}%)")
-            else:
-                final_mask = base_mask
-                
-                if self.debug:
-                    print(f"🔍 DEBUG search_reliability - Sin filtrado MAPIE o CAUSAL")
-                    print(f"🔍   final_mask.sum(): {final_mask.sum()}")
-                    print(f"🔍   final_mask.mean(): {final_mask.mean():.3f}")
+            # Filtro MAPIE
+            if self.debug:
+                print(f"🔍 DEBUG search_reliability - Aplicando filtrado MAPIE")
+                print(f"🔍   base_mask.sum(): {base_mask.sum()}")
+                print(f"🔍   base_mask.mean(): {base_mask.mean():.3f}")
+            
+            mapie_scores = self.apply_mapie_filter(trial, full_ds, hp, base_mask)
+            mapie_mask = mapie_scores == 1.0
+            
+            if self.debug:
+                print(f"🔍   mapie_mask.sum(): {mapie_mask.sum()}")
+                print(f"🔍   mapie_mask.mean(): {mapie_mask.mean():.3f}")
+
+            # Filtro CAUSAL
+            if self.debug:
+                print(f"🔍 DEBUG search_reliability - Aplicando filtrado CAUSAL")
+                print(f"🔍   base_mask.sum(): {base_mask.sum()}")
+                print(f"🔍   base_mask.mean(): {base_mask.mean():.3f}")
+            
+            causal_scores = self.apply_causal_filter(trial, full_ds, hp, base_mask)
+            causal_mask = causal_scores == 1.0
+            
+            if self.debug:
+                print(f"🔍   causal_mask.sum(): {causal_mask.sum()}")
+                print(f"🔍   causal_mask.mean(): {causal_mask.mean():.3f}")
+
+            # Crear máscara final
+            mapie_causal_mask = (base_mask & mapie_mask & causal_mask).astype(bool)
+            if self.debug:
+                print(f"🔍   mapie_causal_mask.sum(): {mapie_causal_mask.sum()}")
+                print(f"🔍   mapie_causal_mask.mean(): {mapie_causal_mask.mean():.3f}")
+                print(f"🔍   Reducción de muestras: {base_mask.sum()} -> {mapie_causal_mask.sum()} ({mapie_causal_mask.sum()/base_mask.sum()*100:.1f}%)")
 
             # Crear dataset main con base_mask
             main_feature_cols = [c for c in full_ds.columns if c.endswith('_main_feature')]
@@ -386,7 +374,7 @@ class StrategySearcher:
             model_meta_train_data = full_ds[meta_feature_cols].dropna(subset=meta_feature_cols).copy()
             meta_mask = self.create_oof_meta_mask(model_main_train_data, model_meta_train_data, hp)
             meta_mask_full = meta_mask.reindex(full_ds.index).fillna(False)
-            final_mask = (final_mask & meta_mask_full).astype(bool)
+            final_mask = (mapie_causal_mask & meta_mask_full).astype(bool)
             model_meta_train_data['labels_meta'] = (
                 final_mask.reindex(model_meta_train_data.index).fillna(False).astype('int8')
             )
@@ -560,49 +548,39 @@ class StrategySearcher:
                         print(f"🔍   Cluster {clust} descartado: sin muestras confiables")
                     continue
                 
-                # APLICAR MAPIE COMO FILTRO SECUNDARIO (opcional)
-                if self.search_filter == 'mapie':
-                    if self.debug:
-                        print(f"🔍 DEBUG evaluate_clusters - Aplicando filtrado MAPIE al cluster {clust}")
-                        print(f"🔍   cluster_mask.sum(): {cluster_mask.sum()}")
-                        print(f"🔍   cluster_mask.mean(): {cluster_mask.mean():.3f}")
-                    
-                    mapie_scores = self.apply_mapie_filter(trial, full_ds, hp, cluster_mask)
-                    mapie_mask = mapie_scores == 1.0
-                    final_mask = cluster_mask & mapie_mask
-                    
-                    if self.debug:
-                        print(f"🔍   mapie_mask.sum(): {mapie_mask.sum()}")
-                        print(f"🔍   mapie_mask.mean(): {mapie_mask.mean():.3f}")
-                        print(f"🔍   final_mask.sum(): {final_mask.sum()}")
-                        print(f"🔍   final_mask.mean(): {final_mask.mean():.3f}")
-                        if cluster_mask.sum() > 0:
-                            print(f"🔍   Reducción de muestras: {cluster_mask.sum()} -> {final_mask.sum()} ({final_mask.sum()/cluster_mask.sum()*100:.1f}%)")
-                elif self.search_filter == 'causal':
-                    if self.debug:
-                        print(f"🔍 DEBUG evaluate_clusters - Aplicando filtrado CAUSAL al cluster {clust}")
-                        print(f"🔍   cluster_mask.sum(): {cluster_mask.sum()}")
-                        print(f"🔍   cluster_mask.mean(): {cluster_mask.mean():.3f}")
-                    
-                    causal_scores = self.apply_causal_filter(trial, full_ds, hp, cluster_mask)
-                    causal_mask = causal_scores == 1.0
-                    final_mask = cluster_mask & causal_mask
-                    
-                    if self.debug:
-                        print(f"🔍   causal_mask.sum(): {causal_mask.sum()}")
-                        print(f"🔍   causal_mask.mean(): {causal_mask.mean():.3f}")
-                        print(f"🔍   final_mask.sum(): {final_mask.sum()}")
-                        print(f"🔍   final_mask.mean(): {final_mask.mean():.3f}")
-                        if cluster_mask.sum() > 0:
-                            print(f"🔍   Reducción de muestras: {cluster_mask.sum()} -> {final_mask.sum()} ({final_mask.sum()/cluster_mask.sum()*100:.1f}%)")
-                else:
-                    final_mask = cluster_mask
-                    
-                    if self.debug:
-                        print(f"🔍 DEBUG evaluate_clusters - Sin filtrado MAPIE o CAUSAL al cluster {clust}")
-                        print(f"🔍   final_mask.sum(): {final_mask.sum()}")
-                        print(f"🔍   final_mask.mean(): {final_mask.mean():.3f}")
-                    
+                # Filtro MAPIE
+                if self.debug:
+                    print(f"🔍 DEBUG evaluate_clusters - Aplicando filtrado MAPIE al cluster {clust}")
+                    print(f"🔍   cluster_mask.sum(): {cluster_mask.sum()}")
+                    print(f"🔍   cluster_mask.mean(): {cluster_mask.mean():.3f}")
+                
+                mapie_scores = self.apply_mapie_filter(trial, full_ds, hp, cluster_mask)
+                mapie_mask = mapie_scores == 1.0
+                
+                if self.debug:
+                    print(f"🔍   mapie_mask.sum(): {mapie_mask.sum()}")
+                    print(f"🔍   mapie_mask.mean(): {mapie_mask.mean():.3f}")
+                
+                # Filtro CAUSAL
+                if self.debug:
+                    print(f"🔍 DEBUG evaluate_clusters - Aplicando filtrado CAUSAL al cluster {clust}")
+                    print(f"🔍   cluster_mask.sum(): {cluster_mask.sum()}")
+                    print(f"🔍   cluster_mask.mean(): {cluster_mask.mean():.3f}")
+                
+                causal_scores = self.apply_causal_filter(trial, full_ds, hp, cluster_mask)
+                causal_mask = causal_scores == 1.0
+                
+                if self.debug:
+                    print(f"🔍   causal_mask.sum(): {causal_mask.sum()}")
+                    print(f"🔍   causal_mask.mean(): {causal_mask.mean():.3f}")
+                
+                # Crear máscara final
+                mapie_causal_mask = (cluster_mask & mapie_mask & causal_mask).astype(bool)
+                if self.debug:
+                    print(f"🔍   mapie_causal_mask.sum(): {mapie_causal_mask.sum()}")
+                    print(f"🔍   mapie_causal_mask.mean(): {mapie_causal_mask.mean():.3f}")
+                    print(f"🔍   Reducción de muestras: {cluster_mask.sum()} -> {mapie_causal_mask.sum()} ({mapie_causal_mask.sum()/cluster_mask.sum()*100:.1f}%)")
+                
                 # Crear dataset main con cluster_mask
                 main_feature_cols = [c for c in full_ds.columns if c.endswith('_main_feature')]
                 model_main_train_data = full_ds.loc[cluster_mask, main_feature_cols + ['labels_main']].dropna(subset=main_feature_cols).copy()
@@ -628,7 +606,7 @@ class StrategySearcher:
                 model_meta_train_data = full_ds[meta_feature_cols].dropna(subset=meta_feature_cols).copy()
                 meta_mask = self.create_oof_meta_mask(model_main_train_data, model_meta_train_data, hp)
                 meta_mask_full = meta_mask.reindex(full_ds.index).fillna(False)
-                final_mask = (final_mask & meta_mask_full).astype(bool)
+                final_mask = (mapie_causal_mask & meta_mask_full).astype(bool)
                 model_meta_train_data['labels_meta'] = (
                     final_mask.reindex(model_meta_train_data.index).fillna(False).astype('int8')
                 )
@@ -817,12 +795,10 @@ class StrategySearcher:
         p = {}
         if self.search_type == 'clusters':
             if self.search_subtype == 'kmeans':
-                # Rangos ampliados para clusters más diversos
                 p['cluster_kmeans_n_clusters'] = trial.suggest_int ('cluster_kmeans_n_clusters', 5, 30, log=True)
                 p['cluster_kmeans_window']     = trial.suggest_int ('cluster_kmeans_window',     40, 300, log=True)
                 p['cluster_kmeans_step']       = trial.suggest_int ('cluster_kmeans_step',       3,  40)
             elif self.search_subtype == 'hdbscan':
-                # Tamaño mínimo de cluster más flexible
                 p['cluster_hdbscan_min_cluster_size'] = trial.suggest_int ('cluster_hdbscan_min_cluster_size', 5, 100, log=True)
             elif self.search_subtype == 'markov':
                 p['cluster_markov_model']    = trial.suggest_categorical('cluster_markov_model', ['GMMHMM', 'HMM'])
@@ -830,18 +806,14 @@ class StrategySearcher:
                 p['cluster_markov_iter']     = trial.suggest_int ('cluster_markov_iter',    30, 300, log=True)
                 p['cluster_markov_mix']      = trial.suggest_int ('cluster_markov_mix',     2, 5)
             elif self.search_subtype == 'lgmm':
-                # Rangos ampliados para Gaussian Mixture Models
                 p['cluster_lgmm_components']  = trial.suggest_int ('cluster_lgmm_components',  2, 20, log=True)
                 p['cluster_lgmm_covariance']  = trial.suggest_categorical('cluster_lgmm_covariance', ['full', 'tied', 'diag', 'spherical'])
                 p['cluster_lgmm_iter']        = trial.suggest_int ('cluster_lgmm_iter',        50, 500, log=True)
 
-        if self.search_filter == 'mapie':
-            p['mapie_confidence_level'] = trial.suggest_float('mapie_confidence_level', 0.75, 0.98)
-            p['mapie_cv']               = trial.suggest_int  ('mapie_cv',               2, 8)
-        elif self.search_filter == 'causal':
-            p['causal_meta_learners'] = trial.suggest_int('causal_meta_learners', 5, 20)
-            p['causal_percentile'] = trial.suggest_int('causal_percentile', 60, 95)
-
+        p['mapie_confidence_level'] = trial.suggest_float('mapie_confidence_level', 0.75, 0.98)
+        p['mapie_cv']               = trial.suggest_int  ('mapie_cv',               2, 8)
+        p['causal_meta_learners'] = trial.suggest_int('causal_meta_learners', 5, 20)
+        p['causal_percentile'] = trial.suggest_int('causal_percentile', 60, 95)
         p['oof_resid_percentile'] = trial.suggest_int('oof_resid_percentile', 75, 95)
         p['meta_threshold'] = 0.5 # trial.suggest_float('meta_threshold', 0.3, 0.7)
         p['main_threshold'] = 0.5 # trial.suggest_float('main_threshold', 0.3, 0.7)
@@ -1011,11 +983,9 @@ class StrategySearcher:
                     model_main_cols=main_feature_cols,
                     model_meta_cols=meta_feature_cols,
                     direction=self.direction,
-                    timeframe=self.timeframe,
                     model_main_threshold=hp.get('main_threshold', 0.5),
                     model_meta_threshold=hp.get('meta_threshold', 0.5),
                     debug=self.debug,
-                    return_equity=True,
                     plot=False
                 )
             except Exception as tester_error:
@@ -1029,7 +999,12 @@ class StrategySearcher:
             
             if not np.isfinite(score):
                 score = -1.0
-
+            
+            if score < 0.0:
+                if self.debug:
+                    print(f"🔍 DEBUG: Score < 0.0 ({score:.6f}), retornando -1.0")
+                return None, None, None, None, None
+            
             # ── Gating Optuna -> Monkey -> score final ─────────────────────────
             # 1) Determinar best actual de Optuna (solo score óptimo de estudio)
             current_best = None
@@ -1087,15 +1062,6 @@ class StrategySearcher:
                     if self.debug:
                         print(f"🔍 DEBUG: Monkey Test NO superado (p={monkey_p_value:.4f} >= {self.monkey_alpha}) → score := -1.0")
                     score = -1.0
-
-            # Guardar info de Monkey en trial attrs si existe
-            if monkey_pass is not None:
-                try:
-                    trial.set_user_attr('monkey_p_value', monkey_p_value)
-                    trial.set_user_attr('monkey_pass', monkey_pass)
-                    trial.set_user_attr('monkey_percentile', monkey_percentile)
-                except Exception:
-                    pass
 
             monkey_info = {}
             if monkey_pass is not None:

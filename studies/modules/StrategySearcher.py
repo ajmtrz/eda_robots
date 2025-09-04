@@ -867,14 +867,14 @@ class StrategySearcher:
             
             # Preparar datos del modelo main
             if model_main_train_data.empty:
-                return None, None, None, None
+                return None, None, None, None, None
             main_feature_cols = [col for col in model_main_train_data.columns if col != 'labels_main']
             if self.debug:
                 print(f"🔍 DEBUG: Main model data shape: {model_main_train_data.shape}")
                 print(f"🔍 DEBUG: Main feature columns: {main_feature_cols}")
             # Utilizar train_test_split de sklearn para dividir los datos de entrenamiento y validación
             if model_main_train_data.empty:
-                return None, None, None, None
+                return None, None, None, None, None
             X_main = model_main_train_data[main_feature_cols].astype('float32')
             y_main = model_main_train_data['labels_main'].astype('int8')
             # Se utiliza un 75% para entrenamiento y 25% para validación, estratificando por la etiqueta si es posible
@@ -884,7 +884,7 @@ class StrategySearcher:
                 )
             except Exception as e:
                 print(f"⚠️ Error en train_test_split: {e}")
-                return None, None, None, None
+                return None, None, None, None, None
             if self.debug:
                 print(f"🔍 DEBUG: X_train_main shape: {X_train_main.shape}, y_train_main shape: {y_train_main.shape}")
                 print(f"🔍 DEBUG: X_val_main shape: {X_val_main.shape}, y_val_main shape: {y_val_main.shape}")
@@ -924,14 +924,14 @@ class StrategySearcher:
             
             # Preparar datos del modelo main
             if model_meta_train_data.empty:
-                return None, None, None, None
+                return None, None, None, None, None
             meta_feature_cols = [col for col in model_meta_train_data.columns if col != 'labels_meta']
             if self.debug:
                 print(f"🔍 DEBUG: Meta model data shape: {model_meta_train_data.shape}")
                 print(f"🔍 DEBUG: Meta feature columns: {meta_feature_cols}")
             # Utilizar train_test_split de sklearn para dividir los datos de entrenamiento y validación
             if model_meta_train_data.empty:
-                return None, None, None, None
+                return None, None, None, None, None
             X_meta = model_meta_train_data[meta_feature_cols].astype('float32')
             y_meta = model_meta_train_data['labels_meta'].astype('int8')
             # Se utiliza un 75% para entrenamiento y 25% para validación, estratificando por la etiqueta si es posible
@@ -941,7 +941,7 @@ class StrategySearcher:
                 )
             except Exception as e:
                 print(f"⚠️ Error en train_test_split: {e}")
-                return None, None, None, None
+                return None, None, None, None, None
             if self.debug:
                 print(f"🔍 DEBUG: X_train_meta shape: {X_train_meta.shape}, y_train_meta shape: {y_train_meta.shape}")
                 print(f"🔍 DEBUG: X_val_meta shape: {X_val_meta.shape}, y_val_meta shape: {y_val_meta.shape}")
@@ -1007,10 +1007,7 @@ class StrategySearcher:
                 print(f"🔍 DEBUG: Tiempo de test in-sample: {test_train_time_end - test_train_time_start:.2f} segundos")
                 print(f"🔍 DEBUG: Score in-sample: {score}")
             
-            if not np.isfinite(score):
-                score = -1.0
-            
-            if score < 0.0:
+            if score < 0.0 or not np.isfinite(score):
                 if self.debug:
                     print(f"🔍 DEBUG: Score < 0.0 ({score:.6f}), retornando -1.0")
                 return None, None, None, None, None

@@ -80,11 +80,14 @@ def export_to_mql5(**kwargs):
         main_periods, main_funcs = _build_periods_funcs(main_cols)
         meta_periods, meta_funcs = _build_periods_funcs(meta_cols)
         
-        # Copia los modelos ONNX desde los archivos temporales a la ruta de destino
-        filename_model_main = f"{tag}_main.onnx"
-        filepath_model_main = os.path.join(models_export_path, filename_model_main)
-        filename_model_meta = f"{tag}_meta.onnx"
-        filepath_model_meta = os.path.join(models_export_path, filename_model_meta)
+        # Crear subcarpeta por tag y construir nombres basados en model_seed
+        tag_models_dir = os.path.join(models_export_path, str(tag))
+        os.makedirs(tag_models_dir, exist_ok=True)
+
+        filename_model_main = f"{model_seed}_main.onnx"
+        filepath_model_main = os.path.join(tag_models_dir, filename_model_main)
+        filename_model_meta = f"{model_seed}_meta.onnx"
+        filepath_model_meta = os.path.join(tag_models_dir, filename_model_meta)
 
         # model_paths[0] es el modelo main, model_paths[1] es el modelo meta
         if model_paths and len(model_paths) >= 2:
@@ -102,9 +105,9 @@ def export_to_mql5(**kwargs):
                     pass
 
         # Copia el dataset con labels desde el archivo temporal a la ruta de destino
-        data_dir = "./data"
+        data_dir = f"./data/{tag}"
         os.makedirs(data_dir, exist_ok=True)
-        dataset_filename = f"{tag}.csv"
+        dataset_filename = f"{model_seed}.csv"
         dataset_path = os.path.join(data_dir, dataset_filename)
         if full_ds_with_labels_path:
             with open(full_ds_with_labels_path, "rb") as src, open(dataset_path, "wb") as dst:
@@ -784,9 +787,10 @@ def export_to_mql5(**kwargs):
         
         code = r"#include <Math\Stat\Math.mqh>"
         code += '\n'
-        code += rf'#resource "\\Files\\{filename_model_main}" as uchar ExtModel_main[]'
+        # Las rutas deben incluir la subcarpeta del tag
+        code += rf'#resource "\\Files\\{tag}\\{filename_model_main}" as uchar ExtModel_main[]'
         code += '\n'
-        code += rf'#resource "\\Files\\{filename_model_meta}" as uchar ExtModel_meta[]'
+        code += rf'#resource "\\Files\\{tag}\\{filename_model_meta}" as uchar ExtModel_meta[]'
         code += '\n\n'
         code += '//+------------------------------------------------------------------+\n'
         code += f'//| SCORE: {best_score}                                        |\n'
@@ -917,7 +921,10 @@ void fill_arays_meta(double &dst[])
 }}
 """
 
-        file_name = os.path.join(include_export_path, f"{tag}.mqh")
+        # Crear subcarpeta por tag para el include y nombrar archivo por seed
+        tag_include_dir = os.path.join(include_export_path, str(tag))
+        os.makedirs(tag_include_dir, exist_ok=True)
+        file_name = os.path.join(tag_include_dir, f"{model_seed}.mqh")
         with open(file_name, "w") as file:
             file.write(code)
 

@@ -13,7 +13,7 @@ from typing import Dict, Any
 import optuna
 from optuna.pruners import HyperbandPruner, SuccessiveHalvingPruner
 # from optuna.integration import CatBoostPruningCallback
-from sklearn.model_selection import TimeSeriesSplit
+from sklearn.model_selection import TimeSeriesSplit, train_test_split
 from catboost import CatBoostClassifier
 from mapie.classification import CrossConformalClassifier
 from modules.labeling_lib import (
@@ -291,18 +291,6 @@ class StrategySearcher:
     # =========================================================================
 
     def search_reliability(self, trial: optuna.Trial) -> float:
-        """
-        Búsqueda basada en confiabilidad de patrones (esquema puro de confiabilidad).
-        
-        Este método implementa el esquema original del artículo MQL5 donde:
-        - Meta model: "¿es confiable el patrón?" (1=confiable, 0=no confiable)
-        - Main model: "¿buy o sell?" (solo en muestras confiables)
-        
-        NOTA: Con el Enfoque 4 de confiabilidad implementado, ahora cualquier 
-        método de búsqueda (clusters, mapie, causal, etc.) puede usar automáticamente
-        etiquetado fractal. Este método se mantiene para compatibilidad y como
-        referencia de la implementación original del artículo.
-        """
         try:
             hp = self.suggest_all_params(trial)
             
@@ -427,7 +415,6 @@ class StrategySearcher:
             return -1.0
 
     def search_clusters(self, trial: optuna.Trial) -> float:
-        """Implementa la búsqueda de estrategias usando clustering."""
         def _clustering_method(data, hp):
             try:
                 if self.search_subtype == 'kmeans':
@@ -885,13 +872,19 @@ class StrategySearcher:
             if self.debug:
                 print(f"🔍 DEBUG: Main model data shape: {model_main_train_data.shape}")
                 print(f"🔍 DEBUG: Main feature columns: {main_feature_cols}")
-            train_df, val_df = self.get_train_test_data(model_main_train_data)
-            if train_df.empty or val_df.empty:
+            # Utilizar train_test_split de sklearn para dividir los datos de entrenamiento y validación
+            if model_main_train_data.empty:
                 return None, None, None, None
-            X_train_main = train_df[main_feature_cols].astype('float32')
-            y_train_main = train_df['labels_main'].astype('int8')
-            X_val_main = val_df[main_feature_cols].astype('float32')
-            y_val_main = val_df['labels_main'].astype('int8')
+            X_main = model_main_train_data[main_feature_cols].astype('float32')
+            y_main = model_main_train_data['labels_main'].astype('int8')
+            # Se utiliza un 75% para entrenamiento y 25% para validación, estratificando por la etiqueta si es posible
+            try:
+                X_train_main, X_val_main, y_train_main, y_val_main = train_test_split(
+                    X_main, y_main, test_size=0.25, stratify=y_main
+                )
+            except Exception as e:
+                print(f"⚠️ Error en train_test_split: {e}")
+                return None, None, None, None
             if self.debug:
                 print(f"🔍 DEBUG: X_train_main shape: {X_train_main.shape}, y_train_main shape: {y_train_main.shape}")
                 print(f"🔍 DEBUG: X_val_main shape: {X_val_main.shape}, y_val_main shape: {y_val_main.shape}")
@@ -902,7 +895,7 @@ class StrategySearcher:
                 depth=hp['cat_main_depth'],
                 learning_rate=hp['cat_main_learning_rate'],
                 l2_leaf_reg=hp['cat_main_l2_leaf_reg'],
-                auto_class_weights='SqrtBalanced',
+                auto_class_weights='Balanced',
                 eval_metric='Accuracy',
                 store_all_simple_ctr=False,
                 allow_writing_files=False,
@@ -929,18 +922,29 @@ class StrategySearcher:
             )
             t_train_main_end = time.time()
             
-            # Recalcular splits para meta tras crear labels_meta
-            meta_feature_cols = [col for col in model_meta_train_data.columns if col != 'labels_meta']
-            train_df, val_df = self.get_train_test_data(model_meta_train_data)
-            if train_df.empty or val_df.empty:
+            # Preparar datos del modelo main
+            if model_meta_train_data.empty:
                 return None, None, None, None
-            X_train_meta = train_df[meta_feature_cols].astype('float32')
-            y_train_meta = train_df['labels_meta'].astype('int8')
-            X_val_meta = val_df[meta_feature_cols].astype('float32')
-            y_val_meta = val_df['labels_meta'].astype('int8')
-
+            meta_feature_cols = [col for col in model_meta_train_data.columns if col != 'labels_meta']
             if self.debug:
-                print(f"🔍 DEBUG: main_threshold: {hp.get('main_threshold', 0.5)}")
+                print(f"🔍 DEBUG: Meta model data shape: {model_meta_train_data.shape}")
+                print(f"🔍 DEBUG: Meta feature columns: {meta_feature_cols}")
+            # Utilizar train_test_split de sklearn para dividir los datos de entrenamiento y validación
+            if model_meta_train_data.empty:
+                return None, None, None, None
+            X_meta = model_meta_train_data[meta_feature_cols].astype('float32')
+            y_meta = model_meta_train_data['labels_meta'].astype('int8')
+            # Se utiliza un 75% para entrenamiento y 25% para validación, estratificando por la etiqueta si es posible
+            try:
+                X_train_meta, X_val_meta, y_train_meta, y_val_meta = train_test_split(
+                    X_meta, y_meta, test_size=0.25, stratify=y_meta
+                )
+            except Exception as e:
+                print(f"⚠️ Error en train_test_split: {e}")
+                return None, None, None, None
+            if self.debug:
+                print(f"🔍 DEBUG: X_train_meta shape: {X_train_meta.shape}, y_train_meta shape: {y_train_meta.shape}")
+                print(f"🔍 DEBUG: X_val_meta shape: {X_val_meta.shape}, y_val_meta shape: {y_val_meta.shape}")
 
             cat_meta_params = dict(
                 iterations=hp['cat_meta_iterations'],
@@ -1204,7 +1208,7 @@ class StrategySearcher:
                 depth=hp['cat_main_depth'],
                 learning_rate=hp['cat_main_learning_rate'],
                 l2_leaf_reg=hp['cat_main_l2_leaf_reg'],
-                auto_class_weights='SqrtBalanced',
+                auto_class_weights='Balanced',
                 eval_metric='Accuracy',
                 store_all_simple_ctr=False,
                 allow_writing_files=False,
@@ -1311,7 +1315,7 @@ class StrategySearcher:
                         depth=hp['cat_main_depth'],
                         learning_rate=hp['cat_main_learning_rate'],
                         l2_leaf_reg=hp['cat_main_l2_leaf_reg'],
-                        auto_class_weights='SqrtBalanced',
+                        auto_class_weights='Balanced',
                         eval_metric='Accuracy',
                         store_all_simple_ctr=False,
                         allow_writing_files=False,
@@ -1904,7 +1908,7 @@ class StrategySearcher:
             depth=hp['cat_main_depth'],
             learning_rate=hp['cat_main_learning_rate'],
             l2_leaf_reg=hp['cat_main_l2_leaf_reg'],
-            auto_class_weights='SqrtBalanced',
+            auto_class_weights='Balanced',
             eval_metric='Accuracy',
             store_all_simple_ctr=False,
             allow_writing_files=False,

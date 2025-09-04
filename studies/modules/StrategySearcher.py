@@ -872,6 +872,11 @@ class StrategySearcher:
             if self.debug:
                 print(f"🔍 DEBUG: Main model data shape: {model_main_train_data.shape}")
                 print(f"🔍 DEBUG: Main feature columns: {main_feature_cols}")
+                try:
+                    print(f"🔍 DEBUG: main_train rango: {train_df.index.min()} → {train_df.index.max()}")
+                    print(f"🔍 DEBUG: main_val   rango: {val_df.index.min()} → {val_df.index.max()}")
+                except Exception:
+                    pass
             # Dividir por rangos temporales configurados (respeta train/test por fechas)
             train_df, val_df = self.get_train_test_data(model_main_train_data)
             if train_df is None or val_df is None or train_df.empty or val_df.empty:
@@ -924,6 +929,11 @@ class StrategySearcher:
             if self.debug:
                 print(f"🔍 DEBUG: Meta model data shape: {model_meta_train_data.shape}")
                 print(f"🔍 DEBUG: Meta feature columns: {meta_feature_cols}")
+                try:
+                    print(f"🔍 DEBUG: meta_train rango: {train_df.index.min()} → {train_df.index.max()}")
+                    print(f"🔍 DEBUG: meta_val   rango: {val_df.index.min()} → {val_df.index.max()}")
+                except Exception:
+                    pass
             train_df, val_df = self.get_train_test_data(model_meta_train_data)
             if train_df is None or val_df is None or train_df.empty or val_df.empty:
                 return None, None, None, None, None
@@ -1842,6 +1852,11 @@ class StrategySearcher:
         if self.debug:
             print(f"🔍 DEBUG: train_data.shape final = {train_data.shape}")
             print(f"🔍 DEBUG: test_data.shape final = {test_data.shape}")
+            try:
+                print(f"🔍 DEBUG: train_data rango: {train_data.index.min()} → {train_data.index.max()}")
+                print(f"🔍 DEBUG: test_data  rango: {test_data.index.min()} → {test_data.index.max()}")
+            except Exception:
+                pass
         
         return train_data, test_data
 

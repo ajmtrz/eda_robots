@@ -123,14 +123,14 @@ def tester(
                 print(f"🔍 DEBUG tester - TODAS las métricas son -1.0, retornando -1.0")
             return (-1.0, np.array([], dtype=np.float64), np.array([], dtype=np.float64), np.array([], dtype=np.int8))
         
-        # Pesos optimizados para favorecer estabilidad temporal y linealidad constante
-        # Prioriza: 1) Consistencia temporal (45%), 2) Linealidad+Pendiente (40%), 3) Otros (15%)
+        # Pesos ajustados para promover rectilineidad y desempeño OOS
+        # Prioriza: 1) Consistencia temporal (55%), 2) Linealidad (25%), 3) Pendiente (10%), 4) RDD (7%), 5) Trades (3%)
         score = (
                 0.25 * r2 +        # Linealidad de la curva (R²)
-                0.20 * slope_nl +  # Pendiente positiva consistente
-                0.10 * rdd_nl +    # Ratio retorno/drawdown
-                0.05 * trade_nl +  # Número de trades (menor importancia)
-                0.40 * wf_nl       # Consistencia temporal (máxima prioridad)
+                0.10 * slope_nl +  # Pendiente positiva moderada
+                0.07 * rdd_nl +    # Ratio retorno/drawdown
+                0.03 * trade_nl +  # Número de trades (muy baja influencia)
+                0.55 * wf_nl       # Consistencia temporal (máxima prioridad)
         )
         if score < 0.0:
             if debug:
@@ -161,8 +161,8 @@ def tester(
 def evaluate_report(
     equity_curve: np.ndarray,
     trade_profits: np.ndarray,
-    min_trades: int = 200,
-    rdd_floor: float = 1.0
+    min_trades: int = 300,
+    rdd_floor: float = 1.5
 ) -> tuple:
     """
     Devuelve un score escalar para Optuna.
@@ -209,10 +209,11 @@ def evaluate_report(
     if slope < 0.0:
         return -1.0, -1.0, -1.0, -1.0, -1.0
 
-    if r2 < 0.7:  # Umbral más estricto para R²
-        r2 = r2 * 0.5  # Penalización severa para R² < 0.7
+    # Endurecer linealidad: si R² < 0.80 penalizar fuertemente
+    if r2 < 0.80:
+        r2 = r2 * 0.4  # Penalización más dura para baja linealidad
     else:
-        r2 = 0.35 + (r2 - 0.7) * 2.17  # Reescalar 0.7-1.0 a 0.35-1.0
+        r2 = 0.40 + (r2 - 0.80) * 3.0  # Reescalar 0.80-1.0 a 0.40-1.0
 
     slope_nl = 1.0 / (1.0 + np.exp(-(np.log1p(slope) / 3.0)))  # Más sensible a pendientes pequeñas
 
@@ -404,8 +405,8 @@ def _walk_forward_validation(eq, trade_profits):
     n = eq.size
     n_trades = len(trade_profits)
     
-    # Ventanas más largas para mayor robustez
-    base_window = max(10, n_trades // 20)  # Al menos 10, o 5% del total
+    # Ventanas más largas para mayor robustez y foco OOS
+    base_window = max(15, n_trades // 10)  # Al menos 15, ~10% del total
     
     if n_trades < base_window:
         return 0.0
@@ -413,8 +414,8 @@ def _walk_forward_validation(eq, trade_profits):
     # Evaluar múltiples escalas temporales con ventanas monótonamente crecientes
     # Asegurar que cada ventana sea mayor que la anterior y no exceda el límite
     window1 = base_window
-    window2 = min(window1 * 2, n_trades // 8)  # Ajustado para evitar ventanas muy pequeñas
-    window3 = min(window1 * 3, n_trades // 4)  # Ajustado para evitar ventanas muy pequeñas
+    window2 = min(window1 * 2, n_trades // 5)
+    window3 = min(window1 * 3, n_trades // 4)
     
     # Filtrar ventanas válidas (debe ser al menos 5 trades por ventana)
     windows = []
@@ -422,15 +423,15 @@ def _walk_forward_validation(eq, trade_profits):
     
     if window1 >= 5:
         windows.append(window1)
-        weights.append(0.5)
+        weights.append(0.2)
     
     if window2 > window1 and window2 >= 5:
         windows.append(window2)
-        weights.append(0.3)
+        weights.append(0.35)
     
     if window3 > window2 and window3 >= 5:
         windows.append(window3)
-        weights.append(0.2)
+        weights.append(0.45)
     
     # Si no hay ventanas válidas, usar solo la base
     if len(windows) == 0:
@@ -448,7 +449,7 @@ def _walk_forward_validation(eq, trade_profits):
         if n_trades < window:
             continue
             
-        step = max(1, window // 4)  # Solapamiento del 75%
+        step = max(1, window // 8)  # Solapamiento del 87.5%
         wins = 0
         total = 0
         win_ratios_sum = 0.0
@@ -495,15 +496,15 @@ def _walk_forward_validation(eq, trade_profits):
             # Penalizar alta volatilidad (inestabilidad)
             if variance > 0:
                 cv = (variance ** 0.5) / (abs(mean_return) + 1e-8)  # Coeficiente de variación
-                stability_penalty = 1.0 / (1.0 + cv * 2.0)  # Más penalización por alta volatilidad
+                stability_penalty = 1.0 / (1.0 + cv * 3.5)  # Penalización más fuerte por inestabilidad
         
         # Score para esta ventana
         window_score = prop_ventanas_rentables * avg_win_ratio * stability_penalty
         total_score += window_score * weight
 
     # Aplicar función sigmoide para mayor discriminación
-    # Penalizar más fuertemente scores bajos
-    final_score = total_score ** 1.5  # Exponente > 1 para penalizar más los valores bajos
+    # Penalizar aún más los scores bajos
+    final_score = total_score ** 2.0
     
     return min(1.0, final_score)
 

@@ -77,12 +77,12 @@ class StrategySearcher:
         tag: str = "",
         debug: bool = False,
         decimal_precision: int = 6,
+        monkey_alpha: float = 0.025,
         monkey_n_simulations: int = 5000,
-        monkey_alpha: float = 0.01,
-        monkey_min_percentile: float = 99.0,
-        monkey_min_zscore: float = 2.5,
-        monkey_block_multiplier: float = 1.5,
+        monkey_min_percentile: float = 97.0,
+        monkey_min_zscore: float = 2.0,
         monkey_wfv_windows: int = 3,
+        monkey_block_multiplier: float = 1.2,
     ):
         self.symbol = symbol
         self.timeframe = timeframe
@@ -1023,8 +1023,8 @@ class StrategySearcher:
                 score, equity_curve, returns_series, pos_series = -1.0, None, None, None
             test_train_time_end = time.time()
             if self.debug:
-                print(f"🔍 DEBUG: Tiempo de test in-sample: {test_train_time_end - test_train_time_start:.2f} segundos")
-                print(f"🔍 DEBUG: Score in-sample: {score}")
+                print(f"🔍 DEBUG: Tiempo de test OOS: {test_train_time_end - test_train_time_start:.2f} segundos")
+                print(f"🔍 DEBUG: Score OOS: {score}")
             
             if score < 0.0 or not np.isfinite(score):
                 if self.debug:
@@ -1055,37 +1055,98 @@ class StrategySearcher:
                     test_monkey_time_start = time.time()
                     # Series OOS
                     price_series = full_ds_oos['open'].to_numpy(dtype='float64') if 'open' in full_ds_oos.columns else None
-                    rs = returns_series if returns_series is not None else None
-                    ps = pos_series if pos_series is not None else None
-                    if rs is None or ps is None or price_series is None:
+                    rs_all = returns_series if returns_series is not None else None
+                    ps_all = pos_series if pos_series is not None else None
+                    if rs_all is None or ps_all is None or price_series is None:
                         raise RuntimeError("Series para Monkey Test no disponibles")
 
-                    # Monkey simple sobre todo OOS (sin segmentación)
-                    res = run_monkey_test(
-                        actual_returns=rs,
-                        price_series=price_series,
-                        pos_series=ps,
-                        direction=self.direction,
-                        n_simulations=self.monkey_n_simulations,
-                        block_multiplier=self.monkey_block_multiplier,
-                    )
-                    monkey_p_value = float(res.get('p_value', 1.0))
-                    monkey_percentile = float(res.get('percentile', 0.0))
-                    mu0 = float(res.get('monkey_sharpes_mean', 0.0))
-                    sd0 = float(res.get('monkey_sharpes_std', 0.0))
-                    sr = float(res.get('actual_sharpe', 0.0))
-                    min_z = (sr - mu0) / sd0 if sd0 > 0.0 else 0.0
-                    cond_p = monkey_p_value < self.monkey_alpha
-                    cond_q = monkey_percentile >= self.monkey_min_percentile
-                    cond_z = min_z >= self.monkey_min_zscore
-                    monkey_pass = bool(cond_p and cond_q and cond_z)
+                    # Definir ventanas WFV sobre OOS
+                    n_bars = int(len(price_series))
+                    n_windows = int(max(1, self.monkey_wfv_windows))
+                    # Asegurar tamaño mínimo de ventana
+                    min_window = 30
+                    while n_windows > 1 and (n_bars // n_windows) < min_window:
+                        n_windows -= 1
+
+                    # Construir ventanas equitativas (última absorbe el residuo)
+                    windows = []
+                    base = n_bars // n_windows
+                    remainder = n_bars % n_windows
+                    start_idx = 0
+                    for w in range(n_windows):
+                        size_w = base + (1 if w < remainder else 0)
+                        end_idx = start_idx + size_w
+                        windows.append((start_idx, end_idx))
+                        start_idx = end_idx
+
+                    # Holm–Bonferroni y umbrales por ventana
+                    def holm_pass(p_values: list[float], alpha: float) -> bool:
+                        m = len(p_values)
+                        if m == 0:
+                            return False
+                        order = np.argsort(np.array(p_values, dtype=np.float64))
+                        for rank, idx in enumerate(order, start=1):
+                            if p_values[idx] > alpha / (m - rank + 1):
+                                return False
+                        return True
+
+                    window_metrics = []
+                    all_ps: list[float] = []
+                    all_qs: list[float] = []
+                    all_zs: list[float] = []
+
+                    for w_idx, (ws, we) in enumerate(windows):
+                        if we - ws <= 5:
+                            continue
+                        pr = price_series[ws:we]
+                        rs = rs_all[ws:we]
+                        ps = ps_all[ws:we]
+                        res = run_monkey_test(
+                            actual_returns=rs,
+                            price_series=pr,
+                            pos_series=ps,
+                            direction=self.direction,
+                            n_simulations=self.monkey_n_simulations,
+                            block_multiplier=self.monkey_block_multiplier,
+                        )
+                        p = float(res.get('p_value', 1.0))
+                        q = float(res.get('percentile', 0.0))
+                        mu0 = float(res.get('monkey_sharpes_mean', 0.0))
+                        sd0 = float(res.get('monkey_sharpes_std', 0.0))
+                        sr = float(res.get('actual_sharpe', 0.0))
+                        z = (sr - mu0) / sd0 if sd0 > 0.0 else 0.0
+
+                        window_metrics.append({
+                            'w_idx': int(w_idx),
+                            'start_bar': int(ws),
+                            'end_bar': int(we),
+                            'p_value': p,
+                            'percentile': q,
+                            'zscore': float(z),
+                            'n_simulations': int(self.monkey_n_simulations),
+                        })
+                        all_ps.append(p)
+                        all_qs.append(q)
+                        all_zs.append(z)
+
+                    # Combinar por Holm y aplicar umbrales mínimos por ventana
+                    holm_ok = holm_pass(all_ps, self.monkey_alpha) if len(all_ps) > 0 else False
+                    thresholds_ok = all((q >= self.monkey_min_percentile and z >= self.monkey_min_zscore) for q, z in zip(all_qs, all_zs)) if len(all_qs) > 0 else False
+
+                    monkey_pass = bool(holm_ok and thresholds_ok)
+                    # Resumen conservador
+                    monkey_p_value = float(max(all_ps)) if len(all_ps) > 0 else 1.0
+                    monkey_percentile = float(min(all_qs)) if len(all_qs) > 0 else 0.0
+
                     test_monkey_time_end = time.time()
                     if self.debug:
-                        print(f"🔍 DEBUG: Tiempo de test Monkey: {test_monkey_time_end - test_monkey_time_start:.2f} s")
-                        print(f"🔍 DEBUG: Resultado Monkey: p={monkey_p_value:.6f}, q={monkey_percentile:.3f}, z={min_z:.3f}")
+                        print(f"🔍 DEBUG: Tiempo de test Monkey (HFV ventanas={n_windows}): {test_monkey_time_end - test_monkey_time_start:.2f} s")
+                        print(f"🔍 DEBUG: Holm pass: {holm_ok}, thresholds pass: {thresholds_ok}")
+                        if len(window_metrics) > 0:
+                            print(f"🔍 DEBUG: Ventanas Monkey (p,q,z): {[ (round(m['p_value'],6), round(m['percentile'],2), round(m['zscore'],3)) for m in window_metrics ]}")
                 except Exception as e_monkey:
                     if self.debug:
-                        print(f"🔍 DEBUG: Error en Monkey Test: {e_monkey}")
+                        print(f"🔍 DEBUG: Error en Monkey Test segmentado: {e_monkey}")
                     monkey_pass = False
                     monkey_p_value = 1.0
                     monkey_percentile = 0.0
@@ -1098,7 +1159,7 @@ class StrategySearcher:
 
             monkey_info = {}
             if monkey_pass is not None:
-                # Añadir detalles si existen (segmentos_info en el scope local)
+                # Añadir detalles y métricas por ventana si se construyeron
                 monkey_info = {
                     'monkey_pass': monkey_pass,
                     'monkey_p_value': monkey_p_value,
@@ -1109,6 +1170,16 @@ class StrategySearcher:
                     'min_zscore': float(self.monkey_min_zscore),
                     'block_multiplier': float(self.monkey_block_multiplier),
                 }
+                try:
+                    if 'window_metrics' in locals():
+                        monkey_info['windows'] = window_metrics
+                        monkey_info['global'] = {
+                            'holm_pass': bool(holm_ok),
+                            'thresholds_pass': bool(thresholds_ok),
+                            'n_windows': int(len(window_metrics)),
+                        }
+                except Exception:
+                    pass
 
             # Desplazar columnas OHLCV una posición hacia atrás
             full_ds = pd.concat([full_ds_is, full_ds_oos]).sort_index()
@@ -1224,14 +1295,14 @@ class StrategySearcher:
                 randomized = base_params.copy()
                 for k in ['iterations', 'depth', 'l2_leaf_reg']:
                     if k in randomized:
-                        jitter = random.uniform(0.7, 1.3)
+                        jitter = random.uniform(0.9, 1.1)
                         # Mantener enteros para iteraciones y profundidad
                         if k in ['iterations', 'depth']:
                             randomized[k] = max(1, int(round(randomized[k] * jitter)))
                         else:
                             randomized[k] = randomized[k] * jitter
                 if 'learning_rate' in randomized:
-                    jitter = random.uniform(0.7, 1.3)
+                    jitter = random.uniform(0.9, 1.1)
                     randomized['learning_rate'] = max(1e-4, randomized['learning_rate'] * jitter)
                 return randomized
             # Configurar CatBoost y MAPIE
@@ -1332,13 +1403,13 @@ class StrategySearcher:
                         randomized = base_params.copy()
                         for k in ['iterations', 'depth', 'l2_leaf_reg']:
                             if k in randomized:
-                                jitter = random.uniform(0.7, 1.3)
+                                jitter = random.uniform(0.9, 1.1)
                                 if k in ['iterations', 'depth']:
                                     randomized[k] = max(1, int(round(randomized[k] * jitter)))
                                 else:
                                     randomized[k] = randomized[k] * jitter
                         if 'learning_rate' in randomized:
-                            jitter = random.uniform(0.7, 1.3)
+                            jitter = random.uniform(0.9, 1.1)
                             randomized['learning_rate'] = max(1e-4, randomized['learning_rate'] * jitter)
                         return randomized
 

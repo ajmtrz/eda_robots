@@ -992,13 +992,12 @@ class StrategySearcher:
 
             model_main_path, model_meta_path = export_models_to_ONNX(models=(model_main, model_meta))
             
+            score = -1.0
             try:
-                # Inicializar score con valor por defecto
-                score = -1.0
-
                 if self.debug:
                     print(f"🔍 DEBUG: Inicializando backtest del periodo OOS")
-                score_oos, equity_curve, returns_series, pos_series = tester(
+                test_train_time_start = time.time()
+                score, equity_curve, returns_series, pos_series = tester(
                     dataset=full_ds_oos,
                     model_main=model_main_path,
                     model_meta=model_meta_path,
@@ -1010,44 +1009,17 @@ class StrategySearcher:
                     debug=self.debug,
                     plot=False
                 )
-                if score_oos < 0.0  or not np.isfinite(score_oos):
-                    if self.debug:
-                        print(f"🔍 DEBUG: Score OOS < 0.0 ({score_oos:.6f})")
-                    return None, None, None, None, None
-
+                test_train_time_end = time.time()
                 if self.debug:
-                    print(f"🔍 DEBUG: Inicializando backtest del periodo IS")
-                test_train_time_start = time.time()
-                score_is, _, _, _ = tester(
-                    dataset=full_ds_is,
-                    model_main=model_main_path,
-                    model_meta=model_meta_path,
-                    model_main_cols=main_feature_cols,
-                    model_meta_cols=meta_feature_cols,
-                    direction=self.direction,
-                    model_main_threshold=hp.get('main_threshold', 0.5),
-                    model_meta_threshold=hp.get('meta_threshold', 0.5),
-                    debug=self.debug,
-                    plot=False
-                )
-                if score_is < 0.0  or not np.isfinite(score_is):
+                    print(f"🔍 DEBUG: Tiempo de backtests: {test_train_time_end - test_train_time_start:.2f} segundos")
+                    print(f"🔍 DEBUG: Score de backtests: {score}")
+                if score < 0.0 or not np.isfinite(score):
                     if self.debug:
-                        print(f"🔍 DEBUG: Score IS < 0.0 ({score_is:.6f})")
+                        print(f"🔍 DEBUG: Score < 0.0 ({score:.6f})")
                     return None, None, None, None, None
-
-                score = (0.7 * score_oos + 0.3 * score_is)
             except Exception as tester_error:
                 if self.debug:
                     print(f"🔍 DEBUG: Error en tester: {tester_error}")
-                return None, None, None, None, None
-            test_train_time_end = time.time()
-            if self.debug:
-                print(f"🔍 DEBUG: Tiempo de backtests: {test_train_time_end - test_train_time_start:.2f} segundos")
-                print(f"🔍 DEBUG: Score combinado de backtests: {score}")
-            
-            if score < 0.0 or not np.isfinite(score):
-                if self.debug:
-                    print(f"🔍 DEBUG: Score combinado < 0.0 ({score:.6f})")
                 return None, None, None, None, None
             
             # 1) Determinar best actual de Optuna (solo score óptimo de estudio)
@@ -1073,7 +1045,7 @@ class StrategySearcher:
                 try:
                     test_monkey_time_start = time.time()
                     # Preparar inputs para Monkey: retornos por barra, precios, posiciones y direccionalidad
-                    price_series = full_ds['open'].to_numpy(dtype='float64') if 'open' in full_ds.columns else None
+                    price_series = full_ds_oos['open'].to_numpy(dtype='float64') if 'open' in full_ds_oos.columns else None
                     monkey_res = run_monkey_test(
                         actual_returns=returns_series if returns_series is not None else None,
                         price_series=price_series,

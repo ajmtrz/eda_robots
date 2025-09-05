@@ -542,7 +542,7 @@ class StrategySearcher:
             if cluster_sizes.empty:
                 if self.debug:
                     print("⚠️ ERROR: No hay clusters")
-                return None, None, None, None
+                return None, None, None, None, None
 
             # Evaluar cada cluster
             for clust in cluster_sizes.index:
@@ -665,7 +665,7 @@ class StrategySearcher:
             return best_score, best_full_ds_with_labels_path, best_model_paths, best_models_cols, (best_monkey_info or {})
         except Exception as e:
             print(f"⚠️ ERROR en evaluación de clusters: {str(e)}")
-            return None, None, None, None
+            return None, None, None, None, None
     
     def _suggest_catboost(self, group: str, trial: optuna.Trial) -> Dict[str, float]:
         """Devuelve hiperparámetros CatBoost (main|meta) con prefijo `group`."""
@@ -1003,9 +1003,10 @@ class StrategySearcher:
             try:
                 # Inicializar score con valor por defecto
                 score = -1.0
-                test_train_time_start = time.time()
-                
-                score, equity_curve, returns_series, pos_series = tester(
+
+                if self.debug:
+                    print(f"🔍 DEBUG: Inicializando backtest del periodo OOS")
+                score_oos, equity_curve, returns_series, pos_series = tester(
                     dataset=full_ds_oos,
                     model_main=model_main_path,
                     model_meta=model_meta_path,
@@ -1017,18 +1018,44 @@ class StrategySearcher:
                     debug=self.debug,
                     plot=False
                 )
+                if score_oos < 0.0  or not np.isfinite(score_oos):
+                    if self.debug:
+                        print(f"🔍 DEBUG: Score OOS < 0.0 ({score_oos:.6f})")
+                    return None, None, None, None, None
+
+                if self.debug:
+                    print(f"🔍 DEBUG: Inicializando backtest del periodo IS")
+                test_train_time_start = time.time()
+                score_is, _, _, _ = tester(
+                    dataset=full_ds_is,
+                    model_main=model_main_path,
+                    model_meta=model_meta_path,
+                    model_main_cols=main_feature_cols,
+                    model_meta_cols=meta_feature_cols,
+                    direction=self.direction,
+                    model_main_threshold=hp.get('main_threshold', 0.5),
+                    model_meta_threshold=hp.get('meta_threshold', 0.5),
+                    debug=self.debug,
+                    plot=False
+                )
+                if score_is < 0.0  or not np.isfinite(score_is):
+                    if self.debug:
+                        print(f"🔍 DEBUG: Score IS < 0.0 ({score_is:.6f})")
+                    return None, None, None, None, None
+
+                score = (0.7 * score_oos + 0.3 * score_is)
             except Exception as tester_error:
                 if self.debug:
                     print(f"🔍 DEBUG: Error en tester: {tester_error}")
-                score, equity_curve, returns_series, pos_series = -1.0, None, None, None
+                return None, None, None, None, None
             test_train_time_end = time.time()
             if self.debug:
-                print(f"🔍 DEBUG: Tiempo de test OOS: {test_train_time_end - test_train_time_start:.2f} segundos")
-                print(f"🔍 DEBUG: Score OOS: {score}")
+                print(f"🔍 DEBUG: Tiempo de backtests: {test_train_time_end - test_train_time_start:.2f} segundos")
+                print(f"🔍 DEBUG: Score combinado de backtests: {score}")
             
             if score < 0.0 or not np.isfinite(score):
                 if self.debug:
-                    print(f"🔍 DEBUG: Score < 0.0 ({score:.6f}), retornando -1.0")
+                    print(f"🔍 DEBUG: Score combinado < 0.0 ({score:.6f})")
                 return None, None, None, None, None
             
             # 1) Determinar best actual de Optuna (solo score óptimo de estudio)

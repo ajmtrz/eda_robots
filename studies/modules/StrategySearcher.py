@@ -307,12 +307,12 @@ class StrategySearcher:
                 reliability_params = {k: v for k, v in hp.items() if k.startswith('label_')}
                 print(f"🔍 DEBUG search_reliability - Parámetros de confiabilidad: {reliability_params}")
                 
-            full_ds = self.get_labeled_full_data(hp)
-            if full_ds is None:
+            full_ds_is, full_ds_oos = self.get_labeled_full_data(hp=hp)
+            if full_ds_is is None or full_ds_oos is None:
                 return -1.0
 
             # Main base mask
-            base_mask = full_ds['labels_main'].isin([0.0, 1.0])
+            base_mask = full_ds_is['labels_main'].isin([0.0, 1.0])
             if not base_mask.any():
                 if self.debug:
                     print(f"🔍 DEBUG search_reliability - No hay muestras de trading")
@@ -324,7 +324,7 @@ class StrategySearcher:
                 print(f"🔍   base_mask.sum(): {base_mask.sum()}")
                 print(f"🔍   base_mask.mean(): {base_mask.mean():.3f}")
             
-            mapie_scores = self.apply_mapie_filter(trial, full_ds, hp, base_mask)
+            mapie_scores = self.apply_mapie_filter(trial=trial, full_ds=full_ds_is, hp=hp, reliable_mask=base_mask)
             mapie_mask = mapie_scores == 1.0
             
             if self.debug:
@@ -337,7 +337,7 @@ class StrategySearcher:
                 print(f"🔍   base_mask.sum(): {base_mask.sum()}")
                 print(f"🔍   base_mask.mean(): {base_mask.mean():.3f}")
             
-            causal_scores = self.apply_causal_filter(trial, full_ds, hp, base_mask)
+            causal_scores = self.apply_causal_filter(trial=trial, full_ds=full_ds_is, hp=hp, reliable_mask=base_mask)
             causal_mask = causal_scores == 1.0
             
             if self.debug:
@@ -352,8 +352,8 @@ class StrategySearcher:
                 print(f"🔍   Reducción de muestras: {base_mask.sum()} -> {mapie_causal_mask.sum()} ({mapie_causal_mask.sum()/base_mask.sum()*100:.1f}%)")
 
             # Crear dataset main con base_mask
-            main_feature_cols = [c for c in full_ds.columns if c.endswith('_main_feature')]
-            model_main_train_data = full_ds.loc[base_mask, main_feature_cols + ['labels_main']].dropna(subset=main_feature_cols).copy()
+            main_feature_cols = [c for c in full_ds_is.columns if c.endswith('_main_feature')]
+            model_main_train_data = full_ds_is.loc[base_mask, main_feature_cols + ['labels_main']].dropna(subset=main_feature_cols).copy()
             if len(model_main_train_data) < 200:
                 if self.debug:
                     print(f"🔍 DEBUG search_reliability - Insuficientes muestras main: {len(model_main_train_data)}")
@@ -370,12 +370,13 @@ class StrategySearcher:
                 print(f"🔍   Main labels distribution: {main_dist}")
 
             # Crear dataset meta con final_mask
-            meta_feature_cols = [c for c in full_ds.columns if c.endswith('_meta_feature')]
+            meta_feature_cols = [c for c in full_ds_is.columns if c.endswith('_meta_feature')]
             if not meta_feature_cols:  # Fallback: usar main features si no hay meta features
                 meta_feature_cols = main_feature_cols
-            model_meta_train_data = full_ds[meta_feature_cols].dropna(subset=meta_feature_cols).copy()
-            meta_mask = self.create_oof_meta_mask(model_main_train_data, model_meta_train_data, hp)
-            meta_mask_full = meta_mask.reindex(full_ds.index).fillna(False)
+            model_meta_train_data = full_ds_is[meta_feature_cols].dropna(subset=meta_feature_cols).copy()
+            meta_mask = self.create_oof_meta_mask(
+                model_main_train_data=model_main_train_data, model_meta_train_data=model_meta_train_data, hp=hp)
+            meta_mask_full = meta_mask.reindex(full_ds_is.index).fillna(False)
             final_mask = (mapie_causal_mask & meta_mask_full).astype(bool)
             model_meta_train_data['labels_meta'] = (
                 final_mask.reindex(model_meta_train_data.index).fillna(False).astype('int8')
@@ -396,7 +397,8 @@ class StrategySearcher:
             # Usar pipeline existente
             score, full_ds_with_labels_path, model_paths, models_cols, monkey_info = self.fit_final_models(
                 trial=trial,
-                full_ds=full_ds,
+                full_ds_is=full_ds_is,
+                full_ds_oos=full_ds_oos,
                 model_main_train_data=model_main_train_data,
                 model_meta_train_data=model_meta_train_data,
                 hp=hp.copy()
@@ -467,12 +469,12 @@ class StrategySearcher:
                 cluster_params = {k: v for k, v in hp.items() if k.startswith('cluster_')}
                 print(f"🔍 DEBUG search_clusters {self.search_subtype} - Parámetros clusters: {cluster_params}")
                 
-            full_ds = self.get_labeled_full_data(hp)
-            if full_ds is None:
+            full_ds_is, full_ds_oos = self.get_labeled_full_data(hp=hp)
+            if full_ds_is is None or full_ds_oos is None:
                 return -1.0
             
-            base_mask = full_ds['labels_main'].isin([0.0, 1.0])
-            reliable_data = full_ds[base_mask].copy()
+            base_mask = full_ds_is['labels_main'].isin([0.0, 1.0])
+            reliable_data = full_ds_is[base_mask].copy()
             if len(reliable_data) < 200:
                 if self.debug:
                     print(f"🔍 DEBUG search_clusters {self.search_subtype} - Insuficientes muestras confiables para hacer clustering")
@@ -481,17 +483,18 @@ class StrategySearcher:
             # 🔍 DEBUG: Verificar distribución después del filtrado
             if self.debug:
                 print(f"🔍 DEBUG search_clusters {self.search_subtype}:")
-                print(f"🔍   Total muestras: {len(full_ds)}")
+                print(f"🔍   Total muestras: {len(full_ds_is)}")
                 print(f"🔍   Muestras confiables: {base_mask.sum()} ({base_mask.mean():.1%})")
                 print(f"🔍   Total muestras confiables: {len(reliable_data)}")
             
             # Aplicar clustering
             reliable_data_clustered = _clustering_method(reliable_data, hp)
             # Propagar clusters a dataset completo
-            full_ds.loc[base_mask, 'labels_meta'] = reliable_data_clustered['labels_meta']
-            full_ds.loc[~base_mask, 'labels_meta'] = -1  # Muestras no confiables sin cluster
+            full_ds_is.loc[base_mask, 'labels_meta'] = reliable_data_clustered['labels_meta']
+            full_ds_is.loc[~base_mask, 'labels_meta'] = -1  # Muestras no confiables sin cluster
 
-            score, full_ds_with_labels_path, model_paths, models_cols, monkey_info = self.evaluate_clusters(trial, full_ds, hp)
+            score, full_ds_with_labels_path, model_paths, models_cols, monkey_info = self.evaluate_clusters(
+                trial=trial, full_ds_is=full_ds_is, full_ds_oos=full_ds_oos, hp=hp)
             if score is None or model_paths is None or models_cols is None or full_ds_with_labels_path is None:
                 return -1.0
             
@@ -515,7 +518,7 @@ class StrategySearcher:
     # Métodos auxiliares
     # =========================================================================
     
-    def evaluate_clusters(self, trial: optuna.trial, full_ds: pd.DataFrame, hp: Dict[str, Any]) -> tuple[float, tuple, tuple, str, dict]:
+    def evaluate_clusters(self, trial: optuna.trial, full_ds_is: pd.DataFrame, full_ds_oos: pd.DataFrame, hp: Dict[str, Any]) -> tuple[float, tuple, tuple, str, dict]:
         """Función helper para evaluar clusters y entrenar modelos."""
         try:
             # Esquema tradicional de clusters
@@ -531,7 +534,7 @@ class StrategySearcher:
                 print(f"🔍 DEBUG evaluate_clusters - Parámetros de validación: {validation_params}")
 
             # Extraer clusters
-            cluster_sizes = full_ds['labels_meta'].value_counts().sort_index()
+            cluster_sizes = full_ds_is['labels_meta'].value_counts().sort_index()
             if self.debug:
                 print(f"🔍 DEBUG: Cluster sizes:\n{cluster_sizes}")
             if -1 in cluster_sizes.index:
@@ -543,7 +546,7 @@ class StrategySearcher:
 
             # Evaluar cada cluster
             for clust in cluster_sizes.index:
-                cluster_mask = full_ds['labels_meta'] == clust
+                cluster_mask = full_ds_is['labels_meta'] == clust
                 if not cluster_mask.any():
                     if self.debug:
                         print(f"🔍   Cluster {clust} descartado: sin muestras confiables")
@@ -555,7 +558,7 @@ class StrategySearcher:
                     print(f"🔍   cluster_mask.sum(): {cluster_mask.sum()}")
                     print(f"🔍   cluster_mask.mean(): {cluster_mask.mean():.3f}")
                 
-                mapie_scores = self.apply_mapie_filter(trial, full_ds, hp, cluster_mask)
+                mapie_scores = self.apply_mapie_filter(trial=trial, full_ds=full_ds_is, hp=hp, reliable_mask=cluster_mask)
                 mapie_mask = mapie_scores == 1.0
                 
                 if self.debug:
@@ -568,7 +571,7 @@ class StrategySearcher:
                     print(f"🔍   cluster_mask.sum(): {cluster_mask.sum()}")
                     print(f"🔍   cluster_mask.mean(): {cluster_mask.mean():.3f}")
                 
-                causal_scores = self.apply_causal_filter(trial, full_ds, hp, cluster_mask)
+                causal_scores = self.apply_causal_filter(trial=trial, full_ds=full_ds_is, hp=hp, reliable_mask=cluster_mask)
                 causal_mask = causal_scores == 1.0
                 
                 if self.debug:
@@ -583,8 +586,8 @@ class StrategySearcher:
                     print(f"🔍   Reducción de muestras: {cluster_mask.sum()} -> {mapie_causal_mask.sum()} ({mapie_causal_mask.sum()/cluster_mask.sum()*100:.1f}%)")
                 
                 # Crear dataset main con cluster_mask
-                main_feature_cols = [c for c in full_ds.columns if c.endswith('_main_feature')]
-                model_main_train_data = full_ds.loc[cluster_mask, main_feature_cols + ['labels_main']].dropna(subset=main_feature_cols).copy()
+                main_feature_cols = [c for c in full_ds_is.columns if c.endswith('_main_feature')]
+                model_main_train_data = full_ds_is.loc[cluster_mask, main_feature_cols + ['labels_main']].dropna(subset=main_feature_cols).copy()
                 if len(model_main_train_data) < 200:
                     if self.debug:
                         print(f"🔍 DEBUG evaluate_clusters - Insuficientes muestras main: {len(model_main_train_data)}")
@@ -601,12 +604,13 @@ class StrategySearcher:
                     print(f"🔍   Main labels distribution: {main_dist}")
 
                 # Crear dataset meta con final_mask
-                meta_feature_cols = [c for c in full_ds.columns if c.endswith('_meta_feature')]
+                meta_feature_cols = [c for c in full_ds_is.columns if c.endswith('_meta_feature')]
                 if not meta_feature_cols:  # Fallback: usar main features si no hay meta features
                     meta_feature_cols = main_feature_cols
-                model_meta_train_data = full_ds[meta_feature_cols].dropna(subset=meta_feature_cols).copy()
-                meta_mask = self.create_oof_meta_mask(model_main_train_data, model_meta_train_data, hp)
-                meta_mask_full = meta_mask.reindex(full_ds.index).fillna(False)
+                model_meta_train_data = full_ds_is[meta_feature_cols].dropna(subset=meta_feature_cols).copy()
+                meta_mask = self.create_oof_meta_mask(
+                    model_main_train_data=model_main_train_data, model_meta_train_data=model_meta_train_data, hp=hp)
+                meta_mask_full = meta_mask.reindex(full_ds_is.index).fillna(False)
                 final_mask = (mapie_causal_mask & meta_mask_full).astype(bool)
                 model_meta_train_data['labels_meta'] = (
                     final_mask.reindex(model_meta_train_data.index).fillna(False).astype('int8')
@@ -627,7 +631,8 @@ class StrategySearcher:
                 # Entrenar modelos
                 score, full_ds_with_labels_path, model_paths, models_cols, monkey_info = self.fit_final_models(
                     trial=trial,
-                    full_ds=full_ds,
+                    full_ds_is=full_ds_is,
+                    full_ds_oos=full_ds_oos,
                     model_main_train_data=model_main_train_data,
                     model_meta_train_data=model_meta_train_data,
                     hp=hp.copy()
@@ -859,7 +864,8 @@ class StrategySearcher:
             return None
 
     def fit_final_models(self, trial: optuna.trial,
-                         full_ds: pd.DataFrame,
+                         full_ds_is: pd.DataFrame,
+                         full_ds_oos: pd.DataFrame,
                          model_main_train_data: pd.DataFrame,
                          model_meta_train_data: pd.DataFrame,
                          hp: Dict[str, Any]) -> tuple[float, str, tuple, tuple, dict]:
@@ -880,19 +886,21 @@ class StrategySearcher:
             if self.debug:
                 print(f"🔍 DEBUG: Main model data shape: {model_main_train_data.shape}")
                 print(f"🔍 DEBUG: Main feature columns: {main_feature_cols}")
-                try:
-                    print(f"🔍 DEBUG: main_train rango: {train_df.index.min()} → {train_df.index.max()}")
-                    print(f"🔍 DEBUG: main_val   rango: {val_df.index.min()} → {val_df.index.max()}")
-                except Exception:
-                    pass
-            # Dividir por rangos temporales configurados (respeta train/test por fechas)
-            train_df, val_df = self.get_train_test_data(model_main_train_data)
-            if train_df is None or val_df is None or train_df.empty or val_df.empty:
+
+            # Dividir train/test
+            train_df_main, val_df_main = train_test_split(
+                model_main_train_data,
+                test_size=0.2,
+                stratify=model_main_train_data['labels_main'],
+                shuffle=True,
+                random_state=None
+            )
+            if train_df_main is None or val_df_main is None or train_df_main.empty or val_df_main.empty:
                 return None, None, None, None, None
-            X_train_main = train_df[main_feature_cols].astype('float32')
-            y_train_main = train_df['labels_main'].astype('int8')
-            X_val_main = val_df[main_feature_cols].astype('float32')
-            y_val_main = val_df['labels_main'].astype('int8')
+            X_train_main = train_df_main[main_feature_cols].astype('float32')
+            y_train_main = train_df_main['labels_main'].astype('int8')
+            X_val_main = val_df_main[main_feature_cols].astype('float32')
+            y_val_main = val_df_main['labels_main'].astype('int8')
             if self.debug:
                 print(f"🔍 DEBUG: X_train_main shape: {X_train_main.shape}, y_train_main shape: {y_train_main.shape}")
                 print(f"🔍 DEBUG: X_val_main shape: {X_val_main.shape}, y_val_main shape: {y_val_main.shape}")
@@ -937,18 +945,21 @@ class StrategySearcher:
             if self.debug:
                 print(f"🔍 DEBUG: Meta model data shape: {model_meta_train_data.shape}")
                 print(f"🔍 DEBUG: Meta feature columns: {meta_feature_cols}")
-                try:
-                    print(f"🔍 DEBUG: meta_train rango: {train_df.index.min()} → {train_df.index.max()}")
-                    print(f"🔍 DEBUG: meta_val   rango: {val_df.index.min()} → {val_df.index.max()}")
-                except Exception:
-                    pass
-            train_df, val_df = self.get_train_test_data(model_meta_train_data)
-            if train_df is None or val_df is None or train_df.empty or val_df.empty:
+
+            # Dividir train/test
+            train_df_meta, val_df_meta = train_test_split(
+                model_meta_train_data,
+                test_size=0.2,
+                stratify=model_meta_train_data['labels_meta'],
+                shuffle=True,
+                random_state=None
+            )
+            if train_df_meta is None or val_df_meta is None or train_df_meta.empty or val_df_meta.empty:
                 return None, None, None, None, None
-            X_train_meta = train_df[meta_feature_cols].astype('float32')
-            y_train_meta = train_df['labels_meta'].astype('int8')
-            X_val_meta = val_df[meta_feature_cols].astype('float32')
-            y_val_meta = val_df['labels_meta'].astype('int8')
+            X_train_meta = train_df_meta[meta_feature_cols].astype('float32')
+            y_train_meta = train_df_meta['labels_meta'].astype('int8')
+            X_val_meta = val_df_meta[meta_feature_cols].astype('float32')
+            y_val_meta = val_df_meta['labels_meta'].astype('int8')
             if self.debug:
                 print(f"🔍 DEBUG: X_train_meta shape: {X_train_meta.shape}, y_train_meta shape: {y_train_meta.shape}")
                 print(f"🔍 DEBUG: X_val_meta shape: {X_val_meta.shape}, y_val_meta shape: {y_val_meta.shape}")
@@ -993,8 +1004,9 @@ class StrategySearcher:
                 # Inicializar score con valor por defecto
                 score = -1.0
                 test_train_time_start = time.time()
+                
                 score, equity_curve, returns_series, pos_series = tester(
-                    dataset=full_ds,
+                    dataset=full_ds_oos,
                     model_main=model_main_path,
                     model_meta=model_meta_path,
                     model_main_cols=main_feature_cols,
@@ -1019,7 +1031,6 @@ class StrategySearcher:
                     print(f"🔍 DEBUG: Score < 0.0 ({score:.6f}), retornando -1.0")
                 return None, None, None, None, None
             
-            # ── Gating Optuna -> Monkey -> score final ─────────────────────────
             # 1) Determinar best actual de Optuna (solo score óptimo de estudio)
             current_best = None
             try:
@@ -1042,72 +1053,150 @@ class StrategySearcher:
             if must_run_monkey and equity_curve is not None and len(equity_curve) > 1:
                 try:
                     test_monkey_time_start = time.time()
-                    # Preparar inputs para Monkey: retornos por barra, precios, posiciones y direccionalidad
-                    price_series = full_ds['open'].to_numpy(dtype='float64') if 'open' in full_ds.columns else None
-                    idx = full_ds.index
-                    test_mask = (idx >= self.test_start) & (idx <= self.test_end)
-                    test_indices = np.where(test_mask.values)[0]
-                    # Dividir OOS en ventanas
+                    # Series OOS
+                    price_series = full_ds_oos['open'].to_numpy(dtype='float64') if 'open' in full_ds_oos.columns else None
+                    rs = returns_series if returns_series is not None else None
+                    ps = pos_series if pos_series is not None else None
+                    if rs is None or ps is None or price_series is None:
+                        raise RuntimeError("Series para Monkey Test no disponibles")
+
+                    # Detectar segmentos OOS contiguos por timestamp
+                    idx_vals = full_ds_oos.index.values.astype('datetime64[ns]').astype('int64')
+                    segments = []
+                    if idx_vals.size <= 1:
+                        segments = [(0, idx_vals.size - 1)]
+                    else:
+                        diffs = np.diff(idx_vals)
+                        # Paso esperado: moda, fallback mediana
+                        try:
+                            vals, counts = np.unique(diffs, return_counts=True)
+                            expected = vals[np.argmax(counts)] if len(vals) > 0 else int(np.median(diffs))
+                        except Exception:
+                            expected = int(np.median(diffs)) if len(diffs) > 0 else 0
+                        threshold = int(expected * 1.5) if expected > 0 else 0
+                        breaks = np.where(diffs > threshold)[0]
+                        start = 0
+                        for bi in breaks:
+                            end = bi
+                            segments.append((start, end))
+                            start = bi + 1
+                        segments.append((start, idx_vals.size - 1))
+
+                    # Repartir ventanas por segmento
+                    seg_lens = [end - start + 1 for (start, end) in segments]
+                    total_len = sum(seg_lens)
                     m = int(max(1, self.monkey_wfv_windows))
-                    windows = np.array_split(test_indices, m) if len(test_indices) > 0 else []
-                    pvals = []
-                    percs = []
-                    zscores = []
-                    win_info = []
-                    for w in windows:
-                        if w.size < 5:
+                    per_segment_windows = []
+                    if total_len > 0:
+                        base = [max(1, (l * m) // total_len) for l in seg_lens]
+                        # Ajustar suma a m
+                        diff_needed = m - sum(base)
+                        if diff_needed != 0 and len(base) > 0:
+                            order = np.argsort([-l for l in seg_lens]) if diff_needed > 0 else np.argsort([l for l in seg_lens])
+                            k = 0
+                            while diff_needed != 0 and k < 1000:
+                                i = order[abs(k) % len(base)]
+                                if diff_needed > 0:
+                                    base[i] += 1
+                                    diff_needed -= 1
+                                else:
+                                    if base[i] > 1:
+                                        base[i] -= 1
+                                        diff_needed += 1
+                                k += 1
+                        per_segment_windows = base
+                    else:
+                        per_segment_windows = [1 for _ in segments]
+
+                    # Ejecutar por segmento → subventanas
+                    global_pvals = []
+                    global_percs = []
+                    global_zs = []
+                    segments_info = []
+
+                    for (seg_idx, (s, e)) in enumerate(segments):
+                        if e < s:
                             continue
-                        w_returns = returns_series[w]
-                        w_pos = pos_series[w]
-                        w_price = price_series[w]
-                        res = run_monkey_test(
-                            actual_returns=w_returns,
-                            price_series=w_price,
-                            pos_series=w_pos,
-                            direction=self.direction,
-                            n_simulations=self.monkey_n_simulations,
-                            block_multiplier=self.monkey_block_multiplier,
-                        )
-                        p = float(res.get('p_value', 1.0))
-                        q = float(res.get('percentile', 0.0))
-                        mu0 = float(res.get('monkey_sharpes_mean', 0.0))
-                        sd0 = float(res.get('monkey_sharpes_std', 0.0))
-                        sr = float(res.get('actual_sharpe', 0.0))
-                        z = (sr - mu0) / sd0 if sd0 > 0.0 else 0.0
-                        pvals.append(p)
-                        percs.append(q)
-                        zscores.append(z)
-                        win_info.append({'p': p, 'percentile': q, 'z': z, 'mu0': mu0, 'sd0': sd0})
+                        wcount = max(1, per_segment_windows[seg_idx] if seg_idx < len(per_segment_windows) else 1)
+                        # Crear subventanas de índices [s..e]
+                        windows = np.array_split(np.arange(s, e + 1), wcount)
+                        seg_pvals = []
+                        seg_percs = []
+                        seg_zs = []
+                        windows_info = []
+                        for w in windows:
+                            if w.size < 5:
+                                continue
+                            res = run_monkey_test(
+                                actual_returns=rs[w],
+                                price_series=price_series[w],
+                                pos_series=ps[w],
+                                direction=self.direction,
+                                n_simulations=self.monkey_n_simulations,
+                                block_multiplier=self.monkey_block_multiplier,
+                            )
+                            p = float(res.get('p_value', 1.0))
+                            q = float(res.get('percentile', 0.0))
+                            mu0 = float(res.get('monkey_sharpes_mean', 0.0))
+                            sd0 = float(res.get('monkey_sharpes_std', 0.0))
+                            sr = float(res.get('actual_sharpe', 0.0))
+                            z = (sr - mu0) / sd0 if sd0 > 0.0 else 0.0
+                            seg_pvals.append(p)
+                            seg_percs.append(q)
+                            seg_zs.append(z)
+                            global_pvals.append(p)
+                            global_percs.append(q)
+                            global_zs.append(z)
+                            windows_info.append({'p_value': p, 'percentile': q, 'zscore': z, 'size': int(w.size)})
 
-                    if len(pvals) == 0:
-                        raise RuntimeError("Monkey OOS windows vacías")
+                        # Holm por segmento
+                        if len(seg_pvals) == 0:
+                            seg_holm = 1.0
+                        else:
+                            order = np.argsort(seg_pvals)
+                            sorted_p = np.array(seg_pvals)[order]
+                            m_eff = len(sorted_p)
+                            holm_adj = [min(1.0, p * (m_eff - j + 1)) for j, p in enumerate(sorted_p, start=1)]
+                            seg_holm = float(np.max(holm_adj))
 
-                    # Corrección de Holm (step-down) sobre p-values por ventana
-                    order = np.argsort(pvals)
-                    sorted_p = np.array(pvals)[order]
+                        segments_info.append({
+                            'segment_index': int(seg_idx),
+                            'start': str(full_ds_oos.index[s]) if s < len(full_ds_oos.index) else None,
+                            'end': str(full_ds_oos.index[e]) if e < len(full_ds_oos.index) else None,
+                            'holm_p_value': seg_holm,
+                            'min_percentile': float(min(seg_percs)) if len(seg_percs) else 0.0,
+                            'min_zscore': float(min(seg_zs)) if len(seg_zs) else 0.0,
+                            'windows': windows_info,
+                        })
+
+                    # Holm global sobre todas las subventanas
+                    if len(global_pvals) == 0:
+                        raise RuntimeError("Monkey OOS sin ventanas evaluables")
+                    order = np.argsort(global_pvals)
+                    sorted_p = np.array(global_pvals)[order]
                     m_eff = len(sorted_p)
-                    holm_adj = []
-                    for j, p in enumerate(sorted_p, start=1):
-                        adj = p * (m_eff - j + 1)
-                        holm_adj.append(min(1.0, adj))
+                    holm_adj = [min(1.0, p * (m_eff - j + 1)) for j, p in enumerate(sorted_p, start=1)]
                     holm_max = float(np.max(holm_adj))
 
                     monkey_p_value = holm_max
-                    monkey_percentile = float(np.min(percs))
-                    min_z = float(np.min(zscores)) if len(zscores) else 0.0
+                    monkey_percentile = float(np.min(global_percs))
+                    min_z = float(np.min(global_zs))
 
-                    cond_p = monkey_p_value < self.monkey_alpha
+                    # Regla de aprobación: todos los segmentos deben ser significativos + tamaño de efecto y percentil globales
+                    segments_pass = all(seg['holm_p_value'] < self.monkey_alpha for seg in segments_info) if len(segments_info) > 0 else False
+                    cond_p = (monkey_p_value < self.monkey_alpha) and segments_pass
                     cond_q = monkey_percentile >= self.monkey_min_percentile
                     cond_z = min_z >= self.monkey_min_zscore
                     monkey_pass = bool(cond_p and cond_q and cond_z)
 
                     test_monkey_time_end = time.time()
                     if self.debug:
-                        print(f"🔍 DEBUG: Tiempo de test Monkey OOS WFV: {test_monkey_time_end - test_monkey_time_start:.2f} segundos")
-                        print(f"🔍 DEBUG: pvals ventanas: {pvals}")
-                        print(f"🔍 DEBUG: Holm max adj p: {holm_max:.6f} (alpha={self.monkey_alpha})")
-                        print(f"🔍 DEBUG: percentiles ventanas (min): {monkey_percentile:.3f} (mínimo requerido={self.monkey_min_percentile})")
-                        print(f"🔍 DEBUG: z-scores ventanas (min): {min_z:.3f} (mínimo requerido={self.monkey_min_zscore})")
+                        print(f"🔍 DEBUG: Tiempo de test Monkey (segmentado+Holm): {test_monkey_time_end - test_monkey_time_start:.2f} s")
+                        print(f"🔍 DEBUG: Holm global: {monkey_p_value:.6f} (alpha={self.monkey_alpha})")
+                        print(f"🔍 DEBUG: Percentil mínimo global: {monkey_percentile:.3f} (req={self.monkey_min_percentile})")
+                        print(f"🔍 DEBUG: Z-score mínimo global: {min_z:.3f} (req={self.monkey_min_zscore})")
+                        for seg in segments_info:
+                            print(f"🔍 DEBUG: Segmento {seg['segment_index']} [{seg['start']} → {seg['end']}] holm_p={seg['holm_p_value']:.6f}, min_q={seg['min_percentile']:.3f}, min_z={seg['min_zscore']:.3f}")
                         print(f"🔍 DEBUG: Monkey pass: {monkey_pass}")
                 except Exception as e_monkey:
                     if self.debug:
@@ -1124,6 +1213,11 @@ class StrategySearcher:
 
             monkey_info = {}
             if monkey_pass is not None:
+                # Añadir detalles si existen (segmentos_info en el scope local)
+                try:
+                    details = {'segments': segments_info}
+                except Exception:
+                    details = {}
                 monkey_info = {
                     'monkey_pass': monkey_pass,
                     'monkey_p_value': monkey_p_value,
@@ -1133,9 +1227,11 @@ class StrategySearcher:
                     'min_percentile': float(self.monkey_min_percentile),
                     'min_zscore': float(self.monkey_min_zscore),
                     'block_multiplier': float(self.monkey_block_multiplier),
+                    **details,
                 }
 
             # Desplazar columnas OHLCV una posición hacia atrás
+            full_ds = pd.concat([full_ds_is, full_ds_oos]).sort_index()
             ohlcv_cols = ["open", "high", "low", "close", "volume"]
             for col in ohlcv_cols:
                 if col in full_ds.columns:
@@ -1676,10 +1772,10 @@ class StrategySearcher:
                 print(f"🔍   Traceback: {traceback.format_exc()}")
             return pd.DataFrame()
 
-    def get_labeled_full_data(self, hp):
+    def get_labeled_full_data(self, hp) -> tuple[pd.DataFrame, pd.DataFrame]:
         try:
             if hp is None:
-                return None
+                return None, None
 
             if self.debug:
                 print(f"🔍 DEBUG: base_df.shape = {self.base_df.shape}")
@@ -1702,7 +1798,7 @@ class StrategySearcher:
                         print(f"🔍   {k}: {v}")
             
             if not main_periods:
-                return None
+                return None, None
                 
             pad = int(max(main_periods) + max(meta_periods) if meta_periods else max(main_periods))
             if self.debug:
@@ -1723,16 +1819,10 @@ class StrategySearcher:
             start_ext = min(self.train_start, self.test_start) - pad * bar_delta
             if start_ext < idx[0]:
                 start_ext = idx[0]
-
-            end_ext = max(self.train_end, self.test_end)
+            # end_ext = max(self.train_end, self.test_end)
+            full_ds = self.base_df.loc[start_ext:].copy()
             if self.debug:
-                print(f"🔍 DEBUG: start_ext = {start_ext}, end_ext = {end_ext}")
-
-            # ──────────────────────────────────────────────────────────────
-            # 4) Obtener features de todo el rango extendido
-            full_ds = self.base_df.loc[start_ext:end_ext].copy()
-            if self.debug:
-                print(f"🔍 DEBUG: full_ds.shape = {full_ds.shape}")
+                print(f"🔍 DEBUG: full_ds.shape ANTES de recortar a rango de interés = {full_ds.shape}")
             
             # 🔍 DEBUG: Supervisar paso de parámetros a get_features
             if self.debug:
@@ -1749,51 +1839,47 @@ class StrategySearcher:
                 hp['feature_meta_periods'] = tuple(hp['feature_meta_periods'])
             if not isinstance(hp.get('feature_meta_stats', []), (list, tuple)):
                 hp['feature_meta_stats'] = tuple(hp['feature_meta_stats'])
+
+            # 4) Obtener features
             full_ds = get_features(data=full_ds, hp=hp, decimal_precision=self.decimal_precision)
             if self.debug:
-                print(f"🔍 DEBUG: full_ds.shape después de get_features = {full_ds.shape}")
                 feature_cols = [c for c in full_ds.columns if 'feature' in c]
                 print(f"🔍   Columnas de features generadas: {len(feature_cols)}")
                 main_features = [c for c in feature_cols if '_main_feature' in c]
                 meta_features = [c for c in feature_cols if '_meta_feature' in c]
                 print(f"🔍   Main features: {len(main_features)}, Meta features: {len(meta_features)}")
 
-            # ✅ SIMPLIFICADO: Pasar hp directamente sin conversiones
-            # 🔍 DEBUG: Supervisar paso de parámetros a apply_labeling
+            # 5) Aplicar labeling
             if self.debug:
                 print(f"🔍 DEBUG: Llamando apply_labeling con label_method='{self.label_method}'")
                 label_params = {k: v for k, v in hp.items() if k.startswith('label_')}
                 print(f"🔍   Parámetros label_* disponibles: {list(label_params.keys())}")
-
             full_ds = self.apply_labeling(full_ds, hp)
             if self.debug:
-                print(f"🔍 DEBUG: full_ds.shape después de apply_labeling = {full_ds.shape}")
-
-            # y recortar exactamente al rango que interesa
-            full_ds = full_ds.loc[
-                min(self.train_start, self.test_start):
-                max(self.train_end,   self.test_end)
-            ]
-            if self.debug:
-                print(f"🔍 DEBUG: full_ds.shape después de recorte a rango de interés = {full_ds.shape}")
-
-            if full_ds.empty:
-                return None
+                print(f"🔍 DEBUG: full_ds.shape DESPUES de apply_labeling = {full_ds.shape}")
 
             # ──────────────────────────────────────────────────────────────
-            # 5) Comprobaciones de calidad de features
+            # 6) Comprobaciones de calidad de features
+            full_ds = full_ds.loc[min(self.train_start, self.test_start):]
+            full_ds = full_ds.loc[full_ds.first_valid_index():full_ds.last_valid_index()]
             feature_cols = full_ds.columns[full_ds.columns.str.contains('feature')]
             if feature_cols.empty:
-                return None
-
+                return None, None
             problematic = self.check_constant_features(full_ds, list(feature_cols))
             if problematic:
+                if self.debug and not full_ds.empty:
+                    print(f"🔍 DEBUG: Primera fila del dataset con características:")
+                    print(f"🔍   Índice: {full_ds.index[0]}")
+                    print(f"🔍   Muestra: {full_ds.iloc[0].to_dict()}")
+                    print(f"🔍 DEBUG: Última fila del dataset con características:")
+                    print(f"🔍   Índice: {full_ds.index[-1]}")
+                    print(f"🔍   Muestra: {full_ds.iloc[-1].to_dict()}")
                 if self.debug:
                     print(f"🔍 DEBUG: Columnas problemáticas eliminadas: {len(problematic)}")
                 full_ds = full_ds.drop(columns=problematic)
                 feature_cols = [c for c in feature_cols if c not in problematic]
                 if not feature_cols:
-                    return None
+                    return None, None
 
             # --- 5b) Reconstruir hp manteniendo el orden original ---------
             main_periods_ordered = []
@@ -1858,13 +1944,7 @@ class StrategySearcher:
             main_periods = hp.get('feature_main_periods', ())
             main_stats = hp.get('feature_main_stats', ())
             if len(main_periods) == 0 or len(main_stats) == 0:
-                return None
-
-            # 🔍 DEBUG: Mostrar primera fila del dataset con características
-            if self.debug and not full_ds.empty:
-                print(f"🔍 DEBUG: Primera fila del dataset con características:")
-                print(f"🔍   Índice: {full_ds.index[0]}")
-                print(f"🔍   Muestra: {full_ds.iloc[0].to_dict()}")
+                return None, None
 
             # ──────────────────────────────────────────────────────────────
             # Chequeo de integridad: asegurar que todos los índices de base_df en el rango de full_ds están en full_ds
@@ -1881,11 +1961,26 @@ class StrategySearcher:
             if not missing_idx.empty:
                 raise ValueError(f"Integridad de full_ds fallida: faltan {len(missing_idx)} índices de base_df en full_ds en el rango de interés.")
 
-            return full_ds
+            # 7) Devolver IS y OOS
+            # Recortar a rangos: IS y OOS
+            is_mask = (full_ds.index >= self.train_start) & (full_ds.index <= self.train_end)
+            oos_mask = (~is_mask) & (full_ds.index >= self.test_start)
+            full_ds_is = full_ds.loc[is_mask]
+            full_ds_oos = full_ds.loc[oos_mask]
+            if self.debug:
+                print(f"🔍 DEBUG: full_ds.shape DESPUES de recortar a rango de interés = {full_ds.shape}")
+                print(f"🔍 DEBUG: full_ds_is.shape = {full_ds_is.shape}, rango: {full_ds_is.index.min() if len(full_ds_is)>0 else None} → {full_ds_is.index.max() if len(full_ds_is)>0 else None}")
+                print(f"🔍 DEBUG: full_ds_oos.shape = {full_ds_oos.shape}, rango: {full_ds_oos.index.min() if len(full_ds_oos)>0 else None} → {full_ds_oos.index.max() if len(full_ds_oos)>0 else None}")
+
+            if full_ds_is.empty or full_ds_oos.empty:
+                return None, None
+            
+            # 8) Devolver IS y OOS
+            return full_ds_is, full_ds_oos
 
         except Exception as e:
             print(f"🔍 DEBUG: ERROR en get_labeled_full_data: {str(e)}")
-            return None
+            return None, None
 
     def get_train_test_data(self, dataset) -> tuple[pd.DataFrame, pd.DataFrame]:
         """Genera los DataFrames de entrenamiento y prueba a partir del DataFrame completo."""

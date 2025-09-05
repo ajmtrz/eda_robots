@@ -80,16 +80,73 @@ def tester(
         # Mapeo para jit
         direction_int = {"buy": 0, "sell": 1, "both": 2}[direction]
 
-        rpt, trade_stats, trade_profits, pos_series, returns_series = backtest(
-            open_,
-            main_predictions = main,
-            meta_predictions = meta,
-            main_thr   = model_main_threshold,
-            meta_thr   = model_meta_threshold,
-            direction_int  = direction_int,
-            max_orders = model_max_orders,
-            delay_bars = model_delay_bars
-        )
+        # Detectar segmentos temporales contiguos (manejo de huecos)
+        # Paso esperado: modo de las diferencias del índice temporal
+        segments: list[tuple[int, int]] = []
+        try:
+            idx_series = dataset.index.to_series().sort_index()
+            diffs = idx_series.diff()
+            if len(diffs) > 1:
+                mode_delta = diffs.dropna().mode()
+                expected = mode_delta.iloc[0] if not mode_delta.empty else diffs.dropna().median()
+                threshold = expected * 1.5
+                # puntos donde hay salto grande
+                break_points = diffs > threshold
+                start = 0
+                for i, is_break in enumerate(break_points.iloc[1:], start=1):
+                    if is_break:
+                        segments.append((start, i - 1))
+                        start = i
+                segments.append((start, len(open_) - 1))
+            else:
+                segments.append((0, len(open_) - 1))
+        except Exception:
+            segments.append((0, len(open_) - 1))
+
+        # Ejecutar backtest por segmento, cerrando posiciones al final de cada uno
+        total_trades = 0
+        total_wins = 0
+        total_losses = 0
+        trade_profits_all = []
+        pos_series = np.zeros(open_.shape[0], dtype=np.int8)
+        returns_series = np.zeros(open_.shape[0], dtype=np.float64)
+        rpt_combined: list[float] = []
+        equity_offset = 0.0
+
+        for (s, e) in segments:
+            if e < s:
+                continue
+            rpt_seg, stats_seg, trade_profits_seg, pos_seg, ret_seg = backtest(
+                open_[s:e+1],
+                main_predictions=main[s:e+1],
+                meta_predictions=meta[s:e+1],
+                main_thr=model_main_threshold,
+                meta_thr=model_meta_threshold,
+                direction_int=direction_int,
+                max_orders=model_max_orders,
+                delay_bars=model_delay_bars,
+            )
+            # Combinar equity: desplazar por offset y evitar duplicar el primer punto 0.0
+            if len(rpt_seg) > 0:
+                rpt_offset = [x + equity_offset for x in rpt_seg]
+                if len(rpt_combined) == 0:
+                    rpt_combined.extend(rpt_offset)
+                else:
+                    rpt_combined.extend(rpt_offset[1:])
+                equity_offset = rpt_combined[-1]
+
+            # Combinar stats y series por-barra
+            total_trades += int(stats_seg[0])
+            total_wins   += int(stats_seg[1])
+            total_losses += int(stats_seg[2])
+            if len(trade_profits_seg) > 0:
+                trade_profits_all.extend(list(trade_profits_seg))
+            pos_series[s:e+1] = pos_seg
+            returns_series[s:e+1] = ret_seg
+
+        trade_stats = (total_trades, total_wins, total_losses)
+        rpt = np.asarray(rpt_combined, dtype=np.float64) if len(rpt_combined) > 0 else np.array([0.0], dtype=np.float64)
+        trade_profits = np.asarray(trade_profits_all, dtype=np.float64) if len(trade_profits_all) > 0 else np.array([], dtype=np.float64)
 
         # DEBUG: Resultados del backtest
         if debug:

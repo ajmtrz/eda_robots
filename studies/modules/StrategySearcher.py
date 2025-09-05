@@ -992,12 +992,11 @@ class StrategySearcher:
 
             model_main_path, model_meta_path = export_models_to_ONNX(models=(model_main, model_meta))
             
-            score = -1.0
             try:
                 if self.debug:
                     print(f"🔍 DEBUG: Inicializando backtest del periodo OOS")
                 test_train_time_start = time.time()
-                score, equity_curve, returns_series, pos_series = tester(
+                score_oos, equity_curve, returns_series, pos_series = tester(
                     dataset=full_ds_oos,
                     model_main=model_main_path,
                     model_meta=model_meta_path,
@@ -1011,11 +1010,36 @@ class StrategySearcher:
                 )
                 test_train_time_end = time.time()
                 if self.debug:
-                    print(f"🔍 DEBUG: Tiempo de backtests: {test_train_time_end - test_train_time_start:.2f} segundos")
-                    print(f"🔍 DEBUG: Score de backtests: {score}")
+                    print(f"🔍 DEBUG: Tiempo de OOS: {test_train_time_end - test_train_time_start:.2f} segundos")
+                    print(f"🔍 DEBUG: Score OOS: {score_oos}")
+                if score_oos < 0.0 or not np.isfinite(score_oos):
+                    if self.debug:
+                        print(f"🔍 DEBUG: Score OOS < 0.0 ({score_oos:.6f})")
+                    return None, None, None, None, None
+
+                if self.debug:
+                    print(f"🔍 DEBUG: Inicializando backtest del periodo FULL")
+                full_ds = pd.concat([full_ds_is, full_ds_oos]).sort_index()
+                test_train_time_start = time.time()
+                score, _, _, _ = tester(
+                    dataset=full_ds,
+                    model_main=model_main_path,
+                    model_meta=model_meta_path,
+                    model_main_cols=main_feature_cols,
+                    model_meta_cols=meta_feature_cols,
+                    direction=self.direction,
+                    model_main_threshold=hp.get('main_threshold', 0.5),
+                    model_meta_threshold=hp.get('meta_threshold', 0.5),
+                    debug=self.debug,
+                    plot=False
+                )
+                test_train_time_end = time.time()
+                if self.debug:
+                    print(f"🔍 DEBUG: Tiempo de FULL: {test_train_time_end - test_train_time_start:.2f} segundos")
+                    print(f"🔍 DEBUG: Score de FULL: {score}")
                 if score < 0.0 or not np.isfinite(score):
                     if self.debug:
-                        print(f"🔍 DEBUG: Score < 0.0 ({score:.6f})")
+                        print(f"🔍 DEBUG: Score FULL < 0.0 ({score:.6f})")
                     return None, None, None, None, None
             except Exception as tester_error:
                 if self.debug:
@@ -1075,7 +1099,7 @@ class StrategySearcher:
                 if not monkey_pass:
                     if self.debug:
                         print(f"🔍 DEBUG: Monkey Test NO superado (p={monkey_p_value:.4f} >= {self.monkey_alpha}) → score := -1.0")
-                    score = -1.0
+                    return None, None, None, None, None
 
             monkey_info = {}
             if monkey_pass is not None:
@@ -1087,7 +1111,6 @@ class StrategySearcher:
                 }
 
             # Desplazar columnas OHLCV una posición hacia atrás
-            full_ds = pd.concat([full_ds_is, full_ds_oos]).sort_index()
             ohlcv_cols = ["open", "high", "low", "close", "volume"]
             for col in ohlcv_cols:
                 if col in full_ds.columns:

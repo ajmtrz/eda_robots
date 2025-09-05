@@ -1060,144 +1060,29 @@ class StrategySearcher:
                     if rs is None or ps is None or price_series is None:
                         raise RuntimeError("Series para Monkey Test no disponibles")
 
-                    # Detectar segmentos OOS contiguos por timestamp
-                    idx_vals = full_ds_oos.index.values.astype('datetime64[ns]').astype('int64')
-                    segments = []
-                    if idx_vals.size <= 1:
-                        segments = [(0, idx_vals.size - 1)]
-                    else:
-                        diffs = np.diff(idx_vals)
-                        # Paso esperado: moda, fallback mediana
-                        try:
-                            vals, counts = np.unique(diffs, return_counts=True)
-                            expected = vals[np.argmax(counts)] if len(vals) > 0 else int(np.median(diffs))
-                        except Exception:
-                            expected = int(np.median(diffs)) if len(diffs) > 0 else 0
-                        threshold = int(expected * 1.5) if expected > 0 else 0
-                        breaks = np.where(diffs > threshold)[0]
-                        start = 0
-                        for bi in breaks:
-                            end = bi
-                            segments.append((start, end))
-                            start = bi + 1
-                        segments.append((start, idx_vals.size - 1))
-
-                    # Repartir ventanas por segmento
-                    seg_lens = [end - start + 1 for (start, end) in segments]
-                    total_len = sum(seg_lens)
-                    m = int(max(1, self.monkey_wfv_windows))
-                    per_segment_windows = []
-                    if total_len > 0:
-                        base = [max(1, (l * m) // total_len) for l in seg_lens]
-                        # Ajustar suma a m
-                        diff_needed = m - sum(base)
-                        if diff_needed != 0 and len(base) > 0:
-                            order = np.argsort([-l for l in seg_lens]) if diff_needed > 0 else np.argsort([l for l in seg_lens])
-                            k = 0
-                            while diff_needed != 0 and k < 1000:
-                                i = order[abs(k) % len(base)]
-                                if diff_needed > 0:
-                                    base[i] += 1
-                                    diff_needed -= 1
-                                else:
-                                    if base[i] > 1:
-                                        base[i] -= 1
-                                        diff_needed += 1
-                                k += 1
-                        per_segment_windows = base
-                    else:
-                        per_segment_windows = [1 for _ in segments]
-
-                    # Ejecutar por segmento → subventanas
-                    global_pvals = []
-                    global_percs = []
-                    global_zs = []
-                    segments_info = []
-
-                    for (seg_idx, (s, e)) in enumerate(segments):
-                        if e < s:
-                            continue
-                        wcount = max(1, per_segment_windows[seg_idx] if seg_idx < len(per_segment_windows) else 1)
-                        # Crear subventanas de índices [s..e]
-                        windows = np.array_split(np.arange(s, e + 1), wcount)
-                        seg_pvals = []
-                        seg_percs = []
-                        seg_zs = []
-                        windows_info = []
-                        for w in windows:
-                            if w.size < 5:
-                                continue
-                            res = run_monkey_test(
-                                actual_returns=rs[w],
-                                price_series=price_series[w],
-                                pos_series=ps[w],
-                                direction=self.direction,
-                                n_simulations=self.monkey_n_simulations,
-                                block_multiplier=self.monkey_block_multiplier,
-                            )
-                            p = float(res.get('p_value', 1.0))
-                            q = float(res.get('percentile', 0.0))
-                            mu0 = float(res.get('monkey_sharpes_mean', 0.0))
-                            sd0 = float(res.get('monkey_sharpes_std', 0.0))
-                            sr = float(res.get('actual_sharpe', 0.0))
-                            z = (sr - mu0) / sd0 if sd0 > 0.0 else 0.0
-                            seg_pvals.append(p)
-                            seg_percs.append(q)
-                            seg_zs.append(z)
-                            global_pvals.append(p)
-                            global_percs.append(q)
-                            global_zs.append(z)
-                            windows_info.append({'p_value': p, 'percentile': q, 'zscore': z, 'size': int(w.size)})
-
-                        # Holm por segmento
-                        if len(seg_pvals) == 0:
-                            seg_holm = 1.0
-                        else:
-                            order = np.argsort(seg_pvals)
-                            sorted_p = np.array(seg_pvals)[order]
-                            m_eff = len(sorted_p)
-                            holm_adj = [min(1.0, p * (m_eff - j + 1)) for j, p in enumerate(sorted_p, start=1)]
-                            seg_holm = float(np.max(holm_adj))
-
-                        segments_info.append({
-                            'segment_index': int(seg_idx),
-                            'start': str(full_ds_oos.index[s]) if s < len(full_ds_oos.index) else None,
-                            'end': str(full_ds_oos.index[e]) if e < len(full_ds_oos.index) else None,
-                            'holm_p_value': seg_holm,
-                            'min_percentile': float(min(seg_percs)) if len(seg_percs) else 0.0,
-                            'min_zscore': float(min(seg_zs)) if len(seg_zs) else 0.0,
-                            'windows': windows_info,
-                        })
-
-                    # Holm global sobre todas las subventanas
-                    if len(global_pvals) == 0:
-                        raise RuntimeError("Monkey OOS sin ventanas evaluables")
-                    order = np.argsort(global_pvals)
-                    sorted_p = np.array(global_pvals)[order]
-                    m_eff = len(sorted_p)
-                    holm_adj = [min(1.0, p * (m_eff - j + 1)) for j, p in enumerate(sorted_p, start=1)]
-                    holm_max = float(np.max(holm_adj))
-
-                    monkey_p_value = holm_max
-                    monkey_percentile = float(np.min(global_percs))
-                    min_z = float(np.min(global_zs))
-
-                    # Regla de aprobación: todos los segmentos deben ser significativos + tamaño de efecto y percentil globales
-                    segments_pass = all(seg['holm_p_value'] < self.monkey_alpha for seg in segments_info) if len(segments_info) > 0 else False
-                    cond_p = (monkey_p_value < self.monkey_alpha) and segments_pass
+                    # Monkey simple sobre todo OOS (sin segmentación)
+                    res = run_monkey_test(
+                        actual_returns=rs,
+                        price_series=price_series,
+                        pos_series=ps,
+                        direction=self.direction,
+                        n_simulations=self.monkey_n_simulations,
+                        block_multiplier=self.monkey_block_multiplier,
+                    )
+                    monkey_p_value = float(res.get('p_value', 1.0))
+                    monkey_percentile = float(res.get('percentile', 0.0))
+                    mu0 = float(res.get('monkey_sharpes_mean', 0.0))
+                    sd0 = float(res.get('monkey_sharpes_std', 0.0))
+                    sr = float(res.get('actual_sharpe', 0.0))
+                    min_z = (sr - mu0) / sd0 if sd0 > 0.0 else 0.0
+                    cond_p = monkey_p_value < self.monkey_alpha
                     cond_q = monkey_percentile >= self.monkey_min_percentile
                     cond_z = min_z >= self.monkey_min_zscore
                     monkey_pass = bool(cond_p and cond_q and cond_z)
-
                     test_monkey_time_end = time.time()
                     if self.debug:
-                        print(f"🔍 DEBUG: Tiempo de test Monkey (segmentado+Holm): {test_monkey_time_end - test_monkey_time_start:.2f} s")
-                        print(f"🔍 DEBUG: Holm global: {monkey_p_value:.6f} (alpha={self.monkey_alpha})")
-                        print(f"🔍 DEBUG: Percentil mínimo global: {monkey_percentile:.3f} (req={self.monkey_min_percentile})")
-                        print(f"🔍 DEBUG: Z-score mínimo global: {min_z:.3f} (req={self.monkey_min_zscore})")
-                        for seg in segments_info:
-                            print(f"🔍 DEBUG: Segmento {seg['segment_index']} [{seg['start']} → {seg['end']}] holm_p={seg['holm_p_value']:.6f}, min_q={seg['min_percentile']:.3f}, min_z={seg['min_zscore']:.3f}")
-                        print(f"🔍 DEBUG: Monkey pass: {monkey_pass}")
+                        print(f"🔍 DEBUG: Tiempo de test Monkey: {test_monkey_time_end - test_monkey_time_start:.2f} s")
+                        print(f"🔍 DEBUG: Resultado Monkey: p={monkey_p_value:.6f}, q={monkey_percentile:.3f}, z={min_z:.3f}")
                 except Exception as e_monkey:
                     if self.debug:
                         print(f"🔍 DEBUG: Error en Monkey Test: {e_monkey}")
@@ -1214,10 +1099,6 @@ class StrategySearcher:
             monkey_info = {}
             if monkey_pass is not None:
                 # Añadir detalles si existen (segmentos_info en el scope local)
-                try:
-                    details = {'segments': segments_info}
-                except Exception:
-                    details = {}
                 monkey_info = {
                     'monkey_pass': monkey_pass,
                     'monkey_p_value': monkey_p_value,
@@ -1227,7 +1108,6 @@ class StrategySearcher:
                     'min_percentile': float(self.monkey_min_percentile),
                     'min_zscore': float(self.monkey_min_zscore),
                     'block_multiplier': float(self.monkey_block_multiplier),
-                    **details,
                 }
 
             # Desplazar columnas OHLCV una posición hacia atrás
@@ -1819,10 +1699,7 @@ class StrategySearcher:
             start_ext = min(self.train_start, self.test_start) - pad * bar_delta
             if start_ext < idx[0]:
                 start_ext = idx[0]
-            # end_ext = max(self.train_end, self.test_end)
             full_ds = self.base_df.loc[start_ext:].copy()
-            if self.debug:
-                print(f"🔍 DEBUG: full_ds.shape ANTES de recortar a rango de interés = {full_ds.shape}")
             
             # 🔍 DEBUG: Supervisar paso de parámetros a get_features
             if self.debug:
@@ -1860,7 +1737,7 @@ class StrategySearcher:
 
             # ──────────────────────────────────────────────────────────────
             # 6) Comprobaciones de calidad de features
-            full_ds = full_ds.loc[min(self.train_start, self.test_start):]
+            full_ds = full_ds.loc[min(self.train_start, self.test_start):max(self.train_end, self.test_end)]
             full_ds = full_ds.loc[full_ds.first_valid_index():full_ds.last_valid_index()]
             feature_cols = full_ds.columns[full_ds.columns.str.contains('feature')]
             if feature_cols.empty:
@@ -1964,13 +1841,10 @@ class StrategySearcher:
             # 7) Devolver IS y OOS
             # Recortar a rangos: IS y OOS
             is_mask = (full_ds.index >= self.train_start) & (full_ds.index <= self.train_end)
-            oos_mask = (~is_mask) & (full_ds.index >= self.test_start)
+            oos_mask = (full_ds.index >= self.test_start) & (full_ds.index <= self.test_end)
+            is_mask &= ~oos_mask
             full_ds_is = full_ds.loc[is_mask]
             full_ds_oos = full_ds.loc[oos_mask]
-            if self.debug:
-                print(f"🔍 DEBUG: full_ds.shape DESPUES de recortar a rango de interés = {full_ds.shape}")
-                print(f"🔍 DEBUG: full_ds_is.shape = {full_ds_is.shape}, rango: {full_ds_is.index.min() if len(full_ds_is)>0 else None} → {full_ds_is.index.max() if len(full_ds_is)>0 else None}")
-                print(f"🔍 DEBUG: full_ds_oos.shape = {full_ds_oos.shape}, rango: {full_ds_oos.index.min() if len(full_ds_oos)>0 else None} → {full_ds_oos.index.max() if len(full_ds_oos)>0 else None}")
 
             if full_ds_is.empty or full_ds_oos.empty:
                 return None, None

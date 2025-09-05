@@ -77,12 +77,12 @@ class StrategySearcher:
         tag: str = "",
         debug: bool = False,
         decimal_precision: int = 6,
-        monkey_alpha: float = 0.025,
-        monkey_n_simulations: int = 5000,
-        monkey_min_percentile: float = 97.0,
-        monkey_min_zscore: float = 2.0,
-        monkey_wfv_windows: int = 3,
-        monkey_block_multiplier: float = 1.2,
+        monkey_alpha: float = 0.05,
+        monkey_n_simulations: int = 2500,
+        monkey_min_percentile: float = 95.0,
+        monkey_min_zscore: float = 1.5,
+        monkey_wfv_windows: int = 2,
+        monkey_block_multiplier: float = 1.0,
     ):
         self.symbol = symbol
         self.timeframe = timeframe

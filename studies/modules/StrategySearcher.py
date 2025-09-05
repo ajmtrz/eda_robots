@@ -77,8 +77,12 @@ class StrategySearcher:
         tag: str = "",
         debug: bool = False,
         decimal_precision: int = 6,
-        monkey_n_simulations: int = 1000,
-        monkey_alpha: float = 0.05,
+        monkey_n_simulations: int = 5000,
+        monkey_alpha: float = 0.01,
+        monkey_min_percentile: float = 99.0,
+        monkey_min_zscore: float = 2.5,
+        monkey_block_multiplier: float = 1.5,
+        monkey_wfv_windows: int = 3,
     ):
         self.symbol = symbol
         self.timeframe = timeframe
@@ -105,6 +109,10 @@ class StrategySearcher:
         self.decimal_precision = decimal_precision  # NUEVO ATRIBUTO
         self.monkey_n_simulations = monkey_n_simulations
         self.monkey_alpha = monkey_alpha
+        self.monkey_min_percentile = monkey_min_percentile
+        self.monkey_min_zscore = monkey_min_zscore
+        self.monkey_block_multiplier = monkey_block_multiplier
+        self.monkey_wfv_windows = monkey_wfv_windows
 
         # Configuración de logging para optuna
         optuna.logging.set_verbosity(optuna.logging.WARNING)
@@ -1036,23 +1044,70 @@ class StrategySearcher:
                     test_monkey_time_start = time.time()
                     # Preparar inputs para Monkey: retornos por barra, precios, posiciones y direccionalidad
                     price_series = full_ds['open'].to_numpy(dtype='float64') if 'open' in full_ds.columns else None
-                    monkey_res = run_monkey_test(
-                        actual_returns=returns_series if returns_series is not None else None,
-                        price_series=price_series,
-                        pos_series=pos_series if pos_series is not None else None,
-                        direction=self.direction,
-                        n_simulations=self.monkey_n_simulations,
-                    )
+                    idx = full_ds.index
+                    test_mask = (idx >= self.test_start) & (idx <= self.test_end)
+                    test_indices = np.where(test_mask.values)[0]
+                    # Dividir OOS en ventanas
+                    m = int(max(1, self.monkey_wfv_windows))
+                    windows = np.array_split(test_indices, m) if len(test_indices) > 0 else []
+                    pvals = []
+                    percs = []
+                    zscores = []
+                    win_info = []
+                    for w in windows:
+                        if w.size < 5:
+                            continue
+                        w_returns = returns_series[w]
+                        w_pos = pos_series[w]
+                        w_price = price_series[w]
+                        res = run_monkey_test(
+                            actual_returns=w_returns,
+                            price_series=w_price,
+                            pos_series=w_pos,
+                            direction=self.direction,
+                            n_simulations=self.monkey_n_simulations,
+                            block_multiplier=self.monkey_block_multiplier,
+                        )
+                        p = float(res.get('p_value', 1.0))
+                        q = float(res.get('percentile', 0.0))
+                        mu0 = float(res.get('monkey_sharpes_mean', 0.0))
+                        sd0 = float(res.get('monkey_sharpes_std', 0.0))
+                        sr = float(res.get('actual_sharpe', 0.0))
+                        z = (sr - mu0) / sd0 if sd0 > 0.0 else 0.0
+                        pvals.append(p)
+                        percs.append(q)
+                        zscores.append(z)
+                        win_info.append({'p': p, 'percentile': q, 'z': z, 'mu0': mu0, 'sd0': sd0})
+
+                    if len(pvals) == 0:
+                        raise RuntimeError("Monkey OOS windows vacías")
+
+                    # Corrección de Holm (step-down) sobre p-values por ventana
+                    order = np.argsort(pvals)
+                    sorted_p = np.array(pvals)[order]
+                    m_eff = len(sorted_p)
+                    holm_adj = []
+                    for j, p in enumerate(sorted_p, start=1):
+                        adj = p * (m_eff - j + 1)
+                        holm_adj.append(min(1.0, adj))
+                    holm_max = float(np.max(holm_adj))
+
+                    monkey_p_value = holm_max
+                    monkey_percentile = float(np.min(percs))
+                    min_z = float(np.min(zscores)) if len(zscores) else 0.0
+
+                    cond_p = monkey_p_value < self.monkey_alpha
+                    cond_q = monkey_percentile >= self.monkey_min_percentile
+                    cond_z = min_z >= self.monkey_min_zscore
+                    monkey_pass = bool(cond_p and cond_q and cond_z)
+
                     test_monkey_time_end = time.time()
                     if self.debug:
-                        print(f"🔍 DEBUG: Tiempo de test Monkey: {test_monkey_time_end - test_monkey_time_start:.2f} segundos")
-                        print(f"🔍 DEBUG: Resultado Monkey: {monkey_res}")
-                    monkey_p_value = float(monkey_res.get('p_value', 1.0))
-                    monkey_percentile = float(monkey_res.get('percentile', 0.0))
-                    monkey_pass = bool(monkey_p_value < self.monkey_alpha)
-                    if self.debug:
-                        print(f"🔍 DEBUG: Monkey p_value: {monkey_p_value}")
-                        print(f"🔍 DEBUG: Monkey percentile: {monkey_percentile}")
+                        print(f"🔍 DEBUG: Tiempo de test Monkey OOS WFV: {test_monkey_time_end - test_monkey_time_start:.2f} segundos")
+                        print(f"🔍 DEBUG: pvals ventanas: {pvals}")
+                        print(f"🔍 DEBUG: Holm max adj p: {holm_max:.6f} (alpha={self.monkey_alpha})")
+                        print(f"🔍 DEBUG: percentiles ventanas (min): {monkey_percentile:.3f} (mínimo requerido={self.monkey_min_percentile})")
+                        print(f"🔍 DEBUG: z-scores ventanas (min): {min_z:.3f} (mínimo requerido={self.monkey_min_zscore})")
                         print(f"🔍 DEBUG: Monkey pass: {monkey_pass}")
                 except Exception as e_monkey:
                     if self.debug:
@@ -1064,7 +1119,7 @@ class StrategySearcher:
                 # 3) Si falla, forzar score -1.0 para evitar autoengaño
                 if not monkey_pass:
                     if self.debug:
-                        print(f"🔍 DEBUG: Monkey Test NO superado (p={monkey_p_value:.4f} >= {self.monkey_alpha}) → score := -1.0")
+                        print(f"🔍 DEBUG: Monkey Test NO superado (holm_p={monkey_p_value:.4f}, perc_min={monkey_percentile:.2f}) → score := -1.0")
                     score = -1.0
 
             monkey_info = {}
@@ -1073,6 +1128,11 @@ class StrategySearcher:
                     'monkey_pass': monkey_pass,
                     'monkey_p_value': monkey_p_value,
                     'monkey_percentile': monkey_percentile,
+                    'n_simulations': int(self.monkey_n_simulations),
+                    'alpha': float(self.monkey_alpha),
+                    'min_percentile': float(self.monkey_min_percentile),
+                    'min_zscore': float(self.monkey_min_zscore),
+                    'block_multiplier': float(self.monkey_block_multiplier),
                 }
 
             # Desplazar columnas OHLCV una posición hacia atrás

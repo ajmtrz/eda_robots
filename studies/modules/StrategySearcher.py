@@ -77,12 +77,8 @@ class StrategySearcher:
         tag: str = "",
         debug: bool = False,
         decimal_precision: int = 6,
+        monkey_n_simulations: int = 5000,
         monkey_alpha: float = 0.05,
-        monkey_n_simulations: int = 2500,
-        monkey_min_percentile: float = 95.0,
-        monkey_min_zscore: float = 1.5,
-        monkey_wfv_windows: int = 2,
-        monkey_block_multiplier: float = 1.0,
     ):
         self.symbol = symbol
         self.timeframe = timeframe
@@ -109,10 +105,6 @@ class StrategySearcher:
         self.decimal_precision = decimal_precision  # NUEVO ATRIBUTO
         self.monkey_n_simulations = monkey_n_simulations
         self.monkey_alpha = monkey_alpha
-        self.monkey_min_percentile = monkey_min_percentile
-        self.monkey_min_zscore = monkey_min_zscore
-        self.monkey_block_multiplier = monkey_block_multiplier
-        self.monkey_wfv_windows = monkey_wfv_windows
 
         # Configuración de logging para optuna
         optuna.logging.set_verbosity(optuna.logging.WARNING)
@@ -1080,97 +1072,26 @@ class StrategySearcher:
             if must_run_monkey and equity_curve is not None and len(equity_curve) > 1:
                 try:
                     test_monkey_time_start = time.time()
-                    # Series OOS
-                    price_series = full_ds_oos['open'].to_numpy(dtype='float64') if 'open' in full_ds_oos.columns else None
-                    rs_all = returns_series if returns_series is not None else None
-                    ps_all = pos_series if pos_series is not None else None
-                    if rs_all is None or ps_all is None or price_series is None:
-                        raise RuntimeError("Series para Monkey Test no disponibles")
-
-                    # Definir ventanas WFV sobre OOS
-                    n_bars = int(len(price_series))
-                    n_windows = int(max(1, self.monkey_wfv_windows))
-                    # Asegurar tamaño mínimo de ventana
-                    min_window = 30
-                    while n_windows > 1 and (n_bars // n_windows) < min_window:
-                        n_windows -= 1
-
-                    # Construir ventanas equitativas (última absorbe el residuo)
-                    windows = []
-                    base = n_bars // n_windows
-                    remainder = n_bars % n_windows
-                    start_idx = 0
-                    for w in range(n_windows):
-                        size_w = base + (1 if w < remainder else 0)
-                        end_idx = start_idx + size_w
-                        windows.append((start_idx, end_idx))
-                        start_idx = end_idx
-
-                    # Holm–Bonferroni y umbrales por ventana
-                    def holm_pass(p_values: list[float], alpha: float) -> bool:
-                        m = len(p_values)
-                        if m == 0:
-                            return False
-                        order = np.argsort(np.array(p_values, dtype=np.float64))
-                        for rank, idx in enumerate(order, start=1):
-                            if p_values[idx] > alpha / (m - rank + 1):
-                                return False
-                        return True
-
-                    window_metrics = []
-                    all_ps: list[float] = []
-                    all_qs: list[float] = []
-                    all_zs: list[float] = []
-
-                    for w_idx, (ws, we) in enumerate(windows):
-                        if we - ws <= 5:
-                            continue
-                        pr = price_series[ws:we]
-                        rs = rs_all[ws:we]
-                        ps = ps_all[ws:we]
-                        res = run_monkey_test(
-                            actual_returns=rs,
-                            price_series=pr,
-                            pos_series=ps,
-                            direction=self.direction,
-                            n_simulations=self.monkey_n_simulations,
-                            block_multiplier=self.monkey_block_multiplier,
-                        )
-                        p = float(res.get('p_value', 1.0))
-                        q = float(res.get('percentile', 0.0))
-                        mu0 = float(res.get('monkey_sharpes_mean', 0.0))
-                        sd0 = float(res.get('monkey_sharpes_std', 0.0))
-                        sr = float(res.get('actual_sharpe', 0.0))
-                        z = (sr - mu0) / sd0 if sd0 > 0.0 else 0.0
-
-                        window_metrics.append({
-                            'w_idx': int(w_idx),
-                            'start_bar': int(ws),
-                            'end_bar': int(we),
-                            'p_value': p,
-                            'percentile': q,
-                            'zscore': float(z),
-                            'n_simulations': int(self.monkey_n_simulations),
-                        })
-                        all_ps.append(p)
-                        all_qs.append(q)
-                        all_zs.append(z)
-
-                    # Combinar por Holm y aplicar umbrales mínimos por ventana
-                    holm_ok = holm_pass(all_ps, self.monkey_alpha) if len(all_ps) > 0 else False
-                    thresholds_ok = all((q >= self.monkey_min_percentile and z >= self.monkey_min_zscore) for q, z in zip(all_qs, all_zs)) if len(all_qs) > 0 else False
-
-                    monkey_pass = bool(holm_ok and thresholds_ok)
-                    # Resumen conservador
-                    monkey_p_value = float(max(all_ps)) if len(all_ps) > 0 else 1.0
-                    monkey_percentile = float(min(all_qs)) if len(all_qs) > 0 else 0.0
-
+                    # Preparar inputs para Monkey: retornos por barra, precios, posiciones y direccionalidad
+                    price_series = full_ds['open'].to_numpy(dtype='float64') if 'open' in full_ds.columns else None
+                    monkey_res = run_monkey_test(
+                        actual_returns=returns_series if returns_series is not None else None,
+                        price_series=price_series,
+                        pos_series=pos_series if pos_series is not None else None,
+                        direction=self.direction,
+                        n_simulations=self.monkey_n_simulations,
+                    )
                     test_monkey_time_end = time.time()
                     if self.debug:
-                        print(f"🔍 DEBUG: Tiempo de test Monkey (HFV ventanas={n_windows}): {test_monkey_time_end - test_monkey_time_start:.2f} s")
-                        print(f"🔍 DEBUG: Holm pass: {holm_ok}, thresholds pass: {thresholds_ok}")
-                        if len(window_metrics) > 0:
-                            print(f"🔍 DEBUG: Ventanas Monkey (p,q,z): {[ (round(m['p_value'],6), round(m['percentile'],2), round(m['zscore'],3)) for m in window_metrics ]}")
+                        print(f"🔍 DEBUG: Tiempo de test Monkey: {test_monkey_time_end - test_monkey_time_start:.2f} segundos")
+                        print(f"🔍 DEBUG: Resultado Monkey: {monkey_res}")
+                    monkey_p_value = float(monkey_res.get('p_value', 1.0))
+                    monkey_percentile = float(monkey_res.get('percentile', 0.0))
+                    monkey_pass = bool(monkey_p_value < self.monkey_alpha)
+                    if self.debug:
+                        print(f"🔍 DEBUG: Monkey p_value: {monkey_p_value}")
+                        print(f"🔍 DEBUG: Monkey percentile: {monkey_percentile}")
+                        print(f"🔍 DEBUG: Monkey pass: {monkey_pass}")
                 except Exception as e_monkey:
                     if self.debug:
                         print(f"🔍 DEBUG: Error en Monkey Test segmentado: {e_monkey}")
@@ -1181,7 +1102,7 @@ class StrategySearcher:
                 # 3) Si falla, forzar score -1.0 para evitar autoengaño
                 if not monkey_pass:
                     if self.debug:
-                        print(f"🔍 DEBUG: Monkey Test NO superado (holm_p={monkey_p_value:.4f}, perc_min={monkey_percentile:.2f}) → score := -1.0")
+                        print(f"🔍 DEBUG: Monkey Test NO superado (p={monkey_p_value:.4f} >= {self.monkey_alpha}) → score := -1.0")
                     score = -1.0
 
             monkey_info = {}
@@ -1191,22 +1112,7 @@ class StrategySearcher:
                     'monkey_pass': monkey_pass,
                     'monkey_p_value': monkey_p_value,
                     'monkey_percentile': monkey_percentile,
-                    'n_simulations': int(self.monkey_n_simulations),
-                    'alpha': float(self.monkey_alpha),
-                    'min_percentile': float(self.monkey_min_percentile),
-                    'min_zscore': float(self.monkey_min_zscore),
-                    'block_multiplier': float(self.monkey_block_multiplier),
                 }
-                try:
-                    if 'window_metrics' in locals():
-                        monkey_info['windows'] = window_metrics
-                        monkey_info['global'] = {
-                            'holm_pass': bool(holm_ok),
-                            'thresholds_pass': bool(thresholds_ok),
-                            'n_windows': int(len(window_metrics)),
-                        }
-                except Exception:
-                    pass
 
             # Desplazar columnas OHLCV una posición hacia atrás
             full_ds = pd.concat([full_ds_is, full_ds_oos]).sort_index()

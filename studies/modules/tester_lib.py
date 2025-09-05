@@ -875,7 +875,6 @@ def run_monkey_test(actual_returns: np.ndarray,
                     pos_series: np.ndarray,
                     direction: str,
                     n_simulations: int = 1000,
-                    block_multiplier: float = 1.0,
                     ) -> dict:
     """
     Monkey Test basado en Sharpe con:
@@ -898,13 +897,6 @@ def run_monkey_test(actual_returns: np.ndarray,
         base_pos = _sanitize_positions_for_direction_code(pos_series, direction_code)
         # Estimar tamaño de bloque y preparar simulaciones
         block_size = _estimate_block_size_jit(base_pos)
-        if not np.isfinite(block_multiplier):
-            block_multiplier = 1.0
-        try:
-            bs = int(max(1, min(base_pos.size, int(round(block_size * float(block_multiplier))))))
-        except Exception:
-            bs = block_size
-        block_size = bs
 
         # Sharpe real (por barra, sin anualizar)
         sr_actual = _compute_sharpe(actual_returns.astype(np.float64))
@@ -927,9 +919,7 @@ def run_monkey_test(actual_returns: np.ndarray,
             'monkey_sharpes_std': float(np.std(sharpes)) if sharpes.size else 0.0,
             'p_value': float(p_value),
             'is_significant': bool(p_value < 0.05),
-            'percentile': float(percentile),
-            'block_size': int(block_size),
-            'n_simulations': int(sharpes.size)
+            'percentile': float(percentile)
         }
     except Exception:
         return {'p_value': 1.0, 'is_significant': False, 'percentile': 0.0}

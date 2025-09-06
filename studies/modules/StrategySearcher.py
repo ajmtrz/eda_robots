@@ -1190,7 +1190,7 @@ class StrategySearcher:
                 mapie.fit_conformalize(
                     X_tr,
                     y_tr,
-                    fit_params={"eval_set": [(X_va, y_va)]}
+                    fit_params={"eval_set": [(X_va, y_va)], "use_best_model": True, "verbose": False}
                 )
 
                 pred_va, pred_sets_va = mapie.predict_set(X_va)
@@ -1280,7 +1280,7 @@ class StrategySearcher:
                         verbose=False,
                     )
                     model = CatBoostClassifier(**catboost_params)
-                    model.fit(X.loc[train_idx], y.loc[train_idx], eval_set=[(X.loc[val_idx], y.loc[val_idx])], verbose=False)
+                    model.fit(X.loc[train_idx], y.loc[train_idx], eval_set=[(X.loc[val_idx], y.loc[val_idx])], use_best_model=True, verbose=False)
                     pred = (model.predict_proba(X.loc[val_idx])[:, 1] >= hp['main_threshold']).astype(int)
                     val_y = y.loc[val_idx]
                     val0 = val_idx[val_y == 0]

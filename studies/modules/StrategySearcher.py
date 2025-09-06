@@ -1622,7 +1622,8 @@ class StrategySearcher:
             start_ext = min(self.train_start, self.test_start) - pad * bar_delta
             if start_ext < idx[0]:
                 start_ext = idx[0]
-            full_ds = self.base_df.loc[start_ext:].copy()
+            end_ext = max(self.train_end, self.test_end)
+            full_ds = self.base_df.loc[start_ext:end_ext].copy()
             
             # 🔍 DEBUG: Supervisar paso de parámetros a get_features
             if self.debug:
@@ -1660,8 +1661,26 @@ class StrategySearcher:
 
             # ──────────────────────────────────────────────────────────────
             # 6) Comprobaciones de calidad de features
-            full_ds = full_ds.loc[min(self.train_start, self.test_start):max(self.train_end, self.test_end)]
-            full_ds = full_ds.loc[full_ds.first_valid_index():full_ds.last_valid_index()]
+            # Recortar al rango de interés (continuo)
+            start_range = min(self.train_start, self.test_start)
+            end_range = max(self.train_end, self.test_end)
+            full_ds = full_ds.loc[start_range:end_range]
+
+            # Recorte vectorizado de warmup: localizar primer y último índice
+            # donde TODOS los features son finitos (sin eliminar filas internas)
+            feature_cols_all = [c for c in full_ds.columns if 'feature' in c]
+            if feature_cols_all:
+                feats_ok = (full_ds[feature_cols_all]
+                            .replace([np.inf, -np.inf], np.nan)
+                            .notna()
+                            .all(axis=1))
+                if feats_ok.any():
+                    valid_idx = full_ds.index[feats_ok]
+                    first_ok = valid_idx[0]
+                    last_ok = valid_idx[-1]
+                    full_ds = full_ds.loc[first_ok:last_ok]
+                else:
+                    return None, None
             feature_cols = full_ds.columns[full_ds.columns.str.contains('feature')]
             if feature_cols.empty:
                 return None, None

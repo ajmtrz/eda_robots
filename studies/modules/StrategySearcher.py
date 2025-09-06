@@ -66,8 +66,8 @@ class StrategySearcher:
         test_end: datetime,
         pruner_type: str = 'hyperband',
         n_trials: int = 500,
-        n_models: int = 10,
-        n_jobs: int = 1,
+        n_models: int = 1,
+        n_jobs: int = -1,
         models_export_path: str = r'/mnt/c/Users/Administrador/AppData/Roaming/MetaQuotes/Terminal/6C3C6A11D1C3791DD4DBF45421BF8028/MQL5/Files/',
         include_export_path: str = r'/mnt/c/Users/Administrador/AppData/Roaming/MetaQuotes/Terminal/6C3C6A11D1C3791DD4DBF45421BF8028/MQL5/Include/ajmtrz/include/Dmitrievsky',
         history_path: str = r"/mnt/c/Users/Administrador/AppData/Roaming/MetaQuotes/Terminal/Common/Files/",
@@ -76,7 +76,7 @@ class StrategySearcher:
         label_method: str = 'random',
         tag: str = "",
         debug: bool = False,
-        decimal_precision: int = 6,
+        decimal_precision: int = 8,
         monkey_n_simulations: int = 5000,
         monkey_alpha: float = 0.05,
     ):
@@ -337,54 +337,48 @@ class StrategySearcher:
                 print(f"🔍   causal_mask.mean(): {causal_mask.mean():.3f}")
 
             # Crear máscara final
-            mapie_causal_mask = (base_mask & mapie_mask & causal_mask).astype(bool)
+            final_mask = (base_mask & mapie_mask & causal_mask).astype(bool)
             if self.debug:
-                print(f"🔍   mapie_causal_mask.sum(): {mapie_causal_mask.sum()}")
-                print(f"🔍   mapie_causal_mask.mean(): {mapie_causal_mask.mean():.3f}")
-                print(f"🔍   Reducción de muestras: {base_mask.sum()} -> {mapie_causal_mask.sum()} ({mapie_causal_mask.sum()/base_mask.sum()*100:.1f}%)")
+                print(f"🔍   final_mask.sum(): {final_mask.sum()}")
+                print(f"🔍   final_mask.mean(): {final_mask.mean():.3f}")
+                print(f"🔍   Reducción de muestras: {base_mask.sum()} -> {final_mask.sum()} ({final_mask.sum()/base_mask.sum()*100:.1f}%)")
 
             # Crear dataset main con base_mask
             main_feature_cols = [c for c in full_ds_is.columns if c.endswith('_main_feature')]
             model_main_train_data = full_ds_is.loc[base_mask, main_feature_cols + ['labels_main']].dropna(subset=main_feature_cols).copy()
             if len(model_main_train_data) < 200:
                 if self.debug:
-                    print(f"🔍 DEBUG search_reliability - Insuficientes muestras main: {len(model_main_train_data)}")
+                    print(f"🔍 DEBUG search_reliability MAIN - Insuficientes muestras: {len(model_main_train_data)}")
                 return -1.0
-            if set(model_main_train_data['labels_main'].unique()) != {0.0, 1.0}:
+            main_label_counts = model_main_train_data['labels_main'].value_counts()
+            if set(main_label_counts.index) != {0, 1} or (main_label_counts < 50).any():
                 if self.debug:
-                    print(f"🔍   Search reliability - labels_main insuficientes")
+                    print(f"🔍 DEBUG search_reliability MAIN - labels_main insuficientes o desbalanceadas ({main_label_counts.to_dict()})")
                 return -1.0
             if self.debug:
-                print(f"🔍 DEBUG search_reliability - Main data shape: {model_main_train_data.shape}")
+                print(f"🔍 DEBUG search_reliability MAIN")
                 print(f"🔍   Main data shape: {model_main_train_data.shape}")
-            if self.debug:
-                main_dist = model_main_train_data['labels_main'].value_counts()
-                print(f"🔍   Main labels distribution: {main_dist}")
+                print(f"🔍   Main labels distribution: {main_label_counts}")
 
             # Crear dataset meta con final_mask
             meta_feature_cols = [c for c in full_ds_is.columns if c.endswith('_meta_feature')]
             if not meta_feature_cols:  # Fallback: usar main features si no hay meta features
                 meta_feature_cols = main_feature_cols
             model_meta_train_data = full_ds_is[meta_feature_cols].dropna(subset=meta_feature_cols).copy()
-            meta_mask = self.create_oof_meta_mask(
-                model_main_train_data=model_main_train_data, model_meta_train_data=model_meta_train_data, hp=hp)
-            meta_mask_full = meta_mask.reindex(full_ds_is.index).fillna(False)
-            final_mask = (mapie_causal_mask & meta_mask_full).astype(bool)
             model_meta_train_data['labels_meta'] = (
                 final_mask.reindex(model_meta_train_data.index).fillna(False).astype('int8')
             )
             if model_meta_train_data is None or model_meta_train_data.empty:
                 return -1.0
-            if set(model_meta_train_data['labels_meta'].unique()) != {0.0, 1.0}:
+            meta_label_counts = model_meta_train_data['labels_meta'].value_counts()
+            if set(meta_label_counts.index) != {0, 1} or (meta_label_counts < 50).any():
                 if self.debug:
-                    print(f"🔍   Search reliability - labels_meta insuficientes")
+                    print(f"🔍 DEBUG search_reliability META - labels_meta insuficientes o desbalanceadas ({meta_label_counts.to_dict()})")
                 return -1.0
             if self.debug:
-                print(f"🔍 DEBUG search_reliability - Meta data shape: {model_meta_train_data.shape}")
+                print(f"🔍 DEBUG search_reliability META")
                 print(f"🔍   Meta data shape: {model_meta_train_data.shape}")
-            if self.debug:
-                meta_dist = model_meta_train_data['labels_meta'].value_counts()
-                print(f"🔍   Meta labels distribution: {meta_dist}")
+                print(f"🔍   Meta labels distribution: {meta_label_counts}")
                 
             # Usar pipeline existente
             score, full_ds_with_labels_path, model_paths, models_cols, monkey_info = self.fit_final_models(
@@ -571,54 +565,48 @@ class StrategySearcher:
                     print(f"🔍   causal_mask.mean(): {causal_mask.mean():.3f}")
                 
                 # Crear máscara final
-                mapie_causal_mask = (cluster_mask & mapie_mask & causal_mask).astype(bool)
+                final_mask = (cluster_mask & mapie_mask & causal_mask).astype(bool)
                 if self.debug:
-                    print(f"🔍   mapie_causal_mask.sum(): {mapie_causal_mask.sum()}")
-                    print(f"🔍   mapie_causal_mask.mean(): {mapie_causal_mask.mean():.3f}")
-                    print(f"🔍   Reducción de muestras: {cluster_mask.sum()} -> {mapie_causal_mask.sum()} ({mapie_causal_mask.sum()/cluster_mask.sum()*100:.1f}%)")
+                    print(f"🔍   final_mask.sum(): {final_mask.sum()}")
+                    print(f"🔍   final_mask.mean(): {final_mask.mean():.3f}")
+                    print(f"🔍   Reducción de muestras: {cluster_mask.sum()} -> {final_mask.sum()} ({final_mask.sum()/cluster_mask.sum()*100:.1f}%)")
                 
                 # Crear dataset main con cluster_mask
                 main_feature_cols = [c for c in full_ds_is.columns if c.endswith('_main_feature')]
                 model_main_train_data = full_ds_is.loc[cluster_mask, main_feature_cols + ['labels_main']].dropna(subset=main_feature_cols).copy()
                 if len(model_main_train_data) < 200:
                     if self.debug:
-                        print(f"🔍 DEBUG evaluate_clusters - Insuficientes muestras main: {len(model_main_train_data)}")
+                        print(f"🔍 DEBUG evaluate_clusters MAIN - Insuficientes muestras: {len(model_main_train_data)}")
                     continue
-                if set(model_main_train_data['labels_main'].unique()) != {0.0, 1.0}:
+                main_label_counts = model_main_train_data['labels_main'].value_counts()
+                if set(main_label_counts.index) != {0, 1} or (main_label_counts < 50).any():
                     if self.debug:
-                        print(f"🔍   Cluster {clust} descartado: labels_main insuficientes")
+                        print(f"🔍 DEBUG evaluate_clusters MAIN - labels_main insuficientes o desbalanceadas ({main_label_counts.to_dict()})")
                     continue
                 if self.debug:
-                    print(f"🔍 DEBUG evaluate_clusters - Main data shape: {model_main_train_data.shape}")
+                    print(f"🔍 DEBUG evaluate_clusters MAIN")
                     print(f"🔍   Main data shape: {model_main_train_data.shape}")
-                if self.debug:
-                    main_dist = model_main_train_data['labels_main'].value_counts()
-                    print(f"🔍   Main labels distribution: {main_dist}")
+                    print(f"🔍   Main labels distribution: {main_label_counts}")
 
                 # Crear dataset meta con final_mask
                 meta_feature_cols = [c for c in full_ds_is.columns if c.endswith('_meta_feature')]
                 if not meta_feature_cols:  # Fallback: usar main features si no hay meta features
                     meta_feature_cols = main_feature_cols
                 model_meta_train_data = full_ds_is[meta_feature_cols].dropna(subset=meta_feature_cols).copy()
-                meta_mask = self.create_oof_meta_mask(
-                    model_main_train_data=model_main_train_data, model_meta_train_data=model_meta_train_data, hp=hp)
-                meta_mask_full = meta_mask.reindex(full_ds_is.index).fillna(False)
-                final_mask = (mapie_causal_mask & meta_mask_full).astype(bool)
                 model_meta_train_data['labels_meta'] = (
                     final_mask.reindex(model_meta_train_data.index).fillna(False).astype('int8')
                 )
                 if model_meta_train_data is None or model_meta_train_data.empty:
                     continue
-                if set(model_meta_train_data['labels_meta'].unique()) != {0.0, 1.0}:
+                meta_label_counts = model_meta_train_data['labels_meta'].value_counts()
+                if set(meta_label_counts.index) != {0, 1} or (meta_label_counts < 50).any():
                     if self.debug:
-                        print(f"🔍   Cluster {clust} descartado: labels_meta insuficientes")
+                        print(f"🔍 DEBUG evaluate_clusters META - labels_meta insuficientes o desbalanceadas ({meta_label_counts.to_dict()})")
                     continue
                 if self.debug:
-                    print(f"🔍 DEBUG evaluate_clusters - Meta data shape: {model_meta_train_data.shape}")
+                    print(f"🔍 DEBUG evaluate_clusters META")
                     print(f"🔍   Meta data shape: {model_meta_train_data.shape}")
-                if self.debug:
-                    meta_dist = model_meta_train_data['labels_meta'].value_counts()
-                    print(f"🔍   Meta labels distribution: {meta_dist}")
+                    print(f"🔍   Meta labels distribution: {meta_label_counts}")
                     
                 # Entrenar modelos
                 score, full_ds_with_labels_path, model_paths, models_cols, monkey_info = self.fit_final_models(
@@ -658,17 +646,6 @@ class StrategySearcher:
         except Exception as e:
             print(f"⚠️ ERROR en evaluación de clusters: {str(e)}")
             return None, None, None, None, None
-    
-    def _suggest_catboost(self, group: str, trial: optuna.Trial) -> Dict[str, float]:
-        """Devuelve hiperparámetros CatBoost (main|meta) con prefijo `group`."""
-        p = {}
-        # Rango más acotado para promover entrenamientos estables (menos under/overfitting) y menor diversidad
-        p[f'{group}_iterations']      = trial.suggest_int (f'{group}_iterations',      400, 800, step=50)
-        p[f'{group}_depth']           = trial.suggest_int (f'{group}_depth',           5,   10)
-        p[f'{group}_learning_rate']   = trial.suggest_float(f'{group}_learning_rate',  1e-2, 0.10, log=True)
-        p[f'{group}_l2_leaf_reg']     = trial.suggest_float(f'{group}_l2_leaf_reg',    2.0,  5.0,  log=True)
-        p[f'{group}_early_stopping']  = trial.suggest_int (f'{group}_early_stopping',  50,  150,  step=20)
-        return p
 
     def _suggest_feature(self, trial: optuna.Trial) -> Dict[str, Any]:
         """
@@ -813,7 +790,7 @@ class StrategySearcher:
         p['causal_meta_learners'] = trial.suggest_int('causal_meta_learners', 5, 20)
         p['causal_percentile'] = trial.suggest_int('causal_percentile', 60, 95)
         p['oof_resid_percentile'] = trial.suggest_int('oof_resid_percentile', 75, 95)
-        p['meta_threshold'] = 0.5 # trial.suggest_float('meta_threshold', 0.3, 0.7)
+        p['meta_threshold'] = trial.suggest_float('meta_threshold', 0.3, 0.7)
         p['main_threshold'] = 0.5 # trial.suggest_float('main_threshold', 0.3, 0.7)
 
         return p
@@ -823,9 +800,6 @@ class StrategySearcher:
         """Sugiere TODOS los hiperparámetros, agrupados de forma independiente."""
         try:
             params = {}
-            # --- CatBoost main & meta ------------------------------------------------
-            params.update(self._suggest_catboost('cat_main', trial))
-            params.update(self._suggest_catboost('cat_meta', trial))
             # --- Feature engineering -------------------------------------------------
             params.update(self._suggest_feature(trial))
             # --- Labelling -----------------------------------------------------------
@@ -835,12 +809,10 @@ class StrategySearcher:
 
             if self.debug:
                 print(f"🔍 DEBUG suggest_all_params - Parámetros generados:")
-                cat_params = {k: v for k, v in params.items() if k.startswith('cat_')}
                 feature_params = {k: v for k, v in params.items() if k.startswith('feature_')}
                 label_params = {k: v for k, v in params.items() if k.startswith('label_')}
-                algo_params = {k: v for k, v in params.items() if not any(k.startswith(p) for p in ['cat_', 'feature_', 'label_'])}
+                algo_params = {k: v for k, v in params.items() if not any(k.startswith(p) for p in ['feature_', 'label_'])}
                 
-                print(f"🔍   CatBoost params: {list(cat_params.keys())}")
                 print(f"🔍   Feature params: {list(feature_params.keys())}")
                 print(f"🔍   Label params: {list(label_params.keys())}")
                 print(f"🔍   Algo params: {list(algo_params.keys())}")
@@ -863,14 +835,6 @@ class StrategySearcher:
                          hp: Dict[str, Any]) -> tuple[float, str, tuple, tuple, dict]:
         """Ajusta los modelos finales y devuelve rutas a archivos temporales."""
         try:
-            # 🔍 DEBUG: Supervisar parámetros CatBoost
-            if self.debug:
-                cat_main_params = {k: v for k, v in hp.items() if k.startswith('cat_main_')}
-                cat_meta_params = {k: v for k, v in hp.items() if k.startswith('cat_meta_')}
-                print(f"🔍 DEBUG fit_final_models - Parámetros CatBoost:")
-                print(f"🔍   cat_main_*: {cat_main_params}")
-                print(f"🔍   cat_meta_*: {cat_meta_params}")
-            
             # Preparar datos del modelo main
             if model_main_train_data.empty:
                 return None, None, None, None, None
@@ -882,7 +846,7 @@ class StrategySearcher:
             # Dividir train/test
             train_df_main, val_df_main = train_test_split(
                 model_main_train_data,
-                test_size=0.2,
+                test_size=0.15,
                 stratify=model_main_train_data['labels_main'],
                 shuffle=True,
                 random_state=None
@@ -899,10 +863,6 @@ class StrategySearcher:
 
             # Configurar parámetros CatBoost
             cat_main_params = dict(
-                iterations=hp['cat_main_iterations'],
-                depth=hp['cat_main_depth'],
-                learning_rate=hp['cat_main_learning_rate'],
-                l2_leaf_reg=hp['cat_main_l2_leaf_reg'],
                 auto_class_weights='Balanced',
                 eval_metric='Accuracy',
                 store_all_simple_ctr=False,
@@ -911,19 +871,12 @@ class StrategySearcher:
                 task_type='CPU',
                 verbose=False,
             )
-            
-            # 🔍 DEBUG: Mostrar configuración final de CatBoost
-            if self.debug:
-                print(f"🔍 DEBUG: CatBoost Main (Classification) configuración final:")
-                for k, v in cat_main_params.items():
-                    print(f"🔍   {k}: {v}")
                 
             model_main = CatBoostClassifier(**cat_main_params)
 
             t_train_main_start = time.time()
             model_main.fit(X_train_main, y_train_main, 
                            eval_set=[(X_val_main, y_val_main)],
-                           early_stopping_rounds=hp['cat_main_early_stopping'],
                            # callbacks=[CatBoostPruningCallback(trial=trial, metric='Logloss')],
                            use_best_model=True,
                            verbose=False
@@ -941,7 +894,7 @@ class StrategySearcher:
             # Dividir train/test
             train_df_meta, val_df_meta = train_test_split(
                 model_meta_train_data,
-                test_size=0.2,
+                test_size=0.15,
                 stratify=model_meta_train_data['labels_meta'],
                 shuffle=True,
                 random_state=None
@@ -957,10 +910,6 @@ class StrategySearcher:
                 print(f"🔍 DEBUG: X_val_meta shape: {X_val_meta.shape}, y_val_meta shape: {y_val_meta.shape}")
 
             cat_meta_params = dict(
-                iterations=hp['cat_meta_iterations'],
-                depth=hp['cat_meta_depth'],
-                learning_rate=hp['cat_meta_learning_rate'],
-                l2_leaf_reg=hp['cat_meta_l2_leaf_reg'],
                 auto_class_weights='Balanced',
                 eval_metric='F1',
                 store_all_simple_ctr=False,
@@ -969,18 +918,11 @@ class StrategySearcher:
                 task_type='CPU',
                 verbose=False,
             )
-            
-            # 🔍 DEBUG: Mostrar configuración final de CatBoost Meta
-            if self.debug:
-                print(f"🔍 DEBUG: CatBoost Meta configuración final:")
-                for k, v in cat_meta_params.items():
-                    print(f"🔍   {k}: {v}")
                     
             model_meta = CatBoostClassifier(**cat_meta_params)
             t_train_meta_start = time.time()
             model_meta.fit(X_train_meta, y_train_meta, 
                            eval_set=[(X_val_meta, y_val_meta)], 
-                           early_stopping_rounds=hp['cat_meta_early_stopping'],
                            # callbacks=[CatBoostPruningCallback(trial=trial, metric='Logloss')],
                            use_best_model=True,
                            verbose=False
@@ -994,34 +936,10 @@ class StrategySearcher:
             
             try:
                 if self.debug:
-                    print(f"🔍 DEBUG: Inicializando backtest del periodo OOS")
-                test_train_time_start = time.time()
-                score_oos, equity_curve, returns_series, pos_series = tester(
-                    dataset=full_ds_oos,
-                    model_main=model_main_path,
-                    model_meta=model_meta_path,
-                    model_main_cols=main_feature_cols,
-                    model_meta_cols=meta_feature_cols,
-                    direction=self.direction,
-                    model_main_threshold=hp.get('main_threshold', 0.5),
-                    model_meta_threshold=hp.get('meta_threshold', 0.5),
-                    debug=self.debug,
-                    plot=False
-                )
-                test_train_time_end = time.time()
-                if self.debug:
-                    print(f"🔍 DEBUG: Tiempo de OOS: {test_train_time_end - test_train_time_start:.2f} segundos")
-                    print(f"🔍 DEBUG: Score OOS: {score_oos}")
-                if score_oos < 0.0 or not np.isfinite(score_oos):
-                    if self.debug:
-                        print(f"🔍 DEBUG: Score OOS < 0.0 ({score_oos:.6f})")
-                    return None, None, None, None, None
-
-                if self.debug:
-                    print(f"🔍 DEBUG: Inicializando backtest del periodo FULL")
+                    print(f"🔍 DEBUG: Inicializando backtest")
                 full_ds = pd.concat([full_ds_is, full_ds_oos]).sort_index()
                 test_train_time_start = time.time()
-                score, _, _, _ = tester(
+                score, equity_curve, returns_series, pos_series = tester(
                     dataset=full_ds,
                     model_main=model_main_path,
                     model_meta=model_meta_path,
@@ -1035,11 +953,11 @@ class StrategySearcher:
                 )
                 test_train_time_end = time.time()
                 if self.debug:
-                    print(f"🔍 DEBUG: Tiempo de FULL: {test_train_time_end - test_train_time_start:.2f} segundos")
-                    print(f"🔍 DEBUG: Score de FULL: {score}")
+                    print(f"🔍 DEBUG: Tiempo de backtest: {test_train_time_end - test_train_time_start:.2f} segundos")
+                    print(f"🔍 DEBUG: Score de backtest: {score}")
                 if score < 0.0 or not np.isfinite(score):
                     if self.debug:
-                        print(f"🔍 DEBUG: Score FULL < 0.0 ({score:.6f})")
+                        print(f"🔍 DEBUG: Score backtest < 0.0 ({score:.6f})")
                     return None, None, None, None, None
             except Exception as tester_error:
                 if self.debug:
@@ -1218,63 +1136,73 @@ class StrategySearcher:
                 else:
                     return np.zeros(len(X))
 
-            def _randomize_catboost_params(base_params):
-                # Pequeñas variaciones aleatorias (±10%) para cada hiperparámetro relevante
-                randomized = base_params.copy()
-                for k in ['iterations', 'depth', 'l2_leaf_reg']:
-                    if k in randomized:
-                        jitter = random.uniform(0.9, 1.1)
-                        # Mantener enteros para iteraciones y profundidad
-                        if k in ['iterations', 'depth']:
-                            randomized[k] = max(1, int(round(randomized[k] * jitter)))
-                        else:
-                            randomized[k] = randomized[k] * jitter
-                if 'learning_rate' in randomized:
-                    jitter = random.uniform(0.9, 1.1)
-                    randomized['learning_rate'] = max(1e-4, randomized['learning_rate'] * jitter)
-                return randomized
-            # Configurar CatBoost y MAPIE
+            # OOF con validación temporal (TimeSeriesSplit) para evitar sobreajuste
             catboost_params = dict(
-                iterations=hp['cat_main_iterations'],
-                depth=hp['cat_main_depth'],
-                learning_rate=hp['cat_main_learning_rate'],
-                l2_leaf_reg=hp['cat_main_l2_leaf_reg'],
                 auto_class_weights='Balanced',
-                eval_metric='Accuracy',
+                eval_metric='Logloss',
                 store_all_simple_ctr=False,
                 allow_writing_files=False,
                 thread_count=self.n_jobs,
                 task_type='CPU',
                 verbose=False,
             )
-            catboost_params = _randomize_catboost_params(catboost_params)
             base_estimator = CatBoostClassifier(**catboost_params)
-            mapie = CrossConformalClassifier(
-                estimator=base_estimator,
-                confidence_level=hp['mapie_confidence_level'],
-                conformity_score='lac',
-                cv=hp['mapie_cv'],
-            )
-            
-            mapie.fit_conformalize(X, y)
-            
-            predicted, prediction_sets = mapie.predict_set(X)
-            prediction_sets_2d = prediction_sets[:, :, 0]
-            set_sizes = prediction_sets_2d.sum(axis=1)
-            conformal_scores = (set_sizes == 1).astype(float)
-            precision_scores = (predicted == y.to_numpy()).astype(float)
-            combined_scores = ((conformal_scores == 1.0) & (precision_scores == 1.0)).astype(float)
-            
+
+            # Splits externos OOF (series temporales)
+            n_splits_outer = int(hp.get('mapie_cv', 2))
+            n_splits_outer = max(2, min(n_splits_outer, max(2, len(X) - 1)))
+            tscv = TimeSeriesSplit(n_splits=n_splits_outer)
+
+            oof_conformal = np.full(shape=len(X), fill_value=np.nan, dtype=float)
+            oof_precision = np.full(shape=len(X), fill_value=np.nan, dtype=float)
+
+            for tr_idx, va_idx in tscv.split(X):
+                X_tr, y_tr = X.iloc[tr_idx], y.iloc[tr_idx]
+                X_va, y_va = X.iloc[va_idx], y.iloc[va_idx]
+
+                # CV interno para calibración conformal en el set de entrenamiento
+                inner_cv = int(hp.get('mapie_cv', 2))
+                inner_cv = max(2, min(inner_cv, max(2, len(X_tr) - 1)))
+
+                mapie = CrossConformalClassifier(
+                    estimator=base_estimator,
+                    confidence_level=hp['mapie_confidence_level'],
+                    conformity_score='lac',
+                    cv=inner_cv,
+                )
+
+                mapie.fit_conformalize(
+                    X_tr,
+                    y_tr,
+                    fit_params={"eval_set": [(X_va, y_va)]}
+                )
+
+                pred_va, pred_sets_va = mapie.predict_set(X_va)
+                pred_sets_va_2d = pred_sets_va[:, :, 0]
+                set_sizes_va = pred_sets_va_2d.sum(axis=1)
+
+                conformal_va = (set_sizes_va == 1).astype(float)
+                precision_va = (pred_va == y_va.to_numpy()).astype(float)
+
+                oof_conformal[va_idx] = conformal_va
+                oof_precision[va_idx] = precision_va
+
+            # Combinar métricas OOF: preciso y conjunto unitario
+            combined_scores = ((oof_conformal == 1.0) & (oof_precision == 1.0)).astype(float)
+            # Reemplazar NaNs (si los hubiera) por 0.0 conservador
+            if np.isnan(combined_scores).any():
+                combined_scores = np.nan_to_num(combined_scores, nan=0.0)
+
             if self.debug:
-                print(f"🔍   set_sizes.min(): {set_sizes.min()}, set_sizes.max(): {set_sizes.max()}")
-                print(f"🔍   conformal_scores.sum(): {(set_sizes == 1).sum()}")
-                print(f"🔍   conformal_scores.mean(): {conformal_scores.mean():.3f}")
-                print(f"🔍   precision_scores.sum(): {precision_scores.sum()}")
-                print(f"🔍   precision_scores.mean(): {precision_scores.mean():.3f}")
-                print(f"🔍   reliability_scores.sum(): {combined_scores.sum()}")
-                print(f"🔍   reliability_scores.mean(): {combined_scores.mean():.3f}")
-                print(f"🔍 DEBUG apply_mapie_filter - Filtrado MAPIE completado")
-            
+                try:
+                    print(f"🔍   OOF conformal mean: {np.nanmean(oof_conformal):.3f}")
+                    print(f"🔍   OOF precision mean: {np.nanmean(oof_precision):.3f}")
+                except Exception:
+                    pass
+                print(f"🔍   reliability_scores.sum(): {np.nansum(combined_scores)}")
+                print(f"🔍   reliability_scores.mean(): {np.nanmean(combined_scores):.3f}")
+                print(f"🔍 DEBUG apply_mapie_filter - Filtrado MAPIE OOF completado")
+
             if reliable_mask is not None:
                 full_reliability_scores = np.zeros(len(full_ds))
                 full_reliability_scores[reliable_mask] = combined_scores
@@ -1325,39 +1253,19 @@ class StrategySearcher:
                     val_idx = X.index.difference(train_idx)
                     if len(val_idx) == 0:
                         continue
-                    
-                    # Diversificar hiperparámetros CatBoost para cada modelo bootstrap
-                    def _randomize_catboost_params(base_params):
-                        randomized = base_params.copy()
-                        for k in ['iterations', 'depth', 'l2_leaf_reg']:
-                            if k in randomized:
-                                jitter = random.uniform(0.9, 1.1)
-                                if k in ['iterations', 'depth']:
-                                    randomized[k] = max(1, int(round(randomized[k] * jitter)))
-                                else:
-                                    randomized[k] = randomized[k] * jitter
-                        if 'learning_rate' in randomized:
-                            jitter = random.uniform(0.9, 1.1)
-                            randomized['learning_rate'] = max(1e-4, randomized['learning_rate'] * jitter)
-                        return randomized
 
                     catboost_params = dict(
-                        iterations=hp['cat_main_iterations'],
-                        depth=hp['cat_main_depth'],
-                        learning_rate=hp['cat_main_learning_rate'],
-                        l2_leaf_reg=hp['cat_main_l2_leaf_reg'],
                         auto_class_weights='Balanced',
-                        eval_metric='Accuracy',
+                        eval_metric='Logloss',
                         store_all_simple_ctr=False,
                         allow_writing_files=False,
                         thread_count=self.n_jobs,
                         task_type='CPU',
                         verbose=False,
                     )
-                    catboost_params = _randomize_catboost_params(catboost_params)
                     model = CatBoostClassifier(**catboost_params)
                     model.fit(X.loc[train_idx], y.loc[train_idx], eval_set=[(X.loc[val_idx], y.loc[val_idx])], verbose=False)
-                    pred = (model.predict_proba(X.loc[val_idx])[:, 1] >= 0.5).astype(int)
+                    pred = (model.predict_proba(X.loc[val_idx])[:, 1] >= hp['main_threshold']).astype(int)
                     val_y = y.loc[val_idx]
                     val0 = val_idx[val_y == 0]
                     val1 = val_idx[val_y == 1]
@@ -1844,6 +1752,14 @@ class StrategySearcher:
             is_mask &= ~oos_mask
             full_ds_is = full_ds.loc[is_mask]
             full_ds_oos = full_ds.loc[oos_mask]
+            if self.debug:
+                print(f"🔍 DEBUG: get_labeled_full_data")
+                print(f"🔍    full_ds_is.shape = {full_ds_is.shape}")
+                print(f"🔍    full_ds_is.index.min() = {full_ds_is.index.min()}")
+                print(f"🔍    full_ds_is.index.max() = {full_ds_is.index.max()}")
+                print(f"🔍    full_ds_oos.shape = {full_ds_oos.shape}")
+                print(f"🔍    full_ds_oos.index.min() = {full_ds_oos.index.min()}")
+                print(f"🔍    full_ds_oos.index.max() = {full_ds_oos.index.max()}")
 
             if full_ds_is.empty or full_ds_oos.empty:
                 return None, None
@@ -1854,39 +1770,6 @@ class StrategySearcher:
         except Exception as e:
             print(f"🔍 DEBUG: ERROR en get_labeled_full_data: {str(e)}")
             return None, None
-
-    def get_train_test_data(self, dataset) -> tuple[pd.DataFrame, pd.DataFrame]:
-        """Genera los DataFrames de entrenamiento y prueba a partir del DataFrame completo."""
-        if dataset is None or dataset.empty:
-            return None, None
-        
-        # Máscaras de train / test
-        test_mask  = (dataset.index >= self.test_start)  & (dataset.index <= self.test_end)
-        train_mask = (dataset.index >= self.train_start) & (dataset.index <= self.train_end)
-
-        if not test_mask.any() or not train_mask.any():
-            return None, None
-
-        # Evitar solapamiento
-        if self.test_start <= self.train_end and self.test_end >= self.train_start:
-            train_mask &= ~test_mask
-            if self.debug:
-                print(f"🔍 DEBUG: train_mask.sum() después de evitar solapamiento = {train_mask.sum()}")
-
-        # DataFrames finales, ordenados cronológicamente
-        train_data = dataset[train_mask].sort_index().copy()
-        test_data  = dataset[test_mask].sort_index().copy()
-
-        if self.debug:
-            print(f"🔍 DEBUG: train_data.shape final = {train_data.shape}")
-            print(f"🔍 DEBUG: test_data.shape final = {test_data.shape}")
-            try:
-                print(f"🔍 DEBUG: train_data rango: {train_data.index.min()} → {train_data.index.max()}")
-                print(f"🔍 DEBUG: test_data  rango: {test_data.index.min()} → {test_data.index.max()}")
-            except Exception:
-                pass
-        
-        return train_data, test_data
 
     def check_constant_features(self, X: pd.DataFrame, feature_cols: list, std_epsilon: float = 1e-6) -> list:
         """Return the list of columns that may cause numerical instability.
@@ -1914,104 +1797,3 @@ class StrategySearcher:
                 problematic_cols.append(col)
                 
         return problematic_cols
-    
-    def _compute_main_oof_predictions_cls(
-        self,
-        X_main: pd.DataFrame,
-        y_main: pd.Series,
-        hp: Dict[str, Any],
-    ) -> pd.Series:
-        """Devuelve probabilidades OOF del modelo main (classification) usando TimeSeriesSplit."""
-        if X_main is None or y_main is None or X_main.empty or y_main.empty:
-            return pd.Series(dtype='float32')
-
-        Xm = X_main.astype('float32')
-        ym = y_main.astype('int8')
-        default_splits = 5
-        n_splits = int(hp.get('oof_n_splits', default_splits))
-        n_splits = max(2, min(n_splits, max(2, len(Xm) - 1)))
-        tscv = TimeSeriesSplit(n_splits=n_splits)
-
-        cat_params = dict(
-            iterations=hp['cat_main_iterations'],
-            depth=hp['cat_main_depth'],
-            learning_rate=hp['cat_main_learning_rate'],
-            l2_leaf_reg=hp['cat_main_l2_leaf_reg'],
-            auto_class_weights='Balanced',
-            eval_metric='Accuracy',
-            store_all_simple_ctr=False,
-            allow_writing_files=False,
-            thread_count=self.n_jobs,
-            task_type='CPU',
-            verbose=False,
-        )
-
-        oof = pd.Series(np.nan, index=ym.index, dtype='float32')
-        for tr_idx, va_idx in tscv.split(Xm):
-            X_tr, X_va = Xm.iloc[tr_idx], Xm.iloc[va_idx]
-            y_tr = ym.iloc[tr_idx]
-            model = CatBoostClassifier(**cat_params)
-            model.fit(
-                X_tr,
-                y_tr,
-                eval_set=[(X_va, ym.iloc[va_idx])],
-                early_stopping_rounds=hp.get('cat_main_early_stopping', 80),
-                use_best_model=True,
-                verbose=False,
-            )
-            # Probabilidad de la clase positiva (1)
-            oof.iloc[va_idx] = model.predict_proba(X_va)[:, 1].astype('float32')
-
-        if oof.isna().any():
-            oof = oof.fillna(oof.median())
-        return oof
-    
-    def create_oof_meta_mask(
-            self, 
-            model_main_train_data: pd.DataFrame, 
-            model_meta_train_data: pd.DataFrame, 
-            hp: Dict[str, Any]
-            ) -> pd.Series:
-        """
-        Crea labels meta a partir de predicciones OOF del main.
-        - Regression: usa residuales |pred - y| mas magnitud
-        - Classification: usa error de probabilidad |p - y| y confianza max(p, 1-p)
-        """
-        main_feature_cols = [col for col in model_main_train_data.columns if col not in ['labels_main']]
-    
-        # 1) Probabilidades OOF del main (clase 1)
-        main_oof_proba = self._compute_main_oof_predictions_cls(
-            X_main=model_main_train_data[main_feature_cols],
-            y_main=model_main_train_data['labels_main'],
-            hp=hp,
-        )
-        # 2) Definir umbral operativo como confianza mínima
-        # Confianza = max(p, 1-p)
-        confidence = main_oof_proba.copy()
-        confidence = pd.Series(np.maximum(confidence.values, 1.0 - confidence.values), index=confidence.index)
-        
-        # 3) Confiabilidad por residuo de probabilidad
-        y_true = model_main_train_data['labels_main'].astype('float32')
-        prob_resid = (main_oof_proba - y_true).abs()
-        tau = float(np.nanpercentile(prob_resid.values, hp['oof_resid_percentile'])) if len(prob_resid) > 0 else float(prob_resid.median() if len(prob_resid) else 0.0)
-        reliability_mask = (prob_resid <= tau)
-        magnitude_mask = (confidence >= hp['main_threshold'])
-        labels_meta = (reliability_mask & magnitude_mask).astype('int8')
-
-        # Construir máscara booleana alineada con meta_features_frame
-        meta_X = model_meta_train_data.copy()
-        mask = pd.Series(False, index=meta_X.index)
-        common_idx = labels_meta.index.intersection(meta_X.index)
-        if len(common_idx) > 0:
-            mask.loc[common_idx] = labels_meta.loc[common_idx] == 1
-
-        if self.debug:
-            n_true = mask.sum()
-            n_total = len(mask)
-            print(f"🔍 DEBUG: create_meta_labels (cls) - {n_true}/{n_total} muestras con etiqueta meta=1.0 ({n_true/n_total:.2%})")
-            print(f"🔍   main_oof_proba range: [{main_oof_proba.min():.3f}, {main_oof_proba.max():.3f}]")
-            print(f"🔍   confidence range: [{confidence.min():.3f}, {confidence.max():.3f}]")
-            print(f"🔍   prob_resid range: [{prob_resid.min():.3f}, {prob_resid.max():.3f}]")
-            print(f"🔍   tau: {tau:.3f}")
-
-        return mask

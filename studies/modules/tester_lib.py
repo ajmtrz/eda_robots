@@ -914,12 +914,8 @@ def run_monkey_test(actual_returns: np.ndarray,
         percentile = (1.0 - p_value) * 100.0
 
         return {
-            'actual_sharpe': float(sr_actual),
-            'monkey_sharpes_mean': float(np.mean(sharpes)) if sharpes.size else 0.0,
-            'monkey_sharpes_std': float(np.std(sharpes)) if sharpes.size else 0.0,
             'p_value': float(p_value),
-            'is_significant': bool(p_value < 0.05),
             'percentile': float(percentile)
         }
     except Exception:
-        return {'p_value': 1.0, 'is_significant': False, 'percentile': 0.0}
+        return {'p_value': 1.0, 'percentile': 0.0}

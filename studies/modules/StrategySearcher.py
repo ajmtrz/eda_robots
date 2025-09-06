@@ -987,11 +987,27 @@ class StrategySearcher:
                 try:
                     test_monkey_time_start = time.time()
                     # Preparar inputs para Monkey: retornos por barra, precios, posiciones y direccionalidad
-                    price_series = full_ds_oos['open'].to_numpy(dtype='float64') if 'open' in full_ds_oos.columns else None
+                    mask_oos = full_ds.index.isin(full_ds_oos.index)
+                    returns_oos = returns_series[mask_oos]
+                    pos_oos = pos_series[mask_oos]
+                    price_oos = full_ds_oos['open'].to_numpy(dtype='float64')
+                    if self.debug:
+                        # Comprobar alineación de longitudes y rangos de índices
+                        aligned = (len(returns_oos) == len(pos_oos) == len(price_oos))
+                        msg = (
+                            f"🔍 DEBUG: Alineación OOS - "
+                            f"len(returns_oos): {len(returns_oos)}, "
+                            f"len(pos_oos): {len(pos_oos)}, "
+                            f"len(price_oos): {len(price_oos)}. "
+                            f"Alineados: {aligned}"
+                        )
+                        print(msg)
+                        if not aligned:
+                            print(f"🔍 DEBUG: Índices returns_oos: {returns_oos.shape}, pos_oos: {pos_oos.shape}, price_oos: {price_oos.shape}")
                     monkey_res = run_monkey_test(
-                        actual_returns=returns_series if returns_series is not None else None,
-                        price_series=price_series,
-                        pos_series=pos_series if pos_series is not None else None,
+                        actual_returns=returns_oos,
+                        price_series=price_oos,
+                        pos_series=pos_oos,
                         direction=self.direction,
                         n_simulations=self.monkey_n_simulations,
                     )
@@ -1008,7 +1024,7 @@ class StrategySearcher:
                         print(f"🔍 DEBUG: Monkey pass: {monkey_pass}")
                 except Exception as e_monkey:
                     if self.debug:
-                        print(f"🔍 DEBUG: Error en Monkey Test segmentado: {e_monkey}")
+                        print(f"🔍 DEBUG: Error en Monkey Test: {e_monkey}")
                     monkey_pass = False
                     monkey_p_value = 1.0
                     monkey_percentile = 0.0

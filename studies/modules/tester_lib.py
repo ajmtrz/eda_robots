@@ -67,7 +67,7 @@ def tester(
 
         # DEBUG: Información de entrada
         if debug:
-            print(f"🔍 DEBUG tester - Información de entrada:")
+            print(f"🔍 DEBUG - tester - Información de entrada:")
             print(f"🔍   direction: {direction}")
             print(f"🔍   model_main_threshold: {model_main_threshold}")
             print(f"🔍   model_meta_threshold: {model_meta_threshold}")
@@ -94,30 +94,9 @@ def tester(
 
         # DEBUG: Resultados del backtest
         if debug:
-            print(f"🔍 DEBUG tester - Resultados del backtest:")
-            print(f"🔍   trade_stats: {trade_stats}")
-            print(f"🔍   len(trade_profits): {len(trade_profits)}")
-            print(f"🔍   len(rpt): {len(rpt)}")
-            if len(trade_profits) > 0:
-                print(f"🔍   trade_profits.min(): {min(trade_profits):.6f}")
-                print(f"🔍   trade_profits.max(): {max(trade_profits):.6f}")
-                print(f"🔍   trade_profits.mean(): {np.mean(trade_profits):.6f}")
-            if len(rpt) > 1:
-                print(f"🔍   rpt[0]: {rpt[0]:.6f}")
-                print(f"🔍   rpt[-1]: {rpt[-1]:.6f}")
-                print(f"🔍   rpt.max(): {np.max(rpt):.6f}")
-                print(f"🔍   rpt.min(): {np.min(rpt):.6f}")
+            print(f"🔍 DEBUG tester - Backtest: trades={trade_stats[0]}, pos={trade_stats[1]}, neg={trade_stats[2]}, rpt_len={len(rpt)}")
 
         trade_nl, rdd_nl, r2, slope_nl, wf_nl = evaluate_report(rpt, trade_profits=trade_profits)
-        
-        # DEBUG: Métricas de evaluación
-        if debug:
-            print(f"🔍 DEBUG tester - Métricas de evaluación:")
-            print(f"🔍   trade_nl: {trade_nl:.6f}")
-            print(f"🔍   rdd_nl: {rdd_nl:.6f}")
-            print(f"🔍   r2: {r2:.6f}")
-            print(f"🔍   slope_nl: {slope_nl:.6f}")
-            print(f"🔍   wf_nl: {wf_nl:.6f}")
         
         if (trade_nl <= -1.0 and rdd_nl <= -1.0 and r2 <= -1.0 and slope_nl <= -1.0 and wf_nl <= -1.0):
             if debug:
@@ -133,14 +112,11 @@ def tester(
                 0.03 * trade_nl +  # Número de trades (muy baja influencia)
                 0.55 * wf_nl       # Consistencia temporal (máxima prioridad)
         )
-        if score < 0.0:
-            if debug:
-                print(f"🔍 DEBUG tester - Score < 0.0 ({score:.6f}), retornando -1.0")
-            return (-1.0, np.array([], dtype=np.float64), np.array([], dtype=np.float64), np.array([], dtype=np.int8))
+
         if debug:
-            print(f"🔍 DEBUG - Main threshold: {model_main_threshold}, Meta threshold: {model_meta_threshold}, Max orders: {model_max_orders}, Delay bars: {model_delay_bars}")
-            print(f"🔍 DEBUG - Métricas de evaluación: SCORE: {score}, trade_nl: {trade_nl}, rdd_nl: {rdd_nl}, r2: {r2}, slope_nl: {slope_nl}, wf_nl: {wf_nl}")
-            print(f"🔍 DEBUG - Trade stats: n_trades: {trade_stats[0]}, n_positivos: {trade_stats[1]}, n_negativos: {trade_stats[2]}")
+            print(f"🔍 DEBUG - Tester - Params: thr_main={model_main_threshold}, thr_meta={model_meta_threshold}, max_orders={model_max_orders}, delay_bars={model_delay_bars}")
+            print(f"🔍 DEBUG - Tester - Metrics: SCORE={score:.6f}, trade_nl={trade_nl:.6f}, rdd_nl={rdd_nl:.6f}, r2={r2:.6f}, slope_nl={slope_nl:.6f}, wf_nl={wf_nl:.6f}")
+            print(f"🔍 DEBUG - Tester - Trades: n={trade_stats[0]}, pos={trade_stats[1]}, neg={trade_stats[2]}")
             if plot:
                 plt.figure(figsize=(10, 6))
                 plt.plot(rpt, label='Equity Curve', linewidth=1.5)
@@ -155,7 +131,8 @@ def tester(
         return score, np.asarray(rpt, dtype=np.float64), returns_series, pos_series
 
     except Exception as e:
-        print(f"🔍 DEBUG: Error en tester: {e}")
+        if debug:
+            print(f"⚠️ ERROR - Tester - Error: {e}")
         return (-1.0, np.array([], dtype=np.float64), np.array([], dtype=np.float64), np.array([], dtype=np.int8))
 
 @njit(cache=True)

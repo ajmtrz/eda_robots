@@ -259,7 +259,8 @@ class StrategySearcher:
                         )
 
                     except Exception as e:
-                        print(f"⚠️ ERROR en log_trial: {str(e)}")
+                        if self.debug:
+                            print(f"⚠️ ERROR - log_trial: {str(e)}")
 
                 study.optimize(
                     search_func,
@@ -270,17 +271,18 @@ class StrategySearcher:
                 )
                 
                 # 🔍 DEBUG: Verificar por qué se paró el estudio
-                print(f"🔍 DEBUG: Study terminado después de {len(study.trials)} trials")
-                print(f"🔍   n_trials configurado: {self.n_trials}")
-                print(f"🔍   best_trial: {study.best_trial}")
-                if study.best_trial:
-                    print(f"🔍   best_score: {study.best_trial.value}")
-                print(f"🔍   trials completados: {len([t for t in study.trials if t.state == optuna.trial.TrialState.COMPLETE])}")
-                print(f"🔍   trials pruned: {len([t for t in study.trials if t.state == optuna.trial.TrialState.PRUNED])}")
-                print(f"🔍   trials failed: {len([t for t in study.trials if t.state == optuna.trial.TrialState.FAIL])}")
+                if self.debug:
+                    print(f"🔍 DEBUG - Study terminado después de {len(study.trials)} trials")
+                    print(f"🔍   n_trials configurado: {self.n_trials}")
+                    print(f"🔍   best_trial: {study.best_trial}")
+                    if study.best_trial:
+                        print(f"🔍   best_score: {study.best_trial.value}")
+                    print(f"🔍   trials completados: {len([t for t in study.trials if t.state == optuna.trial.TrialState.COMPLETE])}")
+                    print(f"🔍   trials pruned: {len([t for t in study.trials if t.state == optuna.trial.TrialState.PRUNED])}")
+                    print(f"🔍   trials failed: {len([t for t in study.trials if t.state == optuna.trial.TrialState.FAIL])}")
                 
             except Exception as e:
-                print(f"\nError procesando modelo {i}:")
+                print(f"\n ⚠️ ERROR - Error procesando modelo {i}:")
                 print(f"Error: {str(e)}")
                 print("Traceback:")
                 print(traceback.format_exc())
@@ -297,7 +299,7 @@ class StrategySearcher:
             # 🔍 DEBUG: Supervisar parámetros específicos de confiabilidad
             if self.debug:
                 reliability_params = {k: v for k, v in hp.items() if k.startswith('label_')}
-                print(f"🔍 DEBUG search_reliability - Parámetros de confiabilidad: {reliability_params}")
+                print(f"🔍 DEBUG - search_reliability - Parámetros de confiabilidad: {reliability_params}")
                 
             full_ds_is, full_ds_oos = self.get_labeled_full_data(hp=hp)
             if full_ds_is is None or full_ds_oos is None:
@@ -307,12 +309,12 @@ class StrategySearcher:
             base_mask = full_ds_is['labels_main'].isin([0.0, 1.0])
             if not base_mask.any():
                 if self.debug:
-                    print(f"🔍 DEBUG search_reliability - No hay muestras de trading")
+                    print(f"🔍 DEBUG - search_reliability - No hay muestras de trading")
                 return -1.0
 
             # Filtro MAPIE
             if self.debug:
-                print(f"🔍 DEBUG search_reliability - Aplicando filtrado MAPIE")
+                print(f"🔍 DEBUG - search_reliability - Aplicando filtrado MAPIE")
                 print(f"🔍   base_mask.sum(): {base_mask.sum()}")
                 print(f"🔍   base_mask.mean(): {base_mask.mean():.3f}")
             
@@ -325,7 +327,7 @@ class StrategySearcher:
 
             # Filtro CAUSAL
             if self.debug:
-                print(f"🔍 DEBUG search_reliability - Aplicando filtrado CAUSAL")
+                print(f"🔍 DEBUG - search_reliability - Aplicando filtrado CAUSAL")
                 print(f"🔍   base_mask.sum(): {base_mask.sum()}")
                 print(f"🔍   base_mask.mean(): {base_mask.mean():.3f}")
             
@@ -348,17 +350,15 @@ class StrategySearcher:
             model_main_train_data = full_ds_is.loc[base_mask, main_feature_cols + ['labels_main']].dropna(subset=main_feature_cols).copy()
             if len(model_main_train_data) < 200:
                 if self.debug:
-                    print(f"🔍 DEBUG search_reliability MAIN - Insuficientes muestras: {len(model_main_train_data)}")
+                    print(f"🔍 DEBUG - search_reliability MAIN - Insuficientes muestras: {len(model_main_train_data)}")
                 return -1.0
             main_label_counts = model_main_train_data['labels_main'].value_counts()
             if set(main_label_counts.index) != {0, 1} or (main_label_counts < 50).any():
                 if self.debug:
-                    print(f"🔍 DEBUG search_reliability MAIN - labels_main insuficientes o desbalanceadas ({main_label_counts.to_dict()})")
+                    print(f"🔍 DEBUG - search_reliability MAIN - labels_main insuficientes o desbalanceadas ({main_label_counts.to_dict()})")
                 return -1.0
             if self.debug:
-                print(f"🔍 DEBUG search_reliability MAIN")
-                print(f"🔍   Main data shape: {model_main_train_data.shape}")
-                print(f"🔍   Main labels distribution: {main_label_counts}")
+                print(f"🔍 DEBUG - search_reliability MAIN: shape={model_main_train_data.shape}, labels={main_label_counts.to_dict()}")
 
             # Crear dataset meta con final_mask
             meta_feature_cols = [c for c in full_ds_is.columns if c.endswith('_meta_feature')]
@@ -373,12 +373,10 @@ class StrategySearcher:
             meta_label_counts = model_meta_train_data['labels_meta'].value_counts()
             if set(meta_label_counts.index) != {0, 1} or (meta_label_counts < 50).any():
                 if self.debug:
-                    print(f"🔍 DEBUG search_reliability META - labels_meta insuficientes o desbalanceadas ({meta_label_counts.to_dict()})")
+                    print(f"🔍 DEBUG - search_reliability META - labels_meta insuficientes o desbalanceadas ({meta_label_counts.to_dict()})")
                 return -1.0
             if self.debug:
-                print(f"🔍 DEBUG search_reliability META")
-                print(f"🔍   Meta data shape: {model_meta_train_data.shape}")
-                print(f"🔍   Meta labels distribution: {meta_label_counts}")
+                print(f"🔍 DEBUG - search_reliability META: shape={model_meta_train_data.shape}, labels={meta_label_counts.to_dict()}")
                 
             # Usar pipeline existente
             score, full_ds_with_labels_path, model_paths, models_cols, monkey_info = self.fit_final_models(
@@ -468,10 +466,7 @@ class StrategySearcher:
             
             # 🔍 DEBUG: Verificar distribución después del filtrado
             if self.debug:
-                print(f"🔍 DEBUG search_clusters {self.search_subtype}:")
-                print(f"🔍   Total muestras: {len(full_ds_is)}")
-                print(f"🔍   Muestras confiables: {base_mask.sum()} ({base_mask.mean():.1%})")
-                print(f"🔍   Total muestras confiables: {len(reliable_data)}")
+                print(f"🔍 DEBUG - search_clusters {self.search_subtype}: total={len(full_ds_is)}, confiables={base_mask.sum()} ({base_mask.mean():.1%})")
             
             # Aplicar clustering
             reliable_data_clustered = _clustering_method(reliable_data, hp)
@@ -497,7 +492,8 @@ class StrategySearcher:
 
             return trial.user_attrs.get('score', -1.0)
         except Exception as e:
-            print(f"Error en search_clusters: {str(e)}")
+            if self.debug:
+                print(f"⚠️ ERROR - search_clusters: {str(e)}")
             return -1.0
         
     # =========================================================================
@@ -517,17 +513,17 @@ class StrategySearcher:
             # 🔍 DEBUG: Supervisar parámetros
             if self.debug:
                 validation_params = {k: v for k, v in hp.items() if k.startswith('label_')}
-                print(f"🔍 DEBUG evaluate_clusters - Parámetros de validación: {validation_params}")
+                print(f"🔍 DEBUG - evaluate_clusters - Parámetros de validación: {validation_params}")
 
             # Extraer clusters
             cluster_sizes = full_ds_is['labels_meta'].value_counts().sort_index()
             if self.debug:
-                print(f"🔍 DEBUG: Cluster sizes:\n{cluster_sizes}")
+                print(f"🔍 DEBUG - evaluate_clusters: Cluster sizes:\n{cluster_sizes}")
             if -1 in cluster_sizes.index:
                 cluster_sizes = cluster_sizes.drop(-1)
             if cluster_sizes.empty:
                 if self.debug:
-                    print("⚠️ ERROR: No hay clusters")
+                    print("🔍 DEBUG - evaluate_clusters - No hay clusters")
                 return None, None, None, None, None
 
             # Evaluar cada cluster
@@ -540,9 +536,7 @@ class StrategySearcher:
                 
                 # Filtro MAPIE
                 if self.debug:
-                    print(f"🔍 DEBUG evaluate_clusters - Aplicando filtrado MAPIE al cluster {clust}")
-                    print(f"🔍   cluster_mask.sum(): {cluster_mask.sum()}")
-                    print(f"🔍   cluster_mask.mean(): {cluster_mask.mean():.3f}")
+                    print(f"🔍 DEBUG - evaluate_clusters/MAPIE - cluster {clust}: n={cluster_mask.sum()} ({cluster_mask.mean():.3f})")
                 
                 mapie_scores = self.apply_mapie_filter(trial=trial, full_ds=full_ds_is, hp=hp, reliable_mask=cluster_mask)
                 mapie_mask = mapie_scores == 1.0
@@ -553,9 +547,7 @@ class StrategySearcher:
                 
                 # Filtro CAUSAL
                 if self.debug:
-                    print(f"🔍 DEBUG evaluate_clusters - Aplicando filtrado CAUSAL al cluster {clust}")
-                    print(f"🔍   cluster_mask.sum(): {cluster_mask.sum()}")
-                    print(f"🔍   cluster_mask.mean(): {cluster_mask.mean():.3f}")
+                    print(f"🔍 DEBUG evaluate_clusters/CAUSAL - cluster {clust}: n={cluster_mask.sum()} ({cluster_mask.mean():.3f})")
                 
                 causal_scores = self.apply_causal_filter(trial=trial, full_ds=full_ds_is, hp=hp, reliable_mask=cluster_mask)
                 causal_mask = causal_scores == 1.0
@@ -576,7 +568,7 @@ class StrategySearcher:
                 model_main_train_data = full_ds_is.loc[cluster_mask, main_feature_cols + ['labels_main']].dropna(subset=main_feature_cols).copy()
                 if len(model_main_train_data) < 200:
                     if self.debug:
-                        print(f"🔍 DEBUG evaluate_clusters MAIN - Insuficientes muestras: {len(model_main_train_data)}")
+                        print(f"🔍 DEBUG - evaluate_clusters MAIN - Insuficientes muestras: {len(model_main_train_data)}")
                     continue
                 main_label_counts = model_main_train_data['labels_main'].value_counts()
                 if set(main_label_counts.index) != {0, 1} or (main_label_counts < 50).any():
@@ -644,7 +636,8 @@ class StrategySearcher:
                 return None, None, None, None, None
             return best_score, best_full_ds_with_labels_path, best_model_paths, best_models_cols, (best_monkey_info or {})
         except Exception as e:
-            print(f"⚠️ ERROR en evaluación de clusters: {str(e)}")
+            if self.debug:
+                print(f"⚠️ ERROR - evaluate_clusters: {str(e)}")
             return None, None, None, None, None
 
     def _suggest_feature(self, trial: optuna.Trial) -> Dict[str, Any]:
@@ -823,8 +816,9 @@ class StrategySearcher:
                 trial.set_user_attr(k, v)
             return params
             
-        except Exception as e:   # Optuna gestiona la excepción/prune
-            print(f"⚠️ Suggest params error: {e}")
+        except Exception as e:
+            if self.debug:
+                print(f"⚠️ ERROR - suggest_all_params: {e}")
             return None
 
     def fit_final_models(self, trial: optuna.trial,
@@ -840,7 +834,7 @@ class StrategySearcher:
                 return None, None, None, None, None
             main_feature_cols = [col for col in model_main_train_data.columns if col != 'labels_main']
             if self.debug:
-                print(f"🔍 DEBUG: Main model data shape: {model_main_train_data.shape}")
+                print(f"🔍 DEBUG - fit_final_models: Main model data shape: {model_main_train_data.shape}")
                 print(f"🔍 DEBUG: Main feature columns: {main_feature_cols}")
 
             # Dividir train/test
@@ -858,7 +852,7 @@ class StrategySearcher:
             X_val_main = val_df_main[main_feature_cols].astype('float32')
             y_val_main = val_df_main['labels_main'].astype('int8')
             if self.debug:
-                print(f"🔍 DEBUG: X_train_main shape: {X_train_main.shape}, y_train_main shape: {y_train_main.shape}")
+                print(f"🔍 DEBUG - fit_final_models: X_train_main shape: {X_train_main.shape}, y_train_main shape: {y_train_main.shape}")
                 print(f"🔍 DEBUG: X_val_main shape: {X_val_main.shape}, y_val_main shape: {y_val_main.shape}")
 
             # Configurar parámetros CatBoost
@@ -888,7 +882,7 @@ class StrategySearcher:
                 return None, None, None, None, None
             meta_feature_cols = [col for col in model_meta_train_data.columns if col != 'labels_meta']
             if self.debug:
-                print(f"🔍 DEBUG: Meta model data shape: {model_meta_train_data.shape}")
+                print(f"🔍 DEBUG - fit_final_models: Meta model data shape: {model_meta_train_data.shape}")
                 print(f"🔍 DEBUG: Meta feature columns: {meta_feature_cols}")
 
             # Dividir train/test
@@ -906,8 +900,8 @@ class StrategySearcher:
             X_val_meta = val_df_meta[meta_feature_cols].astype('float32')
             y_val_meta = val_df_meta['labels_meta'].astype('int8')
             if self.debug:
-                print(f"🔍 DEBUG: X_train_meta shape: {X_train_meta.shape}, y_train_meta shape: {y_train_meta.shape}")
-                print(f"🔍 DEBUG: X_val_meta shape: {X_val_meta.shape}, y_val_meta shape: {y_val_meta.shape}")
+                print(f"🔍 DEBUG - fit_final_models: X_train_meta shape: {X_train_meta.shape}, y_train_meta shape: {y_train_meta.shape}")
+                print(f"🔍 DEBUG - fit_final_models: X_val_meta shape: {X_val_meta.shape}, y_val_meta shape: {y_val_meta.shape}")
 
             cat_meta_params = dict(
                 auto_class_weights='Balanced',
@@ -929,14 +923,14 @@ class StrategySearcher:
             )
             t_train_meta_end = time.time()
             if self.debug:
-                print(f"🔍 DEBUG: Tiempo de entrenamiento modelo main: {t_train_main_end - t_train_main_start:.2f} segundos")
-                print(f"🔍 DEBUG: Tiempo de entrenamiento modelo meta: {t_train_meta_end - t_train_meta_start:.2f} segundos")
+                print(f"🔍 DEBUG - fit_final_models: Tiempo de entrenamiento modelo main: {t_train_main_end - t_train_main_start:.2f} segundos")
+                print(f"🔍 DEBUG - fit_final_models: Tiempo de entrenamiento modelo meta: {t_train_meta_end - t_train_meta_start:.2f} segundos")
 
             model_main_path, model_meta_path = export_models_to_ONNX(models=(model_main, model_meta))
             
             try:
                 if self.debug:
-                    print(f"🔍 DEBUG: Inicializando backtest")
+                    print(f"🔍 DEBUG - fit_final_models: Inicializando backtest")
                 full_ds = pd.concat([full_ds_is, full_ds_oos]).sort_index()
                 test_train_time_start = time.time()
                 score, equity_curve, returns_series, pos_series = tester(
@@ -953,15 +947,14 @@ class StrategySearcher:
                 )
                 test_train_time_end = time.time()
                 if self.debug:
-                    print(f"🔍 DEBUG: Tiempo de backtest: {test_train_time_end - test_train_time_start:.2f} segundos")
-                    print(f"🔍 DEBUG: Score de backtest: {score}")
+                    print(f"🔍 DEBUG - fit_final_models: Tiempo de backtest: {test_train_time_end - test_train_time_start:.2f} segundos")
                 if score < 0.0 or not np.isfinite(score):
                     if self.debug:
-                        print(f"🔍 DEBUG: Score backtest < 0.0 ({score:.6f})")
+                        print(f"🔍 DEBUG - fit_final_models: Score backtest < 0.0 ({score:.6f})")
                     return None, None, None, None, None
             except Exception as tester_error:
                 if self.debug:
-                    print(f"🔍 DEBUG: Error en tester: {tester_error}")
+                    print(f"⚠️ ERROR - fit_final_models: Error en tester: {tester_error}")
                 return None, None, None, None, None
             
             # 1) Determinar best actual de Optuna (solo score óptimo de estudio)
@@ -995,7 +988,7 @@ class StrategySearcher:
                         # Comprobar alineación de longitudes y rangos de índices
                         aligned = (len(returns_oos) == len(pos_oos) == len(price_oos))
                         msg = (
-                            f"🔍 DEBUG: Alineación OOS - "
+                            f"🔍 DEBUG - fit_final_models: Alineación OOS - "
                             f"len(returns_oos): {len(returns_oos)}, "
                             f"len(pos_oos): {len(pos_oos)}, "
                             f"len(price_oos): {len(price_oos)}. "
@@ -1003,7 +996,7 @@ class StrategySearcher:
                         )
                         print(msg)
                         if not aligned:
-                            print(f"🔍 DEBUG: Índices returns_oos: {returns_oos.shape}, pos_oos: {pos_oos.shape}, price_oos: {price_oos.shape}")
+                            print(f"🔍 DEBUG - fit_final_models: Índices returns_oos: {returns_oos.shape}, pos_oos: {pos_oos.shape}, price_oos: {price_oos.shape}")
                     monkey_res = run_monkey_test(
                         actual_returns=returns_oos,
                         price_series=price_oos,
@@ -1013,18 +1006,18 @@ class StrategySearcher:
                     )
                     test_monkey_time_end = time.time()
                     if self.debug:
-                        print(f"🔍 DEBUG: Tiempo de test Monkey: {test_monkey_time_end - test_monkey_time_start:.2f} segundos")
-                        print(f"🔍 DEBUG: Resultado Monkey: {monkey_res}")
+                        print(f"🔍 DEBUG - fit_final_models: Tiempo de test Monkey: {test_monkey_time_end - test_monkey_time_start:.2f} segundos")
+                        print(f"🔍 DEBUG - fit_final_models: Resultado Monkey: {monkey_res}")
                     monkey_p_value = float(monkey_res.get('p_value', 1.0))
                     monkey_percentile = float(monkey_res.get('percentile', 0.0))
                     monkey_pass = bool(monkey_p_value < self.monkey_alpha)
                     if self.debug:
-                        print(f"🔍 DEBUG: Monkey p_value: {monkey_p_value}")
-                        print(f"🔍 DEBUG: Monkey percentile: {monkey_percentile}")
-                        print(f"🔍 DEBUG: Monkey pass: {monkey_pass}")
+                        print(f"🔍 DEBUG - fit_final_models: Monkey p_value: {monkey_p_value}")
+                        print(f"🔍 DEBUG - fit_final_models: Monkey percentile: {monkey_percentile}")
+                        print(f"🔍 DEBUG - fit_final_models: Monkey pass: {monkey_pass}")
                 except Exception as e_monkey:
                     if self.debug:
-                        print(f"🔍 DEBUG: Error en Monkey Test: {e_monkey}")
+                        print(f"⚠️ ERROR - fit_final_models: Error en Monkey Test: {e_monkey}")
                     monkey_pass = False
                     monkey_p_value = 1.0
                     monkey_percentile = 0.0
@@ -1032,7 +1025,7 @@ class StrategySearcher:
                 # 3) Si falla, forzar score -1.0 para evitar autoengaño
                 if not monkey_pass:
                     if self.debug:
-                        print(f"🔍 DEBUG: Monkey Test NO superado (p={monkey_p_value:.4f} >= {self.monkey_alpha}) → score := -1.0")
+                        print(f"🔍 DEBUG - fit_final_models: Monkey Test NO superado (p={monkey_p_value:.4f} >= {self.monkey_alpha}) → score := -1.0")
                     return None, None, None, None, None
 
             monkey_info = {}
@@ -1053,15 +1046,15 @@ class StrategySearcher:
             full_ds_with_labels_path = export_dataset_to_csv(full_ds, self.decimal_precision)
 
             if self.debug:
-                print(f"🔍   DEBUG: Dataset con shape {full_ds.shape} guardado en {full_ds_with_labels_path}")
+                print(f"🔍   DEBUG - fit_final_models: Dataset con shape {full_ds.shape} guardado en {full_ds_with_labels_path}")
                 # Resumen de las columnas de etiquetas
                 if 'labels_main' in full_ds.columns:
                     labels_main = full_ds['labels_main']
                     main_counts = labels_main.value_counts(dropna=False).to_dict()
-                    print(f"🔍      labels_main value_counts: {main_counts}")
-                    print(f"🔍      labels_main únicos: {sorted(labels_main.unique())}")
+                    print(f"🔍      - fit_final_models: labels_main value_counts: {main_counts}")
+                    print(f"🔍      - fit_final_models: labels_main únicos: {sorted(labels_main.unique())}")
                 else:
-                    print(f"🔍      labels_main no encontrada en el dataset")
+                    print(f"🔍      - fit_final_models: labels_main no encontrada en el dataset")
                 if 'labels_meta' in full_ds.columns:
                     labels_meta = full_ds['labels_meta']
                     print(f"🔍      labels_meta resumen: min={labels_meta.min():.6f}, max={labels_meta.max():.6f}, mean={labels_meta.mean():.6f}, std={labels_meta.std():.6f}")
@@ -1070,7 +1063,8 @@ class StrategySearcher:
                 print(f"🔍 DEBUG: Modelos guardados en {model_main_path} y {model_meta_path}")
             return score, full_ds_with_labels_path, (model_main_path, model_meta_path), (main_feature_cols, meta_feature_cols), monkey_info
         except Exception as e:
-            print(f"Error en función de entrenamiento y test: {str(e)}")
+            if self.debug:
+                print(f"⚠️ ERROR - fit_final_models: Error en función de entrenamiento y test: {str(e)}")
             return None, None, None, None, None
         finally:
             clear_onnx_session_cache()
@@ -1233,7 +1227,7 @@ class StrategySearcher:
             
         except Exception as e:
             if self.debug:
-                print(f"🔍 DEBUG apply_mapie_filter - ERROR: {str(e)}")
+                print(f"⚠️ ERROR - apply_mapie_filter: {str(e)}")
             return np.zeros(len(full_ds))
         
     def apply_causal_filter(self, trial, full_ds, hp, reliable_mask=None) -> np.ndarray:
@@ -1409,7 +1403,7 @@ class StrategySearcher:
             
         except Exception as e:
             if self.debug:
-                print(f"🔍 DEBUG apply_causal_filter - ERROR: {str(e)}")
+                print(f"⚠️ ERROR - apply_causal_filter: {str(e)}")
             return np.zeros(len(full_ds))
 
     def apply_labeling(self, dataset: pd.DataFrame, hp: dict) -> pd.DataFrame:
@@ -1803,7 +1797,8 @@ class StrategySearcher:
             return full_ds_is, full_ds_oos
 
         except Exception as e:
-            print(f"🔍 DEBUG: ERROR en get_labeled_full_data: {str(e)}")
+            if self.debug:
+                print(f"⚠️ ERROR - get_labeled_full_data: {str(e)}")
             return None, None
 
     def check_constant_features(self, X: pd.DataFrame, feature_cols: list, std_epsilon: float = 1e-6) -> list:

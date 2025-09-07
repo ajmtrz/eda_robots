@@ -698,110 +698,98 @@ def calculate_atr_simple(high, low, close, period=14):
     return atr
 
 @njit(cache=True)
-def calculate_labels_random(close, atr, label_markup, label_min_val, label_max_val, direction_int, method_int=5, label_type=0):
+def calculate_labels_random(close, high, low, atr, label_markup, label_min_val, label_max_val, direction_int):
     """
-    Etiquetado random con soporte para bidireccional (2) y unidireccional (0=buy, 1=sell) siguiendo la convención:
+    Etiquetado por primer toque (first touch) con soporte para bidireccional (2) y unidireccional (0=buy, 1=sell):
     - Direcciones únicas: 1.0=éxito direccional, 0.0=fracaso, 2.0=no confiable
     - Ambas: 0.0=buy, 1.0=sell, 2.0=no confiable
-    
-    label_type: 0=clasificación, 1=regresión (magnitud)
+
+    Usa high/low para detectar el primer toque del objetivo close[i] ± ATR*markup en la ventana [min,max].
+
+    label_type: 0=clasificación, 1=regresión (magnitud normalizada por ATR del primer toque)
     """
     n = len(close)
     if n <= label_max_val:
         return np.full(0, 2.0, dtype=np.float64)
     result = np.full(n - label_max_val, 2.0, dtype=np.float64)
     for i in range(n - label_max_val):
-        window = close[i + label_min_val : i + label_max_val + 1]
-        if window.size == 0:
-            continue
-        if method_int == 0:  # first
-            future_price = close[i + label_min_val]
-        elif method_int == 1:  # last
-            future_price = close[i + label_max_val]
-        elif method_int == 2:  # mean
-            future_price = np.mean(window)
-        elif method_int == 3:  # max
-            future_price = np.max(window)
-        elif method_int == 4:  # min
-            future_price = np.min(window)
-        else:  # random/otro
-            rand = np.random.randint(label_min_val, label_max_val + 1)
-            future_price = close[i + rand]
+        start_j = i + label_min_val
+        end_j = i + label_max_val
+        if end_j >= n:
+            end_j = n - 1
         dyn_mk = label_markup * atr[i]
+        up_target = close[i] + dyn_mk
+        down_target = close[i] - dyn_mk
+
+        up_hit_idx = -1
+        down_hit_idx = -1
+        j = start_j
+        while j <= end_j:
+            if up_hit_idx == -1 and high[j] >= up_target:
+                up_hit_idx = j
+            if down_hit_idx == -1 and low[j] <= down_target:
+                down_hit_idx = j
+            if up_hit_idx != -1 and down_hit_idx != -1:
+                break
+            j += 1
         
-        if label_type == 1:  # Regresión - magnitud normalizada por ATR
-            magnitude = (future_price - close[i]) / (atr[i] + 1e-12)
-            is_buy = future_price > close[i] + dyn_mk
-            is_sell = future_price < close[i] - dyn_mk
-            if is_buy and not is_sell:
-                result[i] = magnitude  # Magnitud positiva para buy
-            elif is_sell and not is_buy:
-                result[i] = magnitude  # Magnitud negativa para sell
+        if direction_int == 2:
+            # Bidireccional: 0.0=buy, 1.0=sell, 2.0=no confiable
+            if up_hit_idx != -1 or down_hit_idx != -1:
+                if up_hit_idx != -1 and (down_hit_idx == -1 or up_hit_idx <= down_hit_idx):
+                    result[i] = 0.0
+                elif down_hit_idx != -1:
+                    result[i] = 1.0
             else:
-                result[i] = 0.0  # No confiable
-        else:  # Clasificación - etiquetas binarias (funcionalidad original)
-            if direction_int == 2:
-                # Bidireccional: 0.0=buy, 1.0=sell, 2.0=no confiable
-                is_buy = future_price > close[i] + dyn_mk
-                is_sell = future_price < close[i] - dyn_mk
-                if is_buy and not is_sell:
-                    result[i] = 0.0
-                elif is_sell and not is_buy:
-                    result[i] = 1.0
-                else:
-                    result[i] = 2.0
-            elif direction_int == 0:
-                # Solo buy: 1.0=éxito, 0.0=fracaso, 2.0=no confiable
-                if future_price > close[i] + dyn_mk:
-                    result[i] = 1.0
-                elif future_price < close[i] - dyn_mk:
-                    result[i] = 0.0
-                else:
-                    result[i] = 2.0
-            elif direction_int == 1:
-                # Solo sell: 1.0=éxito, 0.0=fracaso, 2.0=no confiable
-                if future_price < close[i] - dyn_mk:
-                    result[i] = 1.0
-                elif future_price > close[i] + dyn_mk:
-                    result[i] = 0.0
-                else:
-                    result[i] = 2.0
+                result[i] = 2.0
+        elif direction_int == 0:
+            # Solo buy: 1.0=éxito, 0.0=fracaso, 2.0=no confiable
+            if up_hit_idx != -1:
+                result[i] = 1.0
+            elif down_hit_idx != -1:
+                result[i] = 0.0
             else:
-                result[i] = 2.0  # fallback
+                result[i] = 2.0
+        elif direction_int == 1:
+            # Solo sell: 1.0=éxito, 0.0=fracaso, 2.0=no confiable
+            if down_hit_idx != -1:
+                result[i] = 1.0
+            elif up_hit_idx != -1:
+                result[i] = 0.0
+            else:
+                result[i] = 2.0
+        else:
+            result[i] = 2.0  # fallback
     return result
 
 def get_labels_random(dataset, label_markup=0.5, label_min_val=1, label_max_val=5,
-                        label_atr_period=14, label_method_random='random', direction=2, label_type='classification') -> pd.DataFrame:
+                        label_atr_period=14, direction=2) -> pd.DataFrame:
     """
     Etiquetado random con soporte para bidireccional (2) y unidireccional (0=buy, 1=sell) siguiendo la convención:
     - Direcciones únicas: 1.0=éxito direccional, 0.0=fracaso, 2.0=no confiable
     - Ambas: 0.0=buy, 1.0=sell, 2.0=no confiable
 
     direction debe venir ya mapeada a int: 0=buy, 1=sell, 2=both
-    label_type: 'classification' o 'regression'
     """
     close = dataset['close'].values
     high = dataset['high'].values
     low = dataset['low'].values
     atr = calculate_atr_simple(high, low, close, period=label_atr_period)
-    method_map = {'first': 0, 'last': 1, 'mean': 2, 'max': 3, 'min': 4, 'random': 5}
-    method_int = method_map.get(label_method_random, 5)
-    label_type_int = 1 if label_type == 'regression' else 0
     labels = calculate_labels_random(
-        close, atr,
-        label_markup, label_min_val, label_max_val, direction,
-        method_int, label_type_int
+        close, high, low, atr,
+        label_markup, label_min_val, label_max_val, direction
     )
     # ✅ CORRECCIÓN CRÍTICA: Alineación correcta de etiquetas
     # El array de etiquetas tiene longitud (n - label_max_val), debe alinearse correctamente
     labels_series = pd.Series(labels, index=dataset.index[:len(labels)])
     labels_aligned = labels_series.reindex(dataset.index, fill_value=2.0)
+    # Add labels to dataset
     dataset['labels_main'] = labels_aligned
     dataset['labels_main'] = dataset['labels_main'].fillna(2.0)
     return dataset
 
 @njit(cache=True)
-def calculate_labels_filter(close, atr, lvl, q, direction=2, method_int=5, 
+def calculate_labels_filter(close, high, low, atr, lvl, q, direction=2, 
                           label_markup=0.5, label_min_val=1, label_max_val=15):
     """
     Generates labels based on Savitzky-Golay filter price deviation with profit target validation using ATR * markup.
@@ -834,63 +822,68 @@ def calculate_labels_filter(close, atr, lvl, q, direction=2, method_int=5,
                   - Clasificación: 0.0=buy, 1.0=sell, 2.0=sin señal
     """
     labels = np.empty(len(close), dtype=np.float64)
-    for i in range(len(close) - label_max_val):
+    for i in range(len(close) - label_max_val + 1):
         curr_lvl = lvl[i]
         curr_pr = close[i]
         dyn_mk = label_markup * atr[i]
         
-        # Selección del precio objetivo según method_int
-        if method_int == 0:  # first
-            future_pr = close[i + label_min_val]
-        elif method_int == 1:  # last
-            future_pr = close[i + label_max_val]
-        elif method_int == 2:  # mean
-            window = close[i + label_min_val : i + label_max_val + 1]
-            if window.size > 0:
-                future_pr = np.mean(window)
-            else:
-                future_pr = close[i + label_min_val]
-        elif method_int == 3:  # max
-            window = close[i + label_min_val : i + label_max_val + 1]
-            if window.size > 0:
-                future_pr = np.max(window)
-            else:
-                future_pr = close[i + label_min_val]
-        elif method_int == 4:  # min
-            window = close[i + label_min_val : i + label_max_val + 1]
-            if window.size > 0:
-                future_pr = np.min(window)
-            else:
-                future_pr = close[i + label_min_val]
-        else:  # random/otro
-            rand = np.random.randint(label_min_val, label_max_val + 1)
-            future_pr = close[i + rand]
+        # First-touch evaluation bounds
+        start_j = i + label_min_val
+        end_j = i + label_max_val
+        if end_j >= len(close):
+            end_j = len(close) - 1
+        up_target = curr_pr + dyn_mk
+        down_target = curr_pr - dyn_mk
 
         if direction == 2:  # both
-            if curr_lvl > q[1] and (future_pr + dyn_mk) < curr_pr:
-                labels[i] = 1.0  # Sell
-            elif curr_lvl < q[0] and (future_pr - dyn_mk) > curr_pr:
-                labels[i] = 0.0  # Buy
-            else:
-                labels[i] = 2.0  # No confiable
-        elif direction == 0:  # solo buy
-            if curr_lvl < q[0] and (future_pr - dyn_mk) > curr_pr:
-                labels[i] = 1.0  # Éxito direccional (compra)
+            if curr_lvl > q[1]:
+                hit = False
+                j = start_j
+                while j <= end_j:
+                    if low[j] <= down_target:
+                        hit = True
+                        break
+                    j += 1
+                labels[i] = 1.0 if hit else 2.0
             elif curr_lvl < q[0]:
-                labels[i] = 0.0  # Fracaso direccional (compra fallida)
+                hit = False
+                j = start_j
+                while j <= end_j:
+                    if high[j] >= up_target:
+                        hit = True
+                        break
+                    j += 1
+                labels[i] = 0.0 if hit else 2.0
             else:
-                labels[i] = 2.0  # Patrón no confiable
+                labels[i] = 2.0
+        elif direction == 0:  # solo buy
+            if curr_lvl < q[0]:
+                hit = False
+                j = start_j
+                while j <= end_j:
+                    if high[j] >= up_target:
+                        hit = True
+                        break
+                    j += 1
+                labels[i] = 1.0 if hit else 0.0
+            else:
+                labels[i] = 2.0
         elif direction == 1:  # solo sell
-            if curr_lvl > q[1] and (future_pr + dyn_mk) < curr_pr:
-                labels[i] = 1.0  # Éxito direccional (venta)
-            elif curr_lvl > q[1]:
-                labels[i] = 0.0  # Fracaso direccional (venta fallida)
+            if curr_lvl > q[1]:
+                hit = False
+                j = start_j
+                while j <= end_j:
+                    if low[j] <= down_target:
+                        hit = True
+                        break
+                    j += 1
+                labels[i] = 1.0 if hit else 0.0
             else:
-                labels[i] = 2.0  # Patrón no confiable
+                labels[i] = 2.0
         else:
             labels[i] = 2.0  # fallback
 
-    for i in range(len(close) - label_max_val, len(close)):
+    for i in range(len(close) - label_max_val + 1, len(close)):
         labels[i] = 2.0
     
     return labels
@@ -898,39 +891,39 @@ def calculate_labels_filter(close, atr, lvl, q, direction=2, method_int=5,
 def get_labels_filter(
     dataset, 
     label_rolling=200, 
-    label_quantiles=[.45, .55], 
+    label_quantiles=[.2, .8], 
     label_polyorder=3, 
     label_decay_factor=0.95, 
     label_method_trend='normal',
     direction=2,
-    label_method_random='random',
     label_markup=0.5,
     label_min_val=1,
     label_max_val=15,
     label_atr_period=14
 ) -> pd.DataFrame:
     """
-    Generates labels for a financial dataset based on price deviation from a Savitzky-Golay label_filter,
-    with exponential weighting applied to prioritize recent data. Supports both normal and inverse methods.
+    Generates labels for a financial dataset based on price deviation from a Savitzky-Golay filter,
+    with exponential weighting applied to prioritize recent data. The deviation is normalized by ATR to
+    make thresholds comparable across volatility regimes. Supports both normal and inverse methods
+    (inverse applies a sign flip over the deviation).
 
     Args:
         dataset (pd.DataFrame): DataFrame containing financial data with a 'close' column.
         label_rolling (int, optional): Window size for the Savitzky-Golay label_filter. Defaults to 200.
-        label_quantiles (list, optional): Quantiles to define the "reversion zone". Defaults to [.45, .55].
+        label_quantiles (list, optional): Quantiles to define the reversion zone. Defaults to [0.2, 0.8].
         label_polyorder (int, optional): Polynomial order for the Savitzky-Golay label_filter. Defaults to 3.
         label_decay_factor (float, optional): Exponential decay factor for weighting past data. 
                                         Lower values prioritize recent data more. Defaults to 0.95.
         direction (int, optional): 0=buy only, 1=sell only, 2=both. Defaults to 2.
-        method (str, optional): 'normal' or 'inverse'. Defaults to 'normal'.
+        label_method_trend (str, optional): 'normal' or 'inverse' (inverse uses sign flip). Defaults to 'normal'.
 
     Returns:
-        pd.DataFrame: The original DataFrame with a new 'labels_main' column and filtered rows:
-                       - 'labels_main' column: 
+        pd.DataFrame: The original DataFrame with a new 'labels_main' column:
+                       - 'labels_main' column:
                             - 0: Buy (or fracaso direccional en modo unidireccional)
                             - 1: Sell (o éxito direccional en modo unidireccional)
                             - 2: Patrón no confiable
-                       - Rows with missing values (NaN) are removed.
-                       - The temporary 'lvl' column is removed. 
+                       - The temporary 'lvl' column is removed.
     """
 
     # Calculate smoothed prices using the Savitzky-Golay label_filter
@@ -939,30 +932,31 @@ def get_labels_filter(
         return pd.DataFrame()
     # Calculate the difference between the actual closing prices and the smoothed prices
     diff = dataset['close'] - smoothed_prices
-    # Apply exponential weighting to the 'diff' values
-    weighted_diff = diff * np.exp(np.arange(len(diff)) * label_decay_factor / len(diff)) 
-    # Apply method-specific transformation
-    if label_method_trend == 'inverse':
-        dataset['lvl'] = 1 / weighted_diff  # Inverse method
-    else:
-        dataset['lvl'] = weighted_diff  # Normal method
-    # Calculate the quantiles of the 'lvl' column (price deviation)
-    q = tuple(dataset['lvl'].quantile(label_quantiles).to_list())
-    # Extract the closing prices and the calculated 'lvl' values as NumPy arrays
-    close = dataset['close'].values
-    lvl = dataset['lvl'].values
-    # Prepare parameters for label calculation
-    method_map = {'first': 0, 'last': 1, 'mean': 2, 'max': 3, 'min': 4, 'random': 5}
-    method_int = method_map.get(label_method_random, 5)
     
-    # Calculate ATR
+    # Calculate ATR once (used for normalization and profit target)
+    close = dataset['close'].values
     high = dataset["high"].values
     low = dataset["low"].values
     atr = calculate_atr_simple(high, low, close, period=label_atr_period)
-    
-    # Calculate buy/sell labels using the 'calculate_labels_filter' function 
+
+    # Apply exponential weighting to the 'diff' values (emphasize recent samples)
+    weighted_diff = diff * np.exp(np.arange(len(diff)) * label_decay_factor / len(diff)) 
+
+    # Apply method-specific transformation: use sign flip instead of 1/x to avoid infinities
+    sign = -1.0 if label_method_trend == 'inverse' else 1.0
+    lvl_raw = sign * weighted_diff.values
+
+    # Normalize by ATR to make thresholds comparable across volatility regimes
+    eps = 1e-8
+    lvl_norm = lvl_raw / np.maximum(atr, eps)
+    dataset['lvl'] = lvl_norm
+    # Calculate the quantiles of the 'lvl' column (price deviation)
+    q = tuple(dataset['lvl'].quantile(label_quantiles).to_list())
+    # Extract the calculated 'lvl' values as NumPy arrays
+    lvl = dataset['lvl'].values
+    # Calculate buy/sell labels using FIRST-TOUCH evaluation with high/low
     labels = calculate_labels_filter(
-        close, atr, lvl, q, direction, method_int,
+        close, high, low, atr, lvl, q, direction,
         label_markup, label_min_val, label_max_val
     ) 
     # Trimming the dataset and adding labels
@@ -972,7 +966,7 @@ def get_labels_filter(
     return dataset.drop(columns=['lvl'])
 
 @njit(cache=True)
-def calc_labels_filter_binary(close, atr, lvl1, lvl2, q1, q2, direction=2, method_int=5,
+def calc_labels_filter_binary(close, high, low, atr, lvl1, lvl2, q1, q2, direction=2,
                              label_markup=0.5, label_min_val=1, label_max_val=15):
     """
     Generates labels based on binary Savitzky-Golay filter consensus with profit target validation using ATR * markup.
@@ -981,7 +975,7 @@ def calc_labels_filter_binary(close, atr, lvl1, lvl2, q1, q2, direction=2, metho
     - Uses two Savitzky-Golay filters with different parameters
     - Calculates price deviation from both smoothed trends
     - Requires consensus between both filters for signal generation
-    - Validates signals using ATR * markup as profit target
+    - Validates signals using ATR * markup as profit target with FIRST-TOUCH evaluation (high/low)
     - For classification: 0.0=buy, 1.0=sell, 2.0=no signal
     
     Signal Generation Logic:
@@ -996,7 +990,6 @@ def calc_labels_filter_binary(close, atr, lvl1, lvl2, q1, q2, direction=2, metho
         q1 (tuple): Quantile tuple for first filter (low, high).
         q2 (tuple): Quantile tuple for second filter (low, high).
         direction (int): 0=buy only, 1=sell only, 2=both
-        method_int (int): 0=first, 1=last, 2=mean, 3=max, 4=min, 5=random
         label_markup (float): Markup multiplier for ATR.
         label_min_val (int): Minimum bars for future validation.
         label_max_val (int): Maximum bars for future validation.
@@ -1013,54 +1006,65 @@ def calc_labels_filter_binary(close, atr, lvl1, lvl2, q1, q2, direction=2, metho
         curr_pr = close[i]
         dyn_mk = label_markup * atr[i]
         
-        # Selección del precio objetivo según method_int
-        if method_int == 0:  # first
-            future_pr = close[i + label_min_val]
-        elif method_int == 1:  # last
-            future_pr = close[i + label_max_val]
-        elif method_int == 2:  # mean
-            window = close[i + label_min_val : i + label_max_val + 1]
-            if window.size > 0:
-                future_pr = np.mean(window)
-            else:
-                future_pr = close[i + label_min_val]
-        elif method_int == 3:  # max
-            window = close[i + label_min_val : i + label_max_val + 1]
-            if window.size > 0:
-                future_pr = np.max(window)
-            else:
-                future_pr = close[i + label_min_val]
-        elif method_int == 4:  # min
-            window = close[i + label_min_val : i + label_max_val + 1]
-            if window.size > 0:
-                future_pr = np.min(window)
-            else:
-                future_pr = close[i + label_min_val]
-        else:  # random/otro
-            rand = np.random.randint(label_min_val, label_max_val + 1)
-            future_pr = close[i + rand]
+        # Primer toque bounds
+        start_j = i + label_min_val
+        end_j = i + label_max_val
+        if end_j >= len(close):
+            end_j = len(close) - 1
+        up_target = curr_pr + dyn_mk
+        down_target = curr_pr - dyn_mk
 
         if direction == 2:  # both
-            if curr_lvl1 > q1[1] and (future_pr + dyn_mk) < curr_pr:
-                labels[i] = 1.0  # Sell
-            elif curr_lvl2 < q2[0] and (future_pr - dyn_mk) > curr_pr:
-                labels[i] = 0.0  # Buy
-            else:
-                labels[i] = 2.0  # No confiable
-        elif direction == 0:  # solo buy
-            if curr_lvl2 < q2[0] and (future_pr - dyn_mk) > curr_pr:
-                labels[i] = 1.0  # Éxito direccional (compra)
+            if curr_lvl1 > q1[1]:
+                hit = False
+                j = start_j
+                while j <= end_j:
+                    if low[j] <= down_target:
+                        hit = True
+                        break
+                    j += 1
+                if hit:
+                    labels[i] = 1.0
+                else:
+                    labels[i] = 2.0
             elif curr_lvl2 < q2[0]:
-                labels[i] = 0.0  # Fracaso direccional (compra fallida)
+                hit = False
+                j = start_j
+                while j <= end_j:
+                    if high[j] >= up_target:
+                        hit = True
+                        break
+                    j += 1
+                if hit:
+                    labels[i] = 0.0
+                else:
+                    labels[i] = 2.0
             else:
-                labels[i] = 2.0  # Patrón no confiable
+                labels[i] = 2.0
+        elif direction == 0:  # solo buy
+            if curr_lvl2 < q2[0]:
+                hit = False
+                j = start_j
+                while j <= end_j:
+                    if high[j] >= up_target:
+                        hit = True
+                        break
+                    j += 1
+                labels[i] = 1.0 if hit else 0.0
+            else:
+                labels[i] = 2.0
         elif direction == 1:  # solo sell
-            if curr_lvl1 > q1[1] and (future_pr + dyn_mk) < curr_pr:
-                labels[i] = 1.0  # Éxito direccional (venta)
-            elif curr_lvl1 > q1[1]:
-                labels[i] = 0.0  # Fracaso direccional (venta fallida)
+            if curr_lvl1 > q1[1]:
+                hit = False
+                j = start_j
+                while j <= end_j:
+                    if low[j] <= down_target:
+                        hit = True
+                        break
+                    j += 1
+                labels[i] = 1.0 if hit else 0.0
             else:
-                labels[i] = 2.0  # Patrón no confiable
+                labels[i] = 2.0
         else:
             labels[i] = 2.0  # fallback
     
@@ -1073,10 +1077,10 @@ def get_labels_filter_binary(
     dataset, 
     label_rolling=200, 
     label_rolling2=200, 
-    label_quantiles=[.45, .55], 
+    label_quantiles=[0.2, 0.8], 
     label_polyorder=3, 
+    label_decay_factor=0.95,
     direction=2,
-    label_method_random='random',
     label_markup=0.5,
     label_min_val=1,
     label_max_val=15,
@@ -1084,7 +1088,8 @@ def get_labels_filter_binary(
 ) -> pd.DataFrame:
     """
     Generates trading labels based on price deviation from two Savitzky-Golay filters applied
-    in opposite directions (forward and reversed) to the closing price data.
+    to the closing price data. The deviations are exponentially weighted (to emphasize recent
+    samples) and normalized by ATR to make the thresholds comparable across volatility regimes.
 
     Supports bidirectional (both) and unidirectional (buy/sell only) labeling.
     For unidirectional: 1.0=éxito direccional, 0.0=fracaso, 2.0=no confiable.
@@ -1094,17 +1099,17 @@ def get_labels_filter_binary(
         dataset (pd.DataFrame): DataFrame containing financial data with a 'close' column.
         label_rolling (int, optional): Window size for the first Savitzky-Golay label_filter. Defaults to 200.
         label_rolling2 (int, optional): Window size for the second Savitzky-Golay label_filter. Defaults to 200.
-        label_quantiles (list, optional): Quantiles to define the "reversion zones". Defaults to [.45, .55].
+        label_quantiles (list, optional): Quantiles to define the reversion zones. Defaults to [0.2, 0.8].
         label_polyorder (int, optional): Polynomial order for both Savitzky-Golay filters. Defaults to 3.
+        label_decay_factor (float, optional): Exponential decay factor for weighting past data. Defaults to 0.95.
         direction (int, optional): 0=buy only, 1=sell only, 2=both. Defaults to 2.
 
     Returns:
-        pd.DataFrame: The original DataFrame with a new 'labels_main' column and filtered rows:
-                       - 'labels_main' column: 
+        pd.DataFrame: The original DataFrame with a new 'labels_main' column:
+                       - 'labels_main' column:
                             - 0: Buy (o fracaso direccional en modo unidireccional)
                             - 1: Sell (o éxito direccional en modo unidireccional)
                             - 2: Patrón no confiable
-                       - Rows with missing values (NaN) are removed.
                        - Temporary 'lvl1' and 'lvl2' columns are removed.
     """
 
@@ -1115,30 +1120,37 @@ def get_labels_filter_binary(
     smoothed_prices2, filtering_successful2 = safe_savgol_filter(close, label_rolling=label_rolling2, label_polyorder=label_polyorder)
     if not filtering_successful1 or not filtering_successful2:
         return pd.DataFrame()
+    # Calculate ATR once
+    high = dataset["high"].values
+    low = dataset["low"].values
+    atr = calculate_atr_simple(high, low, close, period=label_atr_period)
+
     # Calculate price deviations from both smoothed price series
     diff1 = dataset['close'] - smoothed_prices
     diff2 = dataset['close'] - smoothed_prices2
-    # Add price deviations as new columns to the DataFrame
-    dataset['lvl1'] = diff1
-    dataset['lvl2'] = diff2
+
+    # Exponential weighting to emphasize recent data
+    weights = np.exp(np.arange(len(close)) * label_decay_factor / len(close))
+    lvl1_raw = (diff1.values * weights)
+    lvl2_raw = (diff2.values * weights)
+
+    # Normalize by ATR (numerically stable)
+    eps = 1e-8
+    lvl1 = lvl1_raw / np.maximum(atr, eps)
+    lvl2 = lvl2_raw / np.maximum(atr, eps)
+
+    # Add normalized deviations as new columns to the DataFrame (for quantiles)
+    dataset['lvl1'] = lvl1
+    dataset['lvl2'] = lvl2
     # Calculate quantiles for the "reversion zones" for both price deviation series
     q1 = tuple(dataset['lvl1'].quantile(label_quantiles).to_list())
     q2 = tuple(dataset['lvl2'].quantile(label_quantiles).to_list())
     # Extract relevant data for label calculation
     lvl1 = dataset['lvl1'].values
     lvl2 = dataset['lvl2'].values
-    # Prepare parameters for label calculation
-    method_map = {'first': 0, 'last': 1, 'mean': 2, 'max': 3, 'min': 4, 'random': 5}
-    method_int = method_map.get(label_method_random, 5)
-    
-    # Calculate ATR
-    high = dataset["high"].values
-    low = dataset["low"].values
-    atr = calculate_atr_simple(high, low, close, period=label_atr_period)
-    
-    # Calculate buy/sell labels using the 'calc_labels_binary' function
+    # Calculate buy/sell labels using first-touch evaluation
     labels = calc_labels_filter_binary(
-        close, atr, lvl1, lvl2, q1, q2, direction, method_int,
+        close, high, low, atr, lvl1, lvl2, q1, q2, direction,
         label_markup, label_min_val, label_max_val
     )
     # Trimming the dataset and adding labels
@@ -1147,7 +1159,7 @@ def get_labels_filter_binary(
     return dataset.drop(columns=['lvl1', 'lvl2'])
 
 @njit(cache=True)
-def calc_labels_filter_multi(close, atr, lvls, qs, direction=2, method_int=5,
+def calc_labels_filter_multi(close, high, low, atr, lvls, qs, direction=2,
                             label_markup=0.5, label_min_val=1, label_max_val=15):
     """
     Generates labels based on multi-filter Savitzky-Golay consensus with profit target validation using ATR * markup.
@@ -1156,7 +1168,7 @@ def calc_labels_filter_multi(close, atr, lvls, qs, direction=2, method_int=5,
     - Uses multiple Savitzky-Golay filters with different parameters
     - Calculates price deviation from multiple smoothed trends
     - Requires consensus across ALL filters for signal generation
-    - Validates signals using ATR * markup as profit target
+    - Validates signals using ATR * markup as profit target with FIRST-TOUCH evaluation on high/low
     - For classification: 0.0=buy, 1.0=sell, 2.0=no signal
     
     Signal Generation Logic:
@@ -1169,7 +1181,6 @@ def calc_labels_filter_multi(close, atr, lvls, qs, direction=2, method_int=5,
         lvls (List): List of arrays with price deviations from each smoothed trend.
         qs (List): List of quantile tuples for each filter (low, high).
         direction (int): 0=buy only, 1=sell only, 2=both
-        method_int (int): 0=first, 1=last, 2=mean, 3=max, 4=min, 5=random
         label_markup (float): Markup multiplier for ATR.
         label_min_val (int): Minimum bars for future validation.
         label_max_val (int): Maximum bars for future validation.
@@ -1198,58 +1209,63 @@ def calc_labels_filter_multi(close, atr, lvls, qs, direction=2, method_int=5,
         curr_pr = close[i]
         dyn_mk = label_markup * atr[i]
         
-        # Selección del precio objetivo según method_int
-        if method_int == 0:  # first
-            future_pr = close[i + label_min_val]
-        elif method_int == 1:  # last
-            future_pr = close[i + label_max_val]
-        elif method_int == 2:  # mean
-            window = close[i + label_min_val : i + label_max_val + 1]
-            if window.size > 0:
-                future_pr = np.mean(window)
-            else:
-                future_pr = close[i + label_min_val]
-        elif method_int == 3:  # max
-            window = close[i + label_min_val : i + label_max_val + 1]
-            if window.size > 0:
-                future_pr = np.max(window)
-            else:
-                future_pr = close[i + label_min_val]
-        elif method_int == 4:  # min
-            window = close[i + label_min_val : i + label_max_val + 1]
-            if window.size > 0:
-                future_pr = np.min(window)
-            else:
-                future_pr = close[i + label_min_val]
-        else:  # random/otro
-            rand = np.random.randint(label_min_val, label_max_val + 1)
-            future_pr = close[i + rand]
+        # Primer toque: buscar el primer índice en [i+min, i+max] donde se alcanza el objetivo
+        up_target = curr_pr + dyn_mk
+        down_target = curr_pr - dyn_mk
+        start_j = i + label_min_val
+        end_j = i + label_max_val
+        if end_j >= len(close):
+            end_j = len(close) - 1
 
         if direction == 2:
             # Esquema clásico: 0.0=buy, 1.0=sell, 2.0=no confiable
-            # ✅ CORRECCIÓN: Consenso TOTAL y condiciones de profit target corregidas
-            if buy_signals == num_filters and sell_signals == 0 and future_pr >= curr_pr + dyn_mk:
-                labels[i] = 0.0  # Buy
-            elif sell_signals == num_filters and buy_signals == 0 and future_pr <= curr_pr - dyn_mk:
-                labels[i] = 1.0  # Sell
+            # ✅ Consenso TOTAL y evaluación por primer toque con high/low
+            if buy_signals == num_filters and sell_signals == 0:
+                hit = False
+                j = start_j
+                while j <= end_j:
+                    if high[j] >= up_target:
+                        hit = True
+                        break
+                    j += 1
+                labels[i] = 0.0 if hit else 2.0
+            elif sell_signals == num_filters and buy_signals == 0:
+                hit = False
+                j = start_j
+                while j <= end_j:
+                    if low[j] <= down_target:
+                        hit = True
+                        break
+                    j += 1
+                labels[i] = 1.0 if hit else 2.0
             else:
                 labels[i] = 2.0  # No confiable
         elif direction == 0:
             # Solo buy: 1.0=éxito, 0.0=fracaso, 2.0=no confiable
-            # ✅ CORRECCIÓN: Consenso TOTAL y condiciones de profit target corregidas
-            if buy_signals == num_filters and sell_signals == 0 and future_pr >= curr_pr + dyn_mk:
-                labels[i] = 1.0  # Éxito direccional (buy)
-            elif buy_signals == num_filters and sell_signals == 0:
-                labels[i] = 0.0  # Fracaso direccional (buy signal but no profit)
+            # ✅ Consenso TOTAL con primer toque
+            if buy_signals == num_filters and sell_signals == 0:
+                hit = False
+                j = start_j
+                while j <= end_j:
+                    if high[j] >= up_target:
+                        hit = True
+                        break
+                    j += 1
+                labels[i] = 1.0 if hit else 0.0
             else:
                 labels[i] = 2.0  # Patrón no confiable
         elif direction == 1:
             # Solo sell: 1.0=éxito, 0.0=fracaso, 2.0=no confiable
-            # ✅ CORRECCIÓN: Consenso TOTAL y condiciones de profit target corregidas
-            if sell_signals == num_filters and buy_signals == 0 and future_pr <= curr_pr - dyn_mk:
-                labels[i] = 1.0  # Éxito direccional (sell)
-            elif sell_signals == num_filters and buy_signals == 0:
-                labels[i] = 0.0  # Fracaso direccional (sell signal but no profit)
+            # ✅ Consenso TOTAL con primer toque
+            if sell_signals == num_filters and buy_signals == 0:
+                hit = False
+                j = start_j
+                while j <= end_j:
+                    if low[j] <= down_target:
+                        hit = True
+                        break
+                    j += 1
+                labels[i] = 1.0 if hit else 0.0
             else:
                 labels[i] = 2.0  # Patrón no confiable
         else:
@@ -1263,20 +1279,21 @@ def calc_labels_filter_multi(close, atr, lvls, qs, direction=2, method_int=5,
 def get_labels_filter_multi(
     dataset,
     label_rolling_periods_big=[200, 400, 600],
-    label_quantiles=[.45, .55],
+    label_quantiles=[0.2, 0.8],
     label_window_size=100,
     label_polyorder=3,
+    label_decay_factor=0.95,
     direction=2,
-    label_method_random='random',
     label_markup=0.5,
     label_min_val=1,
     label_max_val=15,
     label_atr_period=14
 ) -> pd.DataFrame:
     """
-    Generates trading signals (buy/sell) based on price deviation from multiple 
-    smoothed price trends calculated using a Savitzky-Golay label_filter with different
-    label_rolling periods and label_rolling quantiles. 
+    Generates trading signals (buy/sell) based on price deviation from multiple
+    smoothed price trends calculated using a Savitzky-Golay filter with different
+    rolling periods. Deviations are exponentially weighted (to emphasize recent data)
+    and normalized by ATR to make thresholds comparable across volatility regimes.
 
     This function applies a Savitzky-Golay label_filter to the closing prices for each 
     specified 'rolling_period'. It then calculates the price deviation from these
@@ -1286,59 +1303,61 @@ def get_labels_filter_multi(
 
     Args:
         dataset (pd.DataFrame): DataFrame containing financial data with a 'close' column.
-        label_rolling_periods_big (list, optional): List of label_rolling window_size sizes for the Savitzky-Golay label_filter. 
+        label_rolling_periods_big (list, optional): List of window sizes for the Savitzky-Golay filter.
                                            Defaults to [200, 400, 600].
-        quantiles (list, optional): Quantiles to define the "reversion zone". Defaults to [.45, .55].
-        window_size (int, optional): Window size for calculating label_rolling quantiles. Defaults to 100.
-        label_polyorder (int, optional): Polynomial order for the Savitzky-Golay label_filter. Defaults to 3.
+        label_quantiles (list, optional): Quantiles to define the reversion zone. Defaults to [0.2, 0.8].
+        label_window_size (int, optional): Window size for calculating rolling quantiles. Defaults to 100.
+        label_polyorder (int, optional): Polynomial order for the Savitzky-Golay filter. Defaults to 3.
+        label_decay_factor (float, optional): Exponential decay factor for weighting past data. Defaults to 0.95.
         direction (int, optional): 0=buy only, 1=sell only, 2=both. Defaults to 2.
 
     Returns:
-        pd.DataFrame: The original DataFrame with a new 'labels_main' column and filtered rows:
-                       - 'labels_main' column: 
+        pd.DataFrame: The original DataFrame with a new 'labels_main' column:
+                       - 'labels_main' column:
                             - 0: Buy (o fracaso direccional en modo unidireccional)
                             - 1: Sell (o éxito direccional en modo unidireccional)
                             - 2: Patrón no confiable
-                       - Rows with missing values (NaN) are removed. 
     """
     
     # Lists to store price deviation levels and quantiles for each label_rolling period
     all_levels = []
     all_quantiles = []
-    # Calculate smoothed price trends and label_rolling quantiles for each label_rolling period
+    
+    # Precompute ATR and weights
+    close = dataset['close'].values
+    high = dataset["high"].values
+    low = dataset["low"].values
+    atr = calculate_atr_simple(high, low, close, period=label_atr_period)
+    n = len(close)
+    weights = np.exp(np.arange(n) * label_decay_factor / n)
+    eps = 1e-8
+
+    # Calculate smoothed price trends and rolling quantiles for each rolling period
     for label_rolling in label_rolling_periods_big:
-                # Calculate smoothed prices using the Savitzky-Golay label_filter
-        smoothed_prices, filtering_successful = safe_savgol_filter(dataset['close'].values,
+        # Calculate smoothed prices using the Savitzky-Golay filter
+        smoothed_prices, filtering_successful = safe_savgol_filter(close,
                                        label_rolling=label_rolling,
                                        label_polyorder=label_polyorder)
         if not filtering_successful:
             return pd.DataFrame()
-        # Calculate the price deviation from the smoothed prices
+        # Calculate the weighted and ATR-normalized price deviation
         diff = dataset['close'] - smoothed_prices
-        # Create a temporary DataFrame to calculate label_rolling quantiles
-        temp_df = pd.DataFrame({'diff': diff})
+        lvl_norm = (diff.values * weights) / np.maximum(atr, eps)
+        # Create a temporary DataFrame to calculate rolling quantiles
+        temp_df = pd.DataFrame({'lvl': lvl_norm})
         # Calculate quantiles using pandas rolling for better compatibility
-        q_low = temp_df['diff'].rolling(window=label_window_size, min_periods=1).quantile(label_quantiles[0])
-        q_high = temp_df['diff'].rolling(window=label_window_size, min_periods=1).quantile(label_quantiles[1])
-        # Store the price deviation and quantiles for the current label_rolling period
-        all_levels.append(diff)
+        q_low = temp_df['lvl'].rolling(window=label_window_size, min_periods=1).quantile(label_quantiles[0])
+        q_high = temp_df['lvl'].rolling(window=label_window_size, min_periods=1).quantile(label_quantiles[1])
+        # Store the normalized price deviation and quantiles for the current rolling period
+        all_levels.append(lvl_norm)
         all_quantiles.append([q_low.values, q_high.values])
     # Convert lists to NumPy arrays for faster calculations (potentially using Numba)
     lvls_array = np.array(all_levels)
     qs_array = np.array(all_quantiles)
-    # Prepare parameters for label calculation
-    method_map = {'first': 0, 'last': 1, 'mean': 2, 'max': 3, 'min': 4, 'random': 5}
-    method_int = method_map.get(label_method_random, 5)
-    
-    # Calculate ATR
-    high = dataset["high"].values
-    low = dataset["low"].values
-    close = dataset['close'].values
-    atr = calculate_atr_simple(high, low, close, period=label_atr_period)
     
     # Calculate buy/sell labels using the 'calc_labels_multiple_filters' function 
     labels = calc_labels_filter_multi(
-        close, atr, lvls_array, qs_array, direction, method_int,
+        close, high, low, atr, lvls_array, qs_array, direction,
         label_markup, label_min_val, label_max_val
     )
     # Add the calculated labels to the DataFrame
@@ -1430,6 +1449,8 @@ def calculate_future_outcome_labels_for_patterns(
     correlations_at_window_start,
     window_sizes_at_window_start,
     source_close_data,
+    source_high_data,
+    source_low_data,
     atr,
     correlation_threshold,
     min_future_horizon,
@@ -1439,10 +1460,10 @@ def calculate_future_outcome_labels_for_patterns(
 ):
     """
     Genera etiquetas basadas en resultados futuros para patrones fractales usando ATR * markup.
-    Siguiendo el enfoque del artículo MQL5:
-    - Etiqueta TODOS los patrones fractales encontrados PUNTO POR PUNTO
-    - 0.0/1.0: Patrones confiables (correlación >= threshold) con señal direccional clara
-    - 2.0: Patrones no confiables O confiables sin direccionalidad clara
+    Mejoras clave:
+    - Evalúa primer toque del objetivo dentro de [min_future_horizon, max_future_horizon] usando high/low.
+    - Elimina aleatoriedad del horizonte (ya no se elige un horizonte fijo aleatorio).
+    - Resuelve conflictos entre ventanas superpuestas priorizando menor tiempo-a-objetivo.
     
     Args:
         close_data_len: Longitud total de los datos
@@ -1463,11 +1484,9 @@ def calculate_future_outcome_labels_for_patterns(
     # ✅ CORRECCIÓN: Inicialización con 2.0 (no confiable)
     labels = np.full(close_data_len, 2.0, dtype=np.float64)
     num_potential_windows = len(correlations_at_window_start)
-
-    # ✅ CORRECCIÓN: Horizonte fijo para coherencia temporal del patrón
-    fixed_horizon = min_future_horizon
-    if max_future_horizon > min_future_horizon:
-        fixed_horizon = np.random.randint(min_future_horizon, max_future_horizon + 1)
+    # Registrar el mejor tiempo a objetivo por índice para romper empates
+    INF_TIME = 2147483647
+    best_time_to_target = np.full(close_data_len, INF_TIME, dtype=np.int64)
 
     for idx_window_start in range(num_potential_windows):
         corr_value = correlations_at_window_start[idx_window_start]
@@ -1492,43 +1511,85 @@ def calculate_future_outcome_labels_for_patterns(
                 labels[i] = 2.0  # No confiable
             continue
             
-        # ✅ CORRECCIÓN CRÍTICA: Etiquetado PUNTO POR PUNTO (no promedio)
+        # Etiquetado punto por punto con primer toque
         for point_idx in range(idx_window_start, signal_time_idx + 1):
-            # Verificar límites del array ATR
+            if point_idx >= close_data_len:
+                continue
             if point_idx >= len(atr):
                 continue
-                
-            # Precio actual para este punto específico
-            current_price = source_close_data[point_idx]
-            
-            # ✅ CORRECCIÓN: Usar horizonte fijo para coherencia temporal
-            future_price_idx = point_idx + fixed_horizon
-            
-            if future_price_idx >= close_data_len:
-                continue
-                
-            future_price = source_close_data[future_price_idx]
-            
-            # ATR dinámico para este punto específico
-            dynamic_markup = markup_multiplier * atr[point_idx]
 
-            # ✅ CORRECCIÓN: Asignar etiqueta DIRECTAMENTE al punto
-            if direction == 0:  # buy only
-                if future_price > current_price + dynamic_markup:
-                    labels[point_idx] = 1.0  # Éxito direccional (buy)
+            current_price = source_close_data[point_idx]
+            dynamic_markup = markup_multiplier * atr[point_idx]
+            up_target = current_price + dynamic_markup
+            down_target = current_price - dynamic_markup
+
+            start_j = point_idx + min_future_horizon
+            end_j = point_idx + max_future_horizon
+            if start_j >= close_data_len:
+                continue
+            if end_j >= close_data_len:
+                end_j = close_data_len - 1
+
+            # Buscar primer toque para up y down
+            up_hit_idx = -1
+            down_hit_idx = -1
+            j = start_j
+            while j <= end_j:
+                if up_hit_idx == -1 and source_high_data[j] >= up_target:
+                    up_hit_idx = j
+                if down_hit_idx == -1 and source_low_data[j] <= down_target:
+                    down_hit_idx = j
+                if up_hit_idx != -1 and down_hit_idx != -1:
+                    break
+                j += 1
+
+            # Resolver etiqueta según dirección y primer toque
+            if direction == 0:
+                # buy only: éxito si alcanza up_target
+                if up_hit_idx != -1:
+                    time_to_hit = up_hit_idx - point_idx
+                    # Priorizar menor tiempo-a-objetivo; éxito prevalece sobre fracaso
+                    if time_to_hit < best_time_to_target[point_idx] or labels[point_idx] != 1.0:
+                        labels[point_idx] = 1.0
+                        best_time_to_target[point_idx] = time_to_hit
                 else:
-                    labels[point_idx] = 0.0  # Fracaso direccional (buy)
-            elif direction == 1:  # sell only
-                if future_price < current_price - dynamic_markup:
-                    labels[point_idx] = 1.0  # Éxito direccional (sell)
+                    # Registrar fracaso solo si no hay registro previo mejor
+                    if best_time_to_target[point_idx] == INF_TIME and labels[point_idx] == 2.0:
+                        labels[point_idx] = 0.0
+                        best_time_to_target[point_idx] = end_j - point_idx + 1
+            elif direction == 1:
+                # sell only: éxito si alcanza down_target
+                if down_hit_idx != -1:
+                    time_to_hit = down_hit_idx - point_idx
+                    if time_to_hit < best_time_to_target[point_idx] or labels[point_idx] != 1.0:
+                        labels[point_idx] = 1.0
+                        best_time_to_target[point_idx] = time_to_hit
                 else:
-                    labels[point_idx] = 0.0  # Fracaso direccional (sell)
-            elif direction == 2:  # both directions
-                if future_price > current_price + dynamic_markup:
-                    labels[point_idx] = 0.0  # Precio subió (buy)
-                elif future_price < current_price - dynamic_markup:
-                    labels[point_idx] = 1.0  # Precio bajó (sell)
-                # Si no hay movimiento significativo, mantiene 2.0 (no confiable)
+                    if best_time_to_target[point_idx] == INF_TIME and labels[point_idx] == 2.0:
+                        labels[point_idx] = 0.0
+                        best_time_to_target[point_idx] = end_j - point_idx + 1
+            else:
+                # both: elegir el primer toque
+                if up_hit_idx != -1 or down_hit_idx != -1:
+                    chosen_label = 2.0
+                    time_to_hit = INF_TIME
+                    if up_hit_idx != -1 and down_hit_idx != -1:
+                        if up_hit_idx <= down_hit_idx:
+                            chosen_label = 0.0
+                            time_to_hit = up_hit_idx - point_idx
+                        else:
+                            chosen_label = 1.0
+                            time_to_hit = down_hit_idx - point_idx
+                    elif up_hit_idx != -1:
+                        chosen_label = 0.0
+                        time_to_hit = up_hit_idx - point_idx
+                    else:
+                        chosen_label = 1.0
+                        time_to_hit = down_hit_idx - point_idx
+
+                    if time_to_hit < best_time_to_target[point_idx]:
+                        labels[point_idx] = chosen_label
+                        best_time_to_target[point_idx] = time_to_hit
     
     return labels
 
@@ -1577,6 +1638,8 @@ def get_labels_fractal_patterns(
         correlations_at_start,
         best_window_sizes_at_start,
         close,
+        high,
+        low,
         atr,
         label_corr_threshold,
         label_min_val,
@@ -1654,7 +1717,16 @@ def safe_savgol_filter(x, label_rolling: int, label_polyorder: int):
 
 @njit(cache=True)
 def calculate_labels_trend(
-    close, atr, normalized_trend, label_threshold, label_markup, label_min_val, label_max_val, direction, method_int=5
+    close,
+    high,
+    low,
+    atr,
+    normalized_trend,
+    label_threshold,
+    label_markup,
+    label_min_val,
+    label_max_val,
+    direction
 ):
     """
     Etiquetado de tendencia con profit, soportando dirección.
@@ -1662,71 +1734,69 @@ def calculate_labels_trend(
     Procedimiento de etiquetado:
     1. Se calcula la tendencia normalizada (por volatilidad) para cada punto.
     2. Para cada punto, se evalúa si la tendencia supera un umbral positivo (buy) o negativo (sell).
-    3. Si la señal es válida según la dirección (buy/sell/both), se busca el precio futuro en una ventana [min_val, max_val] usando el método elegido:
-       - 'first', 'last', 'mean', 'max', 'min', o 'random' (ver parámetro method_int).
-    4. Se compara el precio futuro con el precio actual más/menos un objetivo de profit dinámico (ATR * markup).
-    5. Para direcciones únicas (buy/sell): 
-       - 1.0 = éxito direccional (profit alcanzado en la dirección)
-       - 0.0 = fracaso direccional (no se alcanza el profit)
-       - 2.0 = patrón no confiable (la tendencia no supera el umbral)
-    6. Para dirección 'both':
-       - 0.0 = éxito buy, 1.0 = éxito sell, 2.0 = no hay señal o no se alcanza el profit
+    3. Asignación de etiquetas:
+       - Direcciones únicas: 1.0 = éxito, 0.0 = fracaso, 2.0 = patrón no confiable (umbral no superado).
+       - Dirección 'both': 0.0 = éxito buy, 1.0 = éxito sell, 2.0 = no señal/no profit.
 
     direction: 0=solo buy, 1=solo sell, 2=both
-    method_int: 0=first, 1=last, 2=mean, 3=max, 4=min, 5=random
     Usa ATR como filtro de profit.
     """
     labels = np.empty(len(normalized_trend) - label_max_val, dtype=np.float64)
     for i in range(len(normalized_trend) - label_max_val):
         dyn_mk = label_markup * atr[i]
-        
-        # Obtener precio futuro (lógica unificada)
-        window = close[i + label_min_val : i + label_max_val + 1]
-        if window.size == 0:
-            future_pr = close[i + label_min_val] if i + label_min_val < len(close) else close[i]
-        elif method_int == 0:  # first
-            future_pr = close[i + label_min_val]
-        elif method_int == 1:  # last
-            future_pr = close[i + label_max_val]
-        elif method_int == 2:  # mean
-            future_pr = np.mean(window)
-        elif method_int == 3:  # max
-            future_pr = np.max(window)
-        elif method_int == 4:  # min
-            future_pr = np.min(window)
-        else:  # random
-            rand = np.random.randint(label_min_val, label_max_val + 1)
-            future_pr = close[i + rand]
-    
+
+        # Primer toque con high/low
+        up_target = close[i] + dyn_mk
+        down_target = close[i] - dyn_mk
+        start_j = i + label_min_val
+        end_j = i + label_max_val
+
         if direction == 0:  # solo buy
             if normalized_trend[i] > label_threshold:
-                if future_pr >= close[i] + dyn_mk:
-                    labels[i] = 1.0  # Éxito direccional (buy)
-                else:
-                    labels[i] = 0.0  # Fracaso direccional (buy)
+                hit = False
+                j = start_j
+                while j <= end_j:
+                    if high[j] >= up_target:
+                        hit = True
+                        break
+                    j += 1
+                labels[i] = 1.0 if hit else 0.0
             else:
-                labels[i] = 2.0  # Patrón no confiable
+                labels[i] = 2.0
         elif direction == 1:  # solo sell
             if normalized_trend[i] < -label_threshold:
-                if future_pr <= close[i] - dyn_mk:
-                    labels[i] = 1.0  # Éxito direccional (sell)
-                else:
-                    labels[i] = 0.0  # Fracaso direccional (sell)
+                hit = False
+                j = start_j
+                while j <= end_j:
+                    if low[j] <= down_target:
+                        hit = True
+                        break
+                    j += 1
+                labels[i] = 1.0 if hit else 0.0
             else:
-                labels[i] = 2.0  # Patrón no confiable
+                labels[i] = 2.0
         else:  # both
             if normalized_trend[i] > label_threshold:
-                if future_pr >= close[i] + dyn_mk:
-                    labels[i] = 0.0  # Buy (Profit reached)
-                else:
-                    labels[i] = 2.0  # No profit
+                hit = False
+                j = start_j
+                while j <= end_j:
+                    if high[j] >= up_target:
+                        hit = True
+                        break
+                    j += 1
+                labels[i] = 0.0 if hit else 2.0
             elif normalized_trend[i] < -label_threshold:
-                if future_pr <= close[i] - dyn_mk:
-                    labels[i] = 1.0  # Sell (Profit reached)
-                else:
-                    labels[i] = 2.0  # No profit
+                hit = False
+                j = start_j
+                while j <= end_j:
+                    if low[j] <= down_target:
+                        hit = True
+                        break
+                    j += 1
+                labels[i] = 1.0 if hit else 2.0
             else:
-                labels[i] = 2.0  # No signal
+                labels[i] = 2.0
+
     return labels
 
 def get_labels_trend(
@@ -1739,8 +1809,7 @@ def get_labels_trend(
     label_min_val=1,
     label_max_val=15,
     label_atr_period=14,
-    direction=2,  # 0=buy, 1=sell, 2=both
-    label_method_random='random',
+    direction=2,
 ) -> pd.DataFrame:
     """
     Etiquetado de tendencia normalizada con validación de profit objetivo usando ATR y markup.
@@ -1752,15 +1821,14 @@ def get_labels_trend(
     4. Se eliminan los valores NaN y se sincronizan los datos.
     5. Se calcula el ATR para cada punto.
     6. Para cada punto, se evalúa si la tendencia normalizada supera el umbral (positivo para buy, negativo para sell).
-    7. Si la señal es válida, se busca el precio futuro en una ventana [min_val, max_val] usando el método seleccionado ('first', 'last', 'mean', 'max', 'min', 'random').
-    8. Se compara el precio futuro con el precio actual más/menos el objetivo de profit (ATR * markup).
+    7. Si la señal es válida, busca el primer toque del objetivo con high/low en [min_val, max_val].
+    8. Se compara con el objetivo (ATR * markup).
     9. Se asigna la etiqueta según el esquema:
        - Para direcciones únicas (buy/sell): 1.0 = éxito direccional, 0.0 = fracaso, 2.0 = patrón no confiable.
        - Para dirección 'both': 0.0 = éxito buy, 1.0 = éxito sell, 2.0 = no señal/no profit.
 
     Parámetros principales:
     - direction: 0=solo buy, 1=solo sell, 2=ambas direcciones
-    - label_method_random: método de selección del precio objetivo en la ventana futura
     """
     # Smoothing and trend calculation
     smoothed_prices, filtering_successful = safe_savgol_filter(
@@ -1783,19 +1851,20 @@ def get_labels_trend(
     atr = calculate_atr_simple(high, low, close, period=label_atr_period)
     atr_clean = atr[valid_mask]
 
-    # Generating labels
-    method_map = {'first': 0, 'last': 1, 'mean': 2, 'max': 3, 'min': 4, 'random': 5}
-    method_int = method_map.get(label_method_random, 5)
+    # Alinear high/low con valid_mask
+    high_clean = dataset['high'].values[valid_mask]
+    low_clean = dataset['low'].values[valid_mask]
     labels = calculate_labels_trend(
         close_clean,
+        high_clean,
+        low_clean,
         atr_clean,
         normalized_trend_clean,
         label_threshold,
         label_markup,
         label_min_val,
         label_max_val,
-        direction,
-        method_int,
+        direction
     )
 
     # ✅ CORRECCIÓN CRÍTICA: Alineación correcta de etiquetas
@@ -1816,44 +1885,48 @@ def get_labels_trend(
 
 @njit(cache=True)
 def calculate_labels_trend_multi(
-    close, atr, normalized_trends, label_threshold, label_markup, label_min_val, label_max_val, direction=2, method_int=5
+    close, high, low, atr, normalized_trends, label_threshold, label_markup, label_min_val, label_max_val, direction=2
 ):
     """
     Etiquetado multi-período con soporte para direcciones únicas o ambas.
     direction: 0=solo buy, 1=solo sell, 2=ambas
-    method_int: 0=first, 1=last, 2=mean, 3=max, 4=min, 5=random
+    Evaluación por primer toque usando high/low en [min,max].
     """
     num_periods = normalized_trends.shape[0]  # Number of periods
     labels = np.empty(len(close) - label_max_val, dtype=np.float64)
     for i in range(len(close) - label_max_val):
         dyn_mk = label_markup * atr[i]
-        # Select the target price using the specified method
-        window = close[i + label_min_val : i + label_max_val + 1]
-        if window.size == 0:
-            future_price = close[i + label_min_val] if i + label_min_val < len(close) else close[i]
-        elif method_int == 0:  # first
-            future_price = close[i + label_min_val]
-        elif method_int == 1:  # last
-            future_price = close[i + label_max_val]
-        elif method_int == 2:  # mean
-            future_price = np.mean(window)
-        elif method_int == 3:  # max
-            future_price = np.max(window)
-        elif method_int == 4:  # min
-            future_price = np.min(window)
-        else:  # random
-            rand = np.random.randint(label_min_val, label_max_val + 1)
-            future_price = close[i + rand]
+        up_target = close[i] + dyn_mk
+        down_target = close[i] - dyn_mk
+        start_j = i + label_min_val
+        end_j = i + label_max_val
+        if end_j >= len(close):
+            end_j = len(close) - 1
 
         buy_signals = 0
         sell_signals = 0
         # Check conditions for each period
         for j in range(num_periods):
             if normalized_trends[j, i] > label_threshold:
-                if future_price >= close[i] + dyn_mk:
+                # Buscar primer toque arriba
+                hit = False
+                k = start_j
+                while k <= end_j:
+                    if high[k] >= up_target:
+                        hit = True
+                        break
+                    k += 1
+                if hit:
                     buy_signals += 1
             elif normalized_trends[j, i] < -label_threshold:
-                if future_price <= close[i] - dyn_mk:
+                hit = False
+                k = start_j
+                while k <= end_j:
+                    if low[k] <= down_target:
+                        hit = True
+                        break
+                    k += 1
+                if hit:
                     sell_signals += 1
         # Etiquetado según dirección
         if direction == 2:
@@ -1895,8 +1968,7 @@ def get_labels_trend_multi(
     label_min_val=1,
     label_max_val=15,
     label_atr_period=14,
-    direction=2,
-    label_method_random='random',
+    direction=2
 ) -> pd.DataFrame:
     """
     Generates labels for trading signals (Buy/Sell) based on the normalized trend,
@@ -1957,10 +2029,10 @@ def get_labels_trend_multi(
     atr = calculate_atr_simple(high, low, close_prices, period=label_atr_period)
     atr_clean = atr[valid_mask]
     # Generate labels
-    method_map = {'first': 0, 'last': 1, 'mean': 2, 'max': 3, 'min': 4, 'random': 5}
-    method_int = method_map.get(label_method_random, 5)
     labels = calculate_labels_trend_multi(
         close_clean,
+        dataset['high'].values[valid_mask],
+        dataset['low'].values[valid_mask],
         atr_clean,
         normalized_trends_clean,
         label_threshold,
@@ -1968,7 +2040,6 @@ def get_labels_trend_multi(
         label_min_val,
         label_max_val,
         direction=direction,
-        method_int=method_int,
     )
 
     # Asignar etiquetas alineadas y rellenar con 2.0 usando pandas para evitar padding manual
@@ -1980,12 +2051,12 @@ def get_labels_trend_multi(
     return dataset
 
 @njit(cache=True)
-def calculate_labels_trend_filters(close, atr, normalized_trend, label_threshold, label_markup, label_min_val, label_max_val, direction=2, method_int=5):
+def calculate_labels_trend_filters(close, high, low, atr, normalized_trend, label_threshold, label_markup, label_min_val, label_max_val, direction=2):
     """
     Etiquetado de tendencia con profit, soportando dirección.
     
     direction: 0=solo buy, 1=solo sell, 2=ambas
-    method_int: 0=first, 1=last, 2=mean, 3=max, 4=min, 5=random
+    Evaluación por primer toque con high/low en [min,max]
     
     Etiquetas:
       - Clasificación:
@@ -1995,57 +2066,62 @@ def calculate_labels_trend_filters(close, atr, normalized_trend, label_threshold
     labels = np.empty(len(normalized_trend) - label_max_val, dtype=np.float64)
     for i in range(len(normalized_trend) - label_max_val):
         dyn_mk = label_markup * atr[i]
-        # Calcular future_pr directamente según method_int
-        window = close[i + label_min_val : i + label_max_val + 1]
-        if window.size == 0:
-            future_pr = close[i + label_min_val] if i + label_min_val < len(close) else close[i]
-        elif method_int == 0:  # first
-            future_pr = close[i + label_min_val]
-        elif method_int == 1:  # last
-            future_pr = close[i + label_max_val]
-        elif method_int == 2:  # mean
-            future_pr = np.mean(window)
-        elif method_int == 3:  # max
-            future_pr = np.max(window)
-        elif method_int == 4:  # min
-            future_pr = np.min(window)
-        else:  # random
-            rand = np.random.randint(label_min_val, label_max_val + 1)
-            future_pr = close[i + rand]
+        up_target = close[i] + dyn_mk
+        down_target = close[i] - dyn_mk
+        start_j = i + label_min_val
+        end_j = i + label_max_val
+        if end_j >= len(close):
+            end_j = len(close) - 1
 
         if direction == 0:  # solo buy
             if normalized_trend[i] > label_threshold:
-                if future_pr >= close[i] + dyn_mk:
-                    labels[i] = 1.0  # Éxito direccional (buy)
-                else:
-                    labels[i] = 0.0  # Fracaso direccional (buy)
+                hit = False
+                j = start_j
+                while j <= end_j:
+                    if high[j] >= up_target:
+                        hit = True
+                        break
+                    j += 1
+                labels[i] = 1.0 if hit else 0.0
             else:
                 labels[i] = 2.0  # Patrón no confiable
         elif direction == 1:  # solo sell
             if normalized_trend[i] < -label_threshold:
-                if future_pr <= close[i] - dyn_mk:
-                    labels[i] = 1.0  # Éxito direccional (sell)
-                else:
-                    labels[i] = 0.0  # Fracaso direccional (sell)
+                hit = False
+                j = start_j
+                while j <= end_j:
+                    if low[j] <= down_target:
+                        hit = True
+                        break
+                    j += 1
+                labels[i] = 1.0 if hit else 0.0
             else:
                 labels[i] = 2.0  # Patrón no confiable
         else:  # both
             if normalized_trend[i] > label_threshold:
-                if future_pr >= close[i] + dyn_mk:
-                    labels[i] = 0.0  # Buy (Profit reached)
-                else:
-                    labels[i] = 2.0  # No profit
+                hit = False
+                j = start_j
+                while j <= end_j:
+                    if high[j] >= up_target:
+                        hit = True
+                        break
+                    j += 1
+                labels[i] = 0.0 if hit else 2.0
             elif normalized_trend[i] < -label_threshold:
-                if future_pr <= close[i] - dyn_mk:
-                    labels[i] = 1.0  # Sell (Profit reached)
-                else:
-                    labels[i] = 2.0  # No profit
+                hit = False
+                j = start_j
+                while j <= end_j:
+                    if low[j] <= down_target:
+                        hit = True
+                        break
+                    j += 1
+                labels[i] = 1.0 if hit else 2.0
             else:
                 labels[i] = 2.0  # No signal
     return labels
 
 def get_labels_trend_filters(dataset, label_filter='savgol', label_rolling=200, label_polyorder=3, label_threshold=0.5, 
-                    label_vol_window=50, label_markup=0.5, label_min_val=1, label_max_val=15, label_atr_period=14, label_method_random='random', direction=2) -> pd.DataFrame:
+                    label_vol_window=50, label_markup=0.5, label_min_val=1, label_max_val=15, label_atr_period=14, direction=2) -> pd.DataFrame:
     """
     Etiquetado de tendencia con profit usando diferentes filtros de suavizado, con soporte para direcciones únicas o ambas.
     
@@ -2060,7 +2136,6 @@ def get_labels_trend_filters(dataset, label_filter='savgol', label_rolling=200, 
         label_min_val (int): Número mínimo de barras hacia adelante.
         label_max_val (int): Número máximo de barras hacia adelante.
         label_atr_period (int): Período ATR.
-        label_method_random (str): Método de selección del precio objetivo.
         direction (int): 0=solo buy, 1=solo sell, 2=ambas (default).
     
     Returns:
@@ -2104,10 +2179,19 @@ def get_labels_trend_filters(dataset, label_filter='savgol', label_rolling=200, 
     atr = calculate_atr_simple(high, low, close, period=label_atr_period)
     atr_clean = atr[valid_mask]
     
-    # Generating labels
-    method_map = {'first': 0, 'last': 1, 'mean': 2, 'max': 3, 'min': 4, 'random': 5}
-    method_int = method_map.get(label_method_random, 5)
-    labels = calculate_labels_trend_filters(close_clean, atr_clean, normalized_trend_clean, label_threshold, label_markup, label_min_val, label_max_val, direction, method_int)
+    # Generating labels (first-touch)
+    labels = calculate_labels_trend_filters(
+        close_clean,
+        dataset['high'].values[valid_mask],
+        dataset['low'].values[valid_mask],
+        atr_clean,
+        normalized_trend_clean,
+        label_threshold,
+        label_markup,
+        label_min_val,
+        label_max_val,
+        direction,
+    )
     
     # Asignar etiquetas alineadas y rellenar con 2.0 usando pandas para evitar padding manual
     labels = pd.Series(labels, index=dataset.index[valid_mask][:-label_max_val]).reindex_like(dataset).fillna(2.0)
@@ -2228,11 +2312,11 @@ def get_labels_clusters(
     return dataset.drop(columns=['cluster'])
 
 @njit(cache=True)
-def calculate_labels_multi_window(prices, atr, window_sizes, label_markup, label_min_val, label_max_val, direction=2, method_int=5):
+def calculate_labels_multi_window(prices, highs, lows, atr, window_sizes, label_markup, label_min_val, label_max_val, direction=2):
     """
     Etiquetado multi-ventana con profit target basado en ATR * markup.
     direction: 0=solo buy, 1=solo sell, 2=ambas
-    method_int: 0=first, 1=last, 2=mean, 3=max, 4=min, 5=random
+    Evaluación por primer toque con high/low en [min,max]
     
     Etiquetas:
       - Clasificación:
@@ -2258,40 +2342,41 @@ def calculate_labels_multi_window(prices, atr, window_sizes, label_markup, label
             elif current_price < support - dyn_mk:
                 short_signals += 1
 
-        # Validar con profit futuro
-        window = prices[i + label_min_val : i + label_max_val + 1]
-        if window.size == 0:
-            future_price = prices[i + label_min_val] if i + label_min_val < len(prices) else prices[i]
-        elif method_int == 0:  # first
-            future_price = prices[i + label_min_val]
-        elif method_int == 1:  # last
-            future_price = prices[i + label_max_val]
-        elif method_int == 2:  # mean
-            future_price = np.mean(window)
-        elif method_int == 3:  # max
-            future_price = np.max(window)
-        elif method_int == 4:  # min
-            future_price = np.min(window)
-        else:  # random
-            rand = np.random.randint(label_min_val, label_max_val + 1)
-            future_price = prices[i + rand]
+        # Validar con primer toque usando high/low
+        up_target = prices[i] + dyn_mk
+        down_target = prices[i] - dyn_mk
+        start_j = i + label_min_val
+        end_j = i + label_max_val
+        if end_j >= len(prices):
+            end_j = len(prices) - 1
+        up_hit = False
+        down_hit = False
+        j = start_j
+        while j <= end_j:
+            if not up_hit and highs[j] >= up_target:
+                up_hit = True
+            if not down_hit and lows[j] <= down_target:
+                down_hit = True
+            if up_hit and down_hit:
+                break
+            j += 1
     
         if direction == 2:  # both
-            if long_signals > short_signals and future_price >= current_price + dyn_mk:
-                signals.append(0.0)  # buy with profit validation
-            elif short_signals > long_signals and future_price <= current_price - dyn_mk:
-                signals.append(1.0)  # sell with profit validation
+            if long_signals > short_signals and up_hit:
+                signals.append(0.0)  # buy first-touch
+            elif short_signals > long_signals and down_hit:
+                signals.append(1.0)  # sell first-touch
             else:
                 signals.append(2.0)
         elif direction == 0:  # solo buy
-            if long_signals > 0 and future_price >= current_price + dyn_mk:
+            if long_signals > 0 and up_hit:
                 signals.append(1.0)  # éxito direccional (señal de compra)
             elif long_signals > 0:
                 signals.append(0.0)  # fracaso direccional (no profit)
             else:
                 signals.append(2.0)  # patrón no confiable
         elif direction == 1:  # solo sell
-            if short_signals > 0 and future_price <= current_price - dyn_mk:
+            if short_signals > 0 and down_hit:
                 signals.append(1.0)  # éxito direccional (señal de venta)
             elif short_signals > 0:
                 signals.append(0.0)  # fracaso direccional (no profit)
@@ -2306,7 +2391,6 @@ def get_labels_multi_window(
     label_min_val=1,
     label_max_val=15,
     label_atr_period=14,
-    label_method_random='random',
     direction=2,
 ) -> pd.DataFrame:
     """
@@ -2319,7 +2403,6 @@ def get_labels_multi_window(
         label_min_val (int): Número mínimo de barras hacia adelante.
         label_max_val (int): Número máximo de barras hacia adelante.
         label_atr_period (int): Período ATR.
-        label_method_random (str): Método de selección del precio objetivo.
         direction (int): 0=solo buy, 1=solo sell, 2=ambas (default).
     
     Returns:
@@ -2336,10 +2419,8 @@ def get_labels_multi_window(
     atr = calculate_atr_simple(high, low, close, period=label_atr_period)
     # Calculate labels
     window_sizes_t = List(label_window_sizes_int)
-    method_map = {'first': 0, 'last': 1, 'mean': 2, 'max': 3, 'min': 4, 'random': 5}
-    method_int = method_map.get(label_method_random, 5)
     labels = calculate_labels_multi_window(
-        close, atr, window_sizes_t, label_markup, label_min_val, label_max_val, direction, method_int
+        close, high, low, atr, window_sizes_t, label_markup, label_min_val, label_max_val, direction
     )
     # Align labels and fill with 2.0 using pandas to avoid manual padding
     max_window = max(label_window_sizes_int)
@@ -2351,7 +2432,7 @@ def get_labels_multi_window(
     return dataset
 
 @njit(cache=True)
-def calculate_labels_validated_levels(close, high, low, atr, window_size, label_markup, min_touches, label_min_val, label_max_val, direction=2, method_int=5):
+def calculate_labels_validated_levels(close, high, low, atr, window_size, label_markup, min_touches, label_min_val, label_max_val, direction=2):
     """
     Etiquetado de rupturas de niveles validados con profit target basado en ATR * markup.
     
@@ -2360,7 +2441,7 @@ def calculate_labels_validated_levels(close, high, low, atr, window_size, label_
     - Confirmación de rupturas: Usa Close para estabilidad (menos ruido)
     
     direction: 0=solo buy, 1=solo sell, 2=ambas
-    method_int: 0=first, 1=last, 2=mean, 3=max, 4=min, 5=random
+    Evaluación por primer toque con high/low en [min,max]
     
     Etiquetas:
       - Clasificación:
@@ -2465,40 +2546,41 @@ def calculate_labels_validated_levels(close, high, low, atr, window_size, label_
             if current_close < closest_support - dyn_mk:
                 broke_support = True
         
-        # Seleccionar precio futuro según method_int (usando Close)
-        if method_int == 0:  # first
-            future_price = close[i + label_min_val]
-        elif method_int == 1:  # last
-            future_price = close[i + label_max_val]
-        elif method_int == 2:  # mean
-            future_window = close[i + label_min_val:i + label_max_val + 1]
-            future_price = np.mean(future_window)
-        elif method_int == 3:  # max
-            future_window = close[i + label_min_val:i + label_max_val + 1]
-            future_price = np.max(future_window)
-        elif method_int == 4:  # min
-            future_window = close[i + label_min_val:i + label_max_val + 1]
-            future_price = np.min(future_window)
-        else:  # random (method_int == 5)
-            rand = np.random.randint(label_min_val, label_max_val + 1)
-            future_price = close[i + rand]
+        # Validar con primer toque (high/low)
+        up_target = current_close + dyn_mk
+        down_target = current_close - dyn_mk
+        start_j = i + label_min_val
+        end_j = i + label_max_val
+        if end_j >= len(close):
+            end_j = len(close) - 1
+        up_hit = False
+        down_hit = False
+        j = start_j
+        while j <= end_j:
+            if not up_hit and high[j] >= up_target:
+                up_hit = True
+            if not down_hit and low[j] <= down_target:
+                down_hit = True
+            if up_hit and down_hit:
+                break
+            j += 1
     
         if direction == 2:  # both
-            if broke_resistance and future_price >= current_close + dyn_mk:
-                labels.append(0.0)  # buy with profit validation
-            elif broke_support and future_price <= current_close - dyn_mk:
-                labels.append(1.0)  # sell with profit validation
+            if broke_resistance and up_hit:
+                labels.append(0.0)  # buy first-touch
+            elif broke_support and down_hit:
+                labels.append(1.0)  # sell first-touch
             else:
                 labels.append(2.0)  # sin señal
         elif direction == 0:  # solo buy
-            if broke_resistance and future_price >= current_close + dyn_mk:
+            if broke_resistance and up_hit:
                 labels.append(1.0)  # éxito direccional (señal de compra)
             elif broke_resistance:
                 labels.append(0.0)  # fracaso direccional (no profit)
             else:
                 labels.append(2.0)  # patrón no confiable
         elif direction == 1:  # solo sell
-            if broke_support and future_price <= current_close - dyn_mk:
+            if broke_support and down_hit:
                 labels.append(1.0)  # éxito direccional (señal de venta)
             elif broke_support:
                 labels.append(0.0)  # fracaso direccional (no profit)
@@ -2516,7 +2598,6 @@ def get_labels_validated_levels(
     label_max_val=15,
     label_atr_period=14,
     direction=2,
-    label_method_random='random'
 ) -> pd.DataFrame:
     """
     Etiquetado de rupturas de niveles validados con profit target basado en ATR * markup.
@@ -2530,7 +2611,6 @@ def get_labels_validated_levels(
         label_max_val (int): Número máximo de barras hacia adelante.
         label_atr_period (int): Período ATR.
         direction (int): 0=solo buy, 1=solo sell, 2=ambas (default).
-        label_method_random (str): Método de selección del precio objetivo ('first', 'last', 'mean', 'max', 'min', 'random').
     
     Returns:
         pd.DataFrame: DataFrame con columna 'labels_main' añadida:
@@ -2544,14 +2624,10 @@ def get_labels_validated_levels(
     close = dataset["close"].values
     atr = calculate_atr_simple(high, low, close, period=label_atr_period)
     
-    # Map method string to integer
-    method_map = {'first': 0, 'last': 1, 'mean': 2, 'max': 3, 'min': 4, 'random': 5}
-    method_int = method_map.get(label_method_random, 5)
-    
     # Calculate labels
     labels = calculate_labels_validated_levels(
         close, high, low, atr, label_window_size, label_markup, label_min_touches,
-        label_min_val, label_max_val, direction, method_int
+        label_min_val, label_max_val, direction
     )
     
     # Align labels and fill with 2.0 using pandas to avoid manual padding
@@ -2566,13 +2642,13 @@ def get_labels_validated_levels(
     return dataset
 
 @njit(cache=True)
-def calculate_labels_zigzag(peaks, troughs, close, atr, label_markup, label_min_val, label_max_val, direction=2, method_int=5):
+def calculate_labels_zigzag(peaks, troughs, close, high, low, atr, label_markup, label_min_val, label_max_val, direction=2):
     """
     Generates labels based on peaks and troughs with profit target validation using ATR * markup.
     
     Methodology:
     - Detects peaks and troughs using prominence-based identification
-    - Validates signals using ATR * markup as profit target
+    - Validates signals using ATR * markup as profit target with FIRST-TOUCH on high/low
     - For classification: 0.0=buy, 1.0=sell, 2.0=no signal
     
     Signal Generation Logic:
@@ -2590,7 +2666,6 @@ def calculate_labels_zigzag(peaks, troughs, close, atr, label_markup, label_min_
         label_min_val (int): Minimum bars for future validation.
         label_max_val (int): Maximum bars for future validation.
         direction (int): 0=solo buy, 1=solo sell, 2=ambas
-        method_int (int): 0=first, 1=last, 2=mean, 3=max, 4=min, 5=random
 
     Returns:
         np.array: An array of labels with profit validation:
@@ -2620,58 +2695,49 @@ def calculate_labels_zigzag(peaks, troughs, close, atr, label_markup, label_min_
 
         dyn_mk = label_markup * atr[i]
         
-        # Selección del precio objetivo según method_int
-        if method_int == 0:  # first
-            future_price = close[i + label_min_val]
-        elif method_int == 1:  # last
-            future_price = close[i + label_max_val]
-        elif method_int == 2:  # mean
-            window = close[i + label_min_val : i + label_max_val + 1]
-            if window.size > 0:
-                future_price = np.mean(window)
-            else:
-                future_price = close[i + label_min_val]
-        elif method_int == 3:  # max
-            window = close[i + label_min_val : i + label_max_val + 1]
-            if window.size > 0:
-                future_price = np.max(window)
-            else:
-                future_price = close[i + label_min_val]
-        elif method_int == 4:  # min
-            window = close[i + label_min_val : i + label_max_val + 1]
-            if window.size > 0:
-                future_price = np.min(window)
-            else:
-                future_price = close[i + label_min_val]
-        else:  # random/otro
-            rand = np.random.randint(label_min_val, label_max_val + 1)
-            future_price = close[i + rand]
-            
+        # First-touch evaluation within [min,max]
         current_price = close[i]
+        up_target = current_price + dyn_mk
+        down_target = current_price - dyn_mk
+        start_j = i + label_min_val
+        end_j = i + label_max_val
+        if end_j >= len(close):
+            end_j = len(close) - 1
+        up_hit = False
+        down_hit = False
+        j = start_j
+        while j <= end_j:
+            if not up_hit and high[j] >= up_target:
+                up_hit = True
+            if not down_hit and low[j] <= down_target:
+                down_hit = True
+            if up_hit and down_hit:
+                break
+            j += 1
 
         if direction == 2:  # both
-            if is_peak and future_price <= current_price - dyn_mk:
+            if is_peak and down_hit:
                 labels[i] = 1.0  # Sell signal at peaks with profit validation
                 last_peak_type = 1
-            elif is_trough and future_price >= current_price + dyn_mk:
+            elif is_trough and up_hit:
                 labels[i] = 0.0  # Buy signal at troughs with profit validation
                 last_peak_type = 0
             else:
                 # ✅ PUNTOS INTERMEDIOS: Continuar señal SOLO si cumple profit target
                 if last_peak_type == 1:  # Último fue pico válido
-                    if future_price <= current_price - dyn_mk:
+                    if down_hit:
                         labels[i] = 1.0  # Sell
                     else:
                         labels[i] = 2.0  # Sin señal
                 elif last_peak_type == 0:  # Último fue valle válido
-                    if future_price >= current_price + dyn_mk:
+                    if up_hit:
                         labels[i] = 0.0  # Buy
                     else:
                         labels[i] = 2.0  # Sin señal
                 else:
                     labels[i] = 2.0  # Sin señal
         elif direction == 0:  # solo buy
-            if is_trough and future_price >= current_price + dyn_mk:
+            if is_trough and up_hit:
                 labels[i] = 1.0  # Éxito direccional (señal de compra)
                 last_peak_type = 0
             elif is_trough:
@@ -2680,14 +2746,14 @@ def calculate_labels_zigzag(peaks, troughs, close, atr, label_markup, label_min_
             else:
                 # ✅ PUNTOS INTERMEDIOS: Continuar señal SOLO si cumple profit target
                 if last_peak_type == 0:  # Último fue valle válido
-                    if future_price >= current_price + dyn_mk:
+                    if up_hit:
                         labels[i] = 1.0  # Éxito direccional (buy)
                     else:
                         labels[i] = 2.0  # Patrón no confiable
                 else:
                     labels[i] = 2.0  # Patrón no confiable
         elif direction == 1:  # solo sell
-            if is_peak and future_price <= current_price - dyn_mk:
+            if is_peak and down_hit:
                 labels[i] = 1.0  # Éxito direccional (señal de venta)
                 last_peak_type = 1
             elif is_peak:
@@ -2696,7 +2762,7 @@ def calculate_labels_zigzag(peaks, troughs, close, atr, label_markup, label_min_
             else:
                 # ✅ PUNTOS INTERMEDIOS: Continuar señal SOLO si cumple profit target
                 if last_peak_type == 1:  # Último fue pico válido
-                    if future_price <= current_price - dyn_mk:
+                    if down_hit:
                         labels[i] = 1.0  # Éxito direccional (sell)
                     else:
                         labels[i] = 2.0  # Patrón no confiable
@@ -2713,7 +2779,6 @@ def get_labels_zigzag(
     label_max_val=15,
     label_atr_period=14,
     direction=2,
-    label_method_random='random',
 ) -> pd.DataFrame:
     """
     Generates labels for a financial dataset based on zigzag peaks and troughs with profit target validation.
@@ -2738,7 +2803,6 @@ def get_labels_zigzag(
         label_max_val (int): Número máximo de barras hacia adelante.
         label_atr_period (int): Período ATR.
         direction (int): 0=solo buy, 1=solo sell, 2=ambas (default).
-        label_method_random (str): Método de selección del precio objetivo ('first', 'last', 'mean', 'max', 'min', 'random').
     
     Returns:
         pd.DataFrame: DataFrame con columna 'labels_main' añadida:
@@ -2753,11 +2817,9 @@ def get_labels_zigzag(
     troughs, _ = find_peaks(-close, prominence=label_peak_prominence)
     # Calculate ATR
     atr = calculate_atr_simple(high, low, close, period=label_atr_period)
-    # Calculate labels
-    method_map = {'first': 0, 'last': 1, 'mean': 2, 'max': 3, 'min': 4, 'random': 5}
-    method_int = method_map.get(label_method_random, 5)
+    # Calculate labels (first-touch)
     labels = calculate_labels_zigzag(
-        peaks, troughs, close, atr, label_markup, label_min_val, label_max_val, direction, method_int
+        peaks, troughs, close, high, low, atr, label_markup, label_min_val, label_max_val, direction
     ) 
     # Align labels and fill with 2.0 using pandas to avoid manual padding
     labels = pd.Series(labels, index=dataset.index[:-label_max_val]).reindex_like(dataset).fillna(2.0)
@@ -2767,14 +2829,14 @@ def get_labels_zigzag(
     return dataset
 
 @njit(cache=True)
-def calculate_labels_mean_reversion(close, atr, lvl, label_markup, label_min_val, label_max_val, q, direction=2, method_int=5):
+def calculate_labels_mean_reversion(close, high, low, atr, lvl, label_markup, label_min_val, label_max_val, q, direction=2):
     """
     Generates labels based on mean reversion principles with profit target validation using ATR * markup.
     
     Methodology:
     - Uses price deviation from smoothed trend (mean, spline, savgol)
     - Identifies reversion zones using quantiles (q[0], q[1])
-    - Validates signals using ATR * markup as profit target
+    - Validates signals using ATR * markup as profit target with FIRST-TOUCH on high/low
     - For classification: 0.0=buy, 1.0=sell, 2.0=no signal
     
     Signal Generation Logic:
@@ -2791,7 +2853,6 @@ def calculate_labels_mean_reversion(close, atr, lvl, label_markup, label_min_val
         label_max_val (int): Maximum bars for future validation.
         q (tuple): Quantiles defining reversion zones (q[0]=oversold, q[1]=overbought).
         direction (int): 0=buy only, 1=sell only, 2=both
-        method_int (int): 0=first, 1=last, 2=mean, 3=max, 4=min, 5=random
 
     Returns:
         np.array: An array of labels with profit validation:
@@ -2802,52 +2863,42 @@ def calculate_labels_mean_reversion(close, atr, lvl, label_markup, label_min_val
         dyn_mk = label_markup * atr[i]
         curr_pr = close[i]
         curr_lvl = lvl[i]
-        
-        # Selección del precio objetivo según method_int
-        if method_int == 0:  # first
-            future_pr = close[i + label_min_val]
-        elif method_int == 1:  # last
-            future_pr = close[i + label_max_val]
-        elif method_int == 2:  # mean
-            window = close[i + label_min_val : i + label_max_val + 1]
-            if window.size > 0:
-                future_pr = np.mean(window)
-            else:
-                future_pr = close[i + label_min_val]
-        elif method_int == 3:  # max
-            window = close[i + label_min_val : i + label_max_val + 1]
-            if window.size > 0:
-                future_pr = np.max(window)
-            else:
-                future_pr = close[i + label_min_val]
-        elif method_int == 4:  # min
-            window = close[i + label_min_val : i + label_max_val + 1]
-            if window.size > 0:
-                future_pr = np.min(window)
-            else:
-                future_pr = close[i + label_min_val]
-        else:  # random/otro
-            rand = np.random.randint(label_min_val, label_max_val + 1)
-            future_pr = close[i + rand]
+        up_target = curr_pr + dyn_mk
+        down_target = curr_pr - dyn_mk
+        start_j = i + label_min_val
+        end_j = i + label_max_val
+        if end_j >= len(close):
+            end_j = len(close) - 1
+        up_hit = False
+        down_hit = False
+        j = start_j
+        while j <= end_j:
+            if not up_hit and high[j] >= up_target:
+                up_hit = True
+            if not down_hit and low[j] <= down_target:
+                down_hit = True
+            if up_hit and down_hit:
+                break
+            j += 1
 
         if direction == 0:  # buy only
-            if curr_lvl < q[0] and (future_pr - dyn_mk) > curr_pr:
+            if curr_lvl < q[0] and up_hit:
                 labels[i] = 1.0  # éxito direccional (compra)
             elif curr_lvl < q[0]:
                 labels[i] = 0.0  # fracaso direccional (compra fallida)
             else:
                 labels[i] = 2.0  # patrón no confiable
         elif direction == 1:  # sell only
-            if curr_lvl > q[1] and (future_pr + dyn_mk) < curr_pr:
+            if curr_lvl > q[1] and down_hit:
                 labels[i] = 1.0  # éxito direccional (venta)
             elif curr_lvl > q[1]:
                 labels[i] = 0.0  # fracaso direccional (venta fallida)
             else:
                 labels[i] = 2.0  # patrón no confiable
         else:  # both directions
-            if curr_lvl > q[1] and (future_pr + dyn_mk) < curr_pr:
+            if curr_lvl > q[1] and down_hit:
                 labels[i] = 1.0  # sell
-            elif curr_lvl < q[0] and (future_pr - dyn_mk) > curr_pr:
+            elif curr_lvl < q[0] and up_hit:
                 labels[i] = 0.0  # buy
             else:
                 labels[i] = 2.0  # no confiable
@@ -2866,7 +2917,6 @@ def get_labels_mean_reversion(
     label_shift=0,
     label_atr_period=14,
     direction=2,
-    label_method_random='random'
 ) -> pd.DataFrame:
     """
     Generates labels for a financial dataset based on mean reversion principles, with unidirectional support.
@@ -2895,7 +2945,6 @@ def get_labels_mean_reversion(
         label_shift (int, optional): Shift the smoothed price data forward/backward.
         label_atr_period (int, optional): ATR period.
         direction (int, optional): 0=buy only, 1=sell only, 2=both. Defaults to 2.
-        label_method_random (str): Método de selección del precio objetivo ('first', 'last', 'mean', 'max', 'min', 'random').
 
     Returns:
         pd.DataFrame: The original DataFrame with a new 'labels_main' column and filtered rows:
@@ -2938,10 +2987,8 @@ def get_labels_mean_reversion(
     low = dataset['low'].values
     close = dataset['close'].values
     atr = calculate_atr_simple(high, low, close, period=label_atr_period)
-    # Calculate labels
-    method_map = {'first': 0, 'last': 1, 'mean': 2, 'max': 3, 'min': 4, 'random': 5}
-    method_int = method_map.get(label_method_random, 5)
-    labels = calculate_labels_mean_reversion(close, atr, lvl, label_markup, label_min_val, label_max_val, q, direction, method_int)
+    # Calculate labels (first-touch)
+    labels = calculate_labels_mean_reversion(close, high, low, atr, lvl, label_markup, label_min_val, label_max_val, q, direction)
     # Align labels and fill with 2.0 using pandas to avoid padding manual
     labels = pd.Series(labels, index=dataset.index[:-label_max_val]).reindex_like(dataset).fillna(2.0)
     # Add labels to dataset
@@ -2952,7 +2999,7 @@ def get_labels_mean_reversion(
 
 @njit(cache=True)
 def calculate_labels_mean_reversion_multi(
-    close_data, atr, lvl_data, q_list, label_markup, label_min_val, label_max_val, window_sizes, direction=2, method_int=5
+    close_data, high_data, low_data, atr, lvl_data, q_list, label_markup, label_min_val, label_max_val, window_sizes, direction=2
 ):
     """
     Generates labels based on multi-window mean reversion principles with profit target validation using ATR * markup.
@@ -2961,7 +3008,7 @@ def calculate_labels_mean_reversion_multi(
     - Uses multiple window sizes for price deviation calculation (spline smoothing)
     - Identifies reversion zones using quantiles for each window size
     - Requires consensus across all windows for signal generation
-    - Validates signals using ATR * markup as profit target
+    - Validates signals using ATR * markup as profit target with FIRST-TOUCH on high/low
     - For classification: 0.0=buy, 1.0=sell, 2.0=no signal
     
     Signal Generation Logic:
@@ -2979,7 +3026,6 @@ def calculate_labels_mean_reversion_multi(
         label_max_val (int): Maximum bars for future validation.
         window_sizes (List): List of window sizes used for smoothing.
         direction (int): 0=buy only, 1=sell only, 2=both
-        method_int (int): 0=first, 1=last, 2=mean, 3=max, 4=min, 5=random
 
     Returns:
         List: An array of labels with profit validation:
@@ -2990,33 +3036,25 @@ def calculate_labels_mean_reversion_multi(
     for i in range(len(close_data) - label_max_val):
         dyn_mk = label_markup * atr[i]
         curr_pr = close_data[i]
-        
-        # Selección del precio objetivo según method_int
-        if method_int == 0:  # first
-            future_pr = close_data[i + label_min_val]
-        elif method_int == 1:  # last
-            future_pr = close_data[i + label_max_val]
-        elif method_int == 2:  # mean
-            window = close_data[i + label_min_val : i + label_max_val + 1]
-            if window.size > 0:
-                future_pr = np.mean(window)
-            else:
-                future_pr = close_data[i + label_min_val]
-        elif method_int == 3:  # max
-            window = close_data[i + label_min_val : i + label_max_val + 1]
-            if window.size > 0:
-                future_pr = np.max(window)
-            else:
-                future_pr = close_data[i + label_min_val]
-        elif method_int == 4:  # min
-            window = close_data[i + label_min_val : i + label_max_val + 1]
-            if window.size > 0:
-                future_pr = np.min(window)
-            else:
-                future_pr = close_data[i + label_min_val]
-        else:  # random/otro
-            rand = np.random.randint(label_min_val, label_max_val + 1)
-            future_pr = close_data[i + rand]
+
+        # First-touch evaluation within [min,max]
+        up_target = curr_pr + dyn_mk
+        down_target = curr_pr - dyn_mk
+        start_j = i + label_min_val
+        end_j = i + label_max_val
+        if end_j >= len(close_data):
+            end_j = len(close_data) - 1
+        up_hit = False
+        down_hit = False
+        j = start_j
+        while j <= end_j:
+            if not up_hit and high_data[j] >= up_target:
+                up_hit = True
+            if not down_hit and low_data[j] <= down_target:
+                down_hit = True
+            if up_hit and down_hit:
+                break
+            j += 1
 
         buy_condition = 0
         sell_condition = 0
@@ -3034,23 +3072,23 @@ def calculate_labels_mean_reversion_multi(
 
         # direction: buy=0, sell=1, both=2
         if direction == 0:  # buy
-            if buy_condition and (future_pr - dyn_mk) > curr_pr:
+            if buy_condition and up_hit:
                 labels.append(1.0)  # éxito direccional
             elif buy_condition:
                 labels.append(0.0)  # fracaso direccional
             else:
                 labels.append(2.0)  # patrón no confiable
         elif direction == 1:  # sell
-            if sell_condition and (future_pr + dyn_mk) < curr_pr:
+            if sell_condition and down_hit:
                 labels.append(1.0)  # éxito direccional
             elif sell_condition:
                 labels.append(0.0)  # fracaso direccional
             else:
                 labels.append(2.0)  # patrón no confiable
         else:  # both
-            if sell_condition and (future_pr + dyn_mk) < curr_pr:
+            if sell_condition and down_hit:
                 labels.append(1.0)
-            elif buy_condition and (future_pr - dyn_mk) > curr_pr:
+            elif buy_condition and up_hit:
                 labels.append(0.0)
             else:
                 labels.append(2.0)
@@ -3066,7 +3104,6 @@ def get_labels_mean_reversion_multi(
     label_quantiles=[.30, .70], 
     label_atr_period=14, 
     direction=2,
-    label_method_random='random'
 ) -> pd.DataFrame:
     """
     Generates labels for a financial dataset based on multi-window mean reversion principles.
@@ -3092,7 +3129,6 @@ def get_labels_mean_reversion_multi(
         label_quantiles (list, optional): Quantiles to define the "reversion zone". Defaults to [.45, .55].
         label_atr_period (int, optional): ATR period. Defaults to 14.
         direction (int, optional): 0=buy only, 1=sell only, 2=both. Defaults to 2.
-        label_method_random (str): Método de selección del precio objetivo ('first', 'last', 'mean', 'max', 'min', 'random').
 
     Returns:
         pd.DataFrame: The original DataFrame with a new 'labels_main' column:
@@ -3121,13 +3157,10 @@ def get_labels_mean_reversion_multi(
     high = dataset["high"].values
     low = dataset["low"].values
     atr = calculate_atr_simple(high, low, close, period=label_atr_period)
-    # Prepare parameters for label calculation
-    method_map = {'first': 0, 'last': 1, 'mean': 2, 'max': 3, 'min': 4, 'random': 5}
-    method_int = method_map.get(label_method_random, 5)
     windows_t = List(label_window_sizes_float)
     q_t = List([(float(q[i,0]), float(q[i,1])) for i in range(len(label_window_sizes_float))])
     labels = calculate_labels_mean_reversion_multi(
-        close, atr, lvl_data, q_t, label_markup, label_min_val, label_max_val, windows_t, direction, method_int
+        close, high, low, atr, lvl_data, q_t, label_markup, label_min_val, label_max_val, windows_t, direction
     )
     # Align labels and fill with 2.0 using pandas to avoid padding
     labels = pd.Series(labels, index=dataset.index[:-label_max_val]).reindex_like(dataset).fillna(2.0)
@@ -3137,8 +3170,8 @@ def get_labels_mean_reversion_multi(
 
 @njit(cache=True)
 def calculate_labels_mean_reversion_vol(
-    close_data, atr, lvl_data, volatility_group, quantile_groups_low, quantile_groups_high,
-    label_markup, label_min_val, label_max_val, direction=2, method_int=5
+    close_data, high_data, low_data, atr, lvl_data, volatility_group, quantile_groups_low, quantile_groups_high,
+    label_markup, label_min_val, label_max_val, direction=2
 ):
     """
     Generates labels based on volatility-adjusted mean reversion principles with profit target validation using ATR * markup.
@@ -3148,7 +3181,7 @@ def calculate_labels_mean_reversion_vol(
     - Divides data into volatility groups (20 groups by default)
     - Calculates quantiles for each volatility group separately
     - Uses volatility-specific thresholds for signal generation
-    - Validates signals using ATR * markup as profit target
+    - Validates signals using ATR * markup as profit target with FIRST-TOUCH (high/low)
     - For classification: 0.0=buy, 1.0=sell, 2.0=no signal
     
     Signal Generation Logic:
@@ -3167,7 +3200,6 @@ def calculate_labels_mean_reversion_vol(
         label_min_val (int): Minimum bars for future validation.
         label_max_val (int): Maximum bars for future validation.
         direction (int): 0=buy only, 1=sell only, 2=both
-        method_int (int): 0=first, 1=last, 2=mean, 3=max, 4=min, 5=random
 
     Returns:
         List: An array of labels with profit validation:
@@ -3179,55 +3211,46 @@ def calculate_labels_mean_reversion_vol(
         curr_pr = close_data[i]
         curr_lvl = lvl_data[i]
         curr_vol_group = volatility_group[i]
-        
-        # Selección del precio objetivo según method_int
-        if method_int == 0:  # first
-            future_pr = close_data[i + label_min_val]
-        elif method_int == 1:  # last
-            future_pr = close_data[i + label_max_val]
-        elif method_int == 2:  # mean
-            window = close_data[i + label_min_val : i + label_max_val + 1]
-            if window.size > 0:
-                future_pr = np.mean(window)
-            else:
-                future_pr = close_data[i + label_min_val]
-        elif method_int == 3:  # max
-            window = close_data[i + label_min_val : i + label_max_val + 1]
-            if window.size > 0:
-                future_pr = np.max(window)
-            else:
-                future_pr = close_data[i + label_min_val]
-        elif method_int == 4:  # min
-            window = close_data[i + label_min_val : i + label_max_val + 1]
-            if window.size > 0:
-                future_pr = np.min(window)
-            else:
-                future_pr = close_data[i + label_min_val]
-        else:  # random/otro
-            rand = np.random.randint(label_min_val, label_max_val + 1)
-            future_pr = close_data[i + rand]
+        # First-touch evaluation
+        up_target = curr_pr + dyn_mk
+        down_target = curr_pr - dyn_mk
+        start_j = i + label_min_val
+        end_j = i + label_max_val
+        if end_j >= len(close_data):
+            end_j = len(close_data) - 1
+        up_hit = False
+        down_hit = False
+        j = start_j
+        while j <= end_j:
+            if not up_hit and high_data[j] >= up_target:
+                up_hit = True
+            if not down_hit and low_data[j] <= down_target:
+                down_hit = True
+            if up_hit and down_hit:
+                break
+            j += 1
 
         low_q = quantile_groups_low[int(curr_vol_group)]
         high_q = quantile_groups_high[int(curr_vol_group)]
 
         if direction == 0:  # solo buy
-            if curr_lvl < low_q and (future_pr - dyn_mk) > curr_pr:
+            if curr_lvl < low_q and up_hit:
                 labels.append(1.0)  # éxito direccional (compra)
             elif curr_lvl < low_q:
                 labels.append(0.0)  # fracaso direccional (compra fallida)
             else:
                 labels.append(2.0)  # patrón no confiable
         elif direction == 1:  # solo sell
-            if curr_lvl > high_q and (future_pr + dyn_mk) < curr_pr:
+            if curr_lvl > high_q and down_hit:
                 labels.append(1.0)  # éxito direccional (venta)
             elif curr_lvl > high_q:
                 labels.append(0.0)  # fracaso direccional (venta fallida)
             else:
                 labels.append(2.0)  # patrón no confiable
         else:  # both directions
-            if curr_lvl > high_q and (future_pr + dyn_mk) < curr_pr:
+            if curr_lvl > high_q and down_hit:
                 labels.append(1.0)  # sell
-            elif curr_lvl < low_q and (future_pr - dyn_mk) > curr_pr:
+            elif curr_lvl < low_q and up_hit:
                 labels.append(0.0)  # buy
             else:
                 labels.append(2.0)  # no confiable
@@ -3237,7 +3260,6 @@ def get_labels_mean_reversion_vol(
     dataset, label_markup, label_min_val=1, label_max_val=15, label_rolling=0.5,
     label_quantiles=[.45, .55], label_filter_mean='spline', label_shift=1,
     label_vol_window=20, label_atr_period=14, direction=2, label_polyorder=3,
-    label_method_random='random'
 ) -> pd.DataFrame:
     """
     Generates trading labels based on volatility-adjusted mean reversion principles.
@@ -3273,7 +3295,6 @@ def get_labels_mean_reversion_vol(
         label_vol_window (int, optional): Window size for calculating volatility. Defaults to 20.
         label_atr_period (int, optional): ATR period. Defaults to 14.
         direction (int, optional): 0=buy only, 1=sell only, 2=both. Defaults to 2.
-        label_method_random (str): Método de selección del precio objetivo ('first', 'last', 'mean', 'max', 'min', 'random').
 
     Returns:
         pd.DataFrame: The original DataFrame with a new 'labels_main' column:
@@ -3327,14 +3348,11 @@ def get_labels_mean_reversion_vol(
     close = dataset["close"].values
     atr = calculate_atr_simple(high, low, close, period=label_atr_period)
     quantile_groups_high = np.array(quantile_groups_high)
-    # Prepare parameters for label calculation
-    method_map = {'first': 0, 'last': 1, 'mean': 2, 'max': 3, 'min': 4, 'random': 5}
-    method_int = method_map.get(label_method_random, 5)
     
-    # Calculate buy/sell labels with direction support
+    # Calculate buy/sell labels with direction support (first-touch)
     labels = calculate_labels_mean_reversion_vol(
-        close, atr, lvl_data, volatility_group, quantile_groups_low, quantile_groups_high,
-        label_markup, label_min_val, label_max_val, direction, method_int
+        close, high, low, atr, lvl_data, volatility_group, quantile_groups_low, quantile_groups_high,
+        label_markup, label_min_val, label_max_val, direction
     )
     # Align labels and fill with 2.0 using pandas to avoid padding
     labels = pd.Series(labels, index=dataset.index[:-label_max_val]).reindex_like(dataset).fillna(2.0)

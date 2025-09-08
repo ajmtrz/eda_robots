@@ -703,13 +703,13 @@ class StrategySearcher:
             # períodos meta
             n_meta_periods = trial.suggest_int("feature_meta_n_periods", 1, 5)
             meta_periods = [
-                trial.suggest_int(f"feature_meta_period_{i}", 5, 15, log=True)
+                trial.suggest_int(f"feature_meta_period_{i}", 5, 45, log=True)
                 for i in range(n_meta_periods)
             ]
             p["feature_meta_periods"] = tuple(sorted(set(meta_periods)))
 
             # estadísticas meta
-            n_meta_stats = trial.suggest_int("feature_meta_n_stats", 1, 3)
+            n_meta_stats = trial.suggest_int("feature_meta_n_stats", 1, 5)
             meta_stats = [
                 trial.suggest_categorical(f"feature_meta_stat_{i}", ALL_STATS)
                 for i in range(n_meta_stats)

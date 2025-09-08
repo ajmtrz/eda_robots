@@ -713,7 +713,7 @@ def calculate_labels_random(close, high, low, atr, label_markup, label_min_val, 
         return np.full(0, 2.0, dtype=np.float64)
     result = np.full(n - label_max_val, 2.0, dtype=np.float64)
     for i in range(n - label_max_val):
-        start_j = i + label_min_val
+        start_j = i
         end_j = i + label_max_val
         if end_j >= n:
             end_j = n - 1
@@ -723,17 +723,29 @@ def calculate_labels_random(close, high, low, atr, label_markup, label_min_val, 
 
         up_hit_idx = -1
         down_hit_idx = -1
+        lookahead = False
+        ambiguous_bar = False
         j = start_j
         while j <= end_j:
-            if up_hit_idx == -1 and high[j] >= up_target:
+            up_now = high[j] >= up_target
+            down_now = low[j] <= down_target
+            if j == i and (up_now or down_now):
+                lookahead = True
+                break
+            if up_now and down_now:
+                ambiguous_bar = True
+                break
+            if up_now:
                 up_hit_idx = j
-            if down_hit_idx == -1 and low[j] <= down_target:
+                break
+            if down_now:
                 down_hit_idx = j
-            if up_hit_idx != -1 and down_hit_idx != -1:
                 break
             j += 1
         
-        if direction_int == 2:
+        if lookahead or ambiguous_bar:
+            result[i] = 2.0
+        elif direction_int == 2:
             # Bidireccional: 0.0=buy, 1.0=sell, 2.0=no confiable
             if up_hit_idx != -1 or down_hit_idx != -1:
                 if up_hit_idx != -1 and (down_hit_idx == -1 or up_hit_idx <= down_hit_idx):
@@ -828,7 +840,7 @@ def calculate_labels_filter(close, high, low, atr, lvl, q, direction=2,
         dyn_mk = label_markup * atr[i]
         
         # First-touch evaluation bounds
-        start_j = i + label_min_val
+        start_j = i
         end_j = i + label_max_val
         if end_j >= len(close):
             end_j = len(close) - 1
@@ -838,46 +850,82 @@ def calculate_labels_filter(close, high, low, atr, lvl, q, direction=2,
         if direction == 2:  # both
             if curr_lvl > q[1]:
                 hit = False
+                ambiguous = False
                 j = start_j
                 while j <= end_j:
-                    if low[j] <= down_target:
+                    up_now = high[j] >= up_target
+                    down_now = low[j] <= down_target
+                    if j == i and (up_now or down_now):
+                        ambiguous = True
+                        break
+                    if up_now and down_now:
+                        ambiguous = True
+                        break
+                    if down_now:
                         hit = True
                         break
                     j += 1
-                labels[i] = 1.0 if hit else 2.0
+                labels[i] = 2.0 if ambiguous else (1.0 if hit else 2.0)
             elif curr_lvl < q[0]:
                 hit = False
+                ambiguous = False
                 j = start_j
                 while j <= end_j:
-                    if high[j] >= up_target:
+                    up_now = high[j] >= up_target
+                    down_now = low[j] <= down_target
+                    if j == i and (up_now or down_now):
+                        ambiguous = True
+                        break
+                    if up_now and down_now:
+                        ambiguous = True
+                        break
+                    if up_now:
                         hit = True
                         break
                     j += 1
-                labels[i] = 0.0 if hit else 2.0
+                labels[i] = 2.0 if ambiguous else (0.0 if hit else 2.0)
             else:
                 labels[i] = 2.0
         elif direction == 0:  # solo buy
             if curr_lvl < q[0]:
                 hit = False
+                ambiguous = False
                 j = start_j
                 while j <= end_j:
-                    if high[j] >= up_target:
+                    up_now = high[j] >= up_target
+                    down_now = low[j] <= down_target
+                    if j == i and (up_now or down_now):
+                        ambiguous = True
+                        break
+                    if up_now and down_now:
+                        ambiguous = True
+                        break
+                    if up_now:
                         hit = True
                         break
                     j += 1
-                labels[i] = 1.0 if hit else 0.0
+                labels[i] = 2.0 if ambiguous else (1.0 if hit else 0.0)
             else:
                 labels[i] = 2.0
         elif direction == 1:  # solo sell
             if curr_lvl > q[1]:
                 hit = False
+                ambiguous = False
                 j = start_j
                 while j <= end_j:
-                    if low[j] <= down_target:
+                    up_now = high[j] >= up_target
+                    down_now = low[j] <= down_target
+                    if j == i and (up_now or down_now):
+                        ambiguous = True
+                        break
+                    if up_now and down_now:
+                        ambiguous = True
+                        break
+                    if down_now:
                         hit = True
                         break
                     j += 1
-                labels[i] = 1.0 if hit else 0.0
+                labels[i] = 2.0 if ambiguous else (1.0 if hit else 0.0)
             else:
                 labels[i] = 2.0
         else:
@@ -1007,7 +1055,7 @@ def calc_labels_filter_binary(close, high, low, atr, lvl1, lvl2, q1, q2, directi
         dyn_mk = label_markup * atr[i]
         
         # Primer toque bounds
-        start_j = i + label_min_val
+        start_j = i
         end_j = i + label_max_val
         if end_j >= len(close):
             end_j = len(close) - 1
@@ -1019,6 +1067,12 @@ def calc_labels_filter_binary(close, high, low, atr, lvl1, lvl2, q1, q2, directi
                 hit = False
                 j = start_j
                 while j <= end_j:
+                    if j == i and (low[j] <= down_target or high[j] >= up_target):
+                        hit = False
+                        break
+                    if (high[j] >= up_target) and (low[j] <= down_target):
+                        hit = False
+                        break
                     if low[j] <= down_target:
                         hit = True
                         break
@@ -1031,6 +1085,12 @@ def calc_labels_filter_binary(close, high, low, atr, lvl1, lvl2, q1, q2, directi
                 hit = False
                 j = start_j
                 while j <= end_j:
+                    if j == i and (low[j] <= down_target or high[j] >= up_target):
+                        hit = False
+                        break
+                    if (high[j] >= up_target) and (low[j] <= down_target):
+                        hit = False
+                        break
                     if high[j] >= up_target:
                         hit = True
                         break
@@ -1212,7 +1272,7 @@ def calc_labels_filter_multi(close, high, low, atr, lvls, qs, direction=2,
         # Primer toque: buscar el primer índice en [i+min, i+max] donde se alcanza el objetivo
         up_target = curr_pr + dyn_mk
         down_target = curr_pr - dyn_mk
-        start_j = i + label_min_val
+        start_j = i
         end_j = i + label_max_val
         if end_j >= len(close):
             end_j = len(close) - 1
@@ -1224,7 +1284,15 @@ def calc_labels_filter_multi(close, high, low, atr, lvls, qs, direction=2,
                 hit = False
                 j = start_j
                 while j <= end_j:
-                    if high[j] >= up_target:
+                    up_now = high[j] >= up_target
+                    down_now = low[j] <= down_target
+                    if j == i and (up_now or down_now):
+                        hit = False
+                        break
+                    if up_now and down_now:
+                        hit = False
+                        break
+                    if up_now:
                         hit = True
                         break
                     j += 1
@@ -1233,7 +1301,15 @@ def calc_labels_filter_multi(close, high, low, atr, lvls, qs, direction=2,
                 hit = False
                 j = start_j
                 while j <= end_j:
-                    if low[j] <= down_target:
+                    up_now = high[j] >= up_target
+                    down_now = low[j] <= down_target
+                    if j == i and (up_now or down_now):
+                        hit = False
+                        break
+                    if up_now and down_now:
+                        hit = False
+                        break
+                    if down_now:
                         hit = True
                         break
                     j += 1
@@ -1247,7 +1323,15 @@ def calc_labels_filter_multi(close, high, low, atr, lvls, qs, direction=2,
                 hit = False
                 j = start_j
                 while j <= end_j:
-                    if high[j] >= up_target:
+                    up_now = high[j] >= up_target
+                    down_now = low[j] <= down_target
+                    if j == i and (up_now or down_now):
+                        hit = False
+                        break
+                    if up_now and down_now:
+                        hit = False
+                        break
+                    if up_now:
                         hit = True
                         break
                     j += 1
@@ -1261,7 +1345,15 @@ def calc_labels_filter_multi(close, high, low, atr, lvls, qs, direction=2,
                 hit = False
                 j = start_j
                 while j <= end_j:
-                    if low[j] <= down_target:
+                    up_now = high[j] >= up_target
+                    down_now = low[j] <= down_target
+                    if j == i and (up_now or down_now):
+                        hit = False
+                        break
+                    if up_now and down_now:
+                        hit = False
+                        break
+                    if down_now:
                         hit = True
                         break
                     j += 1
@@ -1444,7 +1536,7 @@ def calculate_symmetric_correlation_dynamic(data, min_window_size, max_window_si
 
 
 @njit(cache=True)
-def calculate_future_outcome_labels_for_patterns(
+def calculate_labels_fractal_patterns(
     close_data_len,
     correlations_at_window_start,
     window_sizes_at_window_start,
@@ -1633,7 +1725,7 @@ def get_labels_fractal_patterns(
         label_max_window,
     )
     # Calculate labels
-    labels = calculate_future_outcome_labels_for_patterns(
+    labels = calculate_labels_fractal_patterns(
         len(close),
         correlations_at_start,
         best_window_sizes_at_start,
@@ -1754,46 +1846,82 @@ def calculate_labels_trend(
         if direction == 0:  # solo buy
             if normalized_trend[i] > label_threshold:
                 hit = False
+                amb = False
                 j = start_j
                 while j <= end_j:
-                    if high[j] >= up_target:
+                    up_now = high[j] >= up_target
+                    down_now = low[j] <= down_target
+                    if j == i and (up_now or down_now):
+                        amb = True
+                        break
+                    if up_now and down_now:
+                        amb = True
+                        break
+                    if up_now:
                         hit = True
                         break
                     j += 1
-                labels[i] = 1.0 if hit else 0.0
+                labels[i] = 2.0 if amb else (1.0 if hit else 0.0)
             else:
                 labels[i] = 2.0
         elif direction == 1:  # solo sell
             if normalized_trend[i] < -label_threshold:
                 hit = False
+                amb = False
                 j = start_j
                 while j <= end_j:
-                    if low[j] <= down_target:
+                    up_now = high[j] >= up_target
+                    down_now = low[j] <= down_target
+                    if j == i and (up_now or down_now):
+                        amb = True
+                        break
+                    if up_now and down_now:
+                        amb = True
+                        break
+                    if down_now:
                         hit = True
                         break
                     j += 1
-                labels[i] = 1.0 if hit else 0.0
+                labels[i] = 2.0 if amb else (1.0 if hit else 0.0)
             else:
                 labels[i] = 2.0
         else:  # both
             if normalized_trend[i] > label_threshold:
                 hit = False
+                amb = False
                 j = start_j
                 while j <= end_j:
-                    if high[j] >= up_target:
+                    up_now = high[j] >= up_target
+                    down_now = low[j] <= down_target
+                    if j == i and (up_now or down_now):
+                        amb = True
+                        break
+                    if up_now and down_now:
+                        amb = True
+                        break
+                    if up_now:
                         hit = True
                         break
                     j += 1
-                labels[i] = 0.0 if hit else 2.0
+                labels[i] = 2.0 if amb else (0.0 if hit else 2.0)
             elif normalized_trend[i] < -label_threshold:
                 hit = False
+                amb = False
                 j = start_j
                 while j <= end_j:
-                    if low[j] <= down_target:
+                    up_now = high[j] >= up_target
+                    down_now = low[j] <= down_target
+                    if j == i and (up_now or down_now):
+                        amb = True
+                        break
+                    if up_now and down_now:
+                        amb = True
+                        break
+                    if down_now:
                         hit = True
                         break
                     j += 1
-                labels[i] = 1.0 if hit else 2.0
+                labels[i] = 2.0 if amb else (1.0 if hit else 2.0)
             else:
                 labels[i] = 2.0
 
@@ -1898,7 +2026,7 @@ def calculate_labels_trend_multi(
         dyn_mk = label_markup * atr[i]
         up_target = close[i] + dyn_mk
         down_target = close[i] - dyn_mk
-        start_j = i + label_min_val
+        start_j = i
         end_j = i + label_max_val
         if end_j >= len(close):
             end_j = len(close) - 1
@@ -1906,6 +2034,7 @@ def calculate_labels_trend_multi(
         # Primer toque global para la barra i (evita re-escanear por período)
         up_hit = False
         down_hit = False
+        ambiguous = False
         up_hit_idx = -1
         down_hit_idx = -1
         k = start_j
@@ -2072,21 +2201,40 @@ def calculate_labels_trend_filters(close, high, low, atr, normalized_trend, labe
         if end_j >= len(close):
             end_j = len(close) - 1
 
-        # Escaneo único de la ventana para up/down
+        # Escaneo único de la ventana para up/down con look-ahead/ambigüedad
         up_hit = False
         down_hit = False
+        ambiguous = False
         j = start_j
         while j <= end_j:
-            if (not up_hit) and high[j] >= up_target:
+            up_now = high[j] >= up_target
+            down_now = low[j] <= down_target
+            if j == i and (up_now or down_now):
+                ambiguous = True
+                up_hit = False
+                down_hit = False
+                up_hit_idx = -1
+                down_hit_idx = -1
+                break
+            if up_now and down_now:
+                ambiguous = True
+                up_hit = False
+                down_hit = False
+                up_hit_idx = -1
+                down_hit_idx = -1
+                break
+            if up_now:
                 up_hit = True
-            if (not down_hit) and low[j] <= down_target:
+                break
+            if down_now:
                 down_hit = True
-            if up_hit and down_hit:
                 break
             j += 1
 
         nt = normalized_trend[i]
-        if direction == 0:  # solo buy
+        if ambiguous:
+            labels[i] = 2.0
+        elif direction == 0:  # solo buy
             if nt > label_threshold:
                 labels[i] = 1.0 if up_hit else 0.0
             else:
@@ -2346,23 +2494,32 @@ def calculate_labels_multi_window(prices, highs, lows, atr, window_sizes, label_
         # Validar con primer toque usando high/low (y registrar índice de toque)
         up_target = prices[i] + dyn_mk
         down_target = prices[i] - dyn_mk
-        start_j = i + label_min_val
+        start_j = i
         end_j = i + label_max_val
         if end_j >= len(prices):
             end_j = len(prices) - 1
         up_hit = False
         down_hit = False
+        ambiguous = False
         up_hit_idx = -1
         down_hit_idx = -1
         j = start_j
         while j <= end_j:
-            if (not up_hit) and highs[j] >= up_target:
+            up_now = highs[j] >= up_target
+            down_now = lows[j] <= down_target
+            if j == i and (up_now or down_now):
+                ambiguous = True
+                break
+            if up_now and down_now:
+                ambiguous = True
+                break
+            if (not up_hit) and up_now:
                 up_hit = True
                 up_hit_idx = j
-            if (not down_hit) and lows[j] <= down_target:
+                break
+            if (not down_hit) and down_now:
                 down_hit = True
                 down_hit_idx = j
-            if up_hit and down_hit:
                 break
             j += 1
 
@@ -2370,7 +2527,9 @@ def calculate_labels_multi_window(prices, highs, lows, atr, window_sizes, label_
         num_windows = len(window_sizes)
         min_votes = (num_windows + 1) // 2
 
-        if direction == 2:  # both
+        if ambiguous:
+            signals.append(2.0)
+        elif direction == 2:  # both
             if long_signals >= min_votes and short_signals < min_votes and up_hit:
                 signals.append(0.0)
             elif short_signals >= min_votes and long_signals < min_votes and down_hit:
@@ -2568,23 +2727,32 @@ def calculate_labels_validated_levels(close, high, low, atr, window_size, label_
         # Validar con primer toque (high/low)
         up_target = current_close + dyn_mk
         down_target = current_close - dyn_mk
-        start_j = i + label_min_val
+        start_j = i
         end_j = i + label_max_val
         if end_j >= len(close):
             end_j = len(close) - 1
         up_hit = False
         down_hit = False
+        ambiguous = False
         up_hit_idx = -1
         down_hit_idx = -1
         j = start_j
         while j <= end_j:
-            if (not up_hit) and high[j] >= up_target:
+            up_now = high[j] >= up_target
+            down_now = low[j] <= down_target
+            if j == i and (up_now or down_now):
+                ambiguous = True
+                break
+            if up_now and down_now:
+                ambiguous = True
+                break
+            if (not up_hit) and up_now:
                 up_hit = True
                 up_hit_idx = j
-            if (not down_hit) and low[j] <= down_target:
+                break
+            if (not down_hit) and down_now:
                 down_hit = True
                 down_hit_idx = j
-            if up_hit and down_hit:
                 break
             j += 1
     
@@ -2734,23 +2902,38 @@ def calculate_labels_zigzag(peaks, troughs, close, high, low, atr, label_markup,
         current_price = close[i]
         up_target = current_price + dyn_mk
         down_target = current_price - dyn_mk
-        start_j = i + label_min_val
+        start_j = i
         end_j = i + label_max_val
         if end_j >= len(close):
             end_j = len(close) - 1
         up_hit = False
         down_hit = False
+        ambiguous = False
         up_hit_idx = -1
         down_hit_idx = -1
         j = start_j
         while j <= end_j:
-            if (not up_hit) and high[j] >= up_target:
+            up_now = high[j] >= up_target
+            down_now = low[j] <= down_target
+            if j == i and (up_now or down_now):
+                up_hit = False
+                down_hit = False
+                up_hit_idx = -1
+                down_hit_idx = -1
+                break
+            if up_now and down_now:
+                up_hit = False
+                down_hit = False
+                up_hit_idx = -1
+                down_hit_idx = -1
+                break
+            if (not up_hit) and up_now:
                 up_hit = True
                 up_hit_idx = j
-            if (not down_hit) and low[j] <= down_target:
+                break
+            if (not down_hit) and down_now:
                 down_hit = True
                 down_hit_idx = j
-            if up_hit and down_hit:
                 break
             j += 1
 
@@ -2790,7 +2973,9 @@ def calculate_labels_zigzag(peaks, troughs, close, high, low, atr, label_markup,
                 else:
                     labels[i] = 2.0
         elif direction == 0:  # solo buy
-            if is_trough and up_hit:
+            if ambiguous:
+                labels[i] = 2.0
+            elif is_trough and up_hit:
                 labels[i] = 1.0  # Éxito direccional (señal de compra)
                 last_peak_type = 0
             elif is_trough:
@@ -2806,7 +2991,9 @@ def calculate_labels_zigzag(peaks, troughs, close, high, low, atr, label_markup,
                 else:
                     labels[i] = 2.0  # Patrón no confiable
         elif direction == 1:  # solo sell
-            if is_peak and down_hit:
+            if ambiguous:
+                labels[i] = 2.0
+            elif is_peak and down_hit:
                 labels[i] = 1.0  # Éxito direccional (señal de venta)
                 last_peak_type = 1
             elif is_peak:
@@ -2956,7 +3143,7 @@ def calculate_labels_mean_reversion(close, high, low, atr, lvl, label_markup, la
         curr_lvl = lvl[i]
         up_target = curr_pr + dyn_mk
         down_target = curr_pr - dyn_mk
-        start_j = i + label_min_val
+        start_j = i
         end_j = i + label_max_val
         if end_j >= len(close):
             end_j = len(close) - 1
@@ -2966,13 +3153,27 @@ def calculate_labels_mean_reversion(close, high, low, atr, lvl, label_markup, la
         down_hit_idx = -1
         j = start_j
         while j <= end_j:
-            if (not up_hit) and high[j] >= up_target:
+            up_now = high[j] >= up_target
+            down_now = low[j] <= down_target
+            if j == i and (up_now or down_now):
+                up_hit = False
+                down_hit = False
+                up_hit_idx = -1
+                down_hit_idx = -1
+                break
+            if up_now and down_now:
+                up_hit = False
+                down_hit = False
+                up_hit_idx = -1
+                down_hit_idx = -1
+                break
+            if (not up_hit) and up_now:
                 up_hit = True
                 up_hit_idx = j
-            if (not down_hit) and low[j] <= down_target:
+                break
+            if (not down_hit) and down_now:
                 down_hit = True
                 down_hit_idx = j
-            if up_hit and down_hit:
                 break
             j += 1
 
@@ -3165,7 +3366,7 @@ def calculate_labels_mean_reversion_multi(
         # First-touch evaluation within [min,max]
         up_target = curr_pr + dyn_mk
         down_target = curr_pr - dyn_mk
-        start_j = i + label_min_val
+        start_j = i
         end_j = i + label_max_val
         if end_j >= len(close_data):
             end_j = len(close_data) - 1
@@ -3175,13 +3376,27 @@ def calculate_labels_mean_reversion_multi(
         down_hit_idx = -1
         j = start_j
         while j <= end_j:
-            if (not up_hit) and high_data[j] >= up_target:
+            up_now = high_data[j] >= up_target
+            down_now = low_data[j] <= down_target
+            if j == i and (up_now or down_now):
+                up_hit = False
+                down_hit = False
+                up_hit_idx = -1
+                down_hit_idx = -1
+                break
+            if up_now and down_now:
+                up_hit = False
+                down_hit = False
+                up_hit_idx = -1
+                down_hit_idx = -1
+                break
+            if (not up_hit) and up_now:
                 up_hit = True
                 up_hit_idx = j
-            if (not down_hit) and low_data[j] <= down_target:
+                break
+            if (not down_hit) and down_now:
                 down_hit = True
                 down_hit_idx = j
-            if up_hit and down_hit:
                 break
             j += 1
 
@@ -3355,7 +3570,7 @@ def calculate_labels_mean_reversion_vol(
         # First-touch evaluation
         up_target = curr_pr + dyn_mk
         down_target = curr_pr - dyn_mk
-        start_j = i + label_min_val
+        start_j = i
         end_j = i + label_max_val
         if end_j >= len(close_data):
             end_j = len(close_data) - 1
@@ -3365,13 +3580,27 @@ def calculate_labels_mean_reversion_vol(
         down_hit_idx = -1
         j = start_j
         while j <= end_j:
-            if (not up_hit) and high_data[j] >= up_target:
+            up_now = high_data[j] >= up_target
+            down_now = low_data[j] <= down_target
+            if j == i and (up_now or down_now):
+                up_hit = False
+                down_hit = False
+                up_hit_idx = -1
+                down_hit_idx = -1
+                break
+            if up_now and down_now:
+                up_hit = False
+                down_hit = False
+                up_hit_idx = -1
+                down_hit_idx = -1
+                break
+            if (not up_hit) and up_now:
                 up_hit = True
                 up_hit_idx = j
-            if (not down_hit) and low_data[j] <= down_target:
+                break
+            if (not down_hit) and down_now:
                 down_hit = True
                 down_hit_idx = j
-            if up_hit and down_hit:
                 break
             j += 1
 

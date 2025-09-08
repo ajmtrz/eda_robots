@@ -742,8 +742,7 @@ class StrategySearcher:
             'label_atr_period': lambda t: t.suggest_int('label_atr_period', 10, 30, log=True),
 
             # Ventana de validación futura first-touch
-            'label_min_val':    lambda t: t.suggest_int('label_min_val', 1, 5, log=True),
-            'label_max_val':    lambda t: t.suggest_int('label_max_val', 5, 20, log=True),
+            'label_max_val':    lambda t: t.suggest_int('label_max_val', 5, 25, log=True),
 
             # Dirección de tendencia y filtros
             'label_method_trend': lambda t: t.suggest_categorical('label_method_trend', ['normal', 'inverse']),

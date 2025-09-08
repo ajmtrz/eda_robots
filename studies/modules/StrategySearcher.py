@@ -722,13 +722,13 @@ class StrategySearcher:
         """Hiperparámetros de etiquetado dependientes de la función label_method."""
         label_search_space = {
             # Profit target (ATR-scaled) usado en TODOS los etiquetadores first-touch
-            'label_markup':     lambda t: t.suggest_float('label_markup', 0.25, 1.25, log=True),
+            'label_markup':     lambda t: t.suggest_float('label_markup', 0.25, 5.25, log=True),
 
             # Clustering
             'label_n_clusters': lambda t: t.suggest_int('label_n_clusters', 4, 20, log=True),
 
             # Suavizado Savitzky-Golay / Spline
-            'label_polyorder':  lambda t: t.suggest_int('label_polyorder', 2, 3),
+            'label_polyorder':  lambda t: t.suggest_int('label_polyorder', 2, 5),
             # NOTA: 'label_rolling' se usa como window (savgol/sma/ema) y como 's' en spline.
             # Rango moderado para ser válido en ambos casos sin sobre-suavizar.
             'label_rolling':    lambda t: t.suggest_int('label_rolling', 11, 181, log=True),
@@ -739,10 +739,10 @@ class StrategySearcher:
             'label_rolling_periods_big':   lambda t: [t.suggest_int(f'label_rolling_periods_big_{i}',   50, 600, log=True) for i in range(3)],
 
             # ATR
-            'label_atr_period': lambda t: t.suggest_int('label_atr_period', 10, 30, log=True),
+            'label_atr_period': lambda t: t.suggest_int('label_atr_period', 10, 100, log=True),
 
             # Ventana de validación futura first-touch
-            'label_max_val':    lambda t: t.suggest_int('label_max_val', 5, 25, log=True),
+            'label_max_val':    lambda t: t.suggest_int('label_max_val', 5, 15, log=True),
 
             # Dirección de tendencia y filtros
             'label_method_trend': lambda t: t.suggest_categorical('label_method_trend', ['normal', 'inverse']),

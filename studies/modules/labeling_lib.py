@@ -707,6 +707,8 @@ def calculate_labels_random(close, high, low, atr, label_markup, label_min_val, 
     Usa high/low para detectar el primer toque del objetivo close[i] ± ATR*markup en la ventana [min,max].
 
     label_type: 0=clasificación, 1=regresión (magnitud normalizada por ATR del primer toque)
+    Notas:
+      - Look-ahead (j==i) y ambigüedad intrabar se etiquetan como 2.0.
     """
     n = len(close)
     if n <= label_max_val:
@@ -814,8 +816,8 @@ def calculate_labels_filter(close, high, low, atr, lvl, q, direction=2,
     - For classification: 0.0=buy, 1.0=sell, 2.0=no signal
     
     Signal Generation Logic:
-    - Buy signals: when price deviation < low_quantile and future_price > current_price + ATR*markup
-    - Sell signals: when price deviation > high_quantile and future_price < current_price - ATR*markup
+    - Buy signals: when price deviation < low_quantile and first-touch high/low validates ATR*markup
+    - Sell signals: when price deviation > high_quantile and first-touch high/low validates ATR*markup
     - Classification: assigns binary labels based on profit validation and filter conditions
 
     Args:
@@ -823,7 +825,6 @@ def calculate_labels_filter(close, high, low, atr, lvl, q, direction=2,
         lvl (np.array): Array of price deviations from smoothed trend.
         q (tuple): Quantile tuple defining reversion zones (low, high).
         direction (int): 0=buy only, 1=sell only, 2=both
-        method_int (int): 0=first, 1=last, 2=mean, 3=max, 4=min, 5=random
         label_markup (float): Markup multiplier for ATR.
         label_min_val (int): Minimum bars for future validation.
         label_max_val (int): Maximum bars for future validation.
@@ -832,6 +833,10 @@ def calculate_labels_filter(close, high, low, atr, lvl, q, direction=2,
     Returns:
         np.array: An array of labels with profit validation:
                   - Clasificación: 0.0=buy, 1.0=sell, 2.0=sin señal
+    Notes:
+        - Any look-ahead (j == i) or same-bar up/down conflict is tagged as 2.0.
+    Notes:
+        - Any look-ahead (j == i) or same-bar up/down conflict is tagged as 2.0.
     """
     labels = np.empty(len(close), dtype=np.float64)
     for i in range(len(close) - label_max_val + 1):
@@ -1027,8 +1032,8 @@ def calc_labels_filter_binary(close, high, low, atr, lvl1, lvl2, q1, q2, directi
     - For classification: 0.0=buy, 1.0=sell, 2.0=no signal
     
     Signal Generation Logic:
-    - Buy signals: when filter2 shows oversold (curr_lvl2 < q2[0]) and future_price > current_price + ATR*markup
-    - Sell signals: when filter1 shows overbought (curr_lvl1 > q1[1]) and future_price < current_price - ATR*markup
+    - Buy signals: when filter2 shows oversold (curr_lvl2 < q2[0]) and first-touch high/low validates ATR*markup
+    - Sell signals: when filter1 shows overbought (curr_lvl1 > q1[1]) and first-touch high/low validates ATR*markup
     - Classification: assigns binary labels based on profit validation and filter consensus
 
     Args:
@@ -1046,6 +1051,8 @@ def calc_labels_filter_binary(close, high, low, atr, lvl1, lvl2, q1, q2, directi
     Returns:
         np.array: An array of labels with profit validation:
                   - Clasificación: 0.0=buy, 1.0=sell, 2.0=sin señal
+    Notes:
+        - Any look-ahead (j == i) or same-bar up/down conflict is tagged as 2.0.
     """
     labels = np.empty(len(close), dtype=np.float64)
     for i in range(len(close) - label_max_val):
@@ -1104,25 +1111,43 @@ def calc_labels_filter_binary(close, high, low, atr, lvl1, lvl2, q1, q2, directi
         elif direction == 0:  # solo buy
             if curr_lvl2 < q2[0]:
                 hit = False
+                ambiguous = False
                 j = start_j
                 while j <= end_j:
-                    if high[j] >= up_target:
+                    up_now = high[j] >= up_target
+                    down_now = low[j] <= down_target
+                    if j == i and (up_now or down_now):
+                        ambiguous = True
+                        break
+                    if up_now and down_now:
+                        ambiguous = True
+                        break
+                    if up_now:
                         hit = True
                         break
                     j += 1
-                labels[i] = 1.0 if hit else 0.0
+                labels[i] = 2.0 if ambiguous else (1.0 if hit else 0.0)
             else:
                 labels[i] = 2.0
         elif direction == 1:  # solo sell
             if curr_lvl1 > q1[1]:
                 hit = False
+                ambiguous = False
                 j = start_j
                 while j <= end_j:
-                    if low[j] <= down_target:
+                    up_now = high[j] >= up_target
+                    down_now = low[j] <= down_target
+                    if j == i and (up_now or down_now):
+                        ambiguous = True
+                        break
+                    if up_now and down_now:
+                        ambiguous = True
+                        break
+                    if down_now:
                         hit = True
                         break
                     j += 1
-                labels[i] = 1.0 if hit else 0.0
+                labels[i] = 2.0 if ambiguous else (1.0 if hit else 0.0)
             else:
                 labels[i] = 2.0
         else:
@@ -1232,8 +1257,8 @@ def calc_labels_filter_multi(close, high, low, atr, lvls, qs, direction=2,
     - For classification: 0.0=buy, 1.0=sell, 2.0=no signal
     
     Signal Generation Logic:
-    - Buy signals: when ALL filters show oversold and future_price >= current_price + ATR*markup
-    - Sell signals: when ALL filters show overbought and future_price <= current_price - ATR*markup
+    - Buy signals: when ALL filters show oversold and first-touch high/low validates ATR*markup
+    - Sell signals: when ALL filters show overbought and first-touch high/low validates ATR*markup
     - Classification: assigns binary labels based on profit validation and multi-filter consensus
 
     Args:
@@ -1249,6 +1274,8 @@ def calc_labels_filter_multi(close, high, low, atr, lvls, qs, direction=2,
     Returns:
         np.array: An array of labels with profit validation:
                   - Clasificación: 0.0=buy, 1.0=sell, 2.0=sin señal
+    Notes:
+        - Any look-ahead (j == i) or same-bar up/down conflict is tagged as 2.0.
     """
     labels = np.empty(len(close), dtype=np.float64)
     num_filters = len(lvls)
@@ -1572,6 +1599,8 @@ def calculate_labels_fractal_patterns(
     Returns:
         labels: Array de etiquetas siguiendo el enfoque MQL5:
                 - Clasificación: 0.0/1.0/2.0 según convención
+    Notas:
+        - Look-ahead (j==i) y ambigüedad intrabar se etiquetan como 2.0.
     """
     # ✅ CORRECCIÓN: Inicialización con 2.0 (no confiable)
     labels = np.full(close_data_len, 2.0, dtype=np.float64)
@@ -1615,27 +1644,40 @@ def calculate_labels_fractal_patterns(
             up_target = current_price + dynamic_markup
             down_target = current_price - dynamic_markup
 
-            start_j = point_idx + min_future_horizon
+            start_j = point_idx
             end_j = point_idx + max_future_horizon
             if start_j >= close_data_len:
                 continue
             if end_j >= close_data_len:
                 end_j = close_data_len - 1
 
-            # Buscar primer toque para up y down
+            # Buscar primer toque para up y down con manejo de look-ahead/ambigüedad
             up_hit_idx = -1
             down_hit_idx = -1
+            ambiguous = False
             j = start_j
             while j <= end_j:
-                if up_hit_idx == -1 and source_high_data[j] >= up_target:
+                up_now = source_high_data[j] >= up_target
+                down_now = source_low_data[j] <= down_target
+                if j == point_idx and (up_now or down_now):
+                    ambiguous = True
+                    break
+                if up_now and down_now:
+                    ambiguous = True
+                    break
+                if up_hit_idx == -1 and up_now:
                     up_hit_idx = j
-                if down_hit_idx == -1 and source_low_data[j] <= down_target:
+                if down_hit_idx == -1 and down_now:
                     down_hit_idx = j
                 if up_hit_idx != -1 and down_hit_idx != -1:
                     break
                 j += 1
 
             # Resolver etiqueta según dirección y primer toque
+            if ambiguous:
+                labels[point_idx] = 2.0
+                # No actualizar best_time_to_target para que no se sobrescriba
+                continue
             if direction == 0:
                 # buy only: éxito si alcanza up_target
                 if up_hit_idx != -1:
@@ -1832,6 +1874,8 @@ def calculate_labels_trend(
 
     direction: 0=solo buy, 1=solo sell, 2=both
     Usa ATR como filtro de profit.
+    Notas:
+      - Look-ahead (j==i) y ambigüedad intrabar se etiquetan como 2.0.
     """
     labels = np.empty(len(normalized_trend) - label_max_val, dtype=np.float64)
     for i in range(len(normalized_trend) - label_max_val):
@@ -1840,7 +1884,7 @@ def calculate_labels_trend(
         # Primer toque con high/low
         up_target = close[i] + dyn_mk
         down_target = close[i] - dyn_mk
-        start_j = i + label_min_val
+        start_j = i
         end_j = i + label_max_val
 
         if direction == 0:  # solo buy
@@ -2019,6 +2063,8 @@ def calculate_labels_trend_multi(
     Etiquetado multi-período con soporte para direcciones únicas o ambas.
     direction: 0=solo buy, 1=solo sell, 2=ambas
     Evaluación por primer toque usando high/low en [min,max].
+    Notas:
+      - Look-ahead (j==i) y ambigüedad intrabar se etiquetan como 2.0.
     """
     num_periods = normalized_trends.shape[0]  # Number of periods
     labels = np.empty(len(close) - label_max_val, dtype=np.float64)
@@ -2039,10 +2085,18 @@ def calculate_labels_trend_multi(
         down_hit_idx = -1
         k = start_j
         while k <= end_j:
-            if (not up_hit) and high[k] >= up_target:
+            up_now = high[k] >= up_target
+            down_now = low[k] <= down_target
+            if k == i and (up_now or down_now):
+                ambiguous = True
+                break
+            if up_now and down_now:
+                ambiguous = True
+                break
+            if (not up_hit) and up_now:
                 up_hit = True
                 up_hit_idx = k
-            if (not down_hit) and low[k] <= down_target:
+            if (not down_hit) and down_now:
                 down_hit = True
                 down_hit_idx = k
             if up_hit and down_hit:
@@ -2060,6 +2114,9 @@ def calculate_labels_trend_multi(
 
         min_votes = (num_periods + 1) // 2  # mayoría simple
 
+        if ambiguous:
+            labels[i] = 2.0
+            continue
         if direction == 2:
             if buy_signals >= min_votes and sell_signals < min_votes:
                 labels[i] = 0.0
@@ -2190,13 +2247,15 @@ def calculate_labels_trend_filters(close, high, low, atr, normalized_trend, labe
       - Clasificación:
         - Direccional único: 1.0=éxito direccional, 0.0=fracaso direccional, 2.0=patrón no confiable
         - Ambas: 0.0=éxito buy, 1.0=éxito sell, 2.0=sin señal/no profit
+    Notas:
+      - Look-ahead (j==i) y ambigüedad intrabar se etiquetan como 2.0.
     """
     labels = np.empty(len(normalized_trend) - label_max_val, dtype=np.float64)
     for i in range(len(normalized_trend) - label_max_val):
         dyn_mk = label_markup * atr[i]
         up_target = close[i] + dyn_mk
         down_target = close[i] - dyn_mk
-        start_j = i + label_min_val
+        start_j = i
         end_j = i + label_max_val
         if end_j >= len(close):
             end_j = len(close) - 1
@@ -2356,6 +2415,8 @@ def calculate_labels_clusters(close_data, high_data, low_data, atr, clusters, la
         - Clasificación:
           - Direccional único: 1.0=éxito direccional, 0.0=fracaso direccional, 2.0=patrón no confiable
           - Ambas: 0.0=salto alcista, 1.0=salto bajista, 2.0=sin señal
+    Notas:
+        - Look-ahead (j==i) y ambigüedad intrabar se etiquetan como 2.0.
     """
     n = len(close_data)
     labels = np.full(n, 2.0, dtype=np.float64)
@@ -2377,7 +2438,7 @@ def calculate_labels_clusters(close_data, high_data, low_data, atr, clusters, la
         curr_price = close_data[i]
         up_target = curr_price + dyn_mk
         down_target = curr_price - dyn_mk
-        start_j = i + label_min_val
+        start_j = i
         end_j = i + label_max_val
         if end_j >= n:
             end_j = n - 1
@@ -2386,11 +2447,19 @@ def calculate_labels_clusters(close_data, high_data, low_data, atr, clusters, la
         down_hit_idx = -1
         j = start_j
         while j <= end_j:
-            if up_hit_idx == -1 and high_data[j] >= up_target:
+            up_now = high_data[j] >= up_target
+            down_now = low_data[j] <= down_target
+            if j == i and (up_now or down_now):
+                ambiguous = True
+                break
+            if up_now and down_now:
+                ambiguous = True
+                break
+            if (up_hit_idx == -1) and up_now:
                 up_hit_idx = j
-            if down_hit_idx == -1 and low_data[j] <= down_target:
+            if (down_hit_idx == -1) and down_now:
                 down_hit_idx = j
-            if up_hit_idx != -1 and down_hit_idx != -1:
+            if (up_hit_idx != -1) and (down_hit_idx != -1):
                 break
             j += 1
 
@@ -2471,6 +2540,8 @@ def calculate_labels_multi_window(prices, highs, lows, atr, window_sizes, label_
       - Clasificación:
         - Direccional único: 1.0=éxito direccional, 0.0=fracaso direccional, 2.0=patrón no confiable
         - Ambas: 0.0=buy, 1.0=sell, 2.0=sin señal
+    Notas:
+        - Look-ahead (j==i) y ambigüedad intrabar se etiquetan como 2.0.
     """
     max_window = max(window_sizes)
     signals = []
@@ -2757,6 +2828,9 @@ def calculate_labels_validated_levels(close, high, low, atr, window_size, label_
             j += 1
     
         if direction == 2:  # both
+            if ambiguous:
+                labels[i] = 2.0
+                continue
             both_buy = broke_resistance and up_hit
             both_sell = broke_support and down_hit
             if both_buy and both_sell:
@@ -2873,6 +2947,8 @@ def calculate_labels_zigzag(peaks, troughs, close, high, low, atr, label_markup,
     Returns:
         np.array: An array of labels with profit validation:
                   - Clasificación: 0.0=buy, 1.0=sell, 2.0=sin señal
+    Notes:
+        - Any look-ahead (j == i) or same-bar up/down conflict is tagged as 2.0.
     """
     len_close = len(close) - label_max_val
     labels = np.empty(len_close, dtype=np.float64)
@@ -3031,7 +3107,7 @@ def get_labels_zigzag(
     - Uses scipy.signal.find_peaks with prominence-based detection
     - Validates signals using ATR * markup as profit target
     - Supports both classification (binary) and regression (magnitude) labeling
-    - Optimizable parameters: prominence, markup, future price selection method
+    - Optimizable parameters: prominence, markup
     
     Signal Logic:
     - Peaks (highs) → Sell signals when future price <= current_price - ATR*markup
@@ -3118,8 +3194,8 @@ def calculate_labels_mean_reversion(close, high, low, atr, lvl, label_markup, la
     - For classification: 0.0=buy, 1.0=sell, 2.0=no signal
     
     Signal Generation Logic:
-    - Buy signals: when curr_lvl < q[0] (oversold) and future_price > current_price + ATR*markup
-    - Sell signals: when curr_lvl > q[1] (overbought) and future_price < current_price - ATR*markup
+    - Buy signals: when curr_lvl < q[0] (oversold) and first-touch high/low validates ATR*markup
+    - Sell signals: when curr_lvl > q[1] (overbought) and first-touch high/low validates ATR*markup
     - Classification: assigns binary labels based on profit validation
 
     Args:
@@ -3135,6 +3211,8 @@ def calculate_labels_mean_reversion(close, high, low, atr, lvl, label_markup, la
     Returns:
         np.array: An array of labels with profit validation:
                   - Clasificación: 0.0=buy, 1.0=sell, 2.0=sin señal
+    Notes:
+        - Any look-ahead (j == i) or same-bar up/down conflict is tagged as 2.0.
     """
     labels = np.empty(len(close) - label_max_val, dtype=np.float64)
     for i in range(len(close) - label_max_val):
@@ -3228,11 +3306,11 @@ def get_labels_mean_reversion(
     - Identifies reversion zones using quantiles (oversold/overbought)
     - Validates signals using ATR * markup as profit target
     - Supports both classification (binary) and regression (magnitude) labeling
-    - Optimizable parameters: markup, quantiles, future price selection method
+    - Optimizable parameters: markup, quantiles
     
     Signal Logic:
-    - Buy signals: when price deviation < q[0] (oversold) and future_price > current_price + ATR*markup
-    - Sell signals: when price deviation > q[1] (overbought) and future_price < current_price - ATR*markup
+    - Buy signals: when price deviation < q[0] (oversold) and first-touch high/low validates ATR*markup
+    - Sell signals: when price deviation > q[1] (overbought) and first-touch high/low validates ATR*markup
     - Classification: 0.0=buy, 1.0=sell, 2.0=no signal
 
     Args:
@@ -3335,8 +3413,8 @@ def calculate_labels_mean_reversion_multi(
     - For classification: 0.0=buy, 1.0=sell, 2.0=no signal
     
     Signal Generation Logic:
-    - Buy signals: when ALL windows show oversold (curr_lvl <= q_low) and future_price > current_price + ATR*markup
-    - Sell signals: when ALL windows show overbought (curr_lvl >= q_high) and future_price < current_price - ATR*markup
+    - Buy signals: when ALL windows show oversold (curr_lvl <= q_low) and first-touch high/low validates ATR*markup
+    - Sell signals: when ALL windows show overbought (curr_lvl >= q_high) and first-touch high/low validates ATR*markup
     - Classification: assigns binary labels based on profit validation and multi-window consensus
 
     Args:
@@ -3353,6 +3431,8 @@ def calculate_labels_mean_reversion_multi(
     Returns:
         List: An array of labels with profit validation:
               - Clasificación: 0.0=buy, 1.0=sell, 2.0=sin señal
+    Notes:
+        - Any look-ahead (j == i) or same-bar up/down conflict is tagged as 2.0.
     """
     labels = []
     n_win = len(window_sizes)
@@ -3461,11 +3541,11 @@ def get_labels_mean_reversion_multi(
     - Identifies reversion zones using quantiles for each window size
     - Requires consensus across all windows for signal generation
     - Validates signals using ATR * markup as profit target
-    - Optimizable parameters: markup, quantiles, window sizes, future price selection method
+    - Optimizable parameters: markup, quantiles, window sizes
     
     Signal Logic:
-    - Buy signals: when ALL windows show oversold (curr_lvl <= q_low) and future_price > current_price + ATR*markup
-    - Sell signals: when ALL windows show overbought (curr_lvl >= q_high) and future_price < current_price - ATR*markup
+    - Buy signals: when ALL windows show oversold (curr_lvl <= q_low) and first-touch high/low validates ATR*markup
+    - Sell signals: when ALL windows show overbought (curr_lvl >= q_high) and first-touch high/low validates ATR*markup
     - Classification: 0.0=buy, 1.0=sell, 2.0=no signal
     
     Args:
@@ -3541,8 +3621,8 @@ def calculate_labels_mean_reversion_vol(
     - For classification: 0.0=buy, 1.0=sell, 2.0=no signal
     
     Signal Generation Logic:
-    - Buy signals: when price deviation < low_quantile[volatility_group] and future_price > current_price + ATR*markup
-    - Sell signals: when price deviation > high_quantile[volatility_group] and future_price < current_price - ATR*markup
+    - Buy signals: when price deviation < low_quantile[volatility_group] and first-touch high/low validates ATR*markup
+    - Sell signals: when price deviation > high_quantile[volatility_group] and first-touch high/low validates ATR*markup
     - Classification: assigns binary labels based on profit validation and volatility-adjusted thresholds
 
     Args:
@@ -3560,6 +3640,8 @@ def calculate_labels_mean_reversion_vol(
     Returns:
         List: An array of labels with profit validation:
               - Clasificación: 0.0=buy, 1.0=sell, 2.0=sin señal
+    Notes:
+        - Any look-ahead (j == i) or same-bar up/down conflict is tagged as 2.0.
     """
     labels = []
     for i in range(len(close_data) - label_max_val):
@@ -3649,11 +3731,11 @@ def get_labels_mean_reversion_vol(
     - Calculates quantiles for each volatility group separately
     - Uses volatility-specific thresholds for signal generation
     - Validates signals using ATR * markup as profit target
-    - Optimizable parameters: markup, quantiles, volatility window, future price selection method
+    - Optimizable parameters: markup, quantiles, volatility window
     
     Signal Logic:
-    - Buy signals: when price deviation < low_quantile[volatility_group] and future_price > current_price + ATR*markup
-    - Sell signals: when price deviation > high_quantile[volatility_group] and future_price < current_price - ATR*markup
+    - Buy signals: when price deviation < low_quantile[volatility_group] and first-touch high/low validates ATR*markup
+    - Sell signals: when price deviation > high_quantile[volatility_group] and first-touch high/low validates ATR*markup
     - Classification: 0.0=buy, 1.0=sell, 2.0=no signal
     
     Args:

@@ -723,27 +723,27 @@ class StrategySearcher:
         """Hiperparámetros de etiquetado dependientes de la función label_method."""
         label_search_space = {
             # Profit target (ATR-scaled) usado en TODOS los etiquetadores first-touch
-            'label_markup':     lambda t: t.suggest_float('label_markup', 0.25, 5.25, log=True),
+            'label_markup':     lambda t: t.suggest_float('label_markup', 0.20, 6.50, log=True),
 
             # Clustering
-            'label_n_clusters': lambda t: t.suggest_int('label_n_clusters', 4, 20, log=True),
+            'label_n_clusters': lambda t: t.suggest_int('label_n_clusters', 3, 24, log=True),
 
             # Suavizado Savitzky-Golay / Spline
             'label_polyorder':  lambda t: t.suggest_int('label_polyorder', 2, 5),
             # NOTA: 'label_rolling' se usa como window (savgol/sma/ema) y como 's' en spline.
             # Rango moderado para ser válido en ambos casos sin sobre-suavizar.
-            'label_rolling':    lambda t: t.suggest_int('label_rolling', 11, 181, log=True),
-            'label_rolling2':   lambda t: t.suggest_int('label_rolling2', 11, 181, log=True),
+            'label_rolling':    lambda t: t.suggest_int('label_rolling', 9, 221, log=True),
+            'label_rolling2':   lambda t: t.suggest_int('label_rolling2', 9, 221, log=True),
 
             # Periodos múltiples
-            'label_rolling_periods_small': lambda t: [t.suggest_int(f'label_rolling_periods_small_{i}', 10, 60, log=True) for i in range(3)],
-            'label_rolling_periods_big':   lambda t: [t.suggest_int(f'label_rolling_periods_big_{i}',   50, 600, log=True) for i in range(3)],
+            'label_rolling_periods_small': lambda t: [t.suggest_int(f'label_rolling_periods_small_{i}', 8, 80, log=True) for i in range(3)],
+            'label_rolling_periods_big':   lambda t: [t.suggest_int(f'label_rolling_periods_big_{i}',   40, 720, log=True) for i in range(3)],
 
             # ATR
-            'label_atr_period': lambda t: t.suggest_int('label_atr_period', 10, 100, log=True),
+            'label_atr_period': lambda t: t.suggest_int('label_atr_period', 8, 120, log=True),
 
             # Ventana de validación futura first-touch
-            'label_max_val':    lambda t: t.suggest_int('label_max_val', 5, 15, log=True),
+            'label_max_val':    lambda t: t.suggest_int('label_max_val', 4, 20, log=True),
 
             # Dirección de tendencia y filtros
             'label_method_trend': lambda t: t.suggest_categorical('label_method_trend', ['normal', 'inverse']),
@@ -751,44 +751,44 @@ class StrategySearcher:
             'label_filter_mean':  lambda t: t.suggest_categorical('label_filter_mean', ['savgol', 'spline', 'mean']),
 
             # Umbral para tendencias normalizadas (z-score ~)
-            'label_threshold':  lambda t: t.suggest_float('label_threshold', 0.30, 1.20),
+            'label_threshold':  lambda t: t.suggest_float('label_threshold', 0.20, 1.50),
 
             # Ventanas para cuantiles rolling (filter_multi)
-            'label_window_size': lambda t: t.suggest_int('label_window_size', 30, 150, log=True),
-            'label_window_sizes_int': lambda t: [t.suggest_int(f'label_window_sizes_{i}', 20, 150, log=True) for i in range(3)],
-            'label_window_sizes_float': lambda t: [t.suggest_float(f'label_window_sizes_{i}', 0.10, 0.60) for i in range(3)],
+            'label_window_size': lambda t: t.suggest_int('label_window_size', 24, 200, log=True),
+            'label_window_sizes_int': lambda t: [t.suggest_int(f'label_window_sizes_{i}', 16, 200, log=True) for i in range(3)],
+            'label_window_sizes_float': lambda t: [t.suggest_float(f'label_window_sizes_{i}', 0.08, 0.70) for i in range(3)],
 
             # Fractales
-            'label_min_window':    lambda t: t.suggest_int('label_min_window', 6, 30, log=True),
-            'label_max_window':    lambda t: t.suggest_int('label_max_window', 30, 120, log=True),
-            'label_corr_threshold': lambda t: t.suggest_float('label_corr_threshold', 0.60, 0.95),
+            'label_min_window':    lambda t: t.suggest_int('label_min_window', 5, 36, log=True),
+            'label_max_window':    lambda t: t.suggest_int('label_max_window', 24, 150, log=True),
+            'label_corr_threshold': lambda t: t.suggest_float('label_corr_threshold', 0.50, 0.98),
 
             # Volatilidad (ATR, std rolling)
-            'label_vol_window': lambda t: t.suggest_int('label_vol_window', 20, 150, log=True),
+            'label_vol_window': lambda t: t.suggest_int('label_vol_window', 16, 200, log=True),
 
             # Validated levels
-            'label_min_touches': lambda t: t.suggest_int('label_min_touches', 2, 6),
+            'label_min_touches': lambda t: t.suggest_int('label_min_touches', 2, 7),
 
             # ZigZag (atr-adaptado)
-            'label_k_atr_prominence': lambda t: t.suggest_float('label_k_atr_prominence', 0.5, 4.0),
-            'label_k_atr_amplitude':  lambda t: t.suggest_float('label_k_atr_amplitude', 0.5, 3.0),
-            'label_peak_distance':    lambda t: t.suggest_int('label_peak_distance', 3, 15),
-            'label_peak_width':       lambda t: t.suggest_int('label_peak_width', 1, 5),
+            'label_k_atr_prominence': lambda t: t.suggest_float('label_k_atr_prominence', 0.4, 5.0),
+            'label_k_atr_amplitude':  lambda t: t.suggest_float('label_k_atr_amplitude', 0.4, 4.0),
+            'label_peak_distance':    lambda t: t.suggest_int('label_peak_distance', 2, 20),
+            'label_peak_width':       lambda t: t.suggest_int('label_peak_width', 1, 7),
 
             # Cuantiles para reversiones (asegurar separación low<high)
             'label_quantiles': lambda t: [
-                t.suggest_float('label_q_low', 0.10, 0.45),
-                t.suggest_float('label_q_high', 0.55, 0.90),
+                t.suggest_float('label_q_low', 0.05, 0.48),
+                t.suggest_float('label_q_high', 0.52, 0.95),
             ],
 
             # Ponderación exponencial (énfasis en muestras recientes)
-            'label_decay_factor': lambda t: t.suggest_float('label_decay_factor', 0.93, 0.995),
+            'label_decay_factor': lambda t: t.suggest_float('label_decay_factor', 0.90, 0.998),
 
             # Shift opcional para spline
-            'label_shift': lambda t: t.suggest_int('label_shift', 0, 3),
+            'label_shift': lambda t: t.suggest_int('label_shift', 0, 4),
 
             # Mayoría dinámica opcional para mean_reversion_multi (0 → usar mayoría por defecto)
-            'label_min_votes': lambda t: t.suggest_int('label_min_votes', 0, 3),
+            'label_min_votes': lambda t: t.suggest_int('label_min_votes', 0, 4),
         }
         p = {}
         label_func = self.LABEL_FUNCS[self.label_method]

@@ -677,6 +677,7 @@ class StrategySearcher:
             "kurt",
             "corrskew",
             "sharpe",
+            "vwapdevz",
         )
         p: Dict[str, Any] = {}
 

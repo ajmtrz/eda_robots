@@ -368,12 +368,36 @@ def compute_returns(prices):
     return returns
 
 @njit(cache=True)
+def vwapdevz_manual(high_window, low_window, close_window, volume_window):
+    n = high_window.size
+    if n == 0:
+        return 0.0
+    # VWAP rolling en la ventana [0..n-1]
+    num = 0.0
+    den = 0.0
+    for i in range(n):
+        tp = (high_window[i] + low_window[i] + close_window[i]) / 3.0
+        v = volume_window[i]
+        num += tp * v
+        den += v
+    if den <= 0.0:
+        vwap = (high_window[-1] + low_window[-1] + close_window[-1]) / 3.0
+    else:
+        vwap = num / den
+    c_now = close_window[-1]
+    dev = (c_now - vwap)
+    sd = std_manual(close_window)
+    if sd <= 1e-8:
+        sd = 1e-8
+    return dev / sd
+
+@njit(cache=True)
 def should_use_returns(stat_name):
     """Determina si un estadístico debe usar retornos en lugar de precios."""
     return stat_name in ("mean", "median", "std", "iqr", "mad", "sharpe", "autocorr")
 
 @njit(cache=True)
-def compute_features(close, periods_main, periods_meta, stats_main, stats_meta):
+def compute_features(open, high, low, close, volume, periods_main, periods_meta, stats_main, stats_meta):
     n = len(close)
     # Calcular total de features
     total_features = len(periods_main) * len(stats_main)
@@ -398,76 +422,86 @@ def compute_features(close, periods_main, periods_meta, stats_main, stats_meta):
                 start_idx = win
                 
             for i in range(start_idx, n):
-                # ───── OPTIMIZACIÓN: Usar slice directo en lugar de [::-1] ─────
-                window = close[i - window_size:i]
+                # ───── OPTIMIZACIÓN: Usar slice directo ─────
+                #window_open = open[i - window_size:i]
+                window_high = high[i - window_size:i]
+                window_low = low[i - window_size:i]
+                window_close = close[i - window_size:i]
+                window_volume = volume[i - window_size:i]
                 
                 # ───── NUEVA FUNCIONALIDAD: Usar retornos para estadísticos específicos ─────
                 if should_use_returns(s):
-                    if window.size <= 1:
+                    if window_close.size <= 1:
                         features[i, col] = np.nan
                         continue
-                    window_data = compute_returns(window)
-                    if window_data.size == 0:
+                    window_data_close = compute_returns(window_close)
+                    if window_data_close.size == 0:
                         features[i, col] = np.nan
                         continue
                 else:
-                    window_data = window
+                    #window_data_open = window_open
+                    window_data_high = window_high
+                    window_data_low = window_low
+                    window_data_close = window_close
+                    window_data_volume = window_volume
                 
                 try:
                     if s == "std":
-                        features[i, col] = std_manual(window_data)
+                        features[i, col] = std_manual(window_data_close)
                     elif s == "skew":
-                        features[i, col] = skew_manual(window_data)
+                        features[i, col] = skew_manual(window_data_close)
                     elif s == "kurt":
-                        features[i, col] = kurt_manual(window_data)
+                        features[i, col] = kurt_manual(window_data_close)
                     elif s == "zscore":
-                        features[i, col] = zscore_manual(window_data)
+                        features[i, col] = zscore_manual(window_data_close)
                     elif s == "range":
-                        features[i, col] = np.max(window_data) - np.min(window_data)
+                        features[i, col] = np.max(window_data_close) - np.min(window_data_close)
                     elif s == "mean":
-                        features[i, col] = mean_manual(window_data)
+                        features[i, col] = mean_manual(window_data_close)
                     elif s == "median":
-                        features[i, col] = median_manual(window_data)
+                        features[i, col] = median_manual(window_data_close)
                     elif s == "iqr":
-                        features[i, col] = iqr_manual(window_data)
+                        features[i, col] = iqr_manual(window_data_close)
                     elif s == "cv":
-                        features[i, col] = coeff_var_manual(window_data)
+                        features[i, col] = coeff_var_manual(window_data_close)
                     elif s == "mad":
-                        m = mean_manual(window_data)
-                        features[i, col] = mean_manual(np.abs(window_data - m))
+                        m = mean_manual(window_data_close)
+                        features[i, col] = mean_manual(np.abs(window_data_close - m))
                     elif s == "entropy":
-                        features[i, col] = entropy_manual(window_data)
+                        features[i, col] = entropy_manual(window_data_close)
                     elif s == "slope":
-                        features[i, col] = slope_manual(window_data)
+                        features[i, col] = slope_manual(window_data_close)
                     elif s == "momentum":
-                        features[i, col] = momentum_roc(window_data)
+                        features[i, col] = momentum_roc(window_data_close)
                     elif s == "fractal":
-                        features[i, col] = fractal_dimension_manual(window_data)
+                        features[i, col] = fractal_dimension_manual(window_data_close)
                     elif s == "hurst":
-                        features[i, col] = hurst_manual(window_data)
+                        features[i, col] = hurst_manual(window_data_close)
                     elif s == "autocorr":
-                        features[i, col] = autocorr1_manual(window_data)
+                        features[i, col] = autocorr1_manual(window_data_close)
                     elif s == "maxdd":
-                        features[i, col] = max_dd_manual(window_data)
+                        features[i, col] = max_dd_manual(window_data_close)
                     elif s == "sharpe":
-                        features[i, col] = sharpe_manual(window_data)
+                        features[i, col] = sharpe_manual(window_data_close)
                     elif s == "fisher":
-                        features[i, col] = fisher_transform(momentum_roc(window_data))
+                        features[i, col] = fisher_transform(momentum_roc(window_data_close))
                     elif s == "chande":
-                        features[i, col] = chande_momentum(window_data)
+                        features[i, col] = chande_momentum(window_data_close)
                     elif s == "var":
-                        std = std_manual(window_data)
-                        features[i, col] = std * std * (window_data.size - 1) / window_data.size
+                        std = std_manual(window_data_close)
+                        features[i, col] = std * std * (window_data_close.size - 1) / window_data_close.size
                     elif s == "approxentropy":
-                        features[i, col] = approximate_entropy(window_data)
+                        features[i, col] = approximate_entropy(window_data_close)
                     elif s == "effratio":
-                        features[i, col] = efficiency_ratio(window_data)
+                        features[i, col] = efficiency_ratio(window_data_close)
                     elif s == "corrskew":
-                        features[i, col] = correlation_skew_manual(window_data)
+                        features[i, col] = correlation_skew_manual(window_data_close)
                     elif s == "jumpvol":
-                        features[i, col] = jump_volatility_manual(window_data)
+                        features[i, col] = jump_volatility_manual(window_data_close)
                     elif s == "volskew":
-                        features[i, col] = volatility_skew(window_data)
+                        features[i, col] = volatility_skew(window_data_close)
+                    elif s == "vwapdevz":
+                        features[i, col] = vwapdevz_manual(window_data_high, window_data_low, window_data_close, window_data_volume)
                 except:
                     return np.full((n, total_features), np.nan)
             col += 1
@@ -486,75 +520,85 @@ def compute_features(close, periods_main, periods_meta, stats_main, stats_meta):
 
                 for i in range(start_idx, n):
                     # ───── OPTIMIZACIÓN: Usar slice directo ─────
-                    window = close[i - window_size:i]
+                    #window_open = open[i - window_size:i]
+                    window_high = high[i - window_size:i]
+                    window_low = low[i - window_size:i]
+                    window_close = close[i - window_size:i]
+                    window_volume = volume[i - window_size:i]
                     
                     # ───── NUEVA FUNCIONALIDAD: Usar retornos para estadísticos específicos ─────
                     if should_use_returns(s):
-                        if window.size <= 1:
+                        if window_close.size <= 1:
                             features[i, col] = np.nan
                             continue
-                        window_data = compute_returns(window)
-                        if window_data.size == 0:
+                        window_data_close = compute_returns(window_close)
+                        if window_data_close.size == 0:
                             features[i, col] = np.nan
                             continue
                     else:
-                        window_data = window
+                        #window_data_open = window_open
+                        window_data_high = window_high
+                        window_data_low = window_low
+                        window_data_close = window_close
+                        window_data_volume = window_volume
                     
                     try:
                         if s == "std":
-                            features[i, col] = std_manual(window_data)
+                            features[i, col] = std_manual(window_data_close)
                         elif s == "skew":
-                            features[i, col] = skew_manual(window_data)
+                            features[i, col] = skew_manual(window_data_close)
                         elif s == "kurt":
-                            features[i, col] = kurt_manual(window_data)
+                            features[i, col] = kurt_manual(window_data_close)
                         elif s == "zscore":
-                            features[i, col] = zscore_manual(window_data)
+                            features[i, col] = zscore_manual(window_data_close)
                         elif s == "range":
-                            features[i, col] = np.max(window_data) - np.min(window_data)
+                            features[i, col] = np.max(window_data_close) - np.min(window_data_close)
                         elif s == "mean":
-                            features[i, col] = mean_manual(window_data)
+                            features[i, col] = mean_manual(window_data_close)
                         elif s == "median":
-                            features[i, col] = median_manual(window_data)
+                            features[i, col] = median_manual(window_data_close)
                         elif s == "iqr":
-                            features[i, col] = iqr_manual(window_data)
+                            features[i, col] = iqr_manual(window_data_close)
                         elif s == "cv":
-                            features[i, col] = coeff_var_manual(window_data)
+                            features[i, col] = coeff_var_manual(window_data_close)
                         elif s == "mad":
-                            m = mean_manual(window_data)
-                            features[i, col] = mean_manual(np.abs(window_data - m))
+                            m = mean_manual(window_data_close)
+                            features[i, col] = mean_manual(np.abs(window_data_close - m))
                         elif s == "entropy":
-                            features[i, col] = entropy_manual(window_data)
+                            features[i, col] = entropy_manual(window_data_close)
                         elif s == "slope":
-                            features[i, col] = slope_manual(window_data)
+                            features[i, col] = slope_manual(window_data_close)
                         elif s == "momentum":
-                            features[i, col] = momentum_roc(window_data)
+                            features[i, col] = momentum_roc(window_data_close)
                         elif s == "fractal":
-                            features[i, col] = fractal_dimension_manual(window_data)
+                            features[i, col] = fractal_dimension_manual(window_data_close)
                         elif s == "hurst":
-                            features[i, col] = hurst_manual(window_data)
+                            features[i, col] = hurst_manual(window_data_close)
                         elif s == "autocorr":
-                            features[i, col] = autocorr1_manual(window_data)
+                            features[i, col] = autocorr1_manual(window_data_close)
                         elif s == "maxdd":
-                            features[i, col] = max_dd_manual(window_data)
+                            features[i, col] = max_dd_manual(window_data_close)
                         elif s == "sharpe":
-                            features[i, col] = sharpe_manual(window_data)
+                            features[i, col] = sharpe_manual(window_data_close)
                         elif s == "fisher":
-                            features[i, col] = fisher_transform(momentum_roc(window_data))
+                            features[i, col] = fisher_transform(momentum_roc(window_data_close))
                         elif s == "chande":
-                            features[i, col] = chande_momentum(window_data)
+                            features[i, col] = chande_momentum(window_data_close)
                         elif s == "var":
-                            std = std_manual(window_data)
-                            features[i, col] = std * std * (window_data.size - 1) / window_data.size
+                            std = std_manual(window_data_close)
+                            features[i, col] = std * std * (window_data_close.size - 1) / window_data_close.size
                         elif s == "approxentropy":
-                            features[i, col] = approximate_entropy(window_data)
+                            features[i, col] = approximate_entropy(window_data_close)
                         elif s == "effratio":
-                            features[i, col] = efficiency_ratio(window_data)
+                            features[i, col] = efficiency_ratio(window_data_close)
                         elif s == "corrskew":
-                            features[i, col] = correlation_skew_manual(window_data)
+                            features[i, col] = correlation_skew_manual(window_data_close)
                         elif s == "jumpvol":
-                            features[i, col] = jump_volatility_manual(window_data)
+                            features[i, col] = jump_volatility_manual(window_data_close)
                         elif s == "volskew":
-                            features[i, col] = volatility_skew(window_data)
+                            features[i, col] = volatility_skew(window_data_close)
+                        elif s == "vwapdevz":
+                            features[i, col] = vwapdevz_manual(window_data_high, window_data_low, window_data_close, window_data_volume)
                     except:
                         return np.full((n, total_features), np.nan)
                 col += 1
@@ -562,7 +606,11 @@ def compute_features(close, periods_main, periods_meta, stats_main, stats_meta):
     return features
 
 def get_features(data: pd.DataFrame, hp, decimal_precision=6):
+    open = data['open'].values
+    high = data['high'].values
+    low = data['low'].values
     close = data['close'].values
+    volume = data['volume'].values
     index = data.index
     
     # Verificar datos vacíos
@@ -602,7 +650,11 @@ def get_features(data: pd.DataFrame, hp, decimal_precision=6):
 
     # Calcular features
     feats = compute_features(
+        open,
+        high,
+        low,
         close,
+        volume,
         periods_main_t,
         periods_meta_t,
         stats_main_t,

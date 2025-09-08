@@ -203,6 +203,44 @@ def export_to_mql5(**kwargs):
                     return (a[n-1] - mean) / std;
                 }
                 """,
+            "vwapdevz": """
+                double stat_vwapdevz(const double &a[])
+                {
+                    int n = ArraySize(a);
+                    if(n == 0) return 0.0;
+
+                    // Obtener ventanas High/Low/Volume del mismo tamaño y desplazamiento (shift=1)
+                    double h[], l[];
+                    long   vol[];
+                    CopyHigh(_Symbol, _Period, 1, n, h);
+                    CopyLow(_Symbol, _Period, 1, n, l);
+                    CopyTickVolume(_Symbol, _Period, 1, n, vol);
+                    ArraySetAsSeries(h, false);
+                    ArraySetAsSeries(l, false);
+                    ArraySetAsSeries(vol, false);
+
+                    // Calcular VWAP rolling en la ventana [0..n-1]
+                    double num = 0.0, den = 0.0;
+                    for(int i = 0; i < n; i++)
+                    {
+                        double tp = (h[i] + l[i] + a[i]) / 3.0;
+                        double v = (double)vol[i];
+                        num += tp * v;
+                        den += v;
+                    }
+
+                    double vwap;
+                    if(den <= 0.0)
+                        vwap = (h[n-1] + l[n-1] + a[n-1]) / 3.0;
+                    else
+                        vwap = num / den;
+
+                    // Z-score respecto a la desviación estándar de la serie de cierres de la ventana
+                    double sd = stat_std(a);
+                    if(sd <= 1e-8) sd = 1e-8;
+                    return (a[n-1] - vwap) / sd;
+                }
+                """,
             "mean": """
                 double stat_mean(const double &a[])
                 {

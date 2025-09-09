@@ -776,9 +776,12 @@ def calculate_labels_random(close, atr, label_markup, label_min_val, label_max_v
             future_price = np.max(window)
         elif method_int == 4:  # min
             future_price = np.min(window)
-        else:  # random/otro
-            rand = np.random.randint(label_min_val, label_max_val + 1)
-            future_price = close[i + rand]
+        else:  # random/otro -> usar mediana de la ventana
+            window = close[i + label_min_val : i + label_max_val + 1]
+            if window.size > 0:
+                future_price = median_manual(window)
+            else:
+                future_price = close[i + label_min_val]
         dyn_mk = label_markup * atr[i]
         
         if label_type == 1:  # Regresión - magnitud normalizada por ATR
@@ -914,9 +917,12 @@ def calculate_labels_filter(close, atr, lvl, q, direction=2, method_int=5,
                 future_pr = np.min(window)
             else:
                 future_pr = close[i + label_min_val]
-        else:  # random/otro
-            rand = np.random.randint(label_min_val, label_max_val + 1)
-            future_pr = close[i + rand]
+        else:  # random/otro -> usar mediana de la ventana
+            window = close[i + label_min_val : i + label_max_val + 1]
+            if window.size > 0:
+                future_pr = median_manual(window)
+            else:
+                future_pr = close[i + label_min_val]
 
         if direction == 2:  # both
             if curr_lvl > q[1] and (future_pr + dyn_mk) < curr_pr:
@@ -1088,9 +1094,12 @@ def calculate_labels_filter_binary(close, atr, lvl1, lvl2, q1, q2, direction=2, 
                 future_pr = np.min(window)
             else:
                 future_pr = close[i + label_min_val]
-        else:  # random/otro
-            rand = np.random.randint(label_min_val, label_max_val + 1)
-            future_pr = close[i + rand]
+        else:  # random/otro -> usar mediana de la ventana
+            window = close[i + label_min_val : i + label_max_val + 1]
+            if window.size > 0:
+                future_pr = median_manual(window)
+            else:
+                future_pr = close[i + label_min_val]
 
         if direction == 2:  # both
             if curr_lvl1 > q1[1] and (future_pr + dyn_mk) < curr_pr:
@@ -1273,9 +1282,12 @@ def calculate_labels_filter_multi(close, atr, lvls, qs, direction=2, method_int=
                 future_pr = np.min(window)
             else:
                 future_pr = close[i + label_min_val]
-        else:  # random/otro
-            rand = np.random.randint(label_min_val, label_max_val + 1)
-            future_pr = close[i + rand]
+        else:  # random/otro -> usar mediana de la ventana
+            window = close[i + label_min_val : i + label_max_val + 1]
+            if window.size > 0:
+                future_pr = median_manual(window)
+            else:
+                future_pr = close[i + label_min_val]
 
         if direction == 2:
             # Esquema clásico: 0.0=buy, 1.0=sell, 2.0=no confiable
@@ -1746,9 +1758,12 @@ def calculate_labels_trend(
             future_pr = np.max(window)
         elif method_int == 4:  # min
             future_pr = np.min(window)
-        else:  # random
-            rand = np.random.randint(label_min_val, label_max_val + 1)
-            future_pr = close[i + rand]
+        else:  # random -> usar mediana de la ventana
+            window = close[i + label_min_val : i + label_max_val + 1]
+            if window.size > 0:
+                future_pr = median_manual(window)
+            else:
+                future_pr = close[i + label_min_val]
     
         if direction == 0:  # solo buy
             if normalized_trend[i] > label_threshold:
@@ -1893,9 +1908,12 @@ def calculate_labels_trend_multi(
             future_price = np.max(window)
         elif method_int == 4:  # min
             future_price = np.min(window)
-        else:  # random
-            rand = np.random.randint(label_min_val, label_max_val + 1)
-            future_price = close[i + rand]
+        else:  # random -> usar mediana de la ventana
+            window = close[i + label_min_val : i + label_max_val + 1]
+            if window.size > 0:
+                future_price = median_manual(window)
+            else:
+                future_price = close[i + label_min_val]
 
         buy_signals = 0
         sell_signals = 0
@@ -2061,9 +2079,12 @@ def calculate_labels_trend_filters(close, atr, normalized_trend, label_threshold
             future_pr = np.max(window)
         elif method_int == 4:  # min
             future_pr = np.min(window)
-        else:  # random
-            rand = np.random.randint(label_min_val, label_max_val + 1)
-            future_pr = close[i + rand]
+        else:  # random -> usar mediana de la ventana
+            window = close[i + label_min_val : i + label_max_val + 1]
+            if window.size > 0:
+                future_pr = median_manual(window)
+            else:
+                future_pr = close[i + label_min_val]
 
         if direction == 0:  # solo buy
             if normalized_trend[i] > label_threshold:
@@ -2324,9 +2345,12 @@ def calculate_labels_multi_window(prices, atr, window_sizes, label_markup, label
             future_price = np.max(window)
         elif method_int == 4:  # min
             future_price = np.min(window)
-        else:  # random
-            rand = np.random.randint(label_min_val, label_max_val + 1)
-            future_price = prices[i + rand]
+        else:  # random -> usar mediana de la ventana
+            window = prices[i + label_min_val : i + label_max_val + 1]
+            if window.size > 0:
+                future_price = median_manual(window)
+            else:
+                future_price = prices[i + label_min_val]
     
         if direction == 2:  # both
             if long_signals > short_signals and future_price >= current_price + dyn_mk:
@@ -2531,9 +2555,12 @@ def calculate_labels_validated_levels(close, high, low, atr, window_size, label_
         elif method_int == 4:  # min
             future_window = close[i + label_min_val:i + label_max_val + 1]
             future_price = np.min(future_window)
-        else:  # random (method_int == 5)
-            rand = np.random.randint(label_min_val, label_max_val + 1)
-            future_price = close[i + rand]
+        else:  # random (method_int == 5) -> usar mediana de la ventana
+            future_window = close[i + label_min_val:i + label_max_val + 1]
+            if future_window.size > 0:
+                future_price = median_manual(future_window)
+            else:
+                future_price = close[i + label_min_val]
     
         if direction == 2:  # both
             if broke_resistance and future_price >= current_close + dyn_mk:
@@ -2695,9 +2722,12 @@ def calculate_labels_zigzag(peaks, troughs, close, atr, label_markup, label_min_
                 future_price = np.min(window)
             else:
                 future_price = close[i + label_min_val]
-        else:  # random/otro
-            rand = np.random.randint(label_min_val, label_max_val + 1)
-            future_price = close[i + rand]
+        else:  # random/otro -> usar mediana de la ventana
+            window = close[i + label_min_val : i + label_max_val + 1]
+            if window.size > 0:
+                future_price = median_manual(window)
+            else:
+                future_price = close[i + label_min_val]
             
         current_price = close[i]
 
@@ -2878,9 +2908,12 @@ def calculate_labels_mean_reversion(close, atr, lvl, label_markup, label_min_val
                 future_pr = np.min(window)
             else:
                 future_pr = close[i + label_min_val]
-        else:  # random/otro
-            rand = np.random.randint(label_min_val, label_max_val + 1)
-            future_pr = close[i + rand]
+        else:  # random/otro -> usar mediana de la ventana
+            window = close[i + label_min_val : i + label_max_val + 1]
+            if window.size > 0:
+                future_pr = median_manual(window)
+            else:
+                future_pr = close[i + label_min_val]
 
         if direction == 0:  # buy only
             if curr_lvl < q[0] and (future_pr - dyn_mk) > curr_pr:
@@ -3066,9 +3099,12 @@ def calculate_labels_mean_reversion_multi(
                 future_pr = np.min(window)
             else:
                 future_pr = close_data[i + label_min_val]
-        else:  # random/otro
-            rand = np.random.randint(label_min_val, label_max_val + 1)
-            future_pr = close_data[i + rand]
+        else:  # random/otro -> usar mediana de la ventana
+            window = close_data[i + label_min_val : i + label_max_val + 1]
+            if window.size > 0:
+                future_pr = median_manual(window)
+            else:
+                future_pr = close_data[i + label_min_val]
 
         buy_condition = 0
         sell_condition = 0
@@ -3255,9 +3291,12 @@ def calculate_labels_mean_reversion_vol(
                 future_pr = np.min(window)
             else:
                 future_pr = close_data[i + label_min_val]
-        else:  # random/otro
-            rand = np.random.randint(label_min_val, label_max_val + 1)
-            future_pr = close_data[i + rand]
+        else:  # random/otro -> usar mediana de la ventana
+            window = close_data[i + label_min_val : i + label_max_val + 1]
+            if window.size > 0:
+                future_pr = median_manual(window)
+            else:
+                future_pr = close_data[i + label_min_val]
 
         low_q = quantile_groups_low[int(curr_vol_group)]
         high_q = quantile_groups_high[int(curr_vol_group)]

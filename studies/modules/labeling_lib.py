@@ -844,22 +844,26 @@ def calculate_labels_wyckoff_pivots(
         has_sell = False
         has_buy = False
         if last_ph_idx != -1:
-            # Sweep de máximos con rechazo
+            # Sweep de máximos con rechazo (volumen como OR con mecha extra)
             broke_high = high[i] > high[last_ph_idx]
             reject_close = close[i] < high[last_ph_idx]
             upper_wick = high[i] - (open_arr[i] if open_arr[i] > close[i] else close[i])
-            wick_ok = upper_wick >= wick_atr_min * (atr[i] if atr[i] > eps else eps)
+            atr_i = (atr[i] if atr[i] > eps else eps)
+            wick_ok = upper_wick >= wick_atr_min * atr_i
+            wick_ok_extra = upper_wick >= (2.0 * wick_atr_min) * atr_i
             vol_ok = zvol[i] >= vol_z_min
-            has_sell = broke_high and reject_close and wick_ok and vol_ok
+            has_sell = (broke_high and reject_close and wick_ok) and (vol_ok or wick_ok_extra)
 
         if last_pl_idx != -1:
-            # Sweep de mínimos con rechazo
+            # Sweep de mínimos con rechazo (volumen como OR con mecha extra)
             broke_low = low[i] < low[last_pl_idx]
             reject_close_bull = close[i] > low[last_pl_idx]
             lower_wick = (open_arr[i] if open_arr[i] < close[i] else close[i]) - low[i]
-            wick_ok_b = lower_wick >= wick_atr_min * (atr[i] if atr[i] > eps else eps)
+            atr_i = (atr[i] if atr[i] > eps else eps)
+            wick_ok_b = lower_wick >= wick_atr_min * atr_i
+            wick_ok_extra_b = lower_wick >= (2.0 * wick_atr_min) * atr_i
             vol_ok_b = zvol[i] >= vol_z_min
-            has_buy = broke_low and reject_close_bull and wick_ok_b and vol_ok_b
+            has_buy = (broke_low and reject_close_bull and wick_ok_b) and (vol_ok_b or wick_ok_extra_b)
 
         # Sin patrón → neutral
         if not has_buy and not has_sell:
@@ -1115,7 +1119,6 @@ def get_labels_filter(
     label_decay_factor=0.95, 
     label_method_trend='normal',
     direction=2,
-    label_method_random='random',
     label_markup=0.5,
     label_min_val=1,
     label_max_val=15,
@@ -1265,7 +1268,6 @@ def get_labels_filter_binary(
     label_quantiles=[.45, .55], 
     label_polyorder=3, 
     direction=2,
-    label_method_random='random',
     label_markup=0.5,
     label_min_val=1,
     label_max_val=15,
@@ -1433,7 +1435,6 @@ def get_labels_filter_multi(
     label_window_size=100,
     label_polyorder=3,
     direction=2,
-    label_method_random='random',
     label_markup=0.5,
     label_min_val=1,
     label_max_val=15,
@@ -1892,7 +1893,6 @@ def get_labels_trend(
     label_max_val=15,
     label_atr_period=14,
     direction=2,  # 0=buy, 1=sell, 2=both
-    label_method_random='random',
 ) -> pd.DataFrame:
     """
     Etiquetado de tendencia normalizada con validación de profit objetivo usando ATR y markup.
@@ -1912,7 +1912,6 @@ def get_labels_trend(
 
     Parámetros principales:
     - direction: 0=solo buy, 1=solo sell, 2=ambas direcciones
-    - label_method_random: método de selección del precio objetivo en la ventana futura
     """
     # Smoothing and trend calculation
     smoothed_prices, filtering_successful = safe_savgol_filter(
@@ -2032,7 +2031,6 @@ def get_labels_trend_multi(
     label_max_val=15,
     label_atr_period=14,
     direction=2,
-    label_method_random='random',
 ) -> pd.DataFrame:
     """
     Generates labels for trading signals (Buy/Sell) based on the normalized trend,
@@ -2166,7 +2164,7 @@ def calculate_labels_trend_filters(close, atr, normalized_trend, label_threshold
     return labels
 
 def get_labels_trend_filters(dataset, label_filter='savgol', label_rolling=200, label_polyorder=3, label_threshold=0.5, 
-                    label_vol_window=50, label_markup=0.5, label_min_val=1, label_max_val=15, label_atr_period=14, label_method_random='random', direction=2) -> pd.DataFrame:
+                    label_vol_window=50, label_markup=0.5, label_min_val=1, label_max_val=15, label_atr_period=14, direction=2) -> pd.DataFrame:
     """
     Etiquetado de tendencia con profit usando diferentes filtros de suavizado, con soporte para direcciones únicas o ambas.
     
@@ -2181,7 +2179,6 @@ def get_labels_trend_filters(dataset, label_filter='savgol', label_rolling=200, 
         label_min_val (int): Número mínimo de barras hacia adelante.
         label_max_val (int): Número máximo de barras hacia adelante.
         label_atr_period (int): Período ATR.
-        label_method_random (str): Método de selección del precio objetivo.
         direction (int): 0=solo buy, 1=solo sell, 2=ambas (default).
     
     Returns:
@@ -2424,7 +2421,6 @@ def get_labels_multi_window(
         label_min_val (int): Número mínimo de barras hacia adelante.
         label_max_val (int): Número máximo de barras hacia adelante.
         label_atr_period (int): Período ATR.
-        label_method_random (str): Método de selección del precio objetivo.
         direction (int): 0=solo buy, 1=solo sell, 2=ambas (default).
     
     Returns:
@@ -2608,7 +2604,6 @@ def get_labels_validated_levels(
     label_max_val=15,
     label_atr_period=14,
     direction=2,
-    label_method_random='random'
 ) -> pd.DataFrame:
     """
     Etiquetado de rupturas de niveles validados con profit target basado en ATR * markup.
@@ -2622,7 +2617,6 @@ def get_labels_validated_levels(
         label_max_val (int): Número máximo de barras hacia adelante.
         label_atr_period (int): Período ATR.
         direction (int): 0=solo buy, 1=solo sell, 2=ambas (default).
-        label_method_random (str): Método de selección del precio objetivo ('first', 'last', 'mean', 'max', 'min', 'random').
     
     Returns:
         pd.DataFrame: DataFrame con columna 'labels_main' añadida:
@@ -2805,7 +2799,6 @@ def get_labels_zigzag(
         label_max_val (int): Número máximo de barras hacia adelante.
         label_atr_period (int): Período ATR.
         direction (int): 0=solo buy, 1=solo sell, 2=ambas (default).
-        label_method_random (str): Método de selección del precio objetivo ('first', 'last', 'mean', 'max', 'min', 'random').
     
     Returns:
         pd.DataFrame: DataFrame con columna 'labels_main' añadida:
@@ -2939,7 +2932,6 @@ def get_labels_mean_reversion(
         label_shift (int, optional): Shift the smoothed price data forward/backward.
         label_atr_period (int, optional): ATR period.
         direction (int, optional): 0=buy only, 1=sell only, 2=both. Defaults to 2.
-        label_method_random (str): Método de selección del precio objetivo ('first', 'last', 'mean', 'max', 'min', 'random').
 
     Returns:
         pd.DataFrame: The original DataFrame with a new 'labels_main' column and filtered rows:
@@ -3113,7 +3105,6 @@ def get_labels_mean_reversion_multi(
         label_quantiles (list, optional): Quantiles to define the "reversion zone". Defaults to [.45, .55].
         label_atr_period (int, optional): ATR period. Defaults to 14.
         direction (int, optional): 0=buy only, 1=sell only, 2=both. Defaults to 2.
-        label_method_random (str): Método de selección del precio objetivo ('first', 'last', 'mean', 'max', 'min', 'random').
 
     Returns:
         pd.DataFrame: The original DataFrame with a new 'labels_main' column:
@@ -3270,7 +3261,6 @@ def get_labels_mean_reversion_vol(
         label_vol_window (int, optional): Window size for calculating volatility. Defaults to 20.
         label_atr_period (int, optional): ATR period. Defaults to 14.
         direction (int, optional): 0=buy only, 1=sell only, 2=both. Defaults to 2.
-        label_method_random (str): Método de selección del precio objetivo ('first', 'last', 'mean', 'max', 'min', 'random').
 
     Returns:
         pd.DataFrame: The original DataFrame with a new 'labels_main' column:

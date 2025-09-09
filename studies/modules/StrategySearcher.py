@@ -20,7 +20,7 @@ from modules.labeling_lib import (
     get_prices, get_features, get_labels_trend, 
     get_labels_trend_multi, get_labels_clusters,
     get_labels_multi_window, get_labels_validated_levels,
-    get_labels_mean_reversion, get_labels_random,
+    get_labels_mean_reversion, get_labels_random, get_labels_wyckoff_pivots,
     get_labels_mean_reversion_multi, get_labels_mean_reversion_vol,
     get_labels_filter, get_labels_filter_multi, get_labels_trend_filters,
     get_labels_filter_binary, get_labels_fractal_patterns, get_labels_zigzag,
@@ -43,6 +43,7 @@ class StrategySearcher:
         "multi_window": get_labels_multi_window,
         "validated_levels": get_labels_validated_levels,
         "zigzag": get_labels_zigzag,
+        "wyckoff_pivots": get_labels_wyckoff_pivots,
         "mean_rev": get_labels_mean_reversion,
         "mean_rev_multi": get_labels_mean_reversion_multi,
         "mean_rev_vol": get_labels_mean_reversion_vol,
@@ -1698,6 +1699,14 @@ class StrategySearcher:
                 label_params = {k: v for k, v in hp.items() if k.startswith('label_')}
                 print(f"🔍   Parámetros label_* disponibles: {list(label_params.keys())}")
             full_ds = self.apply_labeling(full_ds, hp)
+            main_label_counts = full_ds['labels_main'].value_counts()
+            # Solo comprobar que hay al menos 100 de 0 y 100 de 1, ignorando la presencia de 2 u otros valores
+            count_0 = main_label_counts.get(0.0, 0)
+            count_1 = main_label_counts.get(1.0, 0)
+            if count_0 < 100 or count_1 < 100:
+                if self.debug:
+                    print(f"🔍 DEBUG - get_labeled_full_data - labels_main insuficientes: 0={count_0}, 1={count_1}, totales={main_label_counts.to_dict()}")
+                return None, None
             if self.debug:
                 print(f"🔍 DEBUG: full_ds.shape DESPUES de apply_labeling = {full_ds.shape}")
 

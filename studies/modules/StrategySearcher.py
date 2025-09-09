@@ -743,8 +743,9 @@ class StrategySearcher:
             'label_atr_period': lambda t: t.suggest_int('label_atr_period', 8, 120, log=True),
 
             # Ventana de validación futura first-touch
-            'label_max_val':    lambda t: t.suggest_int('label_max_val', 4, 20, log=True),
-
+            'label_min_val':    lambda t: t.suggest_int('label_min_val', 1, 5, log=True),
+            'label_max_val':    lambda t: t.suggest_int('label_max_val', 5, 20, log=True),
+            
             # Dirección de tendencia y filtros
             'label_method_trend': lambda t: t.suggest_categorical('label_method_trend', ['normal', 'inverse']),
             'label_filter':       lambda t: t.suggest_categorical('label_filter', ['savgol', 'spline', 'sma', 'ema']),
@@ -752,6 +753,9 @@ class StrategySearcher:
 
             # Umbral para tendencias normalizadas (z-score ~)
             'label_threshold':  lambda t: t.suggest_float('label_threshold', 0.20, 1.50),
+
+            # Método de selección del precio objetivo en la ventana futura
+            'label_method_random':     lambda t: t.suggest_categorical('label_method_random', ['first', 'last', 'mean', 'max', 'min', 'random']),
 
             # Ventanas para cuantiles rolling (filter_multi)
             'label_window_size': lambda t: t.suggest_int('label_window_size', 24, 200, log=True),

@@ -678,6 +678,7 @@ class StrategySearcher:
             "corrskew",
             "sharpe",
             "vwapdevz",
+            "volzscore",
         )
         p: Dict[str, Any] = {}
 
@@ -754,9 +755,6 @@ class StrategySearcher:
             # Umbral para tendencias normalizadas (z-score ~)
             'label_threshold':  lambda t: t.suggest_float('label_threshold', 0.20, 1.50),
 
-            # Método de selección del precio objetivo en la ventana futura
-            'label_method_random':     lambda t: t.suggest_categorical('label_method_random', ['first', 'last', 'mean', 'max', 'min', 'random']),
-
             # Ventanas para cuantiles rolling (filter_multi)
             'label_window_size': lambda t: t.suggest_int('label_window_size', 24, 200, log=True),
             'label_window_sizes_int': lambda t: [t.suggest_int(f'label_window_sizes_{i}', 16, 200, log=True) for i in range(3)],
@@ -778,6 +776,11 @@ class StrategySearcher:
             'label_k_atr_amplitude':  lambda t: t.suggest_float('label_k_atr_amplitude', 0.4, 4.0),
             'label_peak_distance':    lambda t: t.suggest_int('label_peak_distance', 2, 20),
             'label_peak_width':       lambda t: t.suggest_int('label_peak_width', 1, 7),
+
+            # Wyckoff pivots (pivotes + confirmación de volumen)
+            'label_k_pivot':      lambda t: t.suggest_int('label_k_pivot', 2, 12),
+            'label_vol_z_min':    lambda t: t.suggest_float('label_vol_z_min', 0.0, 5.0),
+            'label_wick_atr_min': lambda t: t.suggest_float('label_wick_atr_min', 0.05, 2.5),
 
             # Cuantiles para reversiones (asegurar separación low<high)
             'label_quantiles': lambda t: [

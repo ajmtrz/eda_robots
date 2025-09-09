@@ -392,6 +392,33 @@ def vwapdevz_manual(high_window, low_window, close_window, volume_window):
     return dev / sd
 
 @njit(cache=True)
+def volzscore_manual(volume, window):
+    n = len(volume)
+    z = np.zeros(n, dtype=np.float64)
+    if window <= 1:
+        return z
+    for i in range(n):
+        start = 0 if i - window < 0 else i - window
+        cnt = i - start
+        if cnt <= 0:
+            z[i] = 0.0
+            continue
+        s = 0.0
+        for j in range(start, i):
+            s += volume[j]
+        mean = s / cnt
+        var = 0.0
+        for j in range(start, i):
+            d = volume[j] - mean
+            var += d * d
+        sd = np.sqrt(var / cnt) if cnt > 0 else 0.0
+        if sd <= 1e-8:
+            z[i] = 0.0
+        else:
+            z[i] = (volume[i] - mean) / sd
+    return z
+
+@njit(cache=True)
 def should_use_returns(stat_name):
     """Determina si un estadístico debe usar retornos en lugar de precios."""
     return stat_name in ("mean", "median", "std", "iqr", "mad", "sharpe", "autocorr")
@@ -502,6 +529,9 @@ def compute_features(open, high, low, close, volume, periods_main, periods_meta,
                         features[i, col] = volatility_skew(window_data_close)
                     elif s == "vwapdevz":
                         features[i, col] = vwapdevz_manual(window_data_high, window_data_low, window_data_close, window_data_volume)
+                    elif s == "volzscore":
+                        zarr = volzscore_manual(window_data_volume, window_size)
+                        features[i, col] = zarr[-1] if zarr.size > 0 else 0.0
                 except:
                     return np.full((n, total_features), np.nan)
             col += 1
@@ -599,6 +629,9 @@ def compute_features(open, high, low, close, volume, periods_main, periods_meta,
                             features[i, col] = volatility_skew(window_data_close)
                         elif s == "vwapdevz":
                             features[i, col] = vwapdevz_manual(window_data_high, window_data_low, window_data_close, window_data_volume)
+                        elif s == "volzscore":
+                            zarr = volzscore_manual(window_data_volume, window_size)
+                            features[i, col] = zarr[-1] if zarr.size > 0 else 0.0
                     except:
                         return np.full((n, total_features), np.nan)
                 col += 1
@@ -750,7 +783,181 @@ def calculate_atr_simple(high, low, close, period=14):
     return atr
 
 @njit(cache=True)
-def calculate_labels_random(close, atr, label_markup, label_min_val, label_max_val, direction_int, method_int=5, label_type=0):
+def _pivot_flags(high, low, k):
+    n = len(high)
+    piv_hi = np.zeros(n, dtype=np.uint8)
+    piv_lo = np.zeros(n, dtype=np.uint8)
+    if n == 0 or k <= 0:
+        return piv_hi, piv_lo
+    for i in range(k, n - k):
+        is_hi = True
+        is_lo = True
+        hi_i = high[i]
+        lo_i = low[i]
+        for d in range(1, k + 1):
+            if hi_i < high[i - d] or hi_i < high[i + d]:
+                is_hi = False
+            if lo_i > low[i - d] or lo_i > low[i + d]:
+                is_lo = False
+            if not is_hi and not is_lo:
+                break
+        if is_hi:
+            piv_hi[i] = 1
+        if is_lo:
+            piv_lo[i] = 1
+    return piv_hi, piv_lo
+
+@njit(cache=True)
+def calculate_labels_wyckoff_pivots(
+    open_arr, high, low, close, volume, atr,
+    k_pivot, vol_window, vol_z_min, wick_atr_min,
+    label_markup, label_min_val, label_max_val,
+    direction=2
+):
+    """
+    Aproximación al indicador de pivotes/patrones con confirmación de volumen:
+    - Detecta pivotes (k-left/right)
+    - Señal bajista (sweep alta liquidez): nuevo high > último pivot high y cierre por debajo del último pivot high,
+      con wick superior >= wick_atr_min*ATR y z-score de volumen >= vol_z_min
+    - Señal alcista (sweep baja liquidez): nuevo low < último pivot low y cierre por encima del último pivot low,
+      con wick inferior >= wick_atr_min*ATR y z-score de volumen >= vol_z_min
+    - Validación de profit: usa mediana del close en ventana [i+label_min_val .. i+label_max_val] y umbral ATR*label_markup
+    Etiquetas: direction=2 → 0.0 buy, 1.0 sell, 2.0 neutral; unidireccional → 1.0 éxito, 0.0 fracaso, 2.0 neutral.
+    """
+    n = len(close)
+    if n == 0 or n <= label_max_val:
+        return np.full(0, 2.0, dtype=np.float64)
+    eps = 1e-8
+    piv_hi, piv_lo = _pivot_flags(high, low, k_pivot)
+    zvol = volzscore_manual(volume, vol_window)
+    result = np.full(n - label_max_val, 2.0, dtype=np.float64)
+
+    last_ph_idx = -1
+    last_pl_idx = -1
+    for i in range(n - label_max_val):
+        if piv_hi[i] == 1:
+            last_ph_idx = i
+        if piv_lo[i] == 1:
+            last_pl_idx = i
+
+        # No patrón si aún no hay pivotes previos válidos
+        has_sell = False
+        has_buy = False
+        if last_ph_idx != -1:
+            # Sweep de máximos con rechazo
+            broke_high = high[i] > high[last_ph_idx]
+            reject_close = close[i] < high[last_ph_idx]
+            upper_wick = high[i] - (open_arr[i] if open_arr[i] > close[i] else close[i])
+            wick_ok = upper_wick >= wick_atr_min * (atr[i] if atr[i] > eps else eps)
+            vol_ok = zvol[i] >= vol_z_min
+            has_sell = broke_high and reject_close and wick_ok and vol_ok
+
+        if last_pl_idx != -1:
+            # Sweep de mínimos con rechazo
+            broke_low = low[i] < low[last_pl_idx]
+            reject_close_bull = close[i] > low[last_pl_idx]
+            lower_wick = (open_arr[i] if open_arr[i] < close[i] else close[i]) - low[i]
+            wick_ok_b = lower_wick >= wick_atr_min * (atr[i] if atr[i] > eps else eps)
+            vol_ok_b = zvol[i] >= vol_z_min
+            has_buy = broke_low and reject_close_bull and wick_ok_b and vol_ok_b
+
+        # Sin patrón → neutral
+        if not has_buy and not has_sell:
+            result[i] = 2.0
+            continue
+
+        # Validación futura por mediana y ATR*markup
+        start_j = i + label_min_val
+        end_j = i + label_max_val
+        if start_j >= n:
+            result[i] = 2.0
+            continue
+        if end_j >= n:
+            end_j = n - 1
+        window = close[start_j : end_j + 1]
+        if window.size == 0:
+            med_future = close[start_j]
+        else:
+            med_future = median_manual(window)
+        dyn_mk = label_markup * (atr[i] if atr[i] > eps else eps)
+
+        if direction == 2:
+            if has_buy and not has_sell:
+                if med_future >= close[i] + dyn_mk:
+                    result[i] = 0.0
+                else:
+                    result[i] = 2.0
+            elif has_sell and not has_buy:
+                if med_future <= close[i] - dyn_mk:
+                    result[i] = 1.0
+                else:
+                    result[i] = 2.0
+            else:
+                # Si aparecen ambas (raro), decide por mayor desviación respecto al pivot
+                dist_buy = (low[last_pl_idx] - low[i]) if last_pl_idx != -1 else 0.0
+                dist_sell = (high[i] - high[last_ph_idx]) if last_ph_idx != -1 else 0.0
+                if dist_buy >= dist_sell:
+                    result[i] = 0.0 if med_future >= close[i] + dyn_mk else 2.0
+                else:
+                    result[i] = 1.0 if med_future <= close[i] - dyn_mk else 2.0
+        elif direction == 0:
+            if has_buy:
+                result[i] = 1.0 if med_future >= close[i] + dyn_mk else 0.0
+            else:
+                result[i] = 2.0
+        elif direction == 1:
+            if has_sell:
+                result[i] = 1.0 if med_future <= close[i] - dyn_mk else 0.0
+            else:
+                result[i] = 2.0
+        else:
+            result[i] = 2.0
+
+    return result
+
+def get_labels_wyckoff_pivots(
+    dataset: pd.DataFrame,
+    label_k_pivot: int = 3,
+    label_markup: float = 0.5,
+    label_min_val: int = 1,
+    label_max_val: int = 10,
+    label_atr_period: int = 14,
+    label_vol_window: int = 20,
+    label_vol_z_min: float = 1.0,
+    label_wick_atr_min: float = 0.1,
+    direction: int = 2,
+):
+    """
+    Wrapper para etiquetado tipo Wyckoff (pivotes+sweeps con confirmación de volumen y wick):
+    - Detecta pivotes con profundidad k
+    - Señales por sweeps confirmadas por z-score de volumen y wick relativo a ATR
+    - Validación por mediana futura y ATR*markup
+    """
+    open_arr = dataset['open'].values
+    high = dataset['high'].values
+    low = dataset['low'].values
+    close = dataset['close'].values
+    volume = dataset['volume'].values
+    if len(close) == 0:
+        return pd.DataFrame(index=dataset.index)
+    atr = calculate_atr_simple(high, low, close, period=label_atr_period)
+    labels = calculate_labels_wyckoff_pivots(
+        open_arr, high, low, close, volume, atr,
+        label_k_pivot, label_vol_window, label_vol_z_min, label_wick_atr_min,
+        label_markup, label_min_val, label_max_val,
+        direction,
+    )
+    if labels.size == 0:
+        return pd.DataFrame(index=dataset.index)
+    idx = dataset.index[:labels.size]
+    labels_series = pd.Series(labels, index=idx)
+    labels_aligned = labels_series.reindex(dataset.index, fill_value=2.0)
+    dataset['labels_main'] = labels_aligned
+    dataset['labels_main'] = dataset['labels_main'].fillna(2.0)
+    return dataset
+
+@njit(cache=True)
+def calculate_labels_random(close, atr, label_markup, label_min_val, label_max_val, direction_int):
     """
     Etiquetado random con soporte para bidireccional (2) y unidireccional (0=buy, 1=sell) siguiendo la convención:
     - Direcciones únicas: 1.0=éxito direccional, 0.0=fracaso, 2.0=no confiable
@@ -765,68 +972,43 @@ def calculate_labels_random(close, atr, label_markup, label_min_val, label_max_v
     for i in range(n - label_max_val):
         window = close[i + label_min_val : i + label_max_val + 1]
         if window.size == 0:
-            continue
-        if method_int == 0:  # first
             future_price = close[i + label_min_val]
-        elif method_int == 1:  # last
-            future_price = close[i + label_max_val]
-        elif method_int == 2:  # mean
-            future_price = np.mean(window)
-        elif method_int == 3:  # max
-            future_price = np.max(window)
-        elif method_int == 4:  # min
-            future_price = np.min(window)
-        else:  # random/otro -> usar mediana de la ventana
-            window = close[i + label_min_val : i + label_max_val + 1]
-            if window.size > 0:
-                future_price = median_manual(window)
-            else:
-                future_price = close[i + label_min_val]
+        else:
+            future_price = median_manual(window)
         dyn_mk = label_markup * atr[i]
         
-        if label_type == 1:  # Regresión - magnitud normalizada por ATR
-            magnitude = (future_price - close[i]) / (atr[i] + 1e-12)
+        if direction_int == 2:
+            # Bidireccional: 0.0=buy, 1.0=sell, 2.0=no confiable
             is_buy = future_price > close[i] + dyn_mk
             is_sell = future_price < close[i] - dyn_mk
             if is_buy and not is_sell:
-                result[i] = magnitude  # Magnitud positiva para buy
+                result[i] = 0.0
             elif is_sell and not is_buy:
-                result[i] = magnitude  # Magnitud negativa para sell
+                result[i] = 1.0
             else:
-                result[i] = 0.0  # No confiable
-        else:  # Clasificación - etiquetas binarias (funcionalidad original)
-            if direction_int == 2:
-                # Bidireccional: 0.0=buy, 1.0=sell, 2.0=no confiable
-                is_buy = future_price > close[i] + dyn_mk
-                is_sell = future_price < close[i] - dyn_mk
-                if is_buy and not is_sell:
-                    result[i] = 0.0
-                elif is_sell and not is_buy:
-                    result[i] = 1.0
-                else:
-                    result[i] = 2.0
-            elif direction_int == 0:
-                # Solo buy: 1.0=éxito, 0.0=fracaso, 2.0=no confiable
-                if future_price > close[i] + dyn_mk:
-                    result[i] = 1.0
-                elif future_price < close[i] - dyn_mk:
-                    result[i] = 0.0
-                else:
-                    result[i] = 2.0
-            elif direction_int == 1:
-                # Solo sell: 1.0=éxito, 0.0=fracaso, 2.0=no confiable
-                if future_price < close[i] - dyn_mk:
-                    result[i] = 1.0
-                elif future_price > close[i] + dyn_mk:
-                    result[i] = 0.0
-                else:
-                    result[i] = 2.0
+                result[i] = 2.0
+        elif direction_int == 0:
+            # Solo buy: 1.0=éxito, 0.0=fracaso, 2.0=no confiable
+            if future_price > close[i] + dyn_mk:
+                result[i] = 1.0
+            elif future_price < close[i] - dyn_mk:
+                result[i] = 0.0
             else:
-                result[i] = 2.0  # fallback
+                result[i] = 2.0
+        elif direction_int == 1:
+            # Solo sell: 1.0=éxito, 0.0=fracaso, 2.0=no confiable
+            if future_price < close[i] - dyn_mk:
+                result[i] = 1.0
+            elif future_price > close[i] + dyn_mk:
+                result[i] = 0.0
+            else:
+                result[i] = 2.0
+        else:
+            result[i] = 2.0  # fallback
     return result
 
 def get_labels_random(dataset, label_markup=0.5, label_min_val=1, label_max_val=5,
-                        label_atr_period=14, label_method_random='random', direction=2, label_type='classification') -> pd.DataFrame:
+                        label_atr_period=14, direction=2) -> pd.DataFrame:
     """
     Etiquetado random con soporte para bidireccional (2) y unidireccional (0=buy, 1=sell) siguiendo la convención:
     - Direcciones únicas: 1.0=éxito direccional, 0.0=fracaso, 2.0=no confiable
@@ -839,13 +1021,9 @@ def get_labels_random(dataset, label_markup=0.5, label_min_val=1, label_max_val=
     high = dataset['high'].values
     low = dataset['low'].values
     atr = calculate_atr_simple(high, low, close, period=label_atr_period)
-    method_map = {'first': 0, 'last': 1, 'mean': 2, 'max': 3, 'min': 4, 'random': 5}
-    method_int = method_map.get(label_method_random, 5)
-    label_type_int = 1 if label_type == 'regression' else 0
     labels = calculate_labels_random(
         close, atr,
         label_markup, label_min_val, label_max_val, direction,
-        method_int, label_type_int
     )
     # ✅ CORRECCIÓN CRÍTICA: Alineación correcta de etiquetas
     # El array de etiquetas tiene longitud (n - label_max_val), debe alinearse correctamente
@@ -856,7 +1034,7 @@ def get_labels_random(dataset, label_markup=0.5, label_min_val=1, label_max_val=
     return dataset
 
 @njit(cache=True)
-def calculate_labels_filter(close, atr, lvl, q, direction=2, method_int=5, 
+def calculate_labels_filter(close, atr, lvl, q, direction=2, 
                           label_markup=0.5, label_min_val=1, label_max_val=15):
     """
     Generates labels based on Savitzky-Golay filter price deviation with profit target validation using ATR * markup.
@@ -894,35 +1072,11 @@ def calculate_labels_filter(close, atr, lvl, q, direction=2, method_int=5,
         curr_pr = close[i]
         dyn_mk = label_markup * atr[i]
         
-        # Selección del precio objetivo según method_int
-        if method_int == 0:  # first
+        window = close[i + label_min_val : i + label_max_val + 1]
+        if window.size > 0:
+            future_pr = median_manual(window)
+        else:
             future_pr = close[i + label_min_val]
-        elif method_int == 1:  # last
-            future_pr = close[i + label_max_val]
-        elif method_int == 2:  # mean
-            window = close[i + label_min_val : i + label_max_val + 1]
-            if window.size > 0:
-                future_pr = np.mean(window)
-            else:
-                future_pr = close[i + label_min_val]
-        elif method_int == 3:  # max
-            window = close[i + label_min_val : i + label_max_val + 1]
-            if window.size > 0:
-                future_pr = np.max(window)
-            else:
-                future_pr = close[i + label_min_val]
-        elif method_int == 4:  # min
-            window = close[i + label_min_val : i + label_max_val + 1]
-            if window.size > 0:
-                future_pr = np.min(window)
-            else:
-                future_pr = close[i + label_min_val]
-        else:  # random/otro -> usar mediana de la ventana
-            window = close[i + label_min_val : i + label_max_val + 1]
-            if window.size > 0:
-                future_pr = median_manual(window)
-            else:
-                future_pr = close[i + label_min_val]
 
         if direction == 2:  # both
             if curr_lvl > q[1] and (future_pr + dyn_mk) < curr_pr:
@@ -1010,8 +1164,6 @@ def get_labels_filter(
     close = dataset['close'].values
     lvl = dataset['lvl'].values
     # Prepare parameters for label calculation
-    method_map = {'first': 0, 'last': 1, 'mean': 2, 'max': 3, 'min': 4, 'random': 5}
-    method_int = method_map.get(label_method_random, 5)
     
     # Calculate ATR
     high = dataset["high"].values
@@ -1020,7 +1172,7 @@ def get_labels_filter(
     
     # Calculate buy/sell labels using the 'calculate_labels_filter' function 
     labels = calculate_labels_filter(
-        close, atr, lvl, q, direction, method_int,
+        close, atr, lvl, q, direction,
         label_markup, label_min_val, label_max_val
     ) 
     # Trimming the dataset and adding labels
@@ -1030,7 +1182,7 @@ def get_labels_filter(
     return dataset.drop(columns=['lvl'])
 
 @njit(cache=True)
-def calculate_labels_filter_binary(close, atr, lvl1, lvl2, q1, q2, direction=2, method_int=5,
+def calculate_labels_filter_binary(close, atr, lvl1, lvl2, q1, q2, direction=2,
                              label_markup=0.5, label_min_val=1, label_max_val=15):
     """
     Generates labels based on binary Savitzky-Golay filter consensus with profit target validation using ATR * markup.
@@ -1071,35 +1223,11 @@ def calculate_labels_filter_binary(close, atr, lvl1, lvl2, q1, q2, direction=2, 
         curr_pr = close[i]
         dyn_mk = label_markup * atr[i]
         
-        # Selección del precio objetivo según method_int
-        if method_int == 0:  # first
+        window = close[i + label_min_val : i + label_max_val + 1]
+        if window.size > 0:
+            future_pr = median_manual(window)
+        else:
             future_pr = close[i + label_min_val]
-        elif method_int == 1:  # last
-            future_pr = close[i + label_max_val]
-        elif method_int == 2:  # mean
-            window = close[i + label_min_val : i + label_max_val + 1]
-            if window.size > 0:
-                future_pr = np.mean(window)
-            else:
-                future_pr = close[i + label_min_val]
-        elif method_int == 3:  # max
-            window = close[i + label_min_val : i + label_max_val + 1]
-            if window.size > 0:
-                future_pr = np.max(window)
-            else:
-                future_pr = close[i + label_min_val]
-        elif method_int == 4:  # min
-            window = close[i + label_min_val : i + label_max_val + 1]
-            if window.size > 0:
-                future_pr = np.min(window)
-            else:
-                future_pr = close[i + label_min_val]
-        else:  # random/otro -> usar mediana de la ventana
-            window = close[i + label_min_val : i + label_max_val + 1]
-            if window.size > 0:
-                future_pr = median_manual(window)
-            else:
-                future_pr = close[i + label_min_val]
 
         if direction == 2:  # both
             if curr_lvl1 > q1[1] and (future_pr + dyn_mk) < curr_pr:
@@ -1189,8 +1317,6 @@ def get_labels_filter_binary(
     lvl1 = dataset['lvl1'].values
     lvl2 = dataset['lvl2'].values
     # Prepare parameters for label calculation
-    method_map = {'first': 0, 'last': 1, 'mean': 2, 'max': 3, 'min': 4, 'random': 5}
-    method_int = method_map.get(label_method_random, 5)
     
     # Calculate ATR
     high = dataset["high"].values
@@ -1199,7 +1325,7 @@ def get_labels_filter_binary(
     
     # Calculate buy/sell labels using the 'calc_labels_binary' function
     labels = calculate_labels_filter_binary(
-        close, atr, lvl1, lvl2, q1, q2, direction, method_int,
+        close, atr, lvl1, lvl2, q1, q2, direction,
         label_markup, label_min_val, label_max_val
     )
     # Trimming the dataset and adding labels
@@ -1208,7 +1334,7 @@ def get_labels_filter_binary(
     return dataset.drop(columns=['lvl1', 'lvl2'])
 
 @njit(cache=True)
-def calculate_labels_filter_multi(close, atr, lvls, qs, direction=2, method_int=5,
+def calculate_labels_filter_multi(close, atr, lvls, qs, direction=2,
                             label_markup=0.5, label_min_val=1, label_max_val=15):
     """
     Generates labels based on multi-filter Savitzky-Golay consensus with profit target validation using ATR * markup.
@@ -1259,35 +1385,11 @@ def calculate_labels_filter_multi(close, atr, lvls, qs, direction=2, method_int=
         curr_pr = close[i]
         dyn_mk = label_markup * atr[i]
         
-        # Selección del precio objetivo según method_int
-        if method_int == 0:  # first
+        window = close[i + label_min_val : i + label_max_val + 1]
+        if window.size > 0:
+            future_pr = median_manual(window)
+        else:
             future_pr = close[i + label_min_val]
-        elif method_int == 1:  # last
-            future_pr = close[i + label_max_val]
-        elif method_int == 2:  # mean
-            window = close[i + label_min_val : i + label_max_val + 1]
-            if window.size > 0:
-                future_pr = np.mean(window)
-            else:
-                future_pr = close[i + label_min_val]
-        elif method_int == 3:  # max
-            window = close[i + label_min_val : i + label_max_val + 1]
-            if window.size > 0:
-                future_pr = np.max(window)
-            else:
-                future_pr = close[i + label_min_val]
-        elif method_int == 4:  # min
-            window = close[i + label_min_val : i + label_max_val + 1]
-            if window.size > 0:
-                future_pr = np.min(window)
-            else:
-                future_pr = close[i + label_min_val]
-        else:  # random/otro -> usar mediana de la ventana
-            window = close[i + label_min_val : i + label_max_val + 1]
-            if window.size > 0:
-                future_pr = median_manual(window)
-            else:
-                future_pr = close[i + label_min_val]
 
         if direction == 2:
             # Esquema clásico: 0.0=buy, 1.0=sell, 2.0=no confiable
@@ -1391,9 +1493,6 @@ def get_labels_filter_multi(
     lvls_array = np.array(all_levels)
     qs_array = np.array(all_quantiles)
     # Prepare parameters for label calculation
-    method_map = {'first': 0, 'last': 1, 'mean': 2, 'max': 3, 'min': 4, 'random': 5}
-    method_int = method_map.get(label_method_random, 5)
-    
     # Calculate ATR
     high = dataset["high"].values
     low = dataset["low"].values
@@ -1402,7 +1501,7 @@ def get_labels_filter_multi(
     
     # Calculate buy/sell labels using the 'calc_labels_multiple_filters' function 
     labels = calculate_labels_filter_multi(
-        close, atr, lvls_array, qs_array, direction, method_int,
+        close, atr, lvls_array, qs_array, direction,
         label_markup, label_min_val, label_max_val
     )
     # Add the calculated labels to the DataFrame
@@ -1718,7 +1817,7 @@ def safe_savgol_filter(x, label_rolling: int, label_polyorder: int):
 
 @njit(cache=True)
 def calculate_labels_trend(
-    close, atr, normalized_trend, label_threshold, label_markup, label_min_val, label_max_val, direction, method_int=5
+    close, atr, normalized_trend, label_threshold, label_markup, label_min_val, label_max_val, direction
 ):
     """
     Etiquetado de tendencia con profit, soportando dirección.
@@ -1748,22 +1847,8 @@ def calculate_labels_trend(
         window = close[i + label_min_val : i + label_max_val + 1]
         if window.size == 0:
             future_pr = close[i + label_min_val] if i + label_min_val < len(close) else close[i]
-        elif method_int == 0:  # first
-            future_pr = close[i + label_min_val]
-        elif method_int == 1:  # last
-            future_pr = close[i + label_max_val]
-        elif method_int == 2:  # mean
-            future_pr = np.mean(window)
-        elif method_int == 3:  # max
-            future_pr = np.max(window)
-        elif method_int == 4:  # min
-            future_pr = np.min(window)
-        else:  # random -> usar mediana de la ventana
-            window = close[i + label_min_val : i + label_max_val + 1]
-            if window.size > 0:
-                future_pr = median_manual(window)
-            else:
-                future_pr = close[i + label_min_val]
+        else:
+            future_pr = median_manual(window)
     
         if direction == 0:  # solo buy
             if normalized_trend[i] > label_threshold:
@@ -1842,27 +1927,22 @@ def get_labels_trend(
     normalized_trend = np.where(vol != 0, trend / vol, np.nan)
     valid_mask = ~np.isnan(normalized_trend)
     normalized_trend_clean = normalized_trend[valid_mask]
-    close_clean = dataset['close'].values[valid_mask]
-
-    high = dataset['high'].values
-    low = dataset['low'].values
-    close = dataset['close'].values
+    dataset_clean = dataset[valid_mask].copy()
+    high = dataset_clean['high'].values
+    low = dataset_clean['low'].values
+    close = dataset_clean['close'].values
     atr = calculate_atr_simple(high, low, close, period=label_atr_period)
-    atr_clean = atr[valid_mask]
 
     # Generating labels
-    method_map = {'first': 0, 'last': 1, 'mean': 2, 'max': 3, 'min': 4, 'random': 5}
-    method_int = method_map.get(label_method_random, 5)
     labels = calculate_labels_trend(
-        close_clean,
-        atr_clean,
+        close,
+        atr,
         normalized_trend_clean,
         label_threshold,
         label_markup,
         label_min_val,
         label_max_val,
         direction,
-        method_int,
     )
 
     # ✅ CORRECCIÓN CRÍTICA: Alineación correcta de etiquetas
@@ -1883,7 +1963,7 @@ def get_labels_trend(
 
 @njit(cache=True)
 def calculate_labels_trend_multi(
-    close, atr, normalized_trends, label_threshold, label_markup, label_min_val, label_max_val, direction=2, method_int=5
+    close, atr, normalized_trends, label_threshold, label_markup, label_min_val, label_max_val, direction=2
 ):
     """
     Etiquetado multi-período con soporte para direcciones únicas o ambas.
@@ -1898,22 +1978,8 @@ def calculate_labels_trend_multi(
         window = close[i + label_min_val : i + label_max_val + 1]
         if window.size == 0:
             future_price = close[i + label_min_val] if i + label_min_val < len(close) else close[i]
-        elif method_int == 0:  # first
-            future_price = close[i + label_min_val]
-        elif method_int == 1:  # last
-            future_price = close[i + label_max_val]
-        elif method_int == 2:  # mean
-            future_price = np.mean(window)
-        elif method_int == 3:  # max
-            future_price = np.max(window)
-        elif method_int == 4:  # min
-            future_price = np.min(window)
-        else:  # random -> usar mediana de la ventana
-            window = close[i + label_min_val : i + label_max_val + 1]
-            if window.size > 0:
-                future_price = median_manual(window)
-            else:
-                future_price = close[i + label_min_val]
+        else:
+            future_price = median_manual(window)
 
         buy_signals = 0
         sell_signals = 0
@@ -2020,25 +2086,21 @@ def get_labels_trend_multi(
     # Remove rows with NaN
     valid_mask = ~np.isnan(normalized_trends_array).any(axis=0)
     normalized_trends_clean = normalized_trends_array[:, valid_mask]
-    close_clean = close_prices[valid_mask]
-
-    high = dataset['high'].values
-    low = dataset['low'].values
+    dataset_clean = dataset[valid_mask].copy()
+    high = dataset_clean['high'].values
+    low = dataset_clean['low'].values
+    close = dataset_clean['close'].values
     atr = calculate_atr_simple(high, low, close_prices, period=label_atr_period)
-    atr_clean = atr[valid_mask]
     # Generate labels
-    method_map = {'first': 0, 'last': 1, 'mean': 2, 'max': 3, 'min': 4, 'random': 5}
-    method_int = method_map.get(label_method_random, 5)
     labels = calculate_labels_trend_multi(
-        close_clean,
-        atr_clean,
+        close,
+        atr,
         normalized_trends_clean,
         label_threshold,
         label_markup,
         label_min_val,
         label_max_val,
         direction=direction,
-        method_int=method_int,
     )
 
     # Asignar etiquetas alineadas y rellenar con 2.0 usando pandas para evitar padding manual
@@ -2050,7 +2112,7 @@ def get_labels_trend_multi(
     return dataset
 
 @njit(cache=True)
-def calculate_labels_trend_filters(close, atr, normalized_trend, label_threshold, label_markup, label_min_val, label_max_val, direction=2, method_int=5):
+def calculate_labels_trend_filters(close, atr, normalized_trend, label_threshold, label_markup, label_min_val, label_max_val, direction=2):
     """
     Etiquetado de tendencia con profit, soportando dirección.
     
@@ -2065,26 +2127,12 @@ def calculate_labels_trend_filters(close, atr, normalized_trend, label_threshold
     labels = np.empty(len(normalized_trend) - label_max_val, dtype=np.float64)
     for i in range(len(normalized_trend) - label_max_val):
         dyn_mk = label_markup * atr[i]
-        # Calcular future_pr directamente según method_int
+        # Calcular future_pr por mediana de la ventana
         window = close[i + label_min_val : i + label_max_val + 1]
         if window.size == 0:
             future_pr = close[i + label_min_val] if i + label_min_val < len(close) else close[i]
-        elif method_int == 0:  # first
-            future_pr = close[i + label_min_val]
-        elif method_int == 1:  # last
-            future_pr = close[i + label_max_val]
-        elif method_int == 2:  # mean
-            future_pr = np.mean(window)
-        elif method_int == 3:  # max
-            future_pr = np.max(window)
-        elif method_int == 4:  # min
-            future_pr = np.min(window)
-        else:  # random -> usar mediana de la ventana
-            window = close[i + label_min_val : i + label_max_val + 1]
-            if window.size > 0:
-                future_pr = median_manual(window)
-            else:
-                future_pr = close[i + label_min_val]
+        else:
+            future_pr = median_manual(window)
 
         if direction == 0:  # solo buy
             if normalized_trend[i] > label_threshold:
@@ -2169,18 +2217,14 @@ def get_labels_trend_filters(dataset, label_filter='savgol', label_rolling=200, 
     # Removing NaN and synchronizing data
     valid_mask = ~np.isnan(normalized_trend)
     normalized_trend_clean = normalized_trend[valid_mask]
-    close_clean = dataset['close'].values[valid_mask]
     dataset_clean = dataset[valid_mask].copy()
-    high = dataset['high'].values
-    low = dataset['low'].values
-    close = dataset['close'].values
+    high = dataset_clean['high'].values
+    low = dataset_clean['low'].values
+    close = dataset_clean['close'].values
     atr = calculate_atr_simple(high, low, close, period=label_atr_period)
-    atr_clean = atr[valid_mask]
     
     # Generating labels
-    method_map = {'first': 0, 'last': 1, 'mean': 2, 'max': 3, 'min': 4, 'random': 5}
-    method_int = method_map.get(label_method_random, 5)
-    labels = calculate_labels_trend_filters(close_clean, atr_clean, normalized_trend_clean, label_threshold, label_markup, label_min_val, label_max_val, direction, method_int)
+    labels = calculate_labels_trend_filters(close, atr, normalized_trend_clean, label_threshold, label_markup, label_min_val, label_max_val, direction)
     
     # Asignar etiquetas alineadas y rellenar con 2.0 usando pandas para evitar padding manual
     labels = pd.Series(labels, index=dataset.index[valid_mask][:-label_max_val]).reindex_like(dataset).fillna(2.0)
@@ -2301,7 +2345,7 @@ def get_labels_clusters(
     return dataset.drop(columns=['cluster'])
 
 @njit(cache=True)
-def calculate_labels_multi_window(prices, atr, window_sizes, label_markup, label_min_val, label_max_val, direction=2, method_int=5):
+def calculate_labels_multi_window(prices, atr, window_sizes, label_markup, label_min_val, label_max_val, direction=2):
     """
     Etiquetado multi-ventana con profit target basado en ATR * markup.
     direction: 0=solo buy, 1=solo sell, 2=ambas
@@ -2331,26 +2375,12 @@ def calculate_labels_multi_window(prices, atr, window_sizes, label_markup, label
             elif current_price < support - dyn_mk:
                 short_signals += 1
 
-        # Validar con profit futuro
+        # Validar con profit futuro (mediana)
         window = prices[i + label_min_val : i + label_max_val + 1]
         if window.size == 0:
             future_price = prices[i + label_min_val] if i + label_min_val < len(prices) else prices[i]
-        elif method_int == 0:  # first
-            future_price = prices[i + label_min_val]
-        elif method_int == 1:  # last
-            future_price = prices[i + label_max_val]
-        elif method_int == 2:  # mean
-            future_price = np.mean(window)
-        elif method_int == 3:  # max
-            future_price = np.max(window)
-        elif method_int == 4:  # min
-            future_price = np.min(window)
-        else:  # random -> usar mediana de la ventana
-            window = prices[i + label_min_val : i + label_max_val + 1]
-            if window.size > 0:
-                future_price = median_manual(window)
-            else:
-                future_price = prices[i + label_min_val]
+        else:
+            future_price = median_manual(window)
     
         if direction == 2:  # both
             if long_signals > short_signals and future_price >= current_price + dyn_mk:
@@ -2382,7 +2412,6 @@ def get_labels_multi_window(
     label_min_val=1,
     label_max_val=15,
     label_atr_period=14,
-    label_method_random='random',
     direction=2,
 ) -> pd.DataFrame:
     """
@@ -2412,10 +2441,8 @@ def get_labels_multi_window(
     atr = calculate_atr_simple(high, low, close, period=label_atr_period)
     # Calculate labels
     window_sizes_t = List(label_window_sizes_int)
-    method_map = {'first': 0, 'last': 1, 'mean': 2, 'max': 3, 'min': 4, 'random': 5}
-    method_int = method_map.get(label_method_random, 5)
     labels = calculate_labels_multi_window(
-        close, atr, window_sizes_t, label_markup, label_min_val, label_max_val, direction, method_int
+        close, atr, window_sizes_t, label_markup, label_min_val, label_max_val, direction
     )
     # Align labels and fill with 2.0 using pandas to avoid manual padding
     max_window = max(label_window_sizes_int)
@@ -2427,7 +2454,7 @@ def get_labels_multi_window(
     return dataset
 
 @njit(cache=True)
-def calculate_labels_validated_levels(close, high, low, atr, window_size, label_markup, min_touches, label_min_val, label_max_val, direction=2, method_int=5):
+def calculate_labels_validated_levels(close, high, low, atr, window_size, label_markup, min_touches, label_min_val, label_max_val, direction=2):
     """
     Etiquetado de rupturas de niveles validados con profit target basado en ATR * markup.
     
@@ -2541,26 +2568,12 @@ def calculate_labels_validated_levels(close, high, low, atr, window_size, label_
             if current_close < closest_support - dyn_mk:
                 broke_support = True
         
-        # Seleccionar precio futuro según method_int (usando Close)
-        if method_int == 0:  # first
+        # Seleccionar precio futuro por mediana (usando Close)
+        future_window = close[i + label_min_val:i + label_max_val + 1]
+        if future_window.size > 0:
+            future_price = median_manual(future_window)
+        else:
             future_price = close[i + label_min_val]
-        elif method_int == 1:  # last
-            future_price = close[i + label_max_val]
-        elif method_int == 2:  # mean
-            future_window = close[i + label_min_val:i + label_max_val + 1]
-            future_price = np.mean(future_window)
-        elif method_int == 3:  # max
-            future_window = close[i + label_min_val:i + label_max_val + 1]
-            future_price = np.max(future_window)
-        elif method_int == 4:  # min
-            future_window = close[i + label_min_val:i + label_max_val + 1]
-            future_price = np.min(future_window)
-        else:  # random (method_int == 5) -> usar mediana de la ventana
-            future_window = close[i + label_min_val:i + label_max_val + 1]
-            if future_window.size > 0:
-                future_price = median_manual(future_window)
-            else:
-                future_price = close[i + label_min_val]
     
         if direction == 2:  # both
             if broke_resistance and future_price >= current_close + dyn_mk:
@@ -2623,14 +2636,10 @@ def get_labels_validated_levels(
     close = dataset["close"].values
     atr = calculate_atr_simple(high, low, close, period=label_atr_period)
     
-    # Map method string to integer
-    method_map = {'first': 0, 'last': 1, 'mean': 2, 'max': 3, 'min': 4, 'random': 5}
-    method_int = method_map.get(label_method_random, 5)
-    
     # Calculate labels
     labels = calculate_labels_validated_levels(
         close, high, low, atr, label_window_size, label_markup, label_min_touches,
-        label_min_val, label_max_val, direction, method_int
+        label_min_val, label_max_val, direction
     )
     
     # Align labels and fill with 2.0 using pandas to avoid manual padding
@@ -2645,7 +2654,7 @@ def get_labels_validated_levels(
     return dataset
 
 @njit(cache=True)
-def calculate_labels_zigzag(peaks, troughs, close, atr, label_markup, label_min_val, label_max_val, direction=2, method_int=5):
+def calculate_labels_zigzag(peaks, troughs, close, atr, label_markup, label_min_val, label_max_val, direction=2):
     """
     Generates labels based on peaks and troughs with profit target validation using ATR * markup.
     
@@ -2699,35 +2708,12 @@ def calculate_labels_zigzag(peaks, troughs, close, atr, label_markup, label_min_
 
         dyn_mk = label_markup * atr[i]
         
-        # Selección del precio objetivo según method_int
-        if method_int == 0:  # first
+        # Selección del precio futuro por mediana
+        window = close[i + label_min_val : i + label_max_val + 1]
+        if window.size > 0:
+            future_price = median_manual(window)
+        else:
             future_price = close[i + label_min_val]
-        elif method_int == 1:  # last
-            future_price = close[i + label_max_val]
-        elif method_int == 2:  # mean
-            window = close[i + label_min_val : i + label_max_val + 1]
-            if window.size > 0:
-                future_price = np.mean(window)
-            else:
-                future_price = close[i + label_min_val]
-        elif method_int == 3:  # max
-            window = close[i + label_min_val : i + label_max_val + 1]
-            if window.size > 0:
-                future_price = np.max(window)
-            else:
-                future_price = close[i + label_min_val]
-        elif method_int == 4:  # min
-            window = close[i + label_min_val : i + label_max_val + 1]
-            if window.size > 0:
-                future_price = np.min(window)
-            else:
-                future_price = close[i + label_min_val]
-        else:  # random/otro -> usar mediana de la ventana
-            window = close[i + label_min_val : i + label_max_val + 1]
-            if window.size > 0:
-                future_price = median_manual(window)
-            else:
-                future_price = close[i + label_min_val]
             
         current_price = close[i]
 
@@ -2795,7 +2781,6 @@ def get_labels_zigzag(
     label_max_val=15,
     label_atr_period=14,
     direction=2,
-    label_method_random='random',
 ) -> pd.DataFrame:
     """
     Generates labels for a financial dataset based on zigzag peaks and troughs with profit target validation.
@@ -2835,12 +2820,10 @@ def get_labels_zigzag(
     troughs, _ = find_peaks(-close, prominence=label_peak_prominence)
     # Calculate ATR
     atr = calculate_atr_simple(high, low, close, period=label_atr_period)
-    # Calculate labels
-    method_map = {'first': 0, 'last': 1, 'mean': 2, 'max': 3, 'min': 4, 'random': 5}
-    method_int = method_map.get(label_method_random, 5)
+    # Calculate labels (mediana)
     labels = calculate_labels_zigzag(
-        peaks, troughs, close, atr, label_markup, label_min_val, label_max_val, direction, method_int
-    ) 
+        peaks, troughs, close, atr, label_markup, label_min_val, label_max_val, direction
+    )
     # Align labels and fill with 2.0 using pandas to avoid manual padding
     labels = pd.Series(labels, index=dataset.index[:-label_max_val]).reindex_like(dataset).fillna(2.0)
     # Add labels to dataset
@@ -2849,7 +2832,7 @@ def get_labels_zigzag(
     return dataset
 
 @njit(cache=True)
-def calculate_labels_mean_reversion(close, atr, lvl, label_markup, label_min_val, label_max_val, q, direction=2, method_int=5):
+def calculate_labels_mean_reversion(close, atr, lvl, label_markup, label_min_val, label_max_val, q, direction=2):
     """
     Generates labels based on mean reversion principles with profit target validation using ATR * markup.
     
@@ -2885,35 +2868,12 @@ def calculate_labels_mean_reversion(close, atr, lvl, label_markup, label_min_val
         curr_pr = close[i]
         curr_lvl = lvl[i]
         
-        # Selección del precio objetivo según method_int
-        if method_int == 0:  # first
+        # Futuro por mediana
+        window = close[i + label_min_val : i + label_max_val + 1]
+        if window.size > 0:
+            future_pr = median_manual(window)
+        else:
             future_pr = close[i + label_min_val]
-        elif method_int == 1:  # last
-            future_pr = close[i + label_max_val]
-        elif method_int == 2:  # mean
-            window = close[i + label_min_val : i + label_max_val + 1]
-            if window.size > 0:
-                future_pr = np.mean(window)
-            else:
-                future_pr = close[i + label_min_val]
-        elif method_int == 3:  # max
-            window = close[i + label_min_val : i + label_max_val + 1]
-            if window.size > 0:
-                future_pr = np.max(window)
-            else:
-                future_pr = close[i + label_min_val]
-        elif method_int == 4:  # min
-            window = close[i + label_min_val : i + label_max_val + 1]
-            if window.size > 0:
-                future_pr = np.min(window)
-            else:
-                future_pr = close[i + label_min_val]
-        else:  # random/otro -> usar mediana de la ventana
-            window = close[i + label_min_val : i + label_max_val + 1]
-            if window.size > 0:
-                future_pr = median_manual(window)
-            else:
-                future_pr = close[i + label_min_val]
 
         if direction == 0:  # buy only
             if curr_lvl < q[0] and (future_pr - dyn_mk) > curr_pr:
@@ -2951,7 +2911,6 @@ def get_labels_mean_reversion(
     label_shift=0,
     label_atr_period=14,
     direction=2,
-    label_method_random='random'
 ) -> pd.DataFrame:
     """
     Generates labels for a financial dataset based on mean reversion principles, with unidirectional support.
@@ -3023,10 +2982,8 @@ def get_labels_mean_reversion(
     low = dataset['low'].values
     close = dataset['close'].values
     atr = calculate_atr_simple(high, low, close, period=label_atr_period)
-    # Calculate labels
-    method_map = {'first': 0, 'last': 1, 'mean': 2, 'max': 3, 'min': 4, 'random': 5}
-    method_int = method_map.get(label_method_random, 5)
-    labels = calculate_labels_mean_reversion(close, atr, lvl, label_markup, label_min_val, label_max_val, q, direction, method_int)
+    # Calculate labels (mediana)
+    labels = calculate_labels_mean_reversion(close, atr, lvl, label_markup, label_min_val, label_max_val, q, direction)
     # Align labels and fill with 2.0 using pandas to avoid padding manual
     labels = pd.Series(labels, index=dataset.index[:-label_max_val]).reindex_like(dataset).fillna(2.0)
     # Add labels to dataset
@@ -3037,7 +2994,7 @@ def get_labels_mean_reversion(
 
 @njit(cache=True)
 def calculate_labels_mean_reversion_multi(
-    close_data, atr, lvl_data, q_list, label_markup, label_min_val, label_max_val, window_sizes, direction=2, method_int=5
+    close_data, atr, lvl_data, q_list, label_markup, label_min_val, label_max_val, window_sizes, direction=2
 ):
     """
     Generates labels based on multi-window mean reversion principles with profit target validation using ATR * markup.
@@ -3076,35 +3033,12 @@ def calculate_labels_mean_reversion_multi(
         dyn_mk = label_markup * atr[i]
         curr_pr = close_data[i]
         
-        # Selección del precio objetivo según method_int
-        if method_int == 0:  # first
+        # Futuro por mediana
+        window = close_data[i + label_min_val : i + label_max_val + 1]
+        if window.size > 0:
+            future_pr = median_manual(window)
+        else:
             future_pr = close_data[i + label_min_val]
-        elif method_int == 1:  # last
-            future_pr = close_data[i + label_max_val]
-        elif method_int == 2:  # mean
-            window = close_data[i + label_min_val : i + label_max_val + 1]
-            if window.size > 0:
-                future_pr = np.mean(window)
-            else:
-                future_pr = close_data[i + label_min_val]
-        elif method_int == 3:  # max
-            window = close_data[i + label_min_val : i + label_max_val + 1]
-            if window.size > 0:
-                future_pr = np.max(window)
-            else:
-                future_pr = close_data[i + label_min_val]
-        elif method_int == 4:  # min
-            window = close_data[i + label_min_val : i + label_max_val + 1]
-            if window.size > 0:
-                future_pr = np.min(window)
-            else:
-                future_pr = close_data[i + label_min_val]
-        else:  # random/otro -> usar mediana de la ventana
-            window = close_data[i + label_min_val : i + label_max_val + 1]
-            if window.size > 0:
-                future_pr = median_manual(window)
-            else:
-                future_pr = close_data[i + label_min_val]
 
         buy_condition = 0
         sell_condition = 0
@@ -3154,7 +3088,6 @@ def get_labels_mean_reversion_multi(
     label_quantiles=[.30, .70], 
     label_atr_period=14, 
     direction=2,
-    label_method_random='random'
 ) -> pd.DataFrame:
     """
     Generates labels for a financial dataset based on multi-window mean reversion principles.
@@ -3209,13 +3142,10 @@ def get_labels_mean_reversion_multi(
     high = dataset["high"].values
     low = dataset["low"].values
     atr = calculate_atr_simple(high, low, close, period=label_atr_period)
-    # Prepare parameters for label calculation
-    method_map = {'first': 0, 'last': 1, 'mean': 2, 'max': 3, 'min': 4, 'random': 5}
-    method_int = method_map.get(label_method_random, 5)
     windows_t = List(label_window_sizes_float)
     q_t = List([(float(q[i,0]), float(q[i,1])) for i in range(len(label_window_sizes_float))])
     labels = calculate_labels_mean_reversion_multi(
-        close, atr, lvl_data, q_t, label_markup, label_min_val, label_max_val, windows_t, direction, method_int
+        close, atr, lvl_data, q_t, label_markup, label_min_val, label_max_val, windows_t, direction
     )
     # Align labels and fill with 2.0 using pandas to avoid padding
     labels = pd.Series(labels, index=dataset.index[:-label_max_val]).reindex_like(dataset).fillna(2.0)
@@ -3226,7 +3156,7 @@ def get_labels_mean_reversion_multi(
 @njit(cache=True)
 def calculate_labels_mean_reversion_vol(
     close_data, atr, lvl_data, volatility_group, quantile_groups_low, quantile_groups_high,
-    label_markup, label_min_val, label_max_val, direction=2, method_int=5
+    label_markup, label_min_val, label_max_val, direction=2
 ):
     """
     Generates labels based on volatility-adjusted mean reversion principles with profit target validation using ATR * markup.
@@ -3268,35 +3198,12 @@ def calculate_labels_mean_reversion_vol(
         curr_lvl = lvl_data[i]
         curr_vol_group = volatility_group[i]
         
-        # Selección del precio objetivo según method_int
-        if method_int == 0:  # first
+        # Futuro por mediana
+        window = close_data[i + label_min_val : i + label_max_val + 1]
+        if window.size > 0:
+            future_pr = median_manual(window)
+        else:
             future_pr = close_data[i + label_min_val]
-        elif method_int == 1:  # last
-            future_pr = close_data[i + label_max_val]
-        elif method_int == 2:  # mean
-            window = close_data[i + label_min_val : i + label_max_val + 1]
-            if window.size > 0:
-                future_pr = np.mean(window)
-            else:
-                future_pr = close_data[i + label_min_val]
-        elif method_int == 3:  # max
-            window = close_data[i + label_min_val : i + label_max_val + 1]
-            if window.size > 0:
-                future_pr = np.max(window)
-            else:
-                future_pr = close_data[i + label_min_val]
-        elif method_int == 4:  # min
-            window = close_data[i + label_min_val : i + label_max_val + 1]
-            if window.size > 0:
-                future_pr = np.min(window)
-            else:
-                future_pr = close_data[i + label_min_val]
-        else:  # random/otro -> usar mediana de la ventana
-            window = close_data[i + label_min_val : i + label_max_val + 1]
-            if window.size > 0:
-                future_pr = median_manual(window)
-            else:
-                future_pr = close_data[i + label_min_val]
 
         low_q = quantile_groups_low[int(curr_vol_group)]
         high_q = quantile_groups_high[int(curr_vol_group)]
@@ -3328,7 +3235,6 @@ def get_labels_mean_reversion_vol(
     dataset, label_markup, label_min_val=1, label_max_val=15, label_rolling=0.5,
     label_quantiles=[.45, .55], label_filter_mean='spline', label_shift=1,
     label_vol_window=20, label_atr_period=14, direction=2, label_polyorder=3,
-    label_method_random='random'
 ) -> pd.DataFrame:
     """
     Generates trading labels based on volatility-adjusted mean reversion principles.
@@ -3418,14 +3324,10 @@ def get_labels_mean_reversion_vol(
     close = dataset["close"].values
     atr = calculate_atr_simple(high, low, close, period=label_atr_period)
     quantile_groups_high = np.array(quantile_groups_high)
-    # Prepare parameters for label calculation
-    method_map = {'first': 0, 'last': 1, 'mean': 2, 'max': 3, 'min': 4, 'random': 5}
-    method_int = method_map.get(label_method_random, 5)
-    
     # Calculate buy/sell labels with direction support
     labels = calculate_labels_mean_reversion_vol(
         close, atr, lvl_data, volatility_group, quantile_groups_low, quantile_groups_high,
-        label_markup, label_min_val, label_max_val, direction, method_int
+        label_markup, label_min_val, label_max_val, direction
     )
     # Align labels and fill with 2.0 using pandas to avoid padding
     labels = pd.Series(labels, index=dataset.index[:-label_max_val]).reindex_like(dataset).fillna(2.0)

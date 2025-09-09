@@ -241,6 +241,35 @@ def export_to_mql5(**kwargs):
                     return (a[n-1] - vwap) / sd;
                 }
                 """,
+            "volzscore": """
+                double stat_volzscore(const double &a[])
+                {
+                    int n = ArraySize(a);
+                    if(n <= 1) return 0.0;
+
+                    // Obtener la misma ventana de volumen (TickVolume) alineada, excluyendo barra actual (shift=1)
+                    long vol[];
+                    if(CopyTickVolume(_Symbol, _Period, 1, n, vol) != n) return 0.0;
+                    ArraySetAsSeries(vol, false);
+
+                    int cnt = n - 1; // usar n-1 previos
+                    double sum = 0.0;
+                    for(int i = 0; i < n - 1; i++)
+                        sum += (double)vol[i];
+                    double mean = (cnt > 0) ? (sum / (double)cnt) : 0.0;
+
+                    double var = 0.0;
+                    for(int i = 0; i < n - 1; i++)
+                    {
+                        double d = (double)vol[i] - mean;
+                        var += d * d;
+                    }
+                    double sd = (cnt > 0) ? MathSqrt(var / (double)cnt) : 0.0;
+                    if(sd <= 1e-8) return 0.0;
+
+                    return ((double)vol[n-1] - mean) / sd;
+                }
+                """,
             "mean": """
                 double stat_mean(const double &a[])
                 {

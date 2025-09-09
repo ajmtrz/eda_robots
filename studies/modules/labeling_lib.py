@@ -1024,7 +1024,7 @@ def get_labels_filter(
     return dataset.drop(columns=['lvl'])
 
 @njit(cache=True)
-def calc_labels_filter_binary(close, atr, lvl1, lvl2, q1, q2, direction=2, method_int=5,
+def calculate_labels_filter_binary(close, atr, lvl1, lvl2, q1, q2, direction=2, method_int=5,
                              label_markup=0.5, label_min_val=1, label_max_val=15):
     """
     Generates labels based on binary Savitzky-Golay filter consensus with profit target validation using ATR * markup.
@@ -1189,7 +1189,7 @@ def get_labels_filter_binary(
     atr = calculate_atr_simple(high, low, close, period=label_atr_period)
     
     # Calculate buy/sell labels using the 'calc_labels_binary' function
-    labels = calc_labels_filter_binary(
+    labels = calculate_labels_filter_binary(
         close, atr, lvl1, lvl2, q1, q2, direction, method_int,
         label_markup, label_min_val, label_max_val
     )
@@ -1199,7 +1199,7 @@ def get_labels_filter_binary(
     return dataset.drop(columns=['lvl1', 'lvl2'])
 
 @njit(cache=True)
-def calc_labels_filter_multi(close, atr, lvls, qs, direction=2, method_int=5,
+def calculate_labels_filter_multi(close, atr, lvls, qs, direction=2, method_int=5,
                             label_markup=0.5, label_min_val=1, label_max_val=15):
     """
     Generates labels based on multi-filter Savitzky-Golay consensus with profit target validation using ATR * markup.
@@ -1389,7 +1389,7 @@ def get_labels_filter_multi(
     atr = calculate_atr_simple(high, low, close, period=label_atr_period)
     
     # Calculate buy/sell labels using the 'calc_labels_multiple_filters' function 
-    labels = calc_labels_filter_multi(
+    labels = calculate_labels_filter_multi(
         close, atr, lvls_array, qs_array, direction, method_int,
         label_markup, label_min_val, label_max_val
     )
@@ -1477,7 +1477,7 @@ def calculate_symmetric_correlation_dynamic(data, min_window_size, max_window_si
 
 
 @njit(cache=True)
-def calculate_future_outcome_labels_for_patterns(
+def calculate_labels_fractal_patterns(
     close_data_len,
     correlations_at_window_start,
     window_sizes_at_window_start,
@@ -1624,7 +1624,7 @@ def get_labels_fractal_patterns(
         label_max_window,
     )
     # Calculate labels
-    labels = calculate_future_outcome_labels_for_patterns(
+    labels = calculate_labels_fractal_patterns(
         len(close),
         correlations_at_start,
         best_window_sizes_at_start,

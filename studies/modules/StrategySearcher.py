@@ -20,7 +20,7 @@ from modules.labeling_lib import (
     get_prices, get_features, get_labels_trend, 
     get_labels_trend_multi, get_labels_clusters,
     get_labels_multi_window, get_labels_validated_levels,
-    get_labels_mean_reversion, get_labels_random, get_labels_wyckoff_pivots,
+    get_labels_mean_reversion, get_labels_random,
     get_labels_mean_reversion_multi, get_labels_mean_reversion_vol,
     get_labels_filter, get_labels_filter_multi, get_labels_trend_filters,
     get_labels_filter_binary, get_labels_fractal_patterns, get_labels_zigzag,
@@ -43,7 +43,6 @@ class StrategySearcher:
         "multi_window": get_labels_multi_window,
         "validated_levels": get_labels_validated_levels,
         "zigzag": get_labels_zigzag,
-        "wyckoff_pivots": get_labels_wyckoff_pivots,
         "mean_rev": get_labels_mean_reversion,
         "mean_rev_multi": get_labels_mean_reversion_multi,
         "mean_rev_vol": get_labels_mean_reversion_vol,
@@ -777,11 +776,6 @@ class StrategySearcher:
             'label_k_atr_amplitude':  lambda t: t.suggest_float('label_k_atr_amplitude', 0.4, 4.0),
             'label_peak_distance':    lambda t: t.suggest_int('label_peak_distance', 2, 20),
             'label_peak_width':       lambda t: t.suggest_int('label_peak_width', 1, 7),
-
-            # Wyckoff pivots (pivotes + confirmación de volumen)
-            'label_k_pivot':      lambda t: t.suggest_int('label_k_pivot', 2, 12),
-            'label_vol_z_min':    lambda t: t.suggest_float('label_vol_z_min', 0.0, 5.0),
-            'label_wick_atr_min': lambda t: t.suggest_float('label_wick_atr_min', 0.05, 2.5),
 
             # Cuantiles para reversiones (asegurar separación low<high)
             'label_quantiles': lambda t: [

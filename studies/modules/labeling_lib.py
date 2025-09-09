@@ -392,31 +392,23 @@ def vwapdevz_manual(high_window, low_window, close_window, volume_window):
     return dev / sd
 
 @njit(cache=True)
-def volzscore_manual(volume, window):
-    n = len(volume)
-    z = np.zeros(n, dtype=np.float64)
-    if window <= 1:
-        return z
-    for i in range(n):
-        start = 0 if i - window < 0 else i - window
-        cnt = i - start
-        if cnt <= 0:
-            z[i] = 0.0
-            continue
-        s = 0.0
-        for j in range(start, i):
-            s += volume[j]
-        mean = s / cnt
-        var = 0.0
-        for j in range(start, i):
-            d = volume[j] - mean
-            var += d * d
-        sd = np.sqrt(var / cnt) if cnt > 0 else 0.0
-        if sd <= 1e-8:
-            z[i] = 0.0
-        else:
-            z[i] = (volume[i] - mean) / sd
-    return z
+def volzscore_manual(volume_window):
+    n = len(volume_window)
+    if n <= 1:
+        return 0.0
+    cnt = n - 1
+    s = 0.0
+    for j in range(cnt):
+        s += volume_window[j]
+    mean = s / cnt
+    var = 0.0
+    for j in range(cnt):
+        d = volume_window[j] - mean
+        var += d * d
+    sd = np.sqrt(var / cnt) if cnt > 0 else 0.0
+    if sd <= 1e-8:
+        return 0.0
+    return (volume_window[n - 1] - mean) / sd
 
 @njit(cache=True)
 def should_use_returns(stat_name):
@@ -530,8 +522,7 @@ def compute_features(open, high, low, close, volume, periods_main, periods_meta,
                     elif s == "vwapdevz":
                         features[i, col] = vwapdevz_manual(window_data_high, window_data_low, window_data_close, window_data_volume)
                     elif s == "volzscore":
-                        zarr = volzscore_manual(window_data_volume, window_size)
-                        features[i, col] = zarr[-1] if zarr.size > 0 else 0.0
+                        features[i, col] = volzscore_manual(window_data_volume)
                 except:
                     return np.full((n, total_features), np.nan)
             col += 1
@@ -630,8 +621,7 @@ def compute_features(open, high, low, close, volume, periods_main, periods_meta,
                         elif s == "vwapdevz":
                             features[i, col] = vwapdevz_manual(window_data_high, window_data_low, window_data_close, window_data_volume)
                         elif s == "volzscore":
-                            zarr = volzscore_manual(window_data_volume, window_size)
-                            features[i, col] = zarr[-1] if zarr.size > 0 else 0.0
+                            features[i, col] = volzscore_manual(window_data_volume)
                     except:
                         return np.full((n, total_features), np.nan)
                 col += 1
@@ -781,184 +771,6 @@ def calculate_atr_simple(high, low, close, period=14):
         atr[i] = (atr[i-1] * (period-1) + tr[i]) / period
     
     return atr
-
-@njit(cache=True)
-def _pivot_flags(high, low, k):
-    n = len(high)
-    piv_hi = np.zeros(n, dtype=np.uint8)
-    piv_lo = np.zeros(n, dtype=np.uint8)
-    if n == 0 or k <= 0:
-        return piv_hi, piv_lo
-    for i in range(k, n - k):
-        is_hi = True
-        is_lo = True
-        hi_i = high[i]
-        lo_i = low[i]
-        for d in range(1, k + 1):
-            if hi_i < high[i - d] or hi_i < high[i + d]:
-                is_hi = False
-            if lo_i > low[i - d] or lo_i > low[i + d]:
-                is_lo = False
-            if not is_hi and not is_lo:
-                break
-        if is_hi:
-            piv_hi[i] = 1
-        if is_lo:
-            piv_lo[i] = 1
-    return piv_hi, piv_lo
-
-@njit(cache=True)
-def calculate_labels_wyckoff_pivots(
-    open_arr, high, low, close, volume, atr,
-    k_pivot, vol_window, vol_z_min, wick_atr_min,
-    label_markup, label_min_val, label_max_val,
-    direction=2
-):
-    """
-    Aproximación al indicador de pivotes/patrones con confirmación de volumen:
-    - Detecta pivotes (k-left/right)
-    - Señal bajista (sweep alta liquidez): nuevo high > último pivot high y cierre por debajo del último pivot high,
-      con wick superior >= wick_atr_min*ATR y z-score de volumen >= vol_z_min
-    - Señal alcista (sweep baja liquidez): nuevo low < último pivot low y cierre por encima del último pivot low,
-      con wick inferior >= wick_atr_min*ATR y z-score de volumen >= vol_z_min
-    - Validación de profit: usa mediana del close en ventana [i+label_min_val .. i+label_max_val] y umbral ATR*label_markup
-    Etiquetas: direction=2 → 0.0 buy, 1.0 sell, 2.0 neutral; unidireccional → 1.0 éxito, 0.0 fracaso, 2.0 neutral.
-    """
-    n = len(close)
-    if n == 0 or n <= label_max_val:
-        return np.full(0, 2.0, dtype=np.float64)
-    eps = 1e-8
-    piv_hi, piv_lo = _pivot_flags(high, low, k_pivot)
-    zvol = volzscore_manual(volume, vol_window)
-    result = np.full(n - label_max_val, 2.0, dtype=np.float64)
-
-    last_ph_idx = -1
-    last_pl_idx = -1
-    for i in range(n - label_max_val):
-        if piv_hi[i] == 1:
-            last_ph_idx = i
-        if piv_lo[i] == 1:
-            last_pl_idx = i
-
-        # No patrón si aún no hay pivotes previos válidos
-        has_sell = False
-        has_buy = False
-        if last_ph_idx != -1:
-            # Sweep de máximos con rechazo (volumen como OR con mecha extra)
-            broke_high = high[i] > high[last_ph_idx]
-            reject_close = close[i] < high[last_ph_idx]
-            upper_wick = high[i] - (open_arr[i] if open_arr[i] > close[i] else close[i])
-            atr_i = (atr[i] if atr[i] > eps else eps)
-            wick_ok = upper_wick >= wick_atr_min * atr_i
-            wick_ok_extra = upper_wick >= (2.0 * wick_atr_min) * atr_i
-            vol_ok = zvol[i] >= vol_z_min
-            has_sell = (broke_high and reject_close and wick_ok) and (vol_ok or wick_ok_extra)
-
-        if last_pl_idx != -1:
-            # Sweep de mínimos con rechazo (volumen como OR con mecha extra)
-            broke_low = low[i] < low[last_pl_idx]
-            reject_close_bull = close[i] > low[last_pl_idx]
-            lower_wick = (open_arr[i] if open_arr[i] < close[i] else close[i]) - low[i]
-            atr_i = (atr[i] if atr[i] > eps else eps)
-            wick_ok_b = lower_wick >= wick_atr_min * atr_i
-            wick_ok_extra_b = lower_wick >= (2.0 * wick_atr_min) * atr_i
-            vol_ok_b = zvol[i] >= vol_z_min
-            has_buy = (broke_low and reject_close_bull and wick_ok_b) and (vol_ok_b or wick_ok_extra_b)
-
-        # Sin patrón → neutral
-        if not has_buy and not has_sell:
-            result[i] = 2.0
-            continue
-
-        # Validación futura por mediana y ATR*markup
-        start_j = i + label_min_val
-        end_j = i + label_max_val
-        if start_j >= n:
-            result[i] = 2.0
-            continue
-        if end_j >= n:
-            end_j = n - 1
-        window = close[start_j : end_j + 1]
-        if window.size == 0:
-            med_future = close[start_j]
-        else:
-            med_future = median_manual(window)
-        dyn_mk = label_markup * (atr[i] if atr[i] > eps else eps)
-
-        if direction == 2:
-            if has_buy and not has_sell:
-                if med_future >= close[i] + dyn_mk:
-                    result[i] = 0.0
-                else:
-                    result[i] = 2.0
-            elif has_sell and not has_buy:
-                if med_future <= close[i] - dyn_mk:
-                    result[i] = 1.0
-                else:
-                    result[i] = 2.0
-            else:
-                # Si aparecen ambas (raro), decide por mayor desviación respecto al pivot
-                dist_buy = (low[last_pl_idx] - low[i]) if last_pl_idx != -1 else 0.0
-                dist_sell = (high[i] - high[last_ph_idx]) if last_ph_idx != -1 else 0.0
-                if dist_buy >= dist_sell:
-                    result[i] = 0.0 if med_future >= close[i] + dyn_mk else 2.0
-                else:
-                    result[i] = 1.0 if med_future <= close[i] - dyn_mk else 2.0
-        elif direction == 0:
-            if has_buy:
-                result[i] = 1.0 if med_future >= close[i] + dyn_mk else 0.0
-            else:
-                result[i] = 2.0
-        elif direction == 1:
-            if has_sell:
-                result[i] = 1.0 if med_future <= close[i] - dyn_mk else 0.0
-            else:
-                result[i] = 2.0
-        else:
-            result[i] = 2.0
-
-    return result
-
-def get_labels_wyckoff_pivots(
-    dataset: pd.DataFrame,
-    label_k_pivot: int = 3,
-    label_markup: float = 0.5,
-    label_min_val: int = 1,
-    label_max_val: int = 10,
-    label_atr_period: int = 14,
-    label_vol_window: int = 20,
-    label_vol_z_min: float = 1.0,
-    label_wick_atr_min: float = 0.1,
-    direction: int = 2,
-):
-    """
-    Wrapper para etiquetado tipo Wyckoff (pivotes+sweeps con confirmación de volumen y wick):
-    - Detecta pivotes con profundidad k
-    - Señales por sweeps confirmadas por z-score de volumen y wick relativo a ATR
-    - Validación por mediana futura y ATR*markup
-    """
-    open_arr = dataset['open'].values
-    high = dataset['high'].values
-    low = dataset['low'].values
-    close = dataset['close'].values
-    volume = dataset['volume'].values
-    if len(close) == 0:
-        return pd.DataFrame(index=dataset.index)
-    atr = calculate_atr_simple(high, low, close, period=label_atr_period)
-    labels = calculate_labels_wyckoff_pivots(
-        open_arr, high, low, close, volume, atr,
-        label_k_pivot, label_vol_window, label_vol_z_min, label_wick_atr_min,
-        label_markup, label_min_val, label_max_val,
-        direction,
-    )
-    if labels.size == 0:
-        return pd.DataFrame(index=dataset.index)
-    idx = dataset.index[:labels.size]
-    labels_series = pd.Series(labels, index=idx)
-    labels_aligned = labels_series.reindex(dataset.index, fill_value=2.0)
-    dataset['labels_main'] = labels_aligned
-    dataset['labels_main'] = dataset['labels_main'].fillna(2.0)
-    return dataset
 
 @njit(cache=True)
 def calculate_labels_random(close, atr, label_markup, label_min_val, label_max_val, direction_int):

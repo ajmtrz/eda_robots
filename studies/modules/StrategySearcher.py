@@ -1025,70 +1025,75 @@ class StrategySearcher:
             monkey_percentile = None
             if must_run_monkey:
                 test_monkey_time_start = time.time()
-                # Bactest para Monkey Test
-                _ , equity_curve_real, returns_series_real, pos_series_real = tester(
-                    dataset=full_ds_real,
-                    model_main=model_main_path,
-                    model_meta=model_meta_path,
-                    model_main_cols=main_feature_cols,
-                    model_meta_cols=meta_feature_cols,
-                    direction=self.direction,
-                    model_main_threshold=hp.get('main_threshold', 0.5),
-                    model_meta_threshold=hp.get('meta_threshold', 0.5),
-                    evaluate_strategy=False,
-                    debug=self.debug,
-                    plot=False
-                )
-                if equity_curve_real is not None and len(equity_curve_real) > 1:
-                    try:
-                        price_series_real = full_ds_real['open'].to_numpy(dtype='float64')
-                        if self.debug:
-                            # Comprobar alineación de longitudes y rangos de índices
-                            aligned = (len(returns_series_real) == len(pos_series_real) == len(price_series_real))
-                            msg = (
-                                f"🔍 DEBUG - fit_final_models: Alineación OOS - "
-                                f"len(returns_series_real): {len(returns_series_real)}, "
-                                f"len(pos_series_real): {len(pos_series_real)}, "
-                                f"len(price_real): {len(price_series_real)}. "
-                                f"Alineados: {aligned}"
-                            )
-                            print(msg)
-                            if not aligned:
-                                print(f"🔍 DEBUG - fit_final_models: Índices returns_oos: {returns_series_real.shape}, pos_oos: {pos_series_real.shape}, price_oos: {price_series_real.shape}")
-                        monkey_res = run_monkey_test(
-                            actual_returns=returns_series_real,
-                            price_series=price_series_real,
-                            pos_series=pos_series_real,
-                            direction=self.direction,
-                            n_simulations=self.monkey_n_simulations,
-                        )
-                        test_monkey_time_end = time.time()
-                        if self.debug:
-                            print(f"🔍 DEBUG - fit_final_models: Tiempo de test Monkey: {test_monkey_time_end - test_monkey_time_start:.2f} segundos")
-                            print(f"🔍 DEBUG - fit_final_models: Resultado Monkey: {monkey_res}")
-                        monkey_p_value = float(monkey_res.get('p_value', 1.0))
-                        monkey_percentile = float(monkey_res.get('percentile', 0.0))
-                        monkey_pass = bool(monkey_p_value < self.monkey_alpha)
-                        if self.debug:
-                            print(f"🔍 DEBUG - fit_final_models: Monkey p_value: {monkey_p_value}")
-                            print(f"🔍 DEBUG - fit_final_models: Monkey percentile: {monkey_percentile}")
-                            print(f"🔍 DEBUG - fit_final_models: Monkey pass: {monkey_pass}")
-                    except Exception as e_monkey:
-                        if self.debug:
-                            print(f"⚠️ ERROR - fit_final_models: Error en Monkey Test: {e_monkey}")
-                        monkey_pass = False
-                        monkey_p_value = 1.0
-                        monkey_percentile = 0.0
+                try:
+                    # Bactest para Monkey Test
+                    score_real, equity_curve_real, returns_series_real, pos_series_real = tester(
+                        dataset=full_ds_real,
+                        model_main=model_main_path,
+                        model_meta=model_meta_path,
+                        model_main_cols=main_feature_cols,
+                        model_meta_cols=meta_feature_cols,
+                        direction=self.direction,
+                        model_main_threshold=hp.get('main_threshold', 0.5),
+                        model_meta_threshold=hp.get('meta_threshold', 0.5),
+                        evaluate_strategy=True,
+                        debug=self.debug,
+                        plot=False
+                    )
 
-                    # 3) Si falla, forzar score -1.0 para evitar autoengaño
-                    if not monkey_pass:
+                    if score_real < 0.0:
                         if self.debug:
-                            print(f"🔍 DEBUG - fit_final_models: Monkey Test NO superado (p={monkey_p_value:.4f} >= {self.monkey_alpha}) → score := -1.0")
-                        return None, None, None, None, None
-                else:
+                            print(f"🔍 DEBUG - fit_final_models: No se ejecutó Monkey Test por score_real < 0.0 ({score_real:.6f})")
+                            return None, None, None, None, None
+                    if equity_curve_real is None or len(equity_curve_real) < 1:
+                        if self.debug:
+                            print(f"🔍 DEBUG - fit_final_models: No se ejecutó Monkey Test por falta de equity_curve_real ({len(equity_curve_real)} elementos)")
+                            return None, None, None, None, None
+
+                    price_series_real = full_ds_real['open'].to_numpy(dtype='float64')
                     if self.debug:
-                        print(f"🔍 DEBUG - fit_final_models: No se ejecutó Monkey Test por falta de equity_curve_real")
-                        return None, None, None, None, None
+                        # Comprobar alineación de longitudes y rangos de índices
+                        aligned = (len(returns_series_real) == len(pos_series_real) == len(price_series_real))
+                        msg = (
+                            f"🔍 DEBUG - fit_final_models: Alineación OOS - "
+                            f"len(returns_series_real): {len(returns_series_real)}, "
+                            f"len(pos_series_real): {len(pos_series_real)}, "
+                            f"len(price_real): {len(price_series_real)}. "
+                            f"Alineados: {aligned}"
+                        )
+                        print(msg)
+                        if not aligned:
+                            print(f"🔍 DEBUG - fit_final_models: Índices returns_oos: {returns_series_real.shape}, pos_oos: {pos_series_real.shape}, price_oos: {price_series_real.shape}")
+                    monkey_res = run_monkey_test(
+                        actual_returns=returns_series_real,
+                        price_series=price_series_real,
+                        pos_series=pos_series_real,
+                        direction=self.direction,
+                        n_simulations=self.monkey_n_simulations,
+                    )
+                    test_monkey_time_end = time.time()
+                    if self.debug:
+                        print(f"🔍 DEBUG - fit_final_models: Tiempo de test Monkey: {test_monkey_time_end - test_monkey_time_start:.2f} segundos")
+                        print(f"🔍 DEBUG - fit_final_models: Resultado Monkey: {monkey_res}")
+                    monkey_p_value = float(monkey_res.get('p_value', 1.0))
+                    monkey_percentile = float(monkey_res.get('percentile', 0.0))
+                    monkey_pass = bool(monkey_p_value < self.monkey_alpha)
+                    if self.debug:
+                        print(f"🔍 DEBUG - fit_final_models: Monkey p_value: {monkey_p_value}")
+                        print(f"🔍 DEBUG - fit_final_models: Monkey percentile: {monkey_percentile}")
+                        print(f"🔍 DEBUG - fit_final_models: Monkey pass: {monkey_pass}")
+                except Exception as e_monkey:
+                    if self.debug:
+                        print(f"⚠️ ERROR - fit_final_models: Error en Monkey Test: {e_monkey}")
+                    monkey_pass = False
+                    monkey_p_value = 1.0
+                    monkey_percentile = 0.0
+
+                # 3) Si falla, forzar score -1.0 para evitar autoengaño
+                if not monkey_pass:
+                    if self.debug:
+                        print(f"🔍 DEBUG - fit_final_models: Monkey Test NO superado (p={monkey_p_value:.4f} >= {self.monkey_alpha}) → score := -1.0")
+                    return None, None, None, None, None
 
             monkey_info = {}
             if monkey_pass is not None:

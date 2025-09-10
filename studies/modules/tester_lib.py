@@ -141,9 +141,7 @@ def tester(
 @njit(cache=True)
 def evaluate_report(
     equity_curve: np.ndarray,
-    trade_profits: np.ndarray,
-    min_trades: int = 300,
-    rdd_floor: float = 1.5
+    trade_profits: np.ndarray
 ) -> tuple:
     """
     Devuelve un score escalar para Optuna.
@@ -161,9 +159,7 @@ def evaluate_report(
 
     # ---------- nº de trades (normalizado) -----------------------------------
     n_trades = trade_profits.size
-    if n_trades < min_trades:
-        return -1.0, -1.0, -1.0, -1.0, -1.0
-    trade_nl = 1.0 / (1.0 + np.exp(-(n_trades - min_trades) / (min_trades * 5.0)))
+    trade_nl = 1.0 / (1.0 + np.exp(-(n_trades - 200) / (200 * 5.0)))
 
     # ---------- return / drawdown (normalizado) ------------------------------
     running_max = np.empty_like(equity_curve)
@@ -177,11 +173,7 @@ def evaluate_report(
     else:
         rdd = total_ret / max_dd
 
-    min_rdd = max(rdd_floor * 1.5, 2.0)  # Al menos 2.0 o 1.5 veces el floor
-    if rdd < min_rdd:
-        return -1.0, -1.0, -1.0, -1.0, -1.0
-
-    rdd_nl = 1.0 / (1.0 + np.exp(-(rdd - min_rdd) / (min_rdd * 3.0)))
+    rdd_nl = 1.0 / (1.0 + np.exp(-(rdd - 2.0) / (2.0 * 3.0)))
 
     # ---------- linealidad y pendiente (normalizado) ---------------------------
     x = np.arange(n, dtype=np.float64)

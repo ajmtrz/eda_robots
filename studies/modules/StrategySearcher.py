@@ -1639,7 +1639,7 @@ class StrategySearcher:
     def get_labeled_full_data(self, hp) -> tuple[pd.DataFrame, pd.DataFrame]:
         try:
             if hp is None:
-                return None, None
+                return None, None, None
 
             if self.debug:
                 print(f"🔍 DEBUG: base_df.shape = {self.base_df.shape}")
@@ -1662,7 +1662,7 @@ class StrategySearcher:
                         print(f"🔍   {k}: {v}")
             
             if not main_periods:
-                return None, None
+                return None, None, None
                 
             pad = int(max(main_periods) + max(meta_periods) if meta_periods else max(main_periods))
             if self.debug:
@@ -1723,7 +1723,7 @@ class StrategySearcher:
             if count_0 < 100 or count_1 < 100:
                 if self.debug:
                     print(f"🔍 DEBUG - get_labeled_full_data - labels_main insuficientes: 0={count_0}, 1={count_1}, totales={main_label_counts.to_dict()}")
-                return None, None
+                return None, None, None
             if self.debug:
                 print(f"🔍 DEBUG: full_ds.shape DESPUES de apply_labeling = {full_ds.shape}")
 
@@ -1747,10 +1747,10 @@ class StrategySearcher:
                     last_ok = valid_idx[-1]
                     full_ds = full_ds.loc[first_ok:last_ok]
                 else:
-                    return None, None
+                    return None, None, None
             feature_cols = full_ds.columns[full_ds.columns.str.contains('feature')]
             if feature_cols.empty:
-                return None, None
+                return None, None, None
             problematic = self.check_constant_features(full_ds, list(feature_cols))
             if problematic:
                 if self.debug and not full_ds.empty:
@@ -1765,7 +1765,7 @@ class StrategySearcher:
                 full_ds = full_ds.drop(columns=problematic)
                 feature_cols = [c for c in feature_cols if c not in problematic]
                 if not feature_cols:
-                    return None, None
+                    return None, None, None
 
             # --- 5b) Reconstruir hp manteniendo el orden original ---------
             main_periods_ordered = []
@@ -1830,7 +1830,7 @@ class StrategySearcher:
             main_periods = hp.get('feature_main_periods', ())
             main_stats = hp.get('feature_main_stats', ())
             if len(main_periods) == 0 or len(main_stats) == 0:
-                return None, None
+                return None, None, None
 
             # ──────────────────────────────────────────────────────────────
             # Chequeo de integridad: asegurar que todos los índices de base_df en el rango de full_ds están en full_ds
@@ -1869,7 +1869,7 @@ class StrategySearcher:
                 print(f"🔍    full_ds_real.index.max() = {full_ds_real.index.max()}")
 
             if full_ds_is.empty or full_ds_oos.empty:
-                return None, None
+                return None, None, None
             
             # 8) Devolver IS y OOS
             return full_ds_is, full_ds_oos, full_ds_real
@@ -1877,7 +1877,7 @@ class StrategySearcher:
         except Exception as e:
             if self.debug:
                 print(f"⚠️ ERROR - get_labeled_full_data: {str(e)}")
-            return None, None
+            return None, None, None
 
     def check_constant_features(self, X: pd.DataFrame, feature_cols: list, std_epsilon: float = 1e-6) -> list:
         """Return the list of columns that may cause numerical instability.

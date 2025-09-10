@@ -301,8 +301,8 @@ class StrategySearcher:
                 reliability_params = {k: v for k, v in hp.items() if k.startswith('label_')}
                 print(f"🔍 DEBUG - search_reliability - Parámetros de confiabilidad: {reliability_params}")
                 
-            full_ds_is, full_ds_oos = self.get_labeled_full_data(hp=hp)
-            if full_ds_is is None or full_ds_oos is None:
+            full_ds_is, full_ds_oos, full_ds_real = self.get_labeled_full_data(hp=hp)
+            if full_ds_is is None or full_ds_oos is None or full_ds_real is None:
                 return -1.0
 
             # Main base mask
@@ -383,6 +383,7 @@ class StrategySearcher:
                 trial=trial,
                 full_ds_is=full_ds_is,
                 full_ds_oos=full_ds_oos,
+                full_ds_real=full_ds_real,
                 model_main_train_data=model_main_train_data,
                 model_meta_train_data=model_meta_train_data,
                 hp=hp.copy()
@@ -453,8 +454,8 @@ class StrategySearcher:
                 cluster_params = {k: v for k, v in hp.items() if k.startswith('cluster_')}
                 print(f"🔍 DEBUG search_clusters {self.search_subtype} - Parámetros clusters: {cluster_params}")
                 
-            full_ds_is, full_ds_oos = self.get_labeled_full_data(hp=hp)
-            if full_ds_is is None or full_ds_oos is None:
+            full_ds_is, full_ds_oos, full_ds_real = self.get_labeled_full_data(hp=hp)
+            if full_ds_is is None or full_ds_oos is None or full_ds_real is None:
                 return -1.0
             
             base_mask = full_ds_is['labels_main'].isin([0.0, 1.0])
@@ -475,7 +476,7 @@ class StrategySearcher:
             full_ds_is.loc[~base_mask, 'labels_meta'] = -1  # Muestras no confiables sin cluster
 
             score, full_ds_with_labels_path, model_paths, models_cols, monkey_info = self.evaluate_clusters(
-                trial=trial, full_ds_is=full_ds_is, full_ds_oos=full_ds_oos, hp=hp)
+                trial=trial, full_ds_is=full_ds_is, full_ds_oos=full_ds_oos, full_ds_real=full_ds_real, hp=hp)
             if score is None or model_paths is None or models_cols is None or full_ds_with_labels_path is None:
                 return -1.0
             
@@ -500,7 +501,7 @@ class StrategySearcher:
     # Métodos auxiliares
     # =========================================================================
     
-    def evaluate_clusters(self, trial: optuna.trial, full_ds_is: pd.DataFrame, full_ds_oos: pd.DataFrame, hp: Dict[str, Any]) -> tuple[float, tuple, tuple, str, dict]:
+    def evaluate_clusters(self, trial: optuna.trial, full_ds_is: pd.DataFrame, full_ds_oos: pd.DataFrame, full_ds_real: pd.DataFrame, hp: Dict[str, Any]) -> tuple[float, tuple, tuple, str, dict]:
         """Función helper para evaluar clusters y entrenar modelos."""
         try:
             # Esquema tradicional de clusters
@@ -605,6 +606,7 @@ class StrategySearcher:
                     trial=trial,
                     full_ds_is=full_ds_is,
                     full_ds_oos=full_ds_oos,
+                    full_ds_real=full_ds_real,
                     model_main_train_data=model_main_train_data,
                     model_meta_train_data=model_meta_train_data,
                     hp=hp.copy()
@@ -867,6 +869,7 @@ class StrategySearcher:
     def fit_final_models(self, trial: optuna.trial,
                          full_ds_is: pd.DataFrame,
                          full_ds_oos: pd.DataFrame,
+                         full_ds_real: pd.DataFrame,
                          model_main_train_data: pd.DataFrame,
                          model_meta_train_data: pd.DataFrame,
                          hp: Dict[str, Any]) -> tuple[float, str, tuple, tuple, dict]:
@@ -976,7 +979,7 @@ class StrategySearcher:
                     print(f"🔍 DEBUG - fit_final_models: Inicializando backtest")
                 full_ds = pd.concat([full_ds_is, full_ds_oos]).sort_index()
                 test_train_time_start = time.time()
-                score, equity_curve, returns_series, pos_series = tester(
+                score, _, _, _ = tester(
                     dataset=full_ds,
                     model_main=model_main_path,
                     model_meta=model_meta_path,
@@ -985,6 +988,7 @@ class StrategySearcher:
                     direction=self.direction,
                     model_main_threshold=hp.get('main_threshold', 0.5),
                     model_meta_threshold=hp.get('meta_threshold', 0.5),
+                    evaluate_strategy=True,
                     debug=self.debug,
                     plot=False
                 )
@@ -1019,57 +1023,72 @@ class StrategySearcher:
             monkey_pass = None
             monkey_p_value = None
             monkey_percentile = None
-            if must_run_monkey and equity_curve is not None and len(equity_curve) > 1:
-                try:
-                    test_monkey_time_start = time.time()
-                    # Preparar inputs para Monkey: retornos por barra, precios, posiciones y direccionalidad
-                    mask_oos = full_ds.index.isin(full_ds_oos.index)
-                    returns_oos = returns_series[mask_oos]
-                    pos_oos = pos_series[mask_oos]
-                    price_oos = full_ds_oos['open'].to_numpy(dtype='float64')
-                    if self.debug:
-                        # Comprobar alineación de longitudes y rangos de índices
-                        aligned = (len(returns_oos) == len(pos_oos) == len(price_oos))
-                        msg = (
-                            f"🔍 DEBUG - fit_final_models: Alineación OOS - "
-                            f"len(returns_oos): {len(returns_oos)}, "
-                            f"len(pos_oos): {len(pos_oos)}, "
-                            f"len(price_oos): {len(price_oos)}. "
-                            f"Alineados: {aligned}"
+            if must_run_monkey:
+                test_monkey_time_start = time.time()
+                # Bactest para Monkey Test
+                _ , equity_curve_real, returns_series_real, pos_series_real = tester(
+                    dataset=full_ds_real,
+                    model_main=model_main_path,
+                    model_meta=model_meta_path,
+                    model_main_cols=main_feature_cols,
+                    model_meta_cols=meta_feature_cols,
+                    direction=self.direction,
+                    model_main_threshold=hp.get('main_threshold', 0.5),
+                    model_meta_threshold=hp.get('meta_threshold', 0.5),
+                    evaluate_strategy=False,
+                    debug=self.debug,
+                    plot=False
+                )
+                if equity_curve_real is not None and len(equity_curve_real) > 1:
+                    try:
+                        price_series_real = full_ds_real['open'].to_numpy(dtype='float64')
+                        if self.debug:
+                            # Comprobar alineación de longitudes y rangos de índices
+                            aligned = (len(returns_series_real) == len(pos_series_real) == len(price_series_real))
+                            msg = (
+                                f"🔍 DEBUG - fit_final_models: Alineación OOS - "
+                                f"len(returns_series_real): {len(returns_series_real)}, "
+                                f"len(pos_series_real): {len(pos_series_real)}, "
+                                f"len(price_real): {len(price_series_real)}. "
+                                f"Alineados: {aligned}"
+                            )
+                            print(msg)
+                            if not aligned:
+                                print(f"🔍 DEBUG - fit_final_models: Índices returns_oos: {returns_series_real.shape}, pos_oos: {pos_series_real.shape}, price_oos: {price_series_real.shape}")
+                        monkey_res = run_monkey_test(
+                            actual_returns=returns_series_real,
+                            price_series=price_series_real,
+                            pos_series=pos_series_real,
+                            direction=self.direction,
+                            n_simulations=self.monkey_n_simulations,
                         )
-                        print(msg)
-                        if not aligned:
-                            print(f"🔍 DEBUG - fit_final_models: Índices returns_oos: {returns_oos.shape}, pos_oos: {pos_oos.shape}, price_oos: {price_oos.shape}")
-                    monkey_res = run_monkey_test(
-                        actual_returns=returns_oos,
-                        price_series=price_oos,
-                        pos_series=pos_oos,
-                        direction=self.direction,
-                        n_simulations=self.monkey_n_simulations,
-                    )
-                    test_monkey_time_end = time.time()
-                    if self.debug:
-                        print(f"🔍 DEBUG - fit_final_models: Tiempo de test Monkey: {test_monkey_time_end - test_monkey_time_start:.2f} segundos")
-                        print(f"🔍 DEBUG - fit_final_models: Resultado Monkey: {monkey_res}")
-                    monkey_p_value = float(monkey_res.get('p_value', 1.0))
-                    monkey_percentile = float(monkey_res.get('percentile', 0.0))
-                    monkey_pass = bool(monkey_p_value < self.monkey_alpha)
-                    if self.debug:
-                        print(f"🔍 DEBUG - fit_final_models: Monkey p_value: {monkey_p_value}")
-                        print(f"🔍 DEBUG - fit_final_models: Monkey percentile: {monkey_percentile}")
-                        print(f"🔍 DEBUG - fit_final_models: Monkey pass: {monkey_pass}")
-                except Exception as e_monkey:
-                    if self.debug:
-                        print(f"⚠️ ERROR - fit_final_models: Error en Monkey Test: {e_monkey}")
-                    monkey_pass = False
-                    monkey_p_value = 1.0
-                    monkey_percentile = 0.0
+                        test_monkey_time_end = time.time()
+                        if self.debug:
+                            print(f"🔍 DEBUG - fit_final_models: Tiempo de test Monkey: {test_monkey_time_end - test_monkey_time_start:.2f} segundos")
+                            print(f"🔍 DEBUG - fit_final_models: Resultado Monkey: {monkey_res}")
+                        monkey_p_value = float(monkey_res.get('p_value', 1.0))
+                        monkey_percentile = float(monkey_res.get('percentile', 0.0))
+                        monkey_pass = bool(monkey_p_value < self.monkey_alpha)
+                        if self.debug:
+                            print(f"🔍 DEBUG - fit_final_models: Monkey p_value: {monkey_p_value}")
+                            print(f"🔍 DEBUG - fit_final_models: Monkey percentile: {monkey_percentile}")
+                            print(f"🔍 DEBUG - fit_final_models: Monkey pass: {monkey_pass}")
+                    except Exception as e_monkey:
+                        if self.debug:
+                            print(f"⚠️ ERROR - fit_final_models: Error en Monkey Test: {e_monkey}")
+                        monkey_pass = False
+                        monkey_p_value = 1.0
+                        monkey_percentile = 0.0
 
-                # 3) Si falla, forzar score -1.0 para evitar autoengaño
-                if not monkey_pass:
+                    # 3) Si falla, forzar score -1.0 para evitar autoengaño
+                    if not monkey_pass:
+                        if self.debug:
+                            print(f"🔍 DEBUG - fit_final_models: Monkey Test NO superado (p={monkey_p_value:.4f} >= {self.monkey_alpha}) → score := -1.0")
+                        return None, None, None, None, None
+                else:
                     if self.debug:
-                        print(f"🔍 DEBUG - fit_final_models: Monkey Test NO superado (p={monkey_p_value:.4f} >= {self.monkey_alpha}) → score := -1.0")
-                    return None, None, None, None, None
+                        print(f"🔍 DEBUG - fit_final_models: No se ejecutó Monkey Test por falta de equity_curve_real")
+                        return None, None, None, None, None
 
             monkey_info = {}
             if monkey_pass is not None:
@@ -1659,8 +1678,7 @@ class StrategySearcher:
             start_ext = min(self.train_start, self.test_start) - pad * bar_delta
             if start_ext < idx[0]:
                 start_ext = idx[0]
-            end_ext = max(self.train_end, self.test_end)
-            full_ds = self.base_df.loc[start_ext:end_ext].copy()
+            full_ds = self.base_df.loc[start_ext:].copy()
             
             # 🔍 DEBUG: Supervisar paso de parámetros a get_features
             if self.debug:
@@ -1708,8 +1726,7 @@ class StrategySearcher:
             # 6) Comprobaciones de calidad de features
             # Recortar al rango de interés (continuo)
             start_range = min(self.train_start, self.test_start)
-            end_range = max(self.train_end, self.test_end)
-            full_ds = full_ds.loc[start_range:end_range]
+            full_ds = full_ds.loc[start_range:]
 
             # Recorte vectorizado de warmup: localizar primer y último índice
             # donde TODOS los features son finitos (sin eliminar filas internas)
@@ -1829,9 +1846,11 @@ class StrategySearcher:
             # Recortar a rangos: IS y OOS
             is_mask = (full_ds.index >= self.train_start) & (full_ds.index <= self.train_end)
             oos_mask = (full_ds.index >= self.test_start) & (full_ds.index <= self.test_end)
+            real_mask = (full_ds.index > max(self.train_end, self.test_end))
             is_mask &= ~oos_mask
             full_ds_is = full_ds.loc[is_mask]
             full_ds_oos = full_ds.loc[oos_mask]
+            full_ds_real = full_ds.loc[real_mask]   
             if self.debug:
                 print(f"🔍 DEBUG: get_labeled_full_data")
                 print(f"🔍    full_ds_is.shape = {full_ds_is.shape}")
@@ -1840,12 +1859,15 @@ class StrategySearcher:
                 print(f"🔍    full_ds_oos.shape = {full_ds_oos.shape}")
                 print(f"🔍    full_ds_oos.index.min() = {full_ds_oos.index.min()}")
                 print(f"🔍    full_ds_oos.index.max() = {full_ds_oos.index.max()}")
+                print(f"🔍    full_ds_real.shape = {full_ds_real.shape}")
+                print(f"🔍    full_ds_real.index.min() = {full_ds_real.index.min()}")
+                print(f"🔍    full_ds_real.index.max() = {full_ds_real.index.max()}")
 
             if full_ds_is.empty or full_ds_oos.empty:
                 return None, None
             
             # 8) Devolver IS y OOS
-            return full_ds_is, full_ds_oos
+            return full_ds_is, full_ds_oos, full_ds_real
 
         except Exception as e:
             if self.debug:

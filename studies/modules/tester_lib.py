@@ -21,6 +21,7 @@ def tester(
         model_meta_threshold: float = 0.5,
         model_max_orders: int = 1,
         model_delay_bars: int = 1,
+        evaluate_strategy: bool = True,
         debug: bool = False,
         plot: bool = False
         ) -> tuple[float, pd.DataFrame]:
@@ -81,7 +82,7 @@ def tester(
         direction_int = {"buy": 0, "sell": 1, "both": 2}[direction]
 
         # Backtest simple (sin soporte de datasets disjuntos)
-        rpt, trade_stats, trade_profits, pos_series, returns_series = backtest(
+        equity_curve, trade_stats, trade_profits, pos_series, returns_series = backtest(
             open_,
             main_predictions = main,
             meta_predictions = meta,
@@ -94,41 +95,43 @@ def tester(
 
         # DEBUG: Resultados del backtest
         if debug:
-            print(f"🔍 DEBUG tester - Backtest: trades={trade_stats[0]}, pos={trade_stats[1]}, neg={trade_stats[2]}, rpt_len={len(rpt)}")
+            print(f"🔍 DEBUG tester - Backtest: trades={trade_stats[0]}, pos={trade_stats[1]}, neg={trade_stats[2]}, rpt_len={len(equity_curve)}")
 
-        trade_nl, rdd_nl, r2, slope_nl, wf_nl = evaluate_report(rpt, trade_profits=trade_profits)
-        
-        if (trade_nl <= -1.0 and rdd_nl <= -1.0 and r2 <= -1.0 and slope_nl <= -1.0 and wf_nl <= -1.0):
+        score = -1.0
+        if evaluate_strategy:
+            trade_nl, rdd_nl, r2, slope_nl, wf_nl = evaluate_report(equity_curve=equity_curve, trade_profits=trade_profits)
+            
+            if (trade_nl <= -1.0 and rdd_nl <= -1.0 and r2 <= -1.0 and slope_nl <= -1.0 and wf_nl <= -1.0):
+                if debug:
+                    print(f"🔍 DEBUG tester - TODAS las métricas son -1.0, retornando -1.0")
+                return (-1.0, np.array([], dtype=np.float64), np.array([], dtype=np.float64), np.array([], dtype=np.int8))
+            
+            # Pesos ajustados para promover rectilineidad y desempeño OOS
+            # Prioriza: 1) Consistencia temporal (55%), 2) Linealidad (25%), 3) Pendiente (10%), 4) RDD (7%), 5) Trades (3%)
+            score = (
+                    0.25 * r2 +        # Lineal idad de la curva (R²)
+                    0.10 * slope_nl +  # Pendiente positiva moderada
+                    0.07 * rdd_nl +    # Ratio retorno/drawdown
+                    0.03 * trade_nl +  # Número de trades (muy baja influencia)
+                    0.55 * wf_nl       # Consistencia temporal (máxima prioridad)
+            )
+
             if debug:
-                print(f"🔍 DEBUG tester - TODAS las métricas son -1.0, retornando -1.0")
-            return (-1.0, np.array([], dtype=np.float64), np.array([], dtype=np.float64), np.array([], dtype=np.int8))
-        
-        # Pesos ajustados para promover rectilineidad y desempeño OOS
-        # Prioriza: 1) Consistencia temporal (55%), 2) Linealidad (25%), 3) Pendiente (10%), 4) RDD (7%), 5) Trades (3%)
-        score = (
-                0.25 * r2 +        # Linealidad de la curva (R²)
-                0.10 * slope_nl +  # Pendiente positiva moderada
-                0.07 * rdd_nl +    # Ratio retorno/drawdown
-                0.03 * trade_nl +  # Número de trades (muy baja influencia)
-                0.55 * wf_nl       # Consistencia temporal (máxima prioridad)
-        )
+                print(f"🔍 DEBUG - Tester - Params: thr_main={model_main_threshold}, thr_meta={model_meta_threshold}, max_orders={model_max_orders}, delay_bars={model_delay_bars}")
+                print(f"🔍 DEBUG - Tester - Metrics: SCORE={score:.6f}, trade_nl={trade_nl:.6f}, rdd_nl={rdd_nl:.6f}, r2={r2:.6f}, slope_nl={slope_nl:.6f}, wf_nl={wf_nl:.6f}")
+                print(f"🔍 DEBUG - Tester - Trades: n={trade_stats[0]}, pos={trade_stats[1]}, neg={trade_stats[2]}")
+                if plot:
+                    plt.figure(figsize=(10, 6))
+                    plt.plot(equity_curve, label='Equity Curve', linewidth=1.5)
+                    plt.title(f"Score: {score:.6f}")
+                    plt.xlabel("Trades")
+                    plt.ylabel("Cumulative P&L")
+                    plt.legend()
+                    plt.grid(alpha=0.3)
+                    plt.show()
+                    plt.close()
 
-        if debug:
-            print(f"🔍 DEBUG - Tester - Params: thr_main={model_main_threshold}, thr_meta={model_meta_threshold}, max_orders={model_max_orders}, delay_bars={model_delay_bars}")
-            print(f"🔍 DEBUG - Tester - Metrics: SCORE={score:.6f}, trade_nl={trade_nl:.6f}, rdd_nl={rdd_nl:.6f}, r2={r2:.6f}, slope_nl={slope_nl:.6f}, wf_nl={wf_nl:.6f}")
-            print(f"🔍 DEBUG - Tester - Trades: n={trade_stats[0]}, pos={trade_stats[1]}, neg={trade_stats[2]}")
-            if plot:
-                plt.figure(figsize=(10, 6))
-                plt.plot(rpt, label='Equity Curve', linewidth=1.5)
-                plt.title(f"Score: {score:.6f}")
-                plt.xlabel("Trades")
-                plt.ylabel("Cumulative P&L")
-                plt.legend()
-                plt.grid(alpha=0.3)
-                plt.show()
-                plt.close()
-
-        return score, np.asarray(rpt, dtype=np.float64), returns_series, pos_series
+        return score, np.asarray(equity_curve, dtype=np.float64), returns_series, pos_series
 
     except Exception as e:
         if debug:

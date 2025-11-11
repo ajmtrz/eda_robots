@@ -828,6 +828,36 @@ def _block_bootstrap_positions(base_pos: np.ndarray, length: int, block_size: in
     return out
 
 @njit(cache=True)
+def _circular_shift_positions_jit(pos: np.ndarray, shift: int) -> np.ndarray:
+    n = pos.size
+    if n == 0:
+        return np.zeros(0, dtype=np.int8)
+    s = 0 if n == 0 else (shift % n)
+    if s == 0:
+        return pos.copy()
+    out = np.empty(n, dtype=np.int8)
+    out[:s] = pos[n - s:]
+    out[s:] = pos[:n - s]
+    return out
+
+@njit(cache=True)
+def _randomize_block_size_jit(base_block: int) -> int:
+    # Genera un tamaño de bloque aleatorio alrededor de la mediana observada, acotado [2,64]
+    b = base_block
+    if b < 2:
+        b = 2
+    low = int(0.5 * b)
+    high = int(1.5 * b)
+    if low < 2:
+        low = 2
+    if high > 64:
+        high = 64
+    if high < low:
+        high = low
+    # randint es inclusivo-exclusivo en numba? Aseguramos incluir high sumando 1 si posible
+    return int(np.random.randint(low, high + 1))
+
+@njit(cache=True)
 def _simulate_returns_from_positions(price_series: np.ndarray,
                                      pos_series_sim: np.ndarray) -> np.ndarray:
     # Calcula retornos por barra usando la posición previa (sin comisiones)
@@ -860,6 +890,22 @@ def run_monkey_test(actual_returns: np.ndarray,
         price_series = price_series.astype(np.float64)
         pos_series = pos_series.astype(np.int8)
 
+        # Endurecer calidad OOS: tamaño mínimo efectivo y nº de entradas mínimo
+        #  - Mínimo de barras con exposición distinta de 0
+        #  - Mínimo de cambios 0->(!=0) como proxy de nº de trades
+        if actual_returns.size < 50 or price_series.size < 50 or pos_series.size < 50:
+            return {'p_value': 1.0, 'percentile': 0.0}
+        n_exposed = int(np.count_nonzero(pos_series != 0))
+        # Contar entradas como transiciones desde 0 a no-cero
+        entries = 0
+        prev = 0
+        for v in pos_series:
+            if prev == 0 and v != 0:
+                entries += 1
+            prev = v
+        if n_exposed < 200 or entries < 30:
+            return {'p_value': 1.0, 'percentile': 0.0}
+
         # Sanitizar posiciones según direccionalidad
         direction_code = 2
         if direction == 'buy':
@@ -868,15 +914,24 @@ def run_monkey_test(actual_returns: np.ndarray,
             direction_code = 1
         base_pos = _sanitize_positions_for_direction_code(pos_series, direction_code)
         # Estimar tamaño de bloque y preparar simulaciones
-        block_size = _estimate_block_size_jit(base_pos)
+        block_size_med = _estimate_block_size_jit(base_pos)
 
         # Sharpe real (por barra, sin anualizar)
         sr_actual = _compute_sharpe(actual_returns.astype(np.float64))
 
         # Simulaciones
         sharpes = np.zeros(int(n_simulations), dtype=np.float64)
+        n = price_series.size
         for k in range(int(n_simulations)):
-            sim_pos = _block_bootstrap_positions(base_pos, price_series.size, block_size)
+            # Mezclar dos nulos: circular shift (fase) y block bootstrap (estructura)
+            if (k & 1) == 0:
+                # Circular shift: preserva estructura y frecuencia de rachas; rompe la alineación temporal
+                shift = np.random.randint(0, n) if n > 0 else 0
+                sim_pos = _circular_shift_positions_jit(base_pos, shift)
+            else:
+                # Block bootstrap con tamaño de bloque aleatorio alrededor de la mediana observada
+                bs = _randomize_block_size_jit(block_size_med)
+                sim_pos = _block_bootstrap_positions(base_pos, n, bs)
             sim_ret = _simulate_returns_from_positions(price_series, sim_pos)
             sharpes[k] = _compute_sharpe(sim_ret)
 

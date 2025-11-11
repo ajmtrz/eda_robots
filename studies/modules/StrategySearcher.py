@@ -907,8 +907,8 @@ class StrategySearcher:
                 eval_metric='Accuracy',
                 store_all_simple_ctr=False,
                 allow_writing_files=False,
-                # thread_count=self.n_jobs,
-                task_type='GPU',
+                thread_count=self.n_jobs,
+                task_type='CPU',
                 verbose=False,
             )
                 
@@ -954,8 +954,8 @@ class StrategySearcher:
                 eval_metric='F1',
                 store_all_simple_ctr=False,
                 allow_writing_files=False,
-                # thread_count=self.n_jobs,
-                task_type='GPU',
+                thread_count=self.n_jobs,
+                task_type='CPU',
                 verbose=False,
             )
                     

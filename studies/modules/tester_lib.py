@@ -635,6 +635,9 @@ def predict_proba_onnx_models(
 
     # Caso más común: un solo modelo (str)
     if isinstance(onnx_paths, str):
+        # Manejar entrada vacía de forma segura
+        if X is None or X.shape[0] == 0:
+            return np.zeros(0, dtype=np.float32)
         sess, inp = _get_ort_session(onnx_paths)
         
         # Ejecutar modelo ONNX
@@ -644,7 +647,10 @@ def predict_proba_onnx_models(
         if len(outputs) == 2:  # zipmap: [labels, probabilities]
             # outputs[0] = labels, outputs[1] = probabilities dict
             proba_dict = outputs[1]
-            if isinstance(proba_dict, list) and len(proba_dict) > 0:
+            if isinstance(proba_dict, list):
+                if len(proba_dict) == 0:
+                    # Entrada vacía → salida vacía
+                    return np.zeros(0, dtype=np.float32)
                 # Debug: verificar estructura del zipmap
                 if debug:
                     print(f"🔍 DEBUG ONNX - outputs[0] type: {type(outputs[0])}, shape: {np.array(outputs[0]).shape}")
@@ -695,6 +701,9 @@ def predict_proba_onnx_models(
     # Varios modelos (lista)
     n_models = len(onnx_paths)
     n_samples = X.shape[0]
+    if n_samples == 0:
+        # Devolver array vacío con forma (n_models, 0) para consistencia
+        return np.empty((n_models, 0), dtype=np.float32)
     probs = np.empty((n_models, n_samples), dtype=np.float32)
 
     for k, path in enumerate(onnx_paths):
@@ -703,9 +712,12 @@ def predict_proba_onnx_models(
         
         if len(outputs) == 2:  # zipmap
             proba_dict = outputs[1]
-            if isinstance(proba_dict, list) and len(proba_dict) > 0:
-                # Las claves pueden ser bytes b"1" o enteros 1
-                probs[k] = np.fromiter((p.get(1, p.get(b"1", 0.0)) for p in proba_dict), dtype=np.float32)
+            if isinstance(proba_dict, list):
+                if len(proba_dict) == 0:
+                    probs[k] = np.zeros(n_samples, dtype=np.float32)
+                else:
+                    # Las claves pueden ser bytes b"1" o enteros 1
+                    probs[k] = np.fromiter((p.get(1, p.get(b"1", 0.0)) for p in proba_dict), dtype=np.float32)
             else:
                 raise RuntimeError(f"Formato zipmap inesperado: {type(proba_dict)}")
         elif len(outputs) == 1:  # formato simple

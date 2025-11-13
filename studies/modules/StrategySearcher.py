@@ -908,7 +908,7 @@ class StrategySearcher:
                 store_all_simple_ctr=False,
                 allow_writing_files=False,
                 thread_count=self.n_jobs,
-                task_type='CPU',
+                task_type='GPU',
                 verbose=False,
             )
                 
@@ -955,7 +955,7 @@ class StrategySearcher:
                 store_all_simple_ctr=False,
                 allow_writing_files=False,
                 thread_count=self.n_jobs,
-                task_type='CPU',
+                task_type='GPU',
                 verbose=False,
             )
                     

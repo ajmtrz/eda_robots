@@ -26,7 +26,7 @@ from modules.labeling_lib import (
     get_labels_filter_binary, get_labels_fractal_patterns, get_labels_zigzag,
     clustering_kmeans, clustering_hdbscan, clustering_markov, clustering_lgmm
 )
-from modules.tester_lib import tester, clear_onnx_session_cache, run_monkey_test
+from modules.tester_lib import tester, clear_onnx_session_cache, run_monkey_test, bocpd_guard
 from modules.export_lib import export_models_to_ONNX, export_dataset_to_csv, export_to_mql5
 
 class StrategySearcher:
@@ -177,9 +177,13 @@ class StrategySearcher:
                                             os.remove(study.user_attrs["best_full_ds_with_labels_path"])
                                     # Guardar nuevas rutas de modelos
                                     study.set_user_attr("best_score", trial.user_attrs['score'])
-                                    study.set_user_attr('monkey_p_value', trial.user_attrs.get('monkey_p_value'))
-                                    study.set_user_attr('monkey_percentile', trial.user_attrs.get('monkey_percentile'))
-                                    study.set_user_attr('monkey_pass', trial.user_attrs.get('monkey_pass'))
+                                    study.set_user_attr('best_monkey_p_value', trial.user_attrs.get('monkey_p_value_real'))
+                                    study.set_user_attr('best_monkey_percentile', trial.user_attrs.get('monkey_percentile_real'))
+                                    study.set_user_attr('best_monkey_pass', trial.user_attrs.get('monkey_pass_real'))
+                                    study.set_user_attr('best_bocpd_cp_prob_last', trial.user_attrs.get('bocpd_cp_prob_last'))
+                                    study.set_user_attr('best_bocpd_erl_last', trial.user_attrs.get('bocpd_erl_last'))
+                                    study.set_user_attr('best_bocpd_kill_shock', trial.user_attrs.get('bocpd_kill_shock'))
+                                    study.set_user_attr('best_bocpd_kill_erosion', trial.user_attrs.get('bocpd_kill_erosion'))
                                     study.set_user_attr("best_model_paths", trial.user_attrs['model_paths'])
                                     study.set_user_attr("best_full_ds_with_labels_path", trial.user_attrs['full_ds_with_labels_path'])
                                     study.set_user_attr("best_periods_main", trial.user_attrs.get('feature_main_periods'))
@@ -198,9 +202,13 @@ class StrategySearcher:
                                         "models_export_path": self.models_export_path,
                                         "include_export_path": self.include_export_path,
                                         "best_score": study.user_attrs["best_score"],
-                                        "monkey_p_value": study.user_attrs.get('monkey_p_value'),
-                                        "monkey_percentile": study.user_attrs.get('monkey_percentile'),
-                                        "monkey_pass": study.user_attrs.get('monkey_pass'),
+                                        "best_bocpd_cp_prob_last": study.user_attrs.get('bocpd_cp_prob_last'),
+                                        "best_bocpd_erl_last": study.user_attrs.get('bocpd_erl_last'),
+                                        "best_bocpd_kill_shock": study.user_attrs.get('bocpd_kill_shock'),
+                                        "best_bocpd_kill_erosion": study.user_attrs.get('bocpd_kill_erosion'),
+                                        "best_monkey_p_value": study.user_attrs.get('monkey_p_value_real'),
+                                        "best_monkey_percentile": study.user_attrs.get('monkey_percentile_real'),
+                                        "best_monkey_pass": study.user_attrs.get('monkey_pass_real'),
                                         "best_full_ds_with_labels_path": study.user_attrs["best_full_ds_with_labels_path"],
                                         "best_model_paths": study.user_attrs["best_model_paths"],
                                         "best_model_cols": study.user_attrs["best_model_cols"],
@@ -379,7 +387,7 @@ class StrategySearcher:
                 print(f"🔍 DEBUG - search_reliability META: shape={model_meta_train_data.shape}, labels={meta_label_counts.to_dict()}")
                 
             # Usar pipeline existente
-            score, full_ds_with_labels_path, model_paths, models_cols, monkey_info = self.fit_final_models(
+            score, full_ds_with_labels_path, model_paths, models_cols, test_info = self.fit_final_models(
                 trial=trial,
                 full_ds_is=full_ds_is,
                 full_ds_oos=full_ds_oos,
@@ -398,10 +406,18 @@ class StrategySearcher:
             trial.set_user_attr('full_ds_with_labels_path', full_ds_with_labels_path)
             trial.set_user_attr('best_main_threshold', hp['main_threshold'])
             trial.set_user_attr('best_meta_threshold', hp['meta_threshold'])
-            if isinstance(monkey_info, dict) and monkey_info:
-                trial.set_user_attr('monkey_p_value', monkey_info.get('monkey_p_value'))
-                trial.set_user_attr('monkey_percentile', monkey_info.get('monkey_percentile'))
-                trial.set_user_attr('monkey_pass', monkey_info.get('monkey_pass'))
+            if isinstance(test_info, tuple) and len(test_info) == 2:
+                monkey_info = test_info[0]
+                bocpd_info = test_info[1]
+                if isinstance(monkey_info, dict) and monkey_info:   
+                    trial.set_user_attr('monkey_p_value_real', monkey_info.get('monkey_p_value_real'))
+                    trial.set_user_attr('monkey_percentile_real', monkey_info.get('monkey_percentile_real'))
+                    trial.set_user_attr('monkey_pass_real', monkey_info.get('monkey_pass_real'))
+                if isinstance(bocpd_info, dict) and bocpd_info:
+                    trial.set_user_attr('bocpd_cp_prob_last', bocpd_info.get('bocpd_cp_prob_last'))
+                    trial.set_user_attr('bocpd_erl_last', bocpd_info.get('bocpd_erl_last'))
+                    trial.set_user_attr('bocpd_kill_shock', bocpd_info.get('bocpd_kill_shock'))
+                    trial.set_user_attr('bocpd_kill_erosion', bocpd_info.get('bocpd_kill_erosion'))
 
             return trial.user_attrs.get('score', -1.0)
             
@@ -475,7 +491,7 @@ class StrategySearcher:
             full_ds_is.loc[base_mask, 'labels_meta'] = reliable_data_clustered['labels_meta']
             full_ds_is.loc[~base_mask, 'labels_meta'] = -1  # Muestras no confiables sin cluster
 
-            score, full_ds_with_labels_path, model_paths, models_cols, monkey_info = self.evaluate_clusters(
+            score, full_ds_with_labels_path, model_paths, models_cols, test_info = self.evaluate_clusters(
                 trial=trial, full_ds_is=full_ds_is, full_ds_oos=full_ds_oos, full_ds_real=full_ds_real, hp=hp)
             if score is None or model_paths is None or models_cols is None or full_ds_with_labels_path is None:
                 return -1.0
@@ -486,10 +502,18 @@ class StrategySearcher:
             trial.set_user_attr('full_ds_with_labels_path', full_ds_with_labels_path)
             trial.set_user_attr('best_main_threshold', hp['main_threshold'])
             trial.set_user_attr('best_meta_threshold', hp['meta_threshold'])
-            if isinstance(monkey_info, dict) and monkey_info:
-                trial.set_user_attr('monkey_p_value', monkey_info.get('monkey_p_value'))
-                trial.set_user_attr('monkey_percentile', monkey_info.get('monkey_percentile'))
-                trial.set_user_attr('monkey_pass', monkey_info.get('monkey_pass'))
+            if isinstance(test_info, tuple) and len(test_info) == 2:
+                monkey_info = test_info[0]
+                bocpd_info = test_info[1]
+                if isinstance(monkey_info, dict) and monkey_info:   
+                    trial.set_user_attr('monkey_p_value_real', monkey_info.get('monkey_p_value_real'))
+                    trial.set_user_attr('monkey_percentile_real', monkey_info.get('monkey_percentile_real'))
+                    trial.set_user_attr('monkey_pass_real', monkey_info.get('monkey_pass_real'))
+                if isinstance(bocpd_info, dict) and bocpd_info:
+                    trial.set_user_attr('bocpd_cp_prob_last', bocpd_info.get('bocpd_cp_prob_last'))
+                    trial.set_user_attr('bocpd_erl_last', bocpd_info.get('bocpd_erl_last'))
+                    trial.set_user_attr('bocpd_kill_shock', bocpd_info.get('bocpd_kill_shock'))
+                    trial.set_user_attr('bocpd_kill_erosion', bocpd_info.get('bocpd_kill_erosion'))
 
             return trial.user_attrs.get('score', -1.0)
         except Exception as e:
@@ -510,7 +534,7 @@ class StrategySearcher:
             best_models_cols = (None, None)
             best_full_ds_with_labels_path = None
             best_monkey_info: dict | None = None
-
+            best_bocpd_info: dict | None = None
             # 🔍 DEBUG: Supervisar parámetros
             if self.debug:
                 validation_params = {k: v for k, v in hp.items() if k.startswith('label_')}
@@ -602,7 +626,7 @@ class StrategySearcher:
                     print(f"🔍   Meta labels distribution: {meta_label_counts}")
                     
                 # Entrenar modelos
-                score, full_ds_with_labels_path, model_paths, models_cols, monkey_info = self.fit_final_models(
+                score, full_ds_with_labels_path, model_paths, models_cols, test_info = self.fit_final_models(
                     trial=trial,
                     full_ds_is=full_ds_is,
                     full_ds_oos=full_ds_oos,
@@ -624,8 +648,7 @@ class StrategySearcher:
                     best_model_paths = model_paths
                     best_full_ds_with_labels_path = full_ds_with_labels_path
                     best_models_cols = models_cols
-                    best_monkey_info = monkey_info
-
+                    best_test_info = test_info
                     if self.debug:
                         print(f"🔍   Nuevo mejor cluster {clust}: score = {score}")
                 else:
@@ -636,7 +659,7 @@ class StrategySearcher:
                         os.remove(full_ds_with_labels_path)
             if best_score == -math.inf or best_model_paths == (None, None):
                 return None, None, None, None, None
-            return best_score, best_full_ds_with_labels_path, best_model_paths, best_models_cols, (best_monkey_info or {})
+            return best_score, best_full_ds_with_labels_path, best_model_paths, best_models_cols, best_test_info
         except Exception as e:
             if self.debug:
                 print(f"⚠️ ERROR - evaluate_clusters: {str(e)}")
@@ -829,7 +852,7 @@ class StrategySearcher:
         p['causal_percentile'] = trial.suggest_int('causal_percentile', 60, 95)
         p['oof_resid_percentile'] = trial.suggest_int('oof_resid_percentile', 75, 95)
         p['meta_threshold'] = trial.suggest_float('meta_threshold', 0.3, 0.7)
-        p['main_threshold'] = 0.5 # trial.suggest_float('main_threshold', 0.3, 0.7)
+        p['main_threshold'] = trial.suggest_float('main_threshold', 0.3, 0.7)
 
         return p
 
@@ -979,7 +1002,7 @@ class StrategySearcher:
                     print(f"🔍 DEBUG - fit_final_models: Inicializando backtest")
                 full_ds = pd.concat([full_ds_is, full_ds_oos]).sort_index()
                 test_train_time_start = time.time()
-                score, _, _, _ = tester(
+                score, equity_curve, _, _ = tester(
                     dataset=full_ds,
                     model_main=model_main_path,
                     model_meta=model_meta_path,
@@ -999,9 +1022,56 @@ class StrategySearcher:
                     if self.debug:
                         print(f"🔍 DEBUG - fit_final_models: Score backtest < 0.0 ({score:.6f})")
                     return None, None, None, None, None
-            except Exception as tester_error:
+                if equity_curve is None or len(equity_curve) < 1:
+                    if self.debug:
+                        print(f"🔍 DEBUG - fit_final_models: No se ejecutó backtest por falta de equity_curve ({len(equity_curve)} elementos)")
+                    return None, None, None, None, None
+            except Exception as e_tester:
                 if self.debug:
-                    print(f"⚠️ ERROR - fit_final_models: Error en tester: {tester_error}")
+                    print(f"⚠️ ERROR - fit_final_models: Error en IN-SAMPLE tester: {e_tester}")
+                return None, None, None, None, None
+
+            try:
+                if self.debug:
+                    print(f"🔍 DEBUG - fit_final_models: Inicializando backtest en OOS")
+                score_oos, equity_curve_oos, returns_series_oos, pos_series_oos = tester(
+                    dataset=full_ds_oos,
+                    model_main=model_main_path,
+                    model_meta=model_meta_path,
+                    model_main_cols=main_feature_cols,
+                    model_meta_cols=meta_feature_cols,
+                    direction=self.direction,
+                    model_main_threshold=hp.get('main_threshold', 0.5),
+                    model_meta_threshold=hp.get('meta_threshold', 0.5),
+                    evaluate_strategy=True,
+                    debug=self.debug,
+                    plot=False
+                )
+                if score_oos < 0.0 or not np.isfinite(score_oos):
+                    if self.debug:
+                        print(f"🔍 DEBUG - fit_final_models: Score backtest en OOS < 0.0 ({score_oos:.6f})")
+                    return None, None, None, None, None
+                if equity_curve_oos is None or len(equity_curve_oos) < 1:
+                    if self.debug:
+                        print(f"🔍 DEBUG - fit_final_models: No se ejecutó Monkey Test por falta de equity_curve_oos ({len(equity_curve_oos)} elementos)")
+                    return None, None, None, None, None
+                price_series_oos = full_ds_oos['open'].to_numpy(dtype='float64')
+                monkey_res_oos = run_monkey_test(
+                    actual_returns=returns_series_oos,
+                    price_series=price_series_oos,
+                    pos_series=pos_series_oos,
+                    direction=self.direction,
+                    n_simulations=self.monkey_n_simulations,
+                )
+                monkey_p_value_oos = float(monkey_res_oos.get('p_value', 1.0))
+                monkey_pass_oos = bool(monkey_p_value_oos < self.monkey_alpha)
+                if not monkey_pass_oos:
+                    if self.debug:
+                        print(f"🔍 DEBUG - fit_final_models: Monkey Test en OOS no superado (p={monkey_p_value_oos:.4f} >= {self.monkey_alpha}) → score := {score_oos:.6f}")
+                    return None, None, None, None, None
+            except Exception as e_tester:
+                if self.debug:
+                    print(f"⚠️ ERROR - fit_final_models: Error en OOS tester: {e_tester}")
                 return None, None, None, None, None
             
             # 1) Determinar best actual de Optuna (solo score óptimo de estudio)
@@ -1013,18 +1083,18 @@ class StrategySearcher:
                 current_best = None
 
             # 2) Decidir si ejecutar Monkey Test
-            must_run_monkey = False
+            must_run_monkey_bocpd = False
             if score > 0.0:
                 if current_best is None:
-                    must_run_monkey = True
+                    must_run_monkey_bocpd = True
                 else:
-                    must_run_monkey = score > float(current_best)
+                    must_run_monkey_bocpd = score > float(current_best)
 
-            monkey_pass = None
-            monkey_p_value = None
-            monkey_percentile = None
-            if must_run_monkey:
-                test_monkey_time_start = time.time()
+            monkey_pass_real = None
+            monkey_p_value_real = None
+            monkey_percentile_real = None
+            bocpd_pass_real = None
+            if must_run_monkey_bocpd:
                 try:
                     # Bactest para Monkey Test
                     score_real, equity_curve_real, returns_series_real, pos_series_real = tester(
@@ -1049,21 +1119,48 @@ class StrategySearcher:
                         if self.debug:
                             print(f"🔍 DEBUG - fit_final_models: No se ejecutó Monkey Test por falta de equity_curve_real ({len(equity_curve_real)} elementos)")
                             return None, None, None, None, None
-
-                    price_series_real = full_ds_real['open'].to_numpy(dtype='float64')
+                except Exception as e_tester:
                     if self.debug:
-                        # Comprobar alineación de longitudes y rangos de índices
-                        aligned = (len(returns_series_real) == len(pos_series_real) == len(price_series_real))
-                        msg = (
-                            f"🔍 DEBUG - fit_final_models: Alineación OOS - "
-                            f"len(returns_series_real): {len(returns_series_real)}, "
-                            f"len(pos_series_real): {len(pos_series_real)}, "
-                            f"len(price_real): {len(price_series_real)}. "
-                            f"Alineados: {aligned}"
-                        )
-                        print(msg)
-                        if not aligned:
-                            print(f"🔍 DEBUG - fit_final_models: Índices returns_oos: {returns_series_real.shape}, pos_oos: {pos_series_real.shape}, price_oos: {price_series_real.shape}")
+                        print(f"⚠️ ERROR - fit_final_models: Error en REAL tester: {e_tester}")
+                    return None, None, None, None, None
+                
+                price_series_real = full_ds_real['open'].to_numpy(dtype='float64')
+                if self.debug:
+                    # Comprobar alineación de longitudes y rangos de índices
+                    aligned = (len(returns_series_real) == len(pos_series_real) == len(price_series_real))
+                    msg = (
+                        f"🔍 DEBUG - fit_final_models: Alineación REAL - "
+                        f"len(returns_series_real): {len(returns_series_real)}, "
+                        f"len(pos_series_real): {len(pos_series_real)}, "
+                        f"len(price_real): {len(price_series_real)}. "
+                        f"Alineados: {aligned}"
+                    )
+                    print(msg)
+                    if not aligned:
+                        print(f"🔍 DEBUG - fit_final_models: Índices returns_oos: {returns_series_real.shape}, pos_oos: {pos_series_real.shape}, price_oos: {price_series_real.shape}")
+
+                cumulative_pnl_real = np.cumsum(returns_series_real.astype(np.float64))
+                # ── BOCPD guard: antes del Monkey Test
+                try:
+                    test_bocpd_time_start = time.time()
+                    bocpd_res = bocpd_guard(cumulative_pnl=cumulative_pnl_real, params=None, debug=self.debug)
+                    test_bocpd_time_end = time.time()
+                    if self.debug:
+                        print(f"🔍 DEBUG - fit_final_models: Tiempo de test BOCPD: {test_bocpd_time_end - test_bocpd_time_start:.2f} segundos")
+                        print(f"🔍 DEBUG - fit_final_models: Resultado BOCPD: {bocpd_res}")
+                except Exception as e_bocpd:
+                    if self.debug:
+                        print(f"⚠️ ERROR - fit_final_models: Error en BOCPD guard: {e_bocpd}")
+                    return None, None, None, None, None
+
+                bocpd_pass_real = bocpd_res['regime_stable']
+                if not bocpd_pass_real:
+                    if self.debug:
+                        print("🔍 DEBUG - fit_final_models: BOCPD estrategia rechazada por cambio de régimen")
+                    return None, None, None, None, None
+
+                try:
+                    test_monkey_time_start = time.time()
                     monkey_res = run_monkey_test(
                         actual_returns=returns_series_real,
                         price_series=price_series_real,
@@ -1075,33 +1172,42 @@ class StrategySearcher:
                     if self.debug:
                         print(f"🔍 DEBUG - fit_final_models: Tiempo de test Monkey: {test_monkey_time_end - test_monkey_time_start:.2f} segundos")
                         print(f"🔍 DEBUG - fit_final_models: Resultado Monkey: {monkey_res}")
-                    monkey_p_value = float(monkey_res.get('p_value', 1.0))
-                    monkey_percentile = float(monkey_res.get('percentile', 0.0))
-                    monkey_pass = bool(monkey_p_value < self.monkey_alpha)
+                    monkey_p_value_real = float(monkey_res.get('p_value', 1.0))
+                    monkey_percentile_real = float(monkey_res.get('percentile', 0.0))
+                    monkey_pass_real = bool(monkey_p_value_real < self.monkey_alpha)
                     if self.debug:
-                        print(f"🔍 DEBUG - fit_final_models: Monkey p_value: {monkey_p_value}")
-                        print(f"🔍 DEBUG - fit_final_models: Monkey percentile: {monkey_percentile}")
-                        print(f"🔍 DEBUG - fit_final_models: Monkey pass: {monkey_pass}")
+                        print(f"🔍 DEBUG - fit_final_models: Monkey p_value: {monkey_p_value_real}")
+                        print(f"🔍 DEBUG - fit_final_models: Monkey percentile: {monkey_percentile_real}")
+                        print(f"🔍 DEBUG - fit_final_models: Monkey pass: {monkey_pass_real}")
                 except Exception as e_monkey:
                     if self.debug:
                         print(f"⚠️ ERROR - fit_final_models: Error en Monkey Test: {e_monkey}")
-                    monkey_pass = False
-                    monkey_p_value = 1.0
-                    monkey_percentile = 0.0
+                    monkey_pass_real = False
+                    monkey_p_value_real = 1.0
+                    monkey_percentile_real = 0.0
 
                 # 3) Si falla, forzar score -1.0 para evitar autoengaño
-                if not monkey_pass:
+                if not monkey_pass_real:
                     if self.debug:
-                        print(f"🔍 DEBUG - fit_final_models: Monkey Test NO superado (p={monkey_p_value:.4f} >= {self.monkey_alpha}) → score := -1.0")
+                        print(f"🔍 DEBUG - fit_final_models: Monkey Test NO superado (p={monkey_p_value_real:.4f} >= {self.monkey_alpha}) → score := -1.0")
                     return None, None, None, None, None
+            
+            bocpd_info = {}
+            if bocpd_pass_real is not None:
+                bocpd_info = {
+                    'bocpd_cp_prob_last': float(bocpd_res['changepoint_probs'][-1]) if len(bocpd_res['changepoint_probs']) else None,
+                    'bocpd_erl_last': float(bocpd_res['exp_run_lengths'][-1]) if len(bocpd_res['exp_run_lengths']) else None,
+                    'bocpd_kill_shock': bool(bocpd_res['kill_signals_shock'].any()) if isinstance(bocpd_res.get('kill_signals_shock'), np.ndarray) else None,
+                    'bocpd_kill_erosion': bool(bocpd_res['kill_signals_erosion'].any()) if isinstance(bocpd_res.get('kill_signals_erosion'), np.ndarray) else None,
+                }
 
             monkey_info = {}
-            if monkey_pass is not None:
+            if monkey_pass_real is not None:
                 # Añadir detalles y métricas por ventana si se construyeron
                 monkey_info = {
-                    'monkey_pass': monkey_pass,
-                    'monkey_p_value': monkey_p_value,
-                    'monkey_percentile': monkey_percentile,
+                    'monkey_pass_real': monkey_pass_real,
+                    'monkey_p_value_real': monkey_p_value_real,
+                    'monkey_percentile_real': monkey_percentile_real,
                 }
 
             # Desplazar columnas OHLCV una posición hacia atrás
@@ -1128,7 +1234,7 @@ class StrategySearcher:
                 else:
                     print(f"🔍      labels_meta no encontrada en el dataset")
                 print(f"🔍 DEBUG: Modelos guardados en {model_main_path} y {model_meta_path}")
-            return score, full_ds_with_labels_path, (model_main_path, model_meta_path), (main_feature_cols, meta_feature_cols), monkey_info
+            return score, full_ds_with_labels_path, (model_main_path, model_meta_path), (main_feature_cols, meta_feature_cols), (monkey_info, bocpd_info)
         except Exception as e:
             if self.debug:
                 print(f"⚠️ ERROR - fit_final_models: Error en función de entrenamiento y test: {str(e)}")
@@ -1240,12 +1346,29 @@ class StrategySearcher:
                 # CV interno para calibración conformal en el set de entrenamiento
                 inner_cv = int(hp.get('mapie_cv', 2))
                 inner_cv = max(2, min(inner_cv, max(2, len(X_tr) - 1)))
+                # Asegurar tamaño mínimo de calibración según confidence_level
+                try:
+                    conf = float(hp['mapie_confidence_level'])
+                    # MAPIE requiere n_calib > max(1/conf, 1/(1-conf))
+                    min_required = int(math.ceil(max(1.0 / conf, 1.0 / max(1e-8, (1.0 - conf))) + 1.0))
+                except Exception:
+                    conf = 0.9
+                    min_required = 11
+                adj_inner_cv = int(inner_cv)
+                # Reducir folds hasta que cada fold tenga al menos min_required muestras
+                while adj_inner_cv > 2 and (len(X_tr) // adj_inner_cv) <= min_required:
+                    adj_inner_cv -= 1
+                # Si aun así no hay suficientes muestras de calibración, marcar 0.0 y seguir
+                if (len(X_tr) // adj_inner_cv) <= min_required:
+                    oof_conformal[va_idx] = 0.0
+                    oof_precision[va_idx] = 0.0
+                    continue
 
                 mapie = CrossConformalClassifier(
                     estimator=base_estimator,
                     confidence_level=hp['mapie_confidence_level'],
                     conformity_score='lac',
-                    cv=inner_cv,
+                    cv=adj_inner_cv,
                 )
 
                 mapie.fit_conformalize(

@@ -1093,11 +1093,8 @@ def bocpd_guard(cumulative_pnl: np.ndarray, params: dict | None = None, debug: b
                 kill_erosion[t] = True
             # PRUNING: descartar hipótesis de baja masa
             max_log = float(np.max(R_next))
-            keep = R_next >= (max_log - 10.0)
-            if not np.all(keep):
-                R_next = R_next[keep]
-                # Actualizar parámetros acorde a hipótesis conservadas
-                # Shift 0 es reset; otros son growth desde índices conservados-1
+            keep_mask_next = R_next >= (max_log - 10.0)
+            R_next_kept = R_next[keep_mask_next]
             # Actualizar parámetros para siguiente tick:
             # 1) Para r=0 (reset): prior actualizado con x
             k0 = prior_k0 + 1.0
@@ -1111,42 +1108,33 @@ def bocpd_guard(cumulative_pnl: np.ndarray, params: dict | None = None, debug: b
             b_g = b_arr + 0.5 * (k_arr * (x - m_arr) * (x - m_arr)) / k_g
             # Reconstruir arrays alineados con R_next
             # La primera hipótesis corresponde al reset (r=0)
-            m_new = np.empty(R_next.size, dtype=np.float64)
-            k_new = np.empty(R_next.size, dtype=np.float64)
-            a_new = np.empty(R_next.size, dtype=np.float64)
-            b_new = np.empty(R_next.size, dtype=np.float64)
+            m_new = np.empty(R_next_kept.size, dtype=np.float64)
+            k_new = np.empty(R_next_kept.size, dtype=np.float64)
+            a_new = np.empty(R_next_kept.size, dtype=np.float64)
+            b_new = np.empty(R_next_kept.size, dtype=np.float64)
             m_new[0] = m0
             k_new[0] = k0
             a_new[0] = a0
             b_new[0] = b0
-            # El resto proviene de growth; si se aplicó pruning, recortar
-            growth_keep = np.ones(Rlog.size, dtype=bool)
-            # Mapear keep a growth (R_next[1:]) cuando hubo pruning
-            if R_next.size != (Rlog.size + 1):
-                # reconstruimos mask de next sin el primer elemento
-                # aqui aproximamos: tomamos las top growth por probabilidad
-                # Seleccion simple: usar los mayores log_growth que quepan
-                log_growth_full = np.log(1.0 - hazard) + ll + Rlog
-                order = np.argsort(-log_growth_full)  # descendente
-                n_take = R_next.size - 1
-                selected = order[:n_take]
-                growth_keep = np.zeros(Rlog.size, dtype=bool)
-                growth_keep[selected] = True
-                m_g_s = m_g[growth_keep]
-                k_g_s = k_g[growth_keep]
-                a_g_s = a_g[growth_keep]
-                b_g_s = b_g[growth_keep]
-            else:
+            # El resto proviene de growth; aplicar máscara consistente con R_next_kept
+            growth_keep_mask = keep_mask_next[1:]  # corresponde a hipótesis de growth
+            if growth_keep_mask.size != m_g.size:
+                # fallback de seguridad (no debería ocurrir)
                 m_g_s = m_g
                 k_g_s = k_g
                 a_g_s = a_g
                 b_g_s = b_g
+            else:
+                m_g_s = m_g[growth_keep_mask]
+                k_g_s = k_g[growth_keep_mask]
+                a_g_s = a_g[growth_keep_mask]
+                b_g_s = b_g[growth_keep_mask]
             m_new[1:] = m_g_s
             k_new[1:] = k_g_s
             a_new[1:] = a_g_s
             b_new[1:] = b_g_s
             # Siguiente iteración
-            Rlog = R_next
+            Rlog = R_next_kept
             m_arr = m_new
             k_arr = k_new
             a_arr = a_new

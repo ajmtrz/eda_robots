@@ -64,7 +64,7 @@ class StrategySearcher:
         train_end: datetime,
         test_start: datetime,
         test_end: datetime,
-        pruner_type: str = 'hyperband',
+        pruner_type: str = 'successive',
         n_trials: int = 500,
         n_models: int = 1,
         n_jobs: int = -1,
@@ -79,6 +79,7 @@ class StrategySearcher:
         decimal_precision: int = 8,
         monkey_n_simulations: int = 5000,
         monkey_alpha: float = 0.05,
+        bocpd_level: str = 'medium',
     ):
         self.symbol = symbol
         self.timeframe = timeframe
@@ -105,6 +106,7 @@ class StrategySearcher:
         self.decimal_precision = decimal_precision  # NUEVO ATRIBUTO
         self.monkey_n_simulations = monkey_n_simulations
         self.monkey_alpha = monkey_alpha
+        self.bocpd_level = bocpd_level.lower() if isinstance(bocpd_level, str) else 'medium'
 
         # Configuración de logging para optuna
         optuna.logging.set_verbosity(optuna.logging.WARNING)
@@ -161,77 +163,43 @@ class StrategySearcher:
                         except Exception:
                             pass
                     try:
-                        # Obtener el mejor trial
-                        if study.best_trial and study.best_trial.value > 0.0:
-                            best_trial = study.best_trial
-                            # Si este trial es el mejor, guardar sus modelos
-                            if trial.number == best_trial.number:
-                                if trial.user_attrs.get('model_paths') is not None:
-                                    # Eliminar modelos anteriores
-                                    if study.user_attrs.get("best_model_paths"):
-                                        for p in study.user_attrs["best_model_paths"]:
-                                            if p and os.path.exists(p):
-                                                os.remove(p)
-                                    if study.user_attrs.get("best_full_ds_with_labels_path"):
-                                        if os.path.exists(study.user_attrs["best_full_ds_with_labels_path"]):
-                                            os.remove(study.user_attrs["best_full_ds_with_labels_path"])
-                                    # Guardar nuevas rutas de modelos
-                                    study.set_user_attr("best_score", trial.user_attrs['score'])
-                                    study.set_user_attr('best_monkey_p_value', trial.user_attrs.get('monkey_p_value_real'))
-                                    study.set_user_attr('best_monkey_percentile', trial.user_attrs.get('monkey_percentile_real'))
-                                    study.set_user_attr('best_monkey_pass', trial.user_attrs.get('monkey_pass_real'))
-                                    study.set_user_attr('best_bocpd_cp_prob_last', trial.user_attrs.get('bocpd_cp_prob_last'))
-                                    study.set_user_attr('best_bocpd_erl_last', trial.user_attrs.get('bocpd_erl_last'))
-                                    study.set_user_attr('best_bocpd_kill_shock', trial.user_attrs.get('bocpd_kill_shock'))
-                                    study.set_user_attr('best_bocpd_kill_erosion', trial.user_attrs.get('bocpd_kill_erosion'))
-                                    study.set_user_attr("best_model_paths", trial.user_attrs['model_paths'])
-                                    study.set_user_attr("best_full_ds_with_labels_path", trial.user_attrs['full_ds_with_labels_path'])
-                                    study.set_user_attr("best_periods_main", trial.user_attrs.get('feature_main_periods'))
-                                    study.set_user_attr("best_stats_main", trial.user_attrs.get('feature_main_stats'))
-                                    study.set_user_attr("best_model_cols", trial.user_attrs['model_cols'])
-                                    # THRESHOLDS UNIFICADOS: guardar thresholds apropiados
-                                    study.set_user_attr("best_main_threshold", trial.user_attrs.get('best_main_threshold', 0.5))
-                                    study.set_user_attr("best_meta_threshold", trial.user_attrs.get('best_meta_threshold', 0.5))
-                                    # Cambiar acceso directo por .get para evitar error si no existe
-                                    study.set_user_attr("best_periods_meta", trial.user_attrs.get('feature_meta_periods'))
-                                    study.set_user_attr("best_stats_meta", trial.user_attrs.get('feature_meta_stats'))
-                                    # Exportar modelo
-                                    export_params = {
-                                        "tag": self.tag,
-                                        "direction": self.direction,
-                                        "models_export_path": self.models_export_path,
-                                        "include_export_path": self.include_export_path,
-                                        "best_score": study.user_attrs["best_score"],
-                                        "best_bocpd_cp_prob_last": study.user_attrs.get('bocpd_cp_prob_last'),
-                                        "best_bocpd_erl_last": study.user_attrs.get('bocpd_erl_last'),
-                                        "best_bocpd_kill_shock": study.user_attrs.get('bocpd_kill_shock'),
-                                        "best_bocpd_kill_erosion": study.user_attrs.get('bocpd_kill_erosion'),
-                                        "best_monkey_p_value": study.user_attrs.get('monkey_p_value_real'),
-                                        "best_monkey_percentile": study.user_attrs.get('monkey_percentile_real'),
-                                        "best_monkey_pass": study.user_attrs.get('monkey_pass_real'),
-                                        "best_full_ds_with_labels_path": study.user_attrs["best_full_ds_with_labels_path"],
-                                        "best_model_paths": study.user_attrs["best_model_paths"],
-                                        "best_model_cols": study.user_attrs["best_model_cols"],
-                                        "best_periods_main": study.user_attrs["best_periods_main"],
-                                        "best_periods_meta": study.user_attrs["best_periods_meta"],
-                                        "best_stats_main": study.user_attrs["best_stats_main"],
-                                        "best_stats_meta": study.user_attrs["best_stats_meta"],
-                                        "best_main_threshold": study.user_attrs.get("best_main_threshold"),
-                                        "best_meta_threshold": study.user_attrs.get("best_meta_threshold"),
-                                        "decimal_precision": self.decimal_precision,
-                                    }
-                                    export_to_mql5(**export_params)
-
-                                    # Eliminar archivos temporales del mejor modelo
-                                    for p in study.user_attrs.get("best_model_paths", []):
+                        # Exportar TODAS las estrategias con score > 0.0
+                        if trial.user_attrs.get('score') is not None and float(trial.user_attrs['score']) > 0.0:
+                            if trial.user_attrs.get('model_paths') is not None:
+                                # Preparar parámetros de exportación por trial
+                                export_params = {
+                                    "tag": f"{self.tag}_t{trial.number}",
+                                    "direction": self.direction,
+                                    "models_export_path": self.models_export_path,
+                                    "include_export_path": self.include_export_path,
+                                    "best_score": float(trial.user_attrs['score']),
+                                    "best_bocpd_cp_prob_last": trial.user_attrs.get('bocpd_cp_prob_last'),
+                                    "best_bocpd_erl_last": trial.user_attrs.get('bocpd_erl_last'),
+                                    "best_bocpd_kill_shock": trial.user_attrs.get('bocpd_kill_shock'),
+                                    "best_bocpd_kill_erosion": trial.user_attrs.get('bocpd_kill_erosion'),
+                                    "best_monkey_p_value": trial.user_attrs.get('monkey_p_value_real'),
+                                    "best_monkey_percentile": trial.user_attrs.get('monkey_percentile_real'),
+                                    "best_monkey_pass": trial.user_attrs.get('monkey_pass_real'),
+                                    "best_full_ds_with_labels_path": trial.user_attrs.get('full_ds_with_labels_path'),
+                                    "best_model_paths": trial.user_attrs.get('model_paths'),
+                                    "best_model_cols": trial.user_attrs.get('model_cols'),
+                                    "best_periods_main": trial.user_attrs.get('feature_main_periods'),
+                                    "best_periods_meta": trial.user_attrs.get('feature_meta_periods'),
+                                    "best_stats_main": trial.user_attrs.get('feature_main_stats'),
+                                    "best_stats_meta": trial.user_attrs.get('feature_meta_stats'),
+                                    "best_main_threshold": trial.user_attrs.get("best_main_threshold"),
+                                    "best_meta_threshold": trial.user_attrs.get("best_meta_threshold"),
+                                    "decimal_precision": self.decimal_precision,
+                                }
+                                export_to_mql5(**export_params)
+                                # Limpiar artefactos temporales de este trial
+                                if 'model_paths' in trial.user_attrs and trial.user_attrs['model_paths']:
+                                    for p in trial.user_attrs['model_paths']:
                                         if p and os.path.exists(p):
                                             os.remove(p)
-                                    if os.path.exists(study.user_attrs["best_full_ds_with_labels_path"]):
-                                        os.remove(study.user_attrs["best_full_ds_with_labels_path"])
-                                    # Parar el algoritmo
-                                    if self.debug:
-                                        #if trial.number > 1:
-                                            study.stop()
+                                if 'full_ds_with_labels_path' in trial.user_attrs and trial.user_attrs['full_ds_with_labels_path']:
+                                    if os.path.exists(trial.user_attrs['full_ds_with_labels_path']):
+                                        os.remove(trial.user_attrs['full_ds_with_labels_path'])
 
                             # Liberar memoria eliminando datos pesados del trial
                             if 'model_paths' in trial.user_attrs and trial.user_attrs['model_paths']:
@@ -999,7 +967,7 @@ class StrategySearcher:
             
             try:
                 if self.debug:
-                    print(f"🔍 DEBUG - fit_final_models: Inicializando backtest")
+                    print(f"🔍 DEBUG - fit_final_models: Inicializando backtest IN-SAMPLE y OOS")
                 full_ds = pd.concat([full_ds_is, full_ds_oos]).sort_index()
                 test_train_time_start = time.time()
                 score, equity_curve, _, _ = tester(
@@ -1096,6 +1064,8 @@ class StrategySearcher:
             bocpd_pass_real = None
             if must_run_monkey_bocpd:
                 try:
+                    if self.debug:
+                        print(f"🔍 DEBUG - fit_final_models: Inicializando backtest en REAL")
                     # Bactest para Monkey Test
                     score_real, equity_curve_real, returns_series_real, pos_series_real = tester(
                         dataset=full_ds_real,
@@ -1142,8 +1112,38 @@ class StrategySearcher:
                 cumulative_pnl_real = np.cumsum(returns_series_real.astype(np.float64))
                 # ── BOCPD guard: antes del Monkey Test
                 try:
+                    if self.debug:
+                        print(f"🔍 DEBUG - fit_final_models: Inicializando BOCPD guard")
                     test_bocpd_time_start = time.time()
-                    bocpd_res = bocpd_guard(cumulative_pnl=cumulative_pnl_real, params=None, debug=self.debug)
+                    # Agresividad por defecto (media) con posibilidad de ajustar por nivel
+                    T_real = len(cumulative_pnl_real)
+                    # Heurísticas base
+                    burn_in = max(30, int(0.15 * T_real))
+                    # Configurar parámetros según nivel
+                    level = getattr(self, 'bocpd_level', 'medium')
+                    if level == 'low':
+                        lam = max(burn_in + 10, int(T_real / 2.0))
+                        kill_thr = 0.60
+                        l_min = max(15, int(lam * 0.20))
+                        m_consec = max(5, int(l_min * 0.20))
+                    elif level == 'high':
+                        lam = max(burn_in + 10, int(T_real / 4.0))
+                        kill_thr = 0.40
+                        l_min = max(15, int(lam * 0.35))
+                        m_consec = max(5, int(l_min * 0.40))
+                    else:  # medium
+                        lam = max(burn_in + 10, int(T_real / 3.0))
+                        kill_thr = 0.50
+                        l_min = max(15, int(lam * 0.25))
+                        m_consec = max(5, int(l_min * 0.30))
+                    bocpd_params = {
+                        'burn_in_period': burn_in,
+                        'expected_run_length': int(lam),
+                        'kill_threshold': float(kill_thr),
+                        'l_min': int(l_min),
+                        'm_consecutive': int(m_consec),
+                    }
+                    bocpd_res = bocpd_guard(cumulative_pnl=cumulative_pnl_real, params=bocpd_params, debug=self.debug)
                     test_bocpd_time_end = time.time()
                     if self.debug:
                         print(f"🔍 DEBUG - fit_final_models: Tiempo de test BOCPD: {test_bocpd_time_end - test_bocpd_time_start:.2f} segundos")
@@ -1343,6 +1343,12 @@ class StrategySearcher:
                 X_tr, y_tr = X.iloc[tr_idx], y.iloc[tr_idx]
                 X_va, y_va = X.iloc[va_idx], y.iloc[va_idx]
 
+                # Evitar errores de CatBoost: asegurar dos clases en train por fold
+                if y_tr.nunique() < 2 or y_va.nunique() < 1:
+                    oof_conformal[va_idx] = 0.0
+                    oof_precision[va_idx] = 0.0
+                    continue
+
                 # CV interno para calibración conformal en el set de entrenamiento
                 inner_cv = int(hp.get('mapie_cv', 2))
                 inner_cv = max(2, min(inner_cv, max(2, len(X_tr) - 1)))
@@ -1464,9 +1470,14 @@ class StrategySearcher:
                         verbose=False,
                     )
                     model = CatBoostClassifier(**catboost_params)
-                    model.fit(X.loc[train_idx], y.loc[train_idx], eval_set=[(X.loc[val_idx], y.loc[val_idx])], use_best_model=True, verbose=False)
+                    y_tr = y.loc[train_idx]
+                    y_va = y.loc[val_idx]
+                    # Evitar error: entrenamiento con una sola clase
+                    if y_tr.nunique() < 2:
+                        continue
+                    model.fit(X.loc[train_idx], y_tr, eval_set=[(X.loc[val_idx], y_va)], use_best_model=True, verbose=False)
                     pred = (model.predict_proba(X.loc[val_idx])[:, 1] >= hp['main_threshold']).astype(int)
-                    val_y = y.loc[val_idx]
+                    val_y = y_va
                     val0 = val_idx[val_y == 0]
                     val1 = val_idx[val_y == 1]
                     diff0 = val0[pred[val_y == 0] != 0]

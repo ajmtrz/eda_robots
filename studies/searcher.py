@@ -9,26 +9,26 @@ warnings.filterwarnings("ignore")
 
 configs = [
     dict(
-        symbol='XAUUSD', timeframe='H1', direction='both', pruner_type='successive',
+        symbol='EURUSD', timeframe='H1', direction='both', pruner_type='successive',
         train_start=datetime(2018,4,1), train_end=datetime(2025,8,1),
         test_start=datetime(2023,8,1),  test_end=datetime(2024,4,1),
         label_method='random', search_type='clusters', search_subtype='kmeans',
-        n_models=1, debug=True,
+        n_models=1, bocpd_level='low', debug=False,
     ),
-    # dict(
-    #     symbol='GDAXI', timeframe='H1', direction='both', pruner_type='successive',
-    #     train_start=datetime(2018,4,1), train_end=datetime(2026,4,1),
-    #     test_start=datetime(2022,4,1),  test_end=datetime(2023,4,1),
-    #     label_method='random', search_type='clusters', search_subtype='kmeans',
-    #     n_models=1, debug=False,
-    # ),
-    # dict(
-    #     symbol='NDX', timeframe='H1', direction='both', pruner_type='successive',
-    #     train_start=datetime(2018,4,1), train_end=datetime(2026,4,1),
-    #     test_start=datetime(2022,4,1),  test_end=datetime(2023,4,1),
-    #     label_method='random', search_type='clusters', search_subtype='kmeans',
-    #     n_models=1, debug=False,
-    # ),
+    dict(
+        symbol='GBPJPY', timeframe='H1', direction='both', pruner_type='successive',
+        train_start=datetime(2018,4,1), train_end=datetime(2025,8,1),
+        test_start=datetime(2023,8,1),  test_end=datetime(2024,4,1),
+        label_method='random', search_type='clusters', search_subtype='kmeans',
+        n_models=1, bocpd_level='low', debug=False,
+    ),
+    dict(
+        symbol='XAUUSD', timeframe='H1', direction='buy', pruner_type='successive',
+        train_start=datetime(2018,4,1), train_end=datetime(2025,8,1),
+        test_start=datetime(2023,8,1),  test_end=datetime(2024,4,1),
+        label_method='random', search_type='clusters', search_subtype='kmeans',
+        n_models=1, bocpd_level='low', debug=False,
+    ),
 ]
 
 # Crear tag para cada configuración

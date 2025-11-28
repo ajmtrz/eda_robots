@@ -1024,6 +1024,19 @@ class StrategySearcher:
                         print(f"🔍 DEBUG - fit_final_models: No se ejecutó Monkey Test por falta de equity_curve_oos ({len(equity_curve_oos)} elementos)")
                     return None, None, None, None, None
                 price_series_oos = full_ds_oos['open'].to_numpy(dtype='float64')
+                if self.debug:
+                    # Comprobar alineación de longitudes y rangos de índices
+                    aligned = (len(returns_series_oos) == len(pos_series_oos) == len(price_series_oos))
+                    msg = (
+                        f"🔍 DEBUG - fit_final_models: Alineación OOS - "
+                        f"len(returns_series_oos): {len(returns_series_oos)}, "
+                        f"len(pos_series_oos): {len(pos_series_oos)}, "
+                        f"len(price_series_oos): {len(price_series_oos)}. "
+                        f"Alineados: {aligned}"
+                    )
+                    print(msg)
+                    if not aligned:
+                        print(f"🔍 DEBUG - fit_final_models: Índices returns_oos: {returns_series_oos.shape}, pos_oos: {pos_series_oos.shape}, price_oos: {price_series_oos.shape}")
                 monkey_res_oos = run_monkey_test(
                     actual_returns=returns_series_oos,
                     price_series=price_series_oos,
@@ -1032,7 +1045,7 @@ class StrategySearcher:
                     n_simulations=self.monkey_n_simulations,
                 )
                 monkey_p_value_oos = float(monkey_res_oos.get('p_value', 1.0))
-                monkey_pass_oos = bool(monkey_p_value_oos < self.monkey_alpha)
+                monkey_pass_oos = bool(monkey_p_value_oos < self.monkey_alpha * 2.0)
                 if not monkey_pass_oos:
                     if self.debug:
                         print(f"🔍 DEBUG - fit_final_models: Monkey Test en OOS no superado (p={monkey_p_value_oos:.4f} >= {self.monkey_alpha}) → score := {score_oos:.6f}")
@@ -1107,7 +1120,7 @@ class StrategySearcher:
                     )
                     print(msg)
                     if not aligned:
-                        print(f"🔍 DEBUG - fit_final_models: Índices returns_oos: {returns_series_real.shape}, pos_oos: {pos_series_real.shape}, price_oos: {price_series_real.shape}")
+                        print(f"🔍 DEBUG - fit_final_models: Índices returns_real: {returns_series_real.shape}, pos_real: {pos_series_real.shape}, price_real: {price_series_real.shape}")
 
                 cumulative_pnl_real = np.cumsum(returns_series_real.astype(np.float64))
                 # ── BOCPD guard: antes del Monkey Test

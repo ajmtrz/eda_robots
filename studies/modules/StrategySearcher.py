@@ -26,7 +26,7 @@ from modules.labeling_lib import (
     get_labels_filter_binary, get_labels_fractal_patterns, get_labels_zigzag,
     clustering_kmeans, clustering_hdbscan, clustering_markov, clustering_lgmm
 )
-from modules.tester_lib import tester, clear_onnx_session_cache, run_monkey_test, bocpd_guard
+from modules.tester_lib import tester, clear_onnx_session_cache, run_monkey_test
 from modules.export_lib import export_models_to_ONNX, export_dataset_to_csv, export_to_mql5
 
 class StrategySearcher:
@@ -79,7 +79,7 @@ class StrategySearcher:
         decimal_precision: int = 8,
         monkey_n_simulations: int = 5000,
         monkey_alpha: float = 0.05,
-        bocpd_level: str = 'medium',
+        filter_mode: str = 'mapie-causal',
     ):
         self.symbol = symbol
         self.timeframe = timeframe
@@ -106,7 +106,7 @@ class StrategySearcher:
         self.decimal_precision = decimal_precision  # NUEVO ATRIBUTO
         self.monkey_n_simulations = monkey_n_simulations
         self.monkey_alpha = monkey_alpha
-        self.bocpd_level = bocpd_level.lower() if isinstance(bocpd_level, str) else 'medium'
+        self.filter_mode = (filter_mode or 'mapie-causal').lower()
 
         # Configuración de logging para optuna
         optuna.logging.set_verbosity(optuna.logging.WARNING)
@@ -173,10 +173,6 @@ class StrategySearcher:
                                     "models_export_path": self.models_export_path,
                                     "include_export_path": self.include_export_path,
                                     "best_score": float(trial.user_attrs['score']),
-                                    "best_bocpd_cp_prob_last": trial.user_attrs.get('bocpd_cp_prob_last'),
-                                    "best_bocpd_erl_last": trial.user_attrs.get('bocpd_erl_last'),
-                                    "best_bocpd_kill_shock": trial.user_attrs.get('bocpd_kill_shock'),
-                                    "best_bocpd_kill_erosion": trial.user_attrs.get('bocpd_kill_erosion'),
                                     "best_monkey_p_value": trial.user_attrs.get('monkey_p_value_real'),
                                     "best_monkey_percentile": trial.user_attrs.get('monkey_percentile_real'),
                                     "best_monkey_pass": trial.user_attrs.get('monkey_pass_real'),
@@ -192,14 +188,14 @@ class StrategySearcher:
                                     "decimal_precision": self.decimal_precision,
                                 }
                                 export_to_mql5(**export_params)
-                                # Limpiar artefactos temporales de este trial
-                                if 'model_paths' in trial.user_attrs and trial.user_attrs['model_paths']:
-                                    for p in trial.user_attrs['model_paths']:
-                                        if p and os.path.exists(p):
-                                            os.remove(p)
-                                if 'full_ds_with_labels_path' in trial.user_attrs and trial.user_attrs['full_ds_with_labels_path']:
-                                    if os.path.exists(trial.user_attrs['full_ds_with_labels_path']):
-                                        os.remove(trial.user_attrs['full_ds_with_labels_path'])
+                            # Limpiar artefactos temporales de este trial
+                            if 'model_paths' in trial.user_attrs and trial.user_attrs['model_paths']:
+                                for p in trial.user_attrs['model_paths']:
+                                    if p and os.path.exists(p):
+                                        os.remove(p)
+                            if 'full_ds_with_labels_path' in trial.user_attrs and trial.user_attrs['full_ds_with_labels_path']:
+                                if os.path.exists(trial.user_attrs['full_ds_with_labels_path']):
+                                    os.remove(trial.user_attrs['full_ds_with_labels_path'])
 
                             # Liberar memoria eliminando datos pesados del trial
                             if 'model_paths' in trial.user_attrs and trial.user_attrs['model_paths']:
@@ -290,32 +286,37 @@ class StrategySearcher:
 
             # Filtro MAPIE
             if self.debug:
-                print(f"🔍 DEBUG - search_reliability - Aplicando filtrado MAPIE")
+                print(f"🔍 DEBUG - search_reliability - Aplicando filtros de confiabilidad: mode={self.filter_mode}")
                 print(f"🔍   base_mask.sum(): {base_mask.sum()}")
                 print(f"🔍   base_mask.mean(): {base_mask.mean():.3f}")
             
-            mapie_scores = self.apply_mapie_filter(trial=trial, full_ds=full_ds_is, hp=hp, reliable_mask=base_mask)
-            mapie_mask = mapie_scores == 1.0
-            
-            if self.debug:
-                print(f"🔍   mapie_mask.sum(): {mapie_mask.sum()}")
-                print(f"🔍   mapie_mask.mean(): {mapie_mask.mean():.3f}")
+            # Construir máscaras neutras por defecto (idénticas a base_mask)
+            base_mask_series = base_mask.astype(bool)
+            mapie_mask_series = base_mask_series.copy()
+            causal_mask_series = base_mask_series.copy()
+
+            # MAPIE opcional
+            if self.filter_mode in ('mapie', 'mapie-causal'):
+                mapie_scores = self.apply_mapie_filter(trial=trial, full_ds=full_ds_is, hp=hp, reliable_mask=base_mask)
+                mapie_mask = (mapie_scores == 1.0)
+                mapie_mask_series = pd.Series(mapie_mask, index=full_ds_is.index)
+                if self.debug:
+                    print(f"🔍   mapie_mask.sum(): {int(mapie_mask_series.sum())}")
+                    print(f"🔍   mapie_mask.mean(): {float(mapie_mask_series.mean()):.3f}")
 
             # Filtro CAUSAL
-            if self.debug:
-                print(f"🔍 DEBUG - search_reliability - Aplicando filtrado CAUSAL")
-                print(f"🔍   base_mask.sum(): {base_mask.sum()}")
-                print(f"🔍   base_mask.mean(): {base_mask.mean():.3f}")
-            
-            causal_scores = self.apply_causal_filter(trial=trial, full_ds=full_ds_is, hp=hp, reliable_mask=base_mask)
-            causal_mask = causal_scores == 1.0
-            
-            if self.debug:
-                print(f"🔍   causal_mask.sum(): {causal_mask.sum()}")
-                print(f"🔍   causal_mask.mean(): {causal_mask.mean():.3f}")
+            if self.filter_mode in ('causal', 'mapie-causal'):
+                if self.debug:
+                    print(f"🔍 DEBUG - search_reliability - Aplicando filtrado CAUSAL")
+                causal_scores = self.apply_causal_filter(trial=trial, full_ds=full_ds_is, hp=hp, reliable_mask=base_mask)
+                causal_mask = (causal_scores == 1.0)
+                causal_mask_series = pd.Series(causal_mask, index=full_ds_is.index)
+                if self.debug:
+                    print(f"🔍   causal_mask.sum(): {int(causal_mask_series.sum())}")
+                    print(f"🔍   causal_mask.mean(): {float(causal_mask_series.mean()):.3f}")
 
             # Crear máscara final
-            final_mask = (base_mask & mapie_mask & causal_mask).astype(bool)
+            final_mask = (base_mask_series & mapie_mask_series & causal_mask_series).astype(bool)
             if self.debug:
                 print(f"🔍   final_mask.sum(): {final_mask.sum()}")
                 print(f"🔍   final_mask.mean(): {final_mask.mean():.3f}")
@@ -355,7 +356,7 @@ class StrategySearcher:
                 print(f"🔍 DEBUG - search_reliability META: shape={model_meta_train_data.shape}, labels={meta_label_counts.to_dict()}")
                 
             # Usar pipeline existente
-            score, full_ds_with_labels_path, model_paths, models_cols, test_info = self.fit_final_models(
+            score, full_ds_with_labels_path, model_paths, models_cols = self.fit_final_models(
                 trial=trial,
                 full_ds_is=full_ds_is,
                 full_ds_oos=full_ds_oos,
@@ -374,18 +375,6 @@ class StrategySearcher:
             trial.set_user_attr('full_ds_with_labels_path', full_ds_with_labels_path)
             trial.set_user_attr('best_main_threshold', hp['main_threshold'])
             trial.set_user_attr('best_meta_threshold', hp['meta_threshold'])
-            if isinstance(test_info, tuple) and len(test_info) == 2:
-                monkey_info = test_info[0]
-                bocpd_info = test_info[1]
-                if isinstance(monkey_info, dict) and monkey_info:   
-                    trial.set_user_attr('monkey_p_value_real', monkey_info.get('monkey_p_value_real'))
-                    trial.set_user_attr('monkey_percentile_real', monkey_info.get('monkey_percentile_real'))
-                    trial.set_user_attr('monkey_pass_real', monkey_info.get('monkey_pass_real'))
-                if isinstance(bocpd_info, dict) and bocpd_info:
-                    trial.set_user_attr('bocpd_cp_prob_last', bocpd_info.get('bocpd_cp_prob_last'))
-                    trial.set_user_attr('bocpd_erl_last', bocpd_info.get('bocpd_erl_last'))
-                    trial.set_user_attr('bocpd_kill_shock', bocpd_info.get('bocpd_kill_shock'))
-                    trial.set_user_attr('bocpd_kill_erosion', bocpd_info.get('bocpd_kill_erosion'))
 
             return trial.user_attrs.get('score', -1.0)
             
@@ -459,7 +448,7 @@ class StrategySearcher:
             full_ds_is.loc[base_mask, 'labels_meta'] = reliable_data_clustered['labels_meta']
             full_ds_is.loc[~base_mask, 'labels_meta'] = -1  # Muestras no confiables sin cluster
 
-            score, full_ds_with_labels_path, model_paths, models_cols, test_info = self.evaluate_clusters(
+            score, full_ds_with_labels_path, model_paths, models_cols = self.evaluate_clusters(
                 trial=trial, full_ds_is=full_ds_is, full_ds_oos=full_ds_oos, full_ds_real=full_ds_real, hp=hp)
             if score is None or model_paths is None or models_cols is None or full_ds_with_labels_path is None:
                 return -1.0
@@ -470,18 +459,6 @@ class StrategySearcher:
             trial.set_user_attr('full_ds_with_labels_path', full_ds_with_labels_path)
             trial.set_user_attr('best_main_threshold', hp['main_threshold'])
             trial.set_user_attr('best_meta_threshold', hp['meta_threshold'])
-            if isinstance(test_info, tuple) and len(test_info) == 2:
-                monkey_info = test_info[0]
-                bocpd_info = test_info[1]
-                if isinstance(monkey_info, dict) and monkey_info:   
-                    trial.set_user_attr('monkey_p_value_real', monkey_info.get('monkey_p_value_real'))
-                    trial.set_user_attr('monkey_percentile_real', monkey_info.get('monkey_percentile_real'))
-                    trial.set_user_attr('monkey_pass_real', monkey_info.get('monkey_pass_real'))
-                if isinstance(bocpd_info, dict) and bocpd_info:
-                    trial.set_user_attr('bocpd_cp_prob_last', bocpd_info.get('bocpd_cp_prob_last'))
-                    trial.set_user_attr('bocpd_erl_last', bocpd_info.get('bocpd_erl_last'))
-                    trial.set_user_attr('bocpd_kill_shock', bocpd_info.get('bocpd_kill_shock'))
-                    trial.set_user_attr('bocpd_kill_erosion', bocpd_info.get('bocpd_kill_erosion'))
 
             return trial.user_attrs.get('score', -1.0)
         except Exception as e:
@@ -501,8 +478,6 @@ class StrategySearcher:
             best_model_paths = (None, None)
             best_models_cols = (None, None)
             best_full_ds_with_labels_path = None
-            best_monkey_info: dict | None = None
-            best_bocpd_info: dict | None = None
             # 🔍 DEBUG: Supervisar parámetros
             if self.debug:
                 validation_params = {k: v for k, v in hp.items() if k.startswith('label_')}
@@ -517,7 +492,7 @@ class StrategySearcher:
             if cluster_sizes.empty:
                 if self.debug:
                     print("🔍 DEBUG - evaluate_clusters - No hay clusters")
-                return None, None, None, None, None
+                return None, None, None, None
 
             # Evaluar cada cluster
             for clust in cluster_sizes.index:
@@ -527,30 +502,35 @@ class StrategySearcher:
                         print(f"🔍   Cluster {clust} descartado: sin muestras confiables")
                     continue
                 
-                # Filtro MAPIE
-                if self.debug:
-                    print(f"🔍 DEBUG - evaluate_clusters/MAPIE - cluster {clust}: n={cluster_mask.sum()} ({cluster_mask.mean():.3f})")
+                # Máscaras por defecto = cluster_mask
+                cluster_mask_series = cluster_mask.astype(bool)
+                mapie_mask_series = cluster_mask_series.copy()
+                causal_mask_series = cluster_mask_series.copy()
+
+                # MAPIE opcional
+                if self.filter_mode in ('mapie', 'mapie-causal'):
+                    if self.debug:
+                        print(f"🔍 DEBUG - evaluate_clusters/MAPIE - cluster {clust}: n={cluster_mask.sum()} ({cluster_mask.mean():.3f})")
+                    mapie_scores = self.apply_mapie_filter(trial=trial, full_ds=full_ds_is, hp=hp, reliable_mask=cluster_mask)
+                    mapie_mask = (mapie_scores == 1.0)
+                    mapie_mask_series = pd.Series(mapie_mask, index=full_ds_is.index)
+                    if self.debug:
+                        print(f"🔍   mapie_mask.sum(): {int(mapie_mask_series.sum())}")
+                        print(f"🔍   mapie_mask.mean(): {float(mapie_mask_series.mean()):.3f}")
                 
-                mapie_scores = self.apply_mapie_filter(trial=trial, full_ds=full_ds_is, hp=hp, reliable_mask=cluster_mask)
-                mapie_mask = mapie_scores == 1.0
+                # CAUSAL opcional
+                if self.filter_mode in ('causal', 'mapie-causal'):
+                    if self.debug:
+                        print(f"🔍 DEBUG evaluate_clusters/CAUSAL - cluster {clust}: n={cluster_mask.sum()} ({cluster_mask.mean():.3f})")
+                    causal_scores = self.apply_causal_filter(trial=trial, full_ds=full_ds_is, hp=hp, reliable_mask=cluster_mask)
+                    causal_mask = (causal_scores == 1.0)
+                    causal_mask_series = pd.Series(causal_mask, index=full_ds_is.index)
+                    if self.debug:
+                        print(f"🔍   causal_mask.sum(): {int(causal_mask_series.sum())}")
+                        print(f"🔍   causal_mask.mean(): {float(causal_mask_series.mean()):.3f}")
                 
-                if self.debug:
-                    print(f"🔍   mapie_mask.sum(): {mapie_mask.sum()}")
-                    print(f"🔍   mapie_mask.mean(): {mapie_mask.mean():.3f}")
-                
-                # Filtro CAUSAL
-                if self.debug:
-                    print(f"🔍 DEBUG evaluate_clusters/CAUSAL - cluster {clust}: n={cluster_mask.sum()} ({cluster_mask.mean():.3f})")
-                
-                causal_scores = self.apply_causal_filter(trial=trial, full_ds=full_ds_is, hp=hp, reliable_mask=cluster_mask)
-                causal_mask = causal_scores == 1.0
-                
-                if self.debug:
-                    print(f"🔍   causal_mask.sum(): {causal_mask.sum()}")
-                    print(f"🔍   causal_mask.mean(): {causal_mask.mean():.3f}")
-                
-                # Crear máscara final
-                final_mask = (cluster_mask & mapie_mask & causal_mask).astype(bool)
+                # Crear máscara final combinando según modo
+                final_mask = (cluster_mask_series & mapie_mask_series & causal_mask_series).astype(bool)
                 if self.debug:
                     print(f"🔍   final_mask.sum(): {final_mask.sum()}")
                     print(f"🔍   final_mask.mean(): {final_mask.mean():.3f}")
@@ -594,7 +574,7 @@ class StrategySearcher:
                     print(f"🔍   Meta labels distribution: {meta_label_counts}")
                     
                 # Entrenar modelos
-                score, full_ds_with_labels_path, model_paths, models_cols, test_info = self.fit_final_models(
+                score, full_ds_with_labels_path, model_paths, models_cols = self.fit_final_models(
                     trial=trial,
                     full_ds_is=full_ds_is,
                     full_ds_oos=full_ds_oos,
@@ -616,7 +596,6 @@ class StrategySearcher:
                     best_model_paths = model_paths
                     best_full_ds_with_labels_path = full_ds_with_labels_path
                     best_models_cols = models_cols
-                    best_test_info = test_info
                     if self.debug:
                         print(f"🔍   Nuevo mejor cluster {clust}: score = {score}")
                 else:
@@ -626,12 +605,12 @@ class StrategySearcher:
                     if full_ds_with_labels_path and os.path.exists(full_ds_with_labels_path):
                         os.remove(full_ds_with_labels_path)
             if best_score == -math.inf or best_model_paths == (None, None):
-                return None, None, None, None, None
-            return best_score, best_full_ds_with_labels_path, best_model_paths, best_models_cols, best_test_info
+                return None, None, None, None
+            return best_score, best_full_ds_with_labels_path, best_model_paths, best_models_cols
         except Exception as e:
             if self.debug:
                 print(f"⚠️ ERROR - evaluate_clusters: {str(e)}")
-            return None, None, None, None, None
+            return None, None, None, None
 
     def _suggest_feature(self, trial: optuna.Trial) -> Dict[str, Any]:
         """
@@ -814,11 +793,15 @@ class StrategySearcher:
                 p['cluster_lgmm_covariance']  = trial.suggest_categorical('cluster_lgmm_covariance', ['full', 'tied', 'diag', 'spherical'])
                 p['cluster_lgmm_iter']        = trial.suggest_int ('cluster_lgmm_iter',        50, 500, log=True)
 
-        p['mapie_confidence_level'] = trial.suggest_float('mapie_confidence_level', 0.75, 0.98)
-        p['mapie_cv']               = trial.suggest_int  ('mapie_cv',               2, 8)
-        p['causal_meta_learners'] = trial.suggest_int('causal_meta_learners', 5, 20)
-        p['causal_percentile'] = trial.suggest_int('causal_percentile', 60, 95)
-        p['oof_resid_percentile'] = trial.suggest_int('oof_resid_percentile', 75, 95)
+        # Hiperparámetros de filtros según filter_mode
+        mode = getattr(self, 'filter_mode', 'mapie-causal')
+        if mode in ('mapie', 'mapie-causal'):
+            p['mapie_confidence_level'] = trial.suggest_float('mapie_confidence_level', 0.75, 0.98)
+            p['mapie_cv']               = trial.suggest_int  ('mapie_cv',               2, 8)
+        if mode in ('causal', 'mapie-causal'):
+            p['causal_meta_learners'] = trial.suggest_int('causal_meta_learners', 5, 20)
+            p['causal_percentile'] = trial.suggest_int('causal_percentile', 60, 95)
+            p['oof_resid_percentile'] = trial.suggest_int('oof_resid_percentile', 75, 95)
         p['meta_threshold'] = trial.suggest_float('meta_threshold', 0.3, 0.7)
         p['main_threshold'] = trial.suggest_float('main_threshold', 0.3, 0.7)
 
@@ -868,7 +851,7 @@ class StrategySearcher:
         try:
             # Preparar datos del modelo main
             if model_main_train_data.empty:
-                return None, None, None, None, None
+                return None, None, None, None
             main_feature_cols = [col for col in model_main_train_data.columns if col != 'labels_main']
             if self.debug:
                 print(f"🔍 DEBUG - fit_final_models: Main model data shape: {model_main_train_data.shape}")
@@ -877,13 +860,13 @@ class StrategySearcher:
             # Dividir train/test
             train_df_main, val_df_main = train_test_split(
                 model_main_train_data,
-                test_size=0.15,
+                test_size=0.20,
                 stratify=model_main_train_data['labels_main'],
                 shuffle=True,
                 random_state=None
             )
             if train_df_main is None or val_df_main is None or train_df_main.empty or val_df_main.empty:
-                return None, None, None, None, None
+                return None, None, None, None
             X_train_main = train_df_main[main_feature_cols].astype('float32')
             y_train_main = train_df_main['labels_main'].astype('int8')
             X_val_main = val_df_main[main_feature_cols].astype('float32')
@@ -916,7 +899,7 @@ class StrategySearcher:
             
             # Preparar datos del modelo meta
             if model_meta_train_data.empty:
-                return None, None, None, None, None
+                return None, None, None, None
             meta_feature_cols = [col for col in model_meta_train_data.columns if col != 'labels_meta']
             if self.debug:
                 print(f"🔍 DEBUG - fit_final_models: Meta model data shape: {model_meta_train_data.shape}")
@@ -925,13 +908,13 @@ class StrategySearcher:
             # Dividir train/test
             train_df_meta, val_df_meta = train_test_split(
                 model_meta_train_data,
-                test_size=0.15,
+                test_size=0.20,
                 stratify=model_meta_train_data['labels_meta'],
                 shuffle=True,
                 random_state=None
             )
             if train_df_meta is None or val_df_meta is None or train_df_meta.empty or val_df_meta.empty:
-                return None, None, None, None, None
+                return None, None, None, None
             X_train_meta = train_df_meta[meta_feature_cols].astype('float32')
             y_train_meta = train_df_meta['labels_meta'].astype('int8')
             X_val_meta = val_df_meta[meta_feature_cols].astype('float32')
@@ -989,71 +972,15 @@ class StrategySearcher:
                 if score < 0.0 or not np.isfinite(score):
                     if self.debug:
                         print(f"🔍 DEBUG - fit_final_models: Score backtest < 0.0 ({score:.6f})")
-                    return None, None, None, None, None
+                    return None, None, None, None
                 if equity_curve is None or len(equity_curve) < 1:
                     if self.debug:
                         print(f"🔍 DEBUG - fit_final_models: No se ejecutó backtest por falta de equity_curve ({len(equity_curve)} elementos)")
-                    return None, None, None, None, None
+                    return None, None, None, None
             except Exception as e_tester:
                 if self.debug:
                     print(f"⚠️ ERROR - fit_final_models: Error en IN-SAMPLE tester: {e_tester}")
-                return None, None, None, None, None
-
-            try:
-                if self.debug:
-                    print(f"🔍 DEBUG - fit_final_models: Inicializando backtest en OOS")
-                score_oos, equity_curve_oos, returns_series_oos, pos_series_oos = tester(
-                    dataset=full_ds_oos,
-                    model_main=model_main_path,
-                    model_meta=model_meta_path,
-                    model_main_cols=main_feature_cols,
-                    model_meta_cols=meta_feature_cols,
-                    direction=self.direction,
-                    model_main_threshold=hp.get('main_threshold', 0.5),
-                    model_meta_threshold=hp.get('meta_threshold', 0.5),
-                    evaluate_strategy=True,
-                    debug=self.debug,
-                    plot=False
-                )
-                if score_oos < 0.0 or not np.isfinite(score_oos):
-                    if self.debug:
-                        print(f"🔍 DEBUG - fit_final_models: Score backtest en OOS < 0.0 ({score_oos:.6f})")
-                    return None, None, None, None, None
-                if equity_curve_oos is None or len(equity_curve_oos) < 1:
-                    if self.debug:
-                        print(f"🔍 DEBUG - fit_final_models: No se ejecutó Monkey Test por falta de equity_curve_oos ({len(equity_curve_oos)} elementos)")
-                    return None, None, None, None, None
-                price_series_oos = full_ds_oos['open'].to_numpy(dtype='float64')
-                if self.debug:
-                    # Comprobar alineación de longitudes y rangos de índices
-                    aligned = (len(returns_series_oos) == len(pos_series_oos) == len(price_series_oos))
-                    msg = (
-                        f"🔍 DEBUG - fit_final_models: Alineación OOS - "
-                        f"len(returns_series_oos): {len(returns_series_oos)}, "
-                        f"len(pos_series_oos): {len(pos_series_oos)}, "
-                        f"len(price_series_oos): {len(price_series_oos)}. "
-                        f"Alineados: {aligned}"
-                    )
-                    print(msg)
-                    if not aligned:
-                        print(f"🔍 DEBUG - fit_final_models: Índices returns_oos: {returns_series_oos.shape}, pos_oos: {pos_series_oos.shape}, price_oos: {price_series_oos.shape}")
-                monkey_res_oos = run_monkey_test(
-                    actual_returns=returns_series_oos,
-                    price_series=price_series_oos,
-                    pos_series=pos_series_oos,
-                    direction=self.direction,
-                    n_simulations=self.monkey_n_simulations,
-                )
-                monkey_p_value_oos = float(monkey_res_oos.get('p_value', 1.0))
-                monkey_pass_oos = bool(monkey_p_value_oos < self.monkey_alpha * 2.0)
-                if not monkey_pass_oos:
-                    if self.debug:
-                        print(f"🔍 DEBUG - fit_final_models: Monkey Test en OOS no superado (p={monkey_p_value_oos:.4f} >= {self.monkey_alpha}) → score := {score_oos:.6f}")
-                    return None, None, None, None, None
-            except Exception as e_tester:
-                if self.debug:
-                    print(f"⚠️ ERROR - fit_final_models: Error en OOS tester: {e_tester}")
-                return None, None, None, None, None
+                return None, None, None, None
             
             # 1) Determinar best actual de Optuna (solo score óptimo de estudio)
             current_best = None
@@ -1064,18 +991,46 @@ class StrategySearcher:
                 current_best = None
 
             # 2) Decidir si ejecutar Monkey Test
-            must_run_monkey_bocpd = False
+            must_run_monkey = False
             if score > 0.0:
                 if current_best is None:
-                    must_run_monkey_bocpd = True
+                    must_run_monkey = True
                 else:
-                    must_run_monkey_bocpd = score > float(current_best)
+                    must_run_monkey = score > float(current_best)
 
             monkey_pass_real = None
             monkey_p_value_real = None
             monkey_percentile_real = None
-            bocpd_pass_real = None
-            if must_run_monkey_bocpd:
+            if must_run_monkey:
+                try:
+                    if self.debug:
+                        print(f"🔍 DEBUG - fit_final_models: Inicializando backtest en OOS")
+                    score_oos, equity_curve_oos, _, _ = tester(
+                        dataset=full_ds_oos,
+                        model_main=model_main_path,
+                        model_meta=model_meta_path,
+                        model_main_cols=main_feature_cols,
+                        model_meta_cols=meta_feature_cols,
+                        direction=self.direction,
+                        model_main_threshold=hp.get('main_threshold', 0.5),
+                        model_meta_threshold=hp.get('meta_threshold', 0.5),
+                        evaluate_strategy=True,
+                        debug=self.debug,
+                        plot=False
+                    )
+                    if score_oos < 0.0 or not np.isfinite(score_oos):
+                        if self.debug:
+                            print(f"🔍 DEBUG - fit_final_models: Score backtest en OOS < 0.0 ({score_oos:.6f})")
+                        return None, None, None, None
+                    if equity_curve_oos is None or len(equity_curve_oos) < 1:
+                        if self.debug:
+                            print(f"🔍 DEBUG - fit_final_models: Falta de equity_curve_oos ({len(equity_curve_oos)} elementos)")
+                        return None, None, None, None
+                except Exception as e_tester:
+                    if self.debug:
+                        print(f"⚠️ ERROR - fit_final_models: Error en OOS tester: {e_tester}")
+                    return None, None, None, None
+
                 try:
                     if self.debug:
                         print(f"🔍 DEBUG - fit_final_models: Inicializando backtest en REAL")
@@ -1096,17 +1051,17 @@ class StrategySearcher:
 
                     if score_real < 0.0:
                         if self.debug:
-                            print(f"🔍 DEBUG - fit_final_models: No se ejecutó Monkey Test por score_real < 0.0 ({score_real:.6f})")
-                            return None, None, None, None, None
+                            print(f"🔍 DEBUG - fit_final_models: No se ejecutó Monkey Test en REAL por score_real < 0.0 ({score_real:.6f})")
+                            return None, None, None, None
                     if equity_curve_real is None or len(equity_curve_real) < 1:
                         if self.debug:
-                            print(f"🔍 DEBUG - fit_final_models: No se ejecutó Monkey Test por falta de equity_curve_real ({len(equity_curve_real)} elementos)")
-                            return None, None, None, None, None
+                            print(f"🔍 DEBUG - fit_final_models: No se ejecutó Monkey Test en REAL por falta de equity_curve_real ({len(equity_curve_real)} elementos)")
+                            return None, None, None, None
                 except Exception as e_tester:
                     if self.debug:
                         print(f"⚠️ ERROR - fit_final_models: Error en REAL tester: {e_tester}")
-                    return None, None, None, None, None
-                
+                    return None, None, None, None
+
                 price_series_real = full_ds_real['open'].to_numpy(dtype='float64')
                 if self.debug:
                     # Comprobar alineación de longitudes y rangos de índices
@@ -1121,56 +1076,6 @@ class StrategySearcher:
                     print(msg)
                     if not aligned:
                         print(f"🔍 DEBUG - fit_final_models: Índices returns_real: {returns_series_real.shape}, pos_real: {pos_series_real.shape}, price_real: {price_series_real.shape}")
-
-                cumulative_pnl_real = np.cumsum(returns_series_real.astype(np.float64))
-                # ── BOCPD guard: antes del Monkey Test
-                try:
-                    if self.debug:
-                        print(f"🔍 DEBUG - fit_final_models: Inicializando BOCPD guard")
-                    test_bocpd_time_start = time.time()
-                    # Agresividad por defecto (media) con posibilidad de ajustar por nivel
-                    T_real = len(cumulative_pnl_real)
-                    # Heurísticas base
-                    burn_in = max(30, int(0.15 * T_real))
-                    # Configurar parámetros según nivel
-                    level = getattr(self, 'bocpd_level', 'medium')
-                    if level == 'low':
-                        lam = max(burn_in + 10, int(T_real / 2.0))
-                        kill_thr = 0.60
-                        l_min = max(15, int(lam * 0.20))
-                        m_consec = max(5, int(l_min * 0.20))
-                    elif level == 'high':
-                        lam = max(burn_in + 10, int(T_real / 4.0))
-                        kill_thr = 0.40
-                        l_min = max(15, int(lam * 0.35))
-                        m_consec = max(5, int(l_min * 0.40))
-                    else:  # medium
-                        lam = max(burn_in + 10, int(T_real / 3.0))
-                        kill_thr = 0.50
-                        l_min = max(15, int(lam * 0.25))
-                        m_consec = max(5, int(l_min * 0.30))
-                    bocpd_params = {
-                        'burn_in_period': burn_in,
-                        'expected_run_length': int(lam),
-                        'kill_threshold': float(kill_thr),
-                        'l_min': int(l_min),
-                        'm_consecutive': int(m_consec),
-                    }
-                    bocpd_res = bocpd_guard(cumulative_pnl=cumulative_pnl_real, params=bocpd_params, debug=self.debug)
-                    test_bocpd_time_end = time.time()
-                    if self.debug:
-                        print(f"🔍 DEBUG - fit_final_models: Tiempo de test BOCPD: {test_bocpd_time_end - test_bocpd_time_start:.2f} segundos")
-                        print(f"🔍 DEBUG - fit_final_models: Resultado BOCPD: {bocpd_res}")
-                except Exception as e_bocpd:
-                    if self.debug:
-                        print(f"⚠️ ERROR - fit_final_models: Error en BOCPD guard: {e_bocpd}")
-                    return None, None, None, None, None
-
-                bocpd_pass_real = bocpd_res['regime_stable']
-                if not bocpd_pass_real:
-                    if self.debug:
-                        print("🔍 DEBUG - fit_final_models: BOCPD estrategia rechazada por cambio de régimen")
-                    return None, None, None, None, None
 
                 try:
                     test_monkey_time_start = time.time()
@@ -1203,35 +1108,17 @@ class StrategySearcher:
                 if not monkey_pass_real:
                     if self.debug:
                         print(f"🔍 DEBUG - fit_final_models: Monkey Test NO superado (p={monkey_p_value_real:.4f} >= {self.monkey_alpha}) → score := -1.0")
-                    return None, None, None, None, None
+                    return None, None, None, None
             
-            bocpd_info = {}
-            if bocpd_pass_real is not None:
-                bocpd_info = {
-                    'bocpd_cp_prob_last': float(bocpd_res['changepoint_probs'][-1]) if len(bocpd_res['changepoint_probs']) else None,
-                    'bocpd_erl_last': float(bocpd_res['exp_run_lengths'][-1]) if len(bocpd_res['exp_run_lengths']) else None,
-                    'bocpd_kill_shock': bool(bocpd_res['kill_signals_shock'].any()) if isinstance(bocpd_res.get('kill_signals_shock'), np.ndarray) else None,
-                    'bocpd_kill_erosion': bool(bocpd_res['kill_signals_erosion'].any()) if isinstance(bocpd_res.get('kill_signals_erosion'), np.ndarray) else None,
-                }
-
-            monkey_info = {}
-            if monkey_pass_real is not None:
-                # Añadir detalles y métricas por ventana si se construyeron
-                monkey_info = {
-                    'monkey_pass_real': monkey_pass_real,
-                    'monkey_p_value_real': monkey_p_value_real,
-                    'monkey_percentile_real': monkey_percentile_real,
-                }
-
-            # Desplazar columnas OHLCV una posición hacia atrás
-            ohlcv_cols = ["open", "high", "low", "close", "volume"]
-            for col in ohlcv_cols:
-                if col in full_ds.columns:
-                    full_ds[col] = full_ds[col].shift(1)
-            full_ds = full_ds.iloc[1:]
-            full_ds_with_labels_path = export_dataset_to_csv(full_ds, self.decimal_precision)
-
+            full_ds_with_labels_path = None
             if self.debug:
+                # Desplazar columnas OHLCV una posición hacia atrás
+                ohlcv_cols = ["open", "high", "low", "close", "volume"]
+                for col in ohlcv_cols:
+                    if col in full_ds.columns:
+                        full_ds[col] = full_ds[col].shift(1)
+                full_ds = full_ds.iloc[1:]
+                full_ds_with_labels_path = export_dataset_to_csv(full_ds, self.decimal_precision)
                 print(f"🔍   DEBUG - fit_final_models: Dataset con shape {full_ds.shape} guardado en {full_ds_with_labels_path}")
                 # Resumen de las columnas de etiquetas
                 if 'labels_main' in full_ds.columns:
@@ -1247,11 +1134,11 @@ class StrategySearcher:
                 else:
                     print(f"🔍      labels_meta no encontrada en el dataset")
                 print(f"🔍 DEBUG: Modelos guardados en {model_main_path} y {model_meta_path}")
-            return score, full_ds_with_labels_path, (model_main_path, model_meta_path), (main_feature_cols, meta_feature_cols), (monkey_info, bocpd_info)
+            return score, full_ds_with_labels_path, (model_main_path, model_meta_path), (main_feature_cols, meta_feature_cols)
         except Exception as e:
             if self.debug:
                 print(f"⚠️ ERROR - fit_final_models: Error en función de entrenamiento y test: {str(e)}")
-            return None, None, None, None, None
+            return None, None, None, None
         finally:
             clear_onnx_session_cache()
 
@@ -1489,7 +1376,7 @@ class StrategySearcher:
                     if y_tr.nunique() < 2:
                         continue
                     model.fit(X.loc[train_idx], y_tr, eval_set=[(X.loc[val_idx], y_va)], use_best_model=True, verbose=False)
-                    pred = (model.predict_proba(X.loc[val_idx])[:, 1] >= hp['main_threshold']).astype(int)
+                    pred = (model.predict_proba(X.loc[val_idx])[:, 1] >= float(hp['main_threshold'])).astype(int)
                     val_y = y_va
                     val0 = val_idx[val_y == 0]
                     val1 = val_idx[val_y == 1]

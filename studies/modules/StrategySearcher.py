@@ -168,7 +168,7 @@ class StrategySearcher:
                             if trial.user_attrs.get('model_paths') is not None:
                                 # Preparar parámetros de exportación por trial
                                 export_params = {
-                                    "tag": f"{self.tag}_t{trial.number}",
+                                    "tag": self.tag,
                                     "direction": self.direction,
                                     "models_export_path": self.models_export_path,
                                     "include_export_path": self.include_export_path,
@@ -1120,19 +1120,6 @@ class StrategySearcher:
                 full_ds = full_ds.iloc[1:]
                 full_ds_with_labels_path = export_dataset_to_csv(full_ds, self.decimal_precision)
                 print(f"🔍   DEBUG - fit_final_models: Dataset con shape {full_ds.shape} guardado en {full_ds_with_labels_path}")
-                # Resumen de las columnas de etiquetas
-                if 'labels_main' in full_ds.columns:
-                    labels_main = full_ds['labels_main']
-                    main_counts = labels_main.value_counts(dropna=False).to_dict()
-                    print(f"🔍      - fit_final_models: labels_main value_counts: {main_counts}")
-                    print(f"🔍      - fit_final_models: labels_main únicos: {sorted(labels_main.unique())}")
-                else:
-                    print(f"🔍      - fit_final_models: labels_main no encontrada en el dataset")
-                if 'labels_meta' in full_ds.columns:
-                    labels_meta = full_ds['labels_meta']
-                    print(f"🔍      labels_meta resumen: min={labels_meta.min():.6f}, max={labels_meta.max():.6f}, mean={labels_meta.mean():.6f}, std={labels_meta.std():.6f}")
-                else:
-                    print(f"🔍      labels_meta no encontrada en el dataset")
                 print(f"🔍 DEBUG: Modelos guardados en {model_main_path} y {model_meta_path}")
             return score, full_ds_with_labels_path, (model_main_path, model_meta_path), (main_feature_cols, meta_feature_cols)
         except Exception as e:

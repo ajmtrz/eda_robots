@@ -368,7 +368,7 @@ class StrategySearcher:
                 hp=hp.copy()
             )
             
-            if score is None or model_paths is None or models_cols is None or full_ds_with_labels_path is None:
+            if score is None or model_paths is None or models_cols is None:
                 return -1.0
                 
             trial.set_user_attr('score', score)
@@ -452,7 +452,7 @@ class StrategySearcher:
 
             score, full_ds_with_labels_path, model_paths, models_cols = self.evaluate_clusters(
                 trial=trial, full_ds_is=full_ds_is, full_ds_oos=full_ds_oos, full_ds_real=full_ds_real, hp=hp)
-            if score is None or model_paths is None or models_cols is None or full_ds_with_labels_path is None:
+            if score is None or model_paths is None or models_cols is None:
                 return -1.0
             
             trial.set_user_attr('score', score)

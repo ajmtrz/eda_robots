@@ -75,10 +75,25 @@ def export_to_mql5(**kwargs):
     
     try:
         main_cols, meta_cols = model_cols
-        hash_str = main_cols + meta_cols
-        model_seed = int.from_bytes(hashlib.sha3_224(str(hash_str).encode('utf-8')).digest()[:5], 'big')
         main_periods, main_funcs = _build_periods_funcs(main_cols)
         meta_periods, meta_funcs = _build_periods_funcs(meta_cols)
+
+        # ───── Seed robusto a partir del contenido de los modelos ONNX (main + meta) ─────
+        if not model_paths or len(model_paths) < 2:
+            raise ValueError("No se encontraron suficientes rutas en model_paths para hashear/copiar los modelos ONNX.")
+
+        def _hash_file(path: str, hasher) -> None:
+            with open(path, "rb") as f:
+                for chunk in iter(lambda: f.read(1024 * 1024), b""):
+                    hasher.update(chunk)
+
+        h = hashlib.sha3_224()
+        # Orden determinista: primero main luego meta
+        h.update(b"MAIN")
+        _hash_file(model_paths[0], h)
+        h.update(b"META")
+        _hash_file(model_paths[1], h)
+        model_seed = int.from_bytes(h.digest()[:5], "big")
         
         # Crear subcarpeta por tag y construir nombres basados en model_seed
         tag_models_dir = os.path.join(models_export_path, str(tag))

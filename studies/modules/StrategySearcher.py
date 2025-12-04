@@ -80,6 +80,7 @@ class StrategySearcher:
         monkey_n_simulations: int = 5000,
         monkey_alpha: float = 0.05,
         filter_mode: str = 'mapie-causal',
+        bocpd_level: str = 'medium',
     ):
         self.symbol = symbol
         self.timeframe = timeframe
@@ -107,6 +108,7 @@ class StrategySearcher:
         self.monkey_n_simulations = monkey_n_simulations
         self.monkey_alpha = monkey_alpha
         self.filter_mode = (filter_mode or 'mapie-causal').lower()
+        self.bocpd_level = bocpd_level.lower() if isinstance(bocpd_level, str) else 'medium'
 
         # Configuración de logging para optuna
         optuna.logging.set_verbosity(optuna.logging.WARNING)
@@ -1061,6 +1063,56 @@ class StrategySearcher:
                     if self.debug:
                         print(f"⚠️ ERROR - fit_final_models: Error en REAL tester: {e_tester}")
                     return None, None, None, None
+
+                cumulative_pnl_real = np.cumsum(returns_series_real.astype(np.float64))
+                # ── BOCPD guard: antes del Monkey Test
+                try:
+                    if self.debug:
+                        print(f"🔍 DEBUG - fit_final_models: Inicializando BOCPD guard")
+                    test_bocpd_time_start = time.time()
+                    # Agresividad por defecto (media) con posibilidad de ajustar por nivel
+                    T_real = len(cumulative_pnl_real)
+                    # Heurísticas base
+                    burn_in = max(30, int(0.15 * T_real))
+                    # Configurar parámetros según nivel
+                    level = getattr(self, 'bocpd_level', 'medium')
+                    if level == 'low':
+                        lam = max(burn_in + 10, int(T_real / 2.0))
+                        kill_thr = 0.60
+                        l_min = max(15, int(lam * 0.20))
+                        m_consec = max(5, int(l_min * 0.20))
+                    elif level == 'high':
+                        lam = max(burn_in + 10, int(T_real / 4.0))
+                        kill_thr = 0.40
+                        l_min = max(15, int(lam * 0.35))
+                        m_consec = max(5, int(l_min * 0.40))
+                    else:  # medium
+                        lam = max(burn_in + 10, int(T_real / 3.0))
+                        kill_thr = 0.50
+                        l_min = max(15, int(lam * 0.25))
+                        m_consec = max(5, int(l_min * 0.30))
+                    bocpd_params = {
+                        'burn_in_period': burn_in,
+                        'expected_run_length': int(lam),
+                        'kill_threshold': float(kill_thr),
+                        'l_min': int(l_min),
+                        'm_consecutive': int(m_consec),
+                    }
+                    bocpd_res = bocpd_guard(cumulative_pnl=cumulative_pnl_real, params=bocpd_params, debug=self.debug)
+                    test_bocpd_time_end = time.time()
+                    if self.debug:
+                        print(f"🔍 DEBUG - fit_final_models: Tiempo de test BOCPD: {test_bocpd_time_end - test_bocpd_time_start:.2f} segundos")
+                        print(f"🔍 DEBUG - fit_final_models: Resultado BOCPD: {bocpd_res}")
+                except Exception as e_bocpd:
+                    if self.debug:
+                        print(f"⚠️ ERROR - fit_final_models: Error en BOCPD guard: {e_bocpd}")
+                    return None, None, None, None
+
+                bocpd_pass_real = bocpd_res['regime_stable']
+                if not bocpd_pass_real:
+                    if self.debug:
+                        print("🔍 DEBUG - fit_final_models: BOCPD estrategia rechazada por cambio de régimen")
+                    return None, None, None, None, None
 
                 price_series_real = full_ds_real['open'].to_numpy(dtype='float64')
                 if self.debug:

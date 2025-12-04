@@ -26,7 +26,7 @@ from modules.labeling_lib import (
     get_labels_filter_binary, get_labels_fractal_patterns, get_labels_zigzag,
     clustering_kmeans, clustering_hdbscan, clustering_markov, clustering_lgmm
 )
-from modules.tester_lib import tester, clear_onnx_session_cache, run_monkey_test
+from modules.tester_lib import tester, clear_onnx_session_cache, run_monkey_test, bocpd_guard
 from modules.export_lib import export_models_to_ONNX, export_dataset_to_csv, export_to_mql5
 
 class StrategySearcher:
@@ -993,17 +993,18 @@ class StrategySearcher:
                 current_best = None
 
             # 2) Decidir si ejecutar Monkey Test
-            must_run_monkey = False
+            must_run_tests = False
             if score > 0.0:
                 if current_best is None:
-                    must_run_monkey = True
+                    must_run_tests = True
                 else:
-                    must_run_monkey = score > float(current_best)
+                    must_run_tests = score > float(current_best)
 
             monkey_pass_real = None
             monkey_p_value_real = None
             monkey_percentile_real = None
-            if must_run_monkey:
+            bocpd_pass_real = None
+            if must_run_tests:
                 try:
                     if self.debug:
                         print(f"🔍 DEBUG - fit_final_models: Inicializando backtest en OOS")
@@ -1161,7 +1162,29 @@ class StrategySearcher:
                     if self.debug:
                         print(f"🔍 DEBUG - fit_final_models: Monkey Test NO superado (p={monkey_p_value_real:.4f} >= {self.monkey_alpha}) → score := -1.0")
                     return None, None, None, None
-            
+
+            bocpd_info = {}
+            if bocpd_pass_real is not None:
+                bocpd_info = {
+                    'bocpd_cp_prob_last': float(bocpd_res['changepoint_probs'][-1]) if len(bocpd_res['changepoint_probs']) else None,
+                    'bocpd_erl_last': float(bocpd_res['exp_run_lengths'][-1]) if len(bocpd_res['exp_run_lengths']) else None,
+                    'bocpd_kill_shock': bool(bocpd_res['kill_signals_shock'].any()) if isinstance(bocpd_res.get('kill_signals_shock'), np.ndarray) else None,
+                    'bocpd_kill_erosion': bool(bocpd_res['kill_signals_erosion'].any()) if isinstance(bocpd_res.get('kill_signals_erosion'), np.ndarray) else None,
+                }
+                if self.debug:
+                    print(f"🔍 DEBUG - fit_final_models: BOCPD info: {bocpd_info}")
+
+            monkey_info = {}
+            if monkey_pass_real is not None:
+                # Añadir detalles y métricas por ventana si se construyeron
+                monkey_info = {
+                    'monkey_pass_real': monkey_pass_real,
+                    'monkey_p_value_real': monkey_p_value_real,
+                    'monkey_percentile_real': monkey_percentile_real,
+                }
+                if self.debug:
+                    print(f"🔍 DEBUG - fit_final_models: Monkey info: {monkey_info}")
+
             full_ds_with_labels_path = None
             if self.debug:
                 # Desplazar columnas OHLCV una posición hacia atrás

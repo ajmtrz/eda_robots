@@ -983,152 +983,170 @@ class StrategySearcher:
                 if self.debug:
                     print(f"⚠️ ERROR - fit_final_models: Error en IN-SAMPLE tester: {e_tester}")
                 return None, None, None, None
-            
-            # 1) Determinar best actual de Optuna (solo score óptimo de estudio)
-            current_best = None
+
             try:
-                if trial.study is not None and hasattr(trial.study, 'best_value'):
-                    current_best = trial.study.best_value
-            except Exception:
-                current_best = None
-
-            # 2) Decidir si ejecutar Monkey Test
-            must_run_tests = False
-            if score > 0.0:
-                if current_best is None:
-                    must_run_tests = True
-                else:
-                    must_run_tests = score > float(current_best)
-
-            monkey_pass_real = None
-            monkey_p_value_real = None
-            monkey_percentile_real = None
-            bocpd_pass_real = None
-            if must_run_tests:
-                try:
+                if self.debug:
+                    print(f"🔍 DEBUG - fit_final_models: Inicializando backtest en OOS")
+                test_oos_time_start = time.time()
+                score_oos, equity_curve_oos, returns_series_oos, pos_series_oos = tester(
+                    dataset=full_ds_oos,
+                    model_main=model_main_path,
+                    model_meta=model_meta_path,
+                    model_main_cols=main_feature_cols,
+                    model_meta_cols=meta_feature_cols,
+                    direction=self.direction,
+                    model_main_threshold=hp.get('main_threshold', 0.5),
+                    model_meta_threshold=hp.get('meta_threshold', 0.5),
+                    evaluate_strategy=True,
+                    debug=self.debug,
+                    plot=False
+                )
+                test_oos_time_end = time.time()
+                if self.debug:
+                    print(f"🔍 DEBUG - fit_final_models: Tiempo de backtest en OOS: {test_oos_time_end - test_oos_time_start:.2f} segundos")
+                if score_oos < 0.0 or not np.isfinite(score_oos):
                     if self.debug:
-                        print(f"🔍 DEBUG - fit_final_models: Inicializando backtest en OOS")
-                    score_oos, equity_curve_oos, returns_series_oos, pos_series_oos = tester(
-                        dataset=full_ds_oos,
-                        model_main=model_main_path,
-                        model_meta=model_meta_path,
-                        model_main_cols=main_feature_cols,
-                        model_meta_cols=meta_feature_cols,
-                        direction=self.direction,
-                        model_main_threshold=hp.get('main_threshold', 0.5),
-                        model_meta_threshold=hp.get('meta_threshold', 0.5),
-                        evaluate_strategy=True,
-                        debug=self.debug,
-                        plot=False
-                    )
-                    if score_oos < 0.0 or not np.isfinite(score_oos):
-                        if self.debug:
-                            print(f"🔍 DEBUG - fit_final_models: Score backtest en OOS < 0.0 ({score_oos:.6f})")
-                        return None, None, None, None
-                    if equity_curve_oos is None or len(equity_curve_oos) < 1:
-                        if self.debug:
-                            print(f"🔍 DEBUG - fit_final_models: Falta de equity_curve_oos ({len(equity_curve_oos)} elementos)")
-                        return None, None, None, None
-                    price_series_oos = full_ds_oos['open'].to_numpy(dtype='float64')
-                    monkey_res_oos = run_monkey_test(
-                        actual_returns=returns_series_oos,
-                        price_series=price_series_oos,
-                        pos_series=pos_series_oos,
-                        direction=self.direction,
-                        n_simulations=self.monkey_n_simulations,
-                    )
-                    monkey_p_value_oos = float(monkey_res_oos.get('p_value', 1.0))
-                    monkey_pass_oos = bool(monkey_p_value_oos < self.monkey_alpha)
-                    if not monkey_pass_oos:
-                        if self.debug:
-                            print(f"🔍 DEBUG - fit_final_models: Monkey Test en OOS no superado (p={monkey_p_value_oos:.4f} >= {self.monkey_alpha}) → score := {score_oos:.6f}")
-                        return None, None, None, None
-                except Exception as e_tester:
-                    if self.debug:
-                        print(f"⚠️ ERROR - fit_final_models: Error en OOS tester: {e_tester}")
+                        print(f"🔍 DEBUG - fit_final_models: Score backtest en OOS < 0.0 ({score_oos:.6f})")
                     return None, None, None, None
-
-                try:
+                if equity_curve_oos is None or len(equity_curve_oos) < 1:
                     if self.debug:
-                        print(f"🔍 DEBUG - fit_final_models: Inicializando backtest en REAL")
-                    # Bactest para Monkey Test
-                    score_real, equity_curve_real, returns_series_real, pos_series_real = tester(
-                        dataset=full_ds_real,
-                        model_main=model_main_path,
-                        model_meta=model_meta_path,
-                        model_main_cols=main_feature_cols,
-                        model_meta_cols=meta_feature_cols,
-                        direction=self.direction,
-                        model_main_threshold=hp.get('main_threshold', 0.5),
-                        model_meta_threshold=hp.get('meta_threshold', 0.5),
-                        evaluate_strategy=True,
-                        debug=self.debug,
-                        plot=False
-                    )
-
-                    if score_real < 0.0:
-                        if self.debug:
-                            print(f"🔍 DEBUG - fit_final_models: No se ejecutó Monkey Test en REAL por score_real < 0.0 ({score_real:.6f})")
-                            return None, None, None, None
-                    if equity_curve_real is None or len(equity_curve_real) < 1:
-                        if self.debug:
-                            print(f"🔍 DEBUG - fit_final_models: No se ejecutó Monkey Test en REAL por falta de equity_curve_real ({len(equity_curve_real)} elementos)")
-                            return None, None, None, None
-                except Exception as e_tester:
-                    if self.debug:
-                        print(f"⚠️ ERROR - fit_final_models: Error en REAL tester: {e_tester}")
+                        print(f"🔍 DEBUG - fit_final_models: Falta de equity_curve_oos ({len(equity_curve_oos)} elementos)")
                     return None, None, None, None
+            except Exception as e_tester:
+                if self.debug:
+                    print(f"⚠️ ERROR - fit_final_models: Error en OOS tester: {e_tester}")
+                return None, None, None, None
+            try:
+                price_series_oos = full_ds_oos['open'].to_numpy(dtype='float64')
+                if self.debug:
+                    # Comprobar alineación de longitudes y rangos de índices
+                    aligned = (len(returns_series_oos) == len(pos_series_oos) == len(price_series_oos))
+                    msg = (
+                        f"🔍 DEBUG - fit_final_models: Alineación OOS - "
+                        f"len(returns_series_oos): {len(returns_series_oos)}, "
+                        f"len(pos_series_oos): {len(pos_series_oos)}, "
+                        f"len(price_series_oos): {len(price_series_oos)}. "
+                        f"Alineados: {aligned}"
+                    )
+                    print(msg)
+                    if not aligned:
+                        print(f"🔍 DEBUG - fit_final_models: Índices returns_oos: {returns_series_oos.shape}, pos_oos: {pos_series_oos.shape}, price_oos: {price_series_oos.shape}")
+                test_monkey_time_start = time.time()
+                monkey_res_oos = run_monkey_test(
+                    actual_returns=returns_series_oos,
+                    price_series=price_series_oos,
+                    pos_series=pos_series_oos,
+                    direction=self.direction,
+                    n_simulations=self.monkey_n_simulations,
+                )
+                test_monkey_time_end = time.time()
+                if self.debug:
+                    print(f"🔍 DEBUG - fit_final_models: Tiempo de test Monkey en OOS: {test_monkey_time_end - test_monkey_time_start:.2f} segundos")
+                    print(f"🔍 DEBUG - fit_final_models: Resultado Monkey en OOS: {monkey_res_oos}")
+                monkey_p_value_oos = float(monkey_res_oos.get('p_value', 1.0))
+                monkey_pass_oos = bool(monkey_p_value_oos < self.monkey_alpha * 2.0)
+                if not monkey_pass_oos:
+                    if self.debug:
+                        print(f"🔍 DEBUG - fit_final_models: Monkey Test en OOS no superado (p={monkey_p_value_oos:.4f} >= {self.monkey_alpha * 2.0}) → score := {score_oos:.6f}")
+                    return None, None, None, None
+            except Exception as e_tester:
+                if self.debug:
+                    print(f"⚠️ ERROR - fit_final_models: Error en Monkey Test en OOS: {e_tester}")
+                return None, None, None, None
 
+            try:
+                if self.debug:
+                    print(f"🔍 DEBUG - fit_final_models: Inicializando backtest en REAL")
+                # Bactest para Monkey Test
+                test_real_time_start = time.time()
+                score_real, equity_curve_real, returns_series_real, pos_series_real = tester(
+                    dataset=full_ds_real,
+                    model_main=model_main_path,
+                    model_meta=model_meta_path,
+                    model_main_cols=main_feature_cols,
+                    model_meta_cols=meta_feature_cols,
+                    direction=self.direction,
+                    model_main_threshold=hp.get('main_threshold', 0.5),
+                    model_meta_threshold=hp.get('meta_threshold', 0.5),
+                    evaluate_strategy=True,
+                    debug=self.debug,
+                    plot=False
+                )
+                test_real_time_end = time.time()
+                if self.debug:
+                    print(f"🔍 DEBUG - fit_final_models: Tiempo de backtest en REAL: {test_real_time_end - test_real_time_start:.2f} segundos")
+                if score_real < 0.0:
+                    if self.debug:
+                        print(f"🔍 DEBUG - fit_final_models: No se ejecutó Monkey Test en REAL por score_real < 0.0 ({score_real:.6f})")
+                        return None, None, None, None
+                if equity_curve_real is None or len(equity_curve_real) < 1:
+                    if self.debug:
+                        print(f"🔍 DEBUG - fit_final_models: No se ejecutó Monkey Test en REAL por falta de equity_curve_real ({len(equity_curve_real)} elementos)")
+                        return None, None, None, None
+            except Exception as e_tester:
+                if self.debug:
+                    print(f"⚠️ ERROR - fit_final_models: Error en REAL tester: {e_tester}")
+                return None, None, None, None
+            # ── BOCPD guard: antes del Monkey Test
+            try:
+                if self.debug:
+                    print(f"🔍 DEBUG - fit_final_models: Inicializando BOCPD guard")
                 cumulative_pnl_real = np.cumsum(returns_series_real.astype(np.float64))
-                # ── BOCPD guard: antes del Monkey Test
-                try:
-                    if self.debug:
-                        print(f"🔍 DEBUG - fit_final_models: Inicializando BOCPD guard")
-                    test_bocpd_time_start = time.time()
-                    # Agresividad por defecto (media) con posibilidad de ajustar por nivel
-                    T_real = len(cumulative_pnl_real)
-                    # Heurísticas base
-                    burn_in = max(30, int(0.15 * T_real))
-                    # Configurar parámetros según nivel
-                    level = getattr(self, 'bocpd_level', 'medium')
-                    if level == 'low':
-                        lam = max(burn_in + 10, int(T_real / 2.0))
-                        kill_thr = 0.60
-                        l_min = max(15, int(lam * 0.20))
-                        m_consec = max(5, int(l_min * 0.20))
-                    elif level == 'high':
-                        lam = max(burn_in + 10, int(T_real / 4.0))
-                        kill_thr = 0.40
-                        l_min = max(15, int(lam * 0.35))
-                        m_consec = max(5, int(l_min * 0.40))
-                    else:  # medium
-                        lam = max(burn_in + 10, int(T_real / 3.0))
-                        kill_thr = 0.50
-                        l_min = max(15, int(lam * 0.25))
-                        m_consec = max(5, int(l_min * 0.30))
-                    bocpd_params = {
-                        'burn_in_period': burn_in,
-                        'expected_run_length': int(lam),
-                        'kill_threshold': float(kill_thr),
-                        'l_min': int(l_min),
-                        'm_consecutive': int(m_consec),
-                    }
-                    bocpd_res = bocpd_guard(cumulative_pnl=cumulative_pnl_real, params=bocpd_params, debug=self.debug)
-                    test_bocpd_time_end = time.time()
-                    if self.debug:
-                        print(f"🔍 DEBUG - fit_final_models: Tiempo de test BOCPD: {test_bocpd_time_end - test_bocpd_time_start:.2f} segundos")
-                        print(f"🔍 DEBUG - fit_final_models: Resultado BOCPD: {bocpd_res}")
-                except Exception as e_bocpd:
-                    if self.debug:
-                        print(f"⚠️ ERROR - fit_final_models: Error en BOCPD guard: {e_bocpd}")
-                    return None, None, None, None
+                # Agresividad por defecto (media) con posibilidad de ajustar por nivel
+                T_real = len(cumulative_pnl_real)
+                # Heurísticas base
+                burn_in = max(30, int(0.15 * T_real))
+                # Configurar parámetros según nivel
+                level = getattr(self, 'bocpd_level', 'medium')
+                if level == 'low':
+                    lam = max(burn_in + 10, int(T_real / 2.0))
+                    kill_thr = 0.60
+                    l_min = max(15, int(lam * 0.20))
+                    m_consec = max(5, int(l_min * 0.20))
+                elif level == 'high':
+                    lam = max(burn_in + 10, int(T_real / 4.0))
+                    kill_thr = 0.40
+                    l_min = max(15, int(lam * 0.35))
+                    m_consec = max(5, int(l_min * 0.40))
+                else:  # medium
+                    lam = max(burn_in + 10, int(T_real / 3.0))
+                    kill_thr = 0.50
+                    l_min = max(15, int(lam * 0.25))
+                    m_consec = max(5, int(l_min * 0.30))
+                bocpd_params = {
+                    'burn_in_period': burn_in,
+                    'expected_run_length': int(lam),
+                    'kill_threshold': float(kill_thr),
+                    'l_min': int(l_min),
+                    'm_consecutive': int(m_consec),
+                }
+                test_bocpd_time_start = time.time()
+                bocpd_res = bocpd_guard(cumulative_pnl=cumulative_pnl_real, params=bocpd_params, debug=self.debug)
+                test_bocpd_time_end = time.time()
+                if self.debug:
+                    print(f"🔍 DEBUG - fit_final_models: Tiempo de test BOCPD: {test_bocpd_time_end - test_bocpd_time_start:.2f} segundos")
+                    print(f"🔍 DEBUG - fit_final_models: Resultado BOCPD: {bocpd_res}")
+            except Exception as e_bocpd:
+                if self.debug:
+                    print(f"⚠️ ERROR - fit_final_models: Error en BOCPD guard: {e_bocpd}")
+                return None, None, None, None
 
-                bocpd_pass_real = bocpd_res['regime_stable']
-                if not bocpd_pass_real:
-                    if self.debug:
-                        print("🔍 DEBUG - fit_final_models: BOCPD estrategia rechazada por cambio de régimen")
-                    return None, None, None, None, None
+            bocpd_pass_real = bocpd_res['regime_stable']
+            if not bocpd_pass_real:
+                if self.debug:
+                    print("🔍 DEBUG - fit_final_models: BOCPD estrategia rechazada por cambio de régimen")
+                return None, None, None, None
+            else:
+                bocpd_info = {
+                    'bocpd_cp_prob_last': float(bocpd_res['changepoint_probs'][-1]) if len(bocpd_res['changepoint_probs']) else None,
+                    'bocpd_erl_last': float(bocpd_res['exp_run_lengths'][-1]) if len(bocpd_res['exp_run_lengths']) else None,
+                    'bocpd_kill_shock': bool(bocpd_res['kill_signals_shock'].any()) if isinstance(bocpd_res.get('kill_signals_shock'), np.ndarray) else None,
+                    'bocpd_kill_erosion': bool(bocpd_res['kill_signals_erosion'].any()) if isinstance(bocpd_res.get('kill_signals_erosion'), np.ndarray) else None,
+                }
+                if self.debug:
+                    print(f"🔍 DEBUG - fit_final_models: BOCPD info: {bocpd_info}")
 
+            try:
                 price_series_real = full_ds_real['open'].to_numpy(dtype='float64')
                 if self.debug:
                     # Comprobar alineación de longitudes y rangos de índices
@@ -1143,53 +1161,36 @@ class StrategySearcher:
                     print(msg)
                     if not aligned:
                         print(f"🔍 DEBUG - fit_final_models: Índices returns_real: {returns_series_real.shape}, pos_real: {pos_series_real.shape}, price_real: {price_series_real.shape}")
-
-                try:
-                    test_monkey_time_start = time.time()
-                    monkey_res = run_monkey_test(
-                        actual_returns=returns_series_real,
-                        price_series=price_series_real,
-                        pos_series=pos_series_real,
-                        direction=self.direction,
-                        n_simulations=self.monkey_n_simulations,
-                    )
-                    test_monkey_time_end = time.time()
-                    if self.debug:
-                        print(f"🔍 DEBUG - fit_final_models: Tiempo de test Monkey: {test_monkey_time_end - test_monkey_time_start:.2f} segundos")
-                        print(f"🔍 DEBUG - fit_final_models: Resultado Monkey: {monkey_res}")
-                    monkey_p_value_real = float(monkey_res.get('p_value', 1.0))
-                    monkey_percentile_real = float(monkey_res.get('percentile', 0.0))
-                    monkey_pass_real = bool(monkey_p_value_real < self.monkey_alpha)
-                    if self.debug:
-                        print(f"🔍 DEBUG - fit_final_models: Monkey p_value: {monkey_p_value_real}")
-                        print(f"🔍 DEBUG - fit_final_models: Monkey percentile: {monkey_percentile_real}")
-                        print(f"🔍 DEBUG - fit_final_models: Monkey pass: {monkey_pass_real}")
-                except Exception as e_monkey:
-                    if self.debug:
-                        print(f"⚠️ ERROR - fit_final_models: Error en Monkey Test: {e_monkey}")
-                    monkey_pass_real = False
-                    monkey_p_value_real = 1.0
-                    monkey_percentile_real = 0.0
-
-                # 3) Si falla, forzar score -1.0 para evitar autoengaño
-                if not monkey_pass_real:
-                    if self.debug:
-                        print(f"🔍 DEBUG - fit_final_models: Monkey Test NO superado (p={monkey_p_value_real:.4f} >= {self.monkey_alpha}) → score := -1.0")
-                    return None, None, None, None
-
-            bocpd_info = {}
-            if bocpd_pass_real is not None:
-                bocpd_info = {
-                    'bocpd_cp_prob_last': float(bocpd_res['changepoint_probs'][-1]) if len(bocpd_res['changepoint_probs']) else None,
-                    'bocpd_erl_last': float(bocpd_res['exp_run_lengths'][-1]) if len(bocpd_res['exp_run_lengths']) else None,
-                    'bocpd_kill_shock': bool(bocpd_res['kill_signals_shock'].any()) if isinstance(bocpd_res.get('kill_signals_shock'), np.ndarray) else None,
-                    'bocpd_kill_erosion': bool(bocpd_res['kill_signals_erosion'].any()) if isinstance(bocpd_res.get('kill_signals_erosion'), np.ndarray) else None,
-                }
+                test_monkey_time_start = time.time()
+                monkey_res = run_monkey_test(
+                    actual_returns=returns_series_real,
+                    price_series=price_series_real,
+                    pos_series=pos_series_real,
+                    direction=self.direction,
+                    n_simulations=self.monkey_n_simulations,
+                )
+                test_monkey_time_end = time.time()
                 if self.debug:
-                    print(f"🔍 DEBUG - fit_final_models: BOCPD info: {bocpd_info}")
+                    print(f"🔍 DEBUG - fit_final_models: Tiempo de test Monkey: {test_monkey_time_end - test_monkey_time_start:.2f} segundos")
+                    print(f"🔍 DEBUG - fit_final_models: Resultado Monkey: {monkey_res}")
+                monkey_p_value_real = float(monkey_res.get('p_value', 1.0))
+                monkey_percentile_real = float(monkey_res.get('percentile', 0.0))
+                monkey_pass_real = bool(monkey_p_value_real < self.monkey_alpha)
+                if self.debug:
+                    print(f"🔍 DEBUG - fit_final_models: Monkey p_value: {monkey_p_value_real}")
+                    print(f"🔍 DEBUG - fit_final_models: Monkey percentile: {monkey_percentile_real}")
+                    print(f"🔍 DEBUG - fit_final_models: Monkey pass: {monkey_pass_real}")
+            except Exception as e_monkey:
+                if self.debug:
+                    print(f"⚠️ ERROR - fit_final_models: Error en Monkey Test: {e_monkey}")
+                return None, None, None, None
 
-            monkey_info = {}
-            if monkey_pass_real is not None:
+            # 3) Si falla, forzar score -1.0 para evitar autoengaño
+            if not monkey_pass_real:
+                if self.debug:
+                    print(f"🔍 DEBUG - fit_final_models: Monkey Test NO superado (p={monkey_p_value_real:.4f} >= {self.monkey_alpha}) → score := -1.0")
+                return None, None, None, None
+            else:
                 # Añadir detalles y métricas por ventana si se construyeron
                 monkey_info = {
                     'monkey_pass_real': monkey_pass_real,

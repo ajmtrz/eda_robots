@@ -1008,7 +1008,7 @@ class StrategySearcher:
                 try:
                     if self.debug:
                         print(f"🔍 DEBUG - fit_final_models: Inicializando backtest en OOS")
-                    score_oos, equity_curve_oos, _, _ = tester(
+                    score_oos, equity_curve_oos, returns_series_oos, pos_series_oos = tester(
                         dataset=full_ds_oos,
                         model_main=model_main_path,
                         model_meta=model_meta_path,
@@ -1028,6 +1028,20 @@ class StrategySearcher:
                     if equity_curve_oos is None or len(equity_curve_oos) < 1:
                         if self.debug:
                             print(f"🔍 DEBUG - fit_final_models: Falta de equity_curve_oos ({len(equity_curve_oos)} elementos)")
+                        return None, None, None, None
+                    price_series_oos = full_ds_oos['open'].to_numpy(dtype='float64')
+                    monkey_res_oos = run_monkey_test(
+                        actual_returns=returns_series_oos,
+                        price_series=price_series_oos,
+                        pos_series=pos_series_oos,
+                        direction=self.direction,
+                        n_simulations=self.monkey_n_simulations,
+                    )
+                    monkey_p_value_oos = float(monkey_res_oos.get('p_value', 1.0))
+                    monkey_pass_oos = bool(monkey_p_value_oos < self.monkey_alpha)
+                    if not monkey_pass_oos:
+                        if self.debug:
+                            print(f"🔍 DEBUG - fit_final_models: Monkey Test en OOS no superado (p={monkey_p_value_oos:.4f} >= {self.monkey_alpha}) → score := {score_oos:.6f}")
                         return None, None, None, None
                 except Exception as e_tester:
                     if self.debug:

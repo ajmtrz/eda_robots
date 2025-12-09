@@ -157,6 +157,10 @@ def evaluate_report(
     n = equity_curve.size
     if n < 2:
         return -1.0, -1.0, -1.0, -1.0, -1.0
+    
+    # Descartar inmediatamente curvas con equity final <= equity inicial (p. ej., 0.0)
+    if equity_curve[-1] <= equity_curve[0]:
+        return -1.0, -1.0, -1.0, -1.0, -1.0
 
     # ---------- nº de trades (normalizado) -----------------------------------
     n_trades = trade_profits.size
@@ -526,7 +530,9 @@ def manual_linear_regression(x, y):
         y: array 1D de valores dependientes
     
     Returns:
-        tuple: (r2_signed, slope, intercept)
+        tuple: (r2, slope)
+        r2: coeficiente de determinación no firmado
+        slope: pendiente de la recta de regresión (equity por barra)
     """
     n = len(x)
     if n < 2:
@@ -960,204 +966,153 @@ def run_monkey_test(actual_returns: np.ndarray,
     except Exception:
         return {'p_value': 1.0, 'percentile': 0.0}
 
-# ───── BOCPD (Bayesian Online Changepoint Detection) ─────────────────────────
+# ───── Robust Changepoint Protocol (Quant Beckman Inspired) ───────────────────
 @njit(cache=True)
-def _logsumexp_vec(log_vals: np.ndarray) -> float:
-    if log_vals.size == 0:
-        return float('-inf')
-    m = float(np.max(log_vals))
-    if not np.isfinite(m):
-        return m
-    return m + float(np.log(np.sum(np.exp(log_vals - m))))
+def _robust_median_mad(x: np.ndarray) -> tuple:
+    n = x.size
+    if n == 0:
+        return 0.0, 1.0
+    med = np.median(x)
+    abs_dev = np.empty(n, dtype=np.float64)
+    for i in range(n):
+        abs_dev[i] = abs(x[i] - med)
+    mad = np.median(abs_dev)
+    # Escala consistente con normal: 1.4826 * MAD
+    scale = 1.4826 * mad
+    if scale <= 1e-12:
+        scale = 1.0
+    return med, scale
 
 @njit(cache=True)
-def _student_t_logpdf(x: float, mu: float, sigma: float, nu: float) -> float:
-    # log t_nu(x | mu, sigma)
-    # f = Gamma((nu+1)/2) / (Gamma(nu/2) * sqrt(nu*pi) * sigma) * (1 + ((x-mu)^2)/(nu*sigma^2))^{-(nu+1)/2}
-    if sigma <= 0.0 or nu <= 0.0 or not np.isfinite(x) or not np.isfinite(mu):
-        return -1e12
-    z = (x - mu) / sigma
-    log_num = math.lgamma(0.5 * (nu + 1.0))
-    log_den = math.lgamma(0.5 * nu) + 0.5 * (np.log(nu) + np.log(np.pi)) + np.log(sigma)
-    log_core = -0.5 * (nu + 1.0) * np.log(1.0 + (z * z) / nu)
-    return float(log_num - log_den + log_core)
-
-@njit(cache=True)
-def _student_t_logpdf_vec(x: float, m_arr: np.ndarray, sigma: np.ndarray, nu: np.ndarray) -> np.ndarray:
-    n = m_arr.size
-    out = np.empty(n, dtype=np.float64)
-    for j in range(n):
-        out[j] = _student_t_logpdf(x, m_arr[j], sigma[j], nu[j])
+def _ewma(x: np.ndarray, alpha: float) -> np.ndarray:
+    n = x.size
+    out = np.zeros(n, dtype=np.float64)
+    if n == 0:
+        return out
+    val = x[0]
+    out[0] = val
+    for i in range(1, n):
+        val = alpha * x[i] + (1.0 - alpha) * val
+        out[i] = val
     return out
-    
-def bocpd_guard(cumulative_pnl: np.ndarray, params: dict | None = None, debug: bool = False) -> dict:
+
+@njit(cache=True)
+def _detect_shock(returns: np.ndarray, burn_in: int, z_thr: float, window: int) -> int:
+    n = returns.size
+    if n <= burn_in + 1:
+        return -1
+    w = max(4, window)
+    for t in range(burn_in, n):
+        start = t - w
+        if start < 0:
+            start = 0
+        med, scale = _robust_median_mad(returns[start:t])
+        z = (returns[t] - med) / scale
+        if z < -z_thr:
+            return t
+    return -1
+
+@njit(cache=True)
+def _detect_erosion(returns: np.ndarray, burn_in: int, erosion_window: int, l_min: int, m_consecutive: int, scale: float) -> int:
+    n = returns.size
+    if n <= burn_in + l_min + 1:
+        return -1
+    sc = scale
+    if sc <= 1e-12:
+        sc = 1.0
+    returns_z = returns / sc
+    # EWMA de retornos con alpha derivado de la ventana
+    span = float(max(2, erosion_window))
+    alpha = 2.0 / (span + 1.0)
+    ew = _ewma(returns_z, alpha)
+    # Gracia: no activar erosión antes de burn_in + l_min
+    grace = burn_in + l_min
+    consec = 0
+    for t in range(grace, n):
+        if ew[t] < 0.0:
+            consec += 1
+        else:
+            consec = 0
+        if consec >= m_consecutive:
+            return t
+    return -1
+
+def robust_cp_guard(cumulative_pnl: np.ndarray,
+                    params: dict | None = None,
+                    debug: bool = False) -> dict:
     """
-    Guardia de cambios de régimen (BOCPD) sobre PnL acumulado.
-    Devuelve arrays por tick y un flag 'regime_stable' (False si dispara kill).
+    Guardia robusta de cambio de régimen con dos gatillos:
+      - Shock: retorno instantáneo con z-score robusto < -z_thr tras burn-in
+      - Erosión: secuencia de señal EWMA negativa sostenida tras un periodo de gracia
+    Args:
+        cumulative_pnl: Serie de PnL acumulado (REAL).
+        params: {
+            'use_series': 'pnl' | 'returns',   # default 'pnl' (usa diff del PnL)
+            'burn_in': int,                    # default 30
+            'shock_z': float,                  # default 3.0
+            'erosion_window': int,             # default 64
+            'l_min': int,                      # default 20
+            'm_consecutive': int,              # default 3
+        }
+        debug: logging de diagnóstico si True.
+    Returns:
+        dict con:
+            - kill_shock: bool
+            - kill_erosion: bool
+            - idx_shock: int | None (índice absoluto)
+            - idx_erosion: int | None
+            - stable: bool (no se activaron gatillos)
     """
     try:
-        if cumulative_pnl is None or len(cumulative_pnl) < 2:
-            return {
-                'kill_signals_shock': np.array([], dtype=bool),
-                'kill_signals_erosion': np.array([], dtype=bool),
-                'changepoint_probs': np.array([], dtype=np.float64),
-                'exp_run_lengths': np.array([], dtype=np.float64),
-                'regime_stable': True
-            }
-        # Serie estacionaria
-        returns = np.diff(cumulative_pnl, prepend=cumulative_pnl[0]).astype(np.float64)
-        T = returns.size
-        if T < 10:
-            return {
-                'kill_signals_shock': np.zeros(T, dtype=bool),
-                'kill_signals_erosion': np.zeros(T, dtype=bool),
-                'changepoint_probs': np.zeros(T, dtype=np.float64),
-                'exp_run_lengths': np.arange(T, dtype=np.float64),
-                'regime_stable': True
-            }
-        # Heurísticas automáticas
-        burn_in = max(30, int(T * 0.15))
-        lam = max(burn_in + 10, int(T / 3.0))
-        kill_threshold = 0.5
-        l_min = max(15, int(lam * 0.25))
-        m_consecutive = max(5, int(l_min * 0.3))
-        if params:
-            burn_in = int(params.get('burn_in_period', burn_in))
-            lam = int(params.get('expected_run_length', lam))
-            kill_threshold = float(params.get('kill_threshold', kill_threshold))
-            l_min = int(params.get('l_min', l_min))
-            m_consecutive = int(params.get('m_consecutive', m_consecutive))
-        hazard = 1.0 / max(lam, 1e-6)
-        if hazard >= 1.0:
-            hazard = 0.999999
-        # Priors NIG desde burn-in
-        bi = min(burn_in, T)
-        burn_data = returns[:bi]
-        prior_m0 = float(np.mean(burn_data))
-        var_guess = float(np.var(burn_data)) if burn_data.size > 1 else 0.0
-        if var_guess <= 0.0 or not np.isfinite(var_guess):
-            var_guess = 1e-4
-        prior_k0 = 1.0
-        prior_a0 = 1.0
-        prior_b0 = var_guess * prior_a0
-        # Estado inicial
-        # Rlog: log P(runlen=r | x_{1:t})
-        Rlog = np.array([0.0], dtype=np.float64)  # t=0, r=0
-        # Hyperparámetros por run-length (alineados con Rlog)
-        m_arr = np.array([prior_m0], dtype=np.float64)
-        k_arr = np.array([prior_k0], dtype=np.float64)
-        a_arr = np.array([prior_a0], dtype=np.float64)
-        b_arr = np.array([prior_b0], dtype=np.float64)
-        # Salidas
-        cp_probs = np.zeros(T, dtype=np.float64)
-        erl_series = np.zeros(T, dtype=np.float64)
-        kill_shock = np.zeros(T, dtype=bool)
-        kill_erosion = np.zeros(T, dtype=bool)
-        erosion_cnt = 0
-        for t in range(T):
-            x = returns[t]
-            # Predictiva Student-t por hipótesis
-            nu = 2.0 * a_arr
-            sigma = np.sqrt((b_arr * (k_arr + 1.0)) / (a_arr * k_arr))
-            # Calcular log-likelihoods (jit)
-            ll = _student_t_logpdf_vec(x, m_arr, sigma, nu)
-            # Growth: r -> r+1
-            log_growth = np.log(1.0 - hazard) + ll + Rlog
-            # Changepoint/reset: r -> 0
-            log_cp_terms = np.log(hazard) + ll + Rlog
-            log_cp = _logsumexp_vec(log_cp_terms)
-            # Montar R_next
-            R_next = np.empty(Rlog.size + 1, dtype=np.float64)
-            R_next[0] = log_cp
-            R_next[1:] = log_growth
-            # Normalizar
-            lse = _logsumexp_vec(R_next)
-            R_next -= lse
-            # Probabilidad de CP y ERL
-            cp_prob_t = float(np.exp(R_next[0]))
-            cp_probs[t] = cp_prob_t
-            # Expected run length
-            idxs = np.arange(R_next.size, dtype=np.float64)
-            erl = float(np.sum(idxs * np.exp(R_next)))
-            erl_series[t] = erl
-            # Triggers
-            if t >= burn_in and cp_prob_t > kill_threshold:
-                kill_shock[t] = True
-            # Grace period para erosión: esperar hasta burn_in + l_min
-            grace_period = burn_in + l_min
-            if t > grace_period and erl < l_min:
-                erosion_cnt += 1
-            else:
-                erosion_cnt = 0
-            if erosion_cnt >= m_consecutive:
-                kill_erosion[t] = True
-            # PRUNING: descartar hipótesis de baja masa
-            max_log = float(np.max(R_next))
-            keep_mask_next = R_next >= (max_log - 10.0)
-            R_next_kept = R_next[keep_mask_next]
-            # Actualizar parámetros para siguiente tick:
-            # 1) Para r=0 (reset): prior actualizado con x
-            k0 = prior_k0 + 1.0
-            m0 = (prior_k0 * prior_m0 + x) / k0
-            a0 = prior_a0 + 0.5
-            b0 = prior_b0 + 0.5 * (prior_k0 * (x - prior_m0) * (x - prior_m0)) / k0
-            # 2) Para growth: actualizar todos con x
-            k_g = k_arr + 1.0
-            m_g = (k_arr * m_arr + x) / k_g
-            a_g = a_arr + 0.5
-            b_g = b_arr + 0.5 * (k_arr * (x - m_arr) * (x - m_arr)) / k_g
-            # Reconstruir arrays alineados con R_next
-            # La primera hipótesis corresponde al reset (r=0)
-            m_new = np.empty(R_next_kept.size, dtype=np.float64)
-            k_new = np.empty(R_next_kept.size, dtype=np.float64)
-            a_new = np.empty(R_next_kept.size, dtype=np.float64)
-            b_new = np.empty(R_next_kept.size, dtype=np.float64)
-            m_new[0] = m0
-            k_new[0] = k0
-            a_new[0] = a0
-            b_new[0] = b0
-            # El resto proviene de growth; aplicar máscara consistente con R_next_kept
-            growth_keep_mask = keep_mask_next[1:]  # corresponde a hipótesis de growth
-            if growth_keep_mask.size != m_g.size:
-                # fallback de seguridad (no debería ocurrir)
-                m_g_s = m_g
-                k_g_s = k_g
-                a_g_s = a_g
-                b_g_s = b_g
-            else:
-                m_g_s = m_g[growth_keep_mask]
-                k_g_s = k_g[growth_keep_mask]
-                a_g_s = a_g[growth_keep_mask]
-                b_g_s = b_g[growth_keep_mask]
-            m_new[1:] = m_g_s
-            k_new[1:] = k_g_s
-            a_new[1:] = a_g_s
-            b_new[1:] = b_g_s
-            # Siguiente iteración
-            Rlog = R_next_kept
-            m_arr = m_new
-            k_arr = k_new
-            a_arr = a_new
-            b_arr = b_new
-        regime_stable = not (kill_shock.any() or kill_erosion.any())
+        if cumulative_pnl is None:
+            return {'kill_shock': False, 'kill_erosion': False, 'idx_shock': None, 'idx_erosion': None, 'stable': True}
+        pnl = np.asarray(cumulative_pnl, dtype=np.float64)
+        n = pnl.size
+        if n < 10:
+            return {'kill_shock': False, 'kill_erosion': False, 'idx_shock': None, 'idx_erosion': None, 'stable': True}
+        # Parámetros
+        p = params or {}
+        use_series = p.get('use_series', 'pnl')
+        burn_in = int(p.get('burn_in', 30))
+        shock_z = float(p.get('shock_z', 3.0))
+        shock_window = int(p.get('shock_window', burn_in))
+        erosion_window = int(p.get('erosion_window', 64))
+        l_min = int(p.get('l_min', 20))
+        m_consecutive = int(p.get('m_consecutive', 3))
+        # Serie analizada: retornos por barra
+        if use_series == 'returns':
+            # Si el usuario desea pasar retornos directamente, asúmelos en pnl
+            returns = pnl
+        else:
+            # Por defecto: diferenciar PnL acumulado
+            returns = np.zeros(n, dtype=np.float64)
+            returns[1:] = pnl[1:] - pnl[:-1]
+        # Escala robusta global para normalizar (reduce falsos positivos por volatilidad)
+        _, scale_global = _robust_median_mad(returns[:max(burn_in, 1)])
+        # Detección de shock y erosión (numba jitted kernels)
+        idx_shock = _detect_shock(returns, burn_in, shock_z, shock_window)
+        idx_erosion = _detect_erosion(returns, burn_in, erosion_window, l_min, m_consecutive, scale_global)
+        kill_shock = (idx_shock >= 0)
+        kill_erosion = (idx_erosion >= 0)
+        reason = "stable"
+        if kill_shock and kill_erosion:
+            reason = "shock_and_erosion"
+        elif kill_shock:
+            reason = "shock"
+        elif kill_erosion:
+            reason = "erosion"
+        if debug:
+            print(f"🔍 DEBUG - robust_cp_guard: n={n}, burn_in={burn_in}, shock_z={shock_z}, shock_window={shock_window}, erosion_window={erosion_window}, l_min={l_min}, m={m_consecutive}")
+            print(f"🔍 DEBUG - robust_cp_guard: idx_shock={idx_shock}, idx_erosion={idx_erosion}, scale_global={scale_global}")
         return {
-            'kill_signals_shock': kill_shock,
-            'kill_signals_erosion': kill_erosion,
-            'changepoint_probs': cp_probs,
-            'exp_run_lengths': erl_series,
-            'regime_stable': bool(regime_stable)
+            'kill_shock': bool(kill_shock),
+            'kill_erosion': bool(kill_erosion),
+            'idx_shock': int(idx_shock) if kill_shock else None,
+            'idx_erosion': int(idx_erosion) if kill_erosion else None,
+            'stable': not (kill_shock or kill_erosion),
+            'reason': reason,
         }
     except Exception as e:
         if debug:
-            try:
-                print(f"⚠️ DEBUG - bocpd_guard: excepción interna: {e}")
-            except Exception:
-                pass
-        # Si algo falla, actuar conservador: no matar por BOCPD
-        return {
-            'kill_signals_shock': np.array([], dtype=bool),
-            'kill_signals_erosion': np.array([], dtype=bool),
-            'changepoint_probs': np.array([], dtype=np.float64),
-            'exp_run_lengths': np.array([], dtype=np.float64),
-            'regime_stable': True
-        }
+            print(f"⚠️ ERROR - robust_cp_guard: {e}")
+        return {'kill_shock': False, 'kill_erosion': False, 'idx_shock': None, 'idx_erosion': None, 'stable': True, 'reason': 'error'}

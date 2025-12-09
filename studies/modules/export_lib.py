@@ -119,18 +119,20 @@ def export_to_mql5(**kwargs):
                 except Exception:
                     pass
 
-        # Copia el dataset con labels desde el archivo temporal a la ruta de destino
-        data_dir = f"./data/{tag}"
-        os.makedirs(data_dir, exist_ok=True)
-        dataset_filename = f"{model_seed}.csv"
-        dataset_path = os.path.join(data_dir, dataset_filename)
+        # Copia el dataset con labels desde el archivo temporal a la ruta de destino (opcional)
+        # Nota: Cuando debug=False, el dataset no se exporta para evitar uso excesivo de disco.
+        # En ese caso, saltamos esta copia sin error y continuamos con la exportación de modelos y .mqh.
         if full_ds_with_labels_path:
+            data_dir = f"./data/{tag}"
+            os.makedirs(data_dir, exist_ok=True)
+            dataset_filename = f"{model_seed}.csv"
+            dataset_path = os.path.join(data_dir, dataset_filename)
             with open(full_ds_with_labels_path, "rb") as src, open(dataset_path, "wb") as dst:
                 dst.write(src.read())
-        else:
-            raise ValueError("No se encontraron suficientes rutas en model_paths para copiar el dataset.")
-        if full_ds_with_labels_path:
-            os.remove(full_ds_with_labels_path)
+            try:
+                os.remove(full_ds_with_labels_path)
+            except Exception:
+                pass
 
         stat_function_templates = {
             "std": """

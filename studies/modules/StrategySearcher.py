@@ -26,7 +26,7 @@ from modules.labeling_lib import (
     get_labels_filter_binary, get_labels_fractal_patterns, get_labels_zigzag,
     clustering_kmeans, clustering_hdbscan, clustering_markov, clustering_lgmm
 )
-from modules.tester_lib import tester, clear_onnx_session_cache, run_monkey_test, bocpd_guard
+from modules.tester_lib import tester, clear_onnx_session_cache, run_monkey_test, robust_cp_guard
 from modules.export_lib import export_models_to_ONNX, export_dataset_to_csv, export_to_mql5
 
 class StrategySearcher:
@@ -80,7 +80,7 @@ class StrategySearcher:
         monkey_n_simulations: int = 5000,
         monkey_alpha: float = 0.05,
         filter_mode: str = 'mapie-causal',
-        bocpd_level: str = 'medium',
+        robust_cp_level: str = 'medium',
     ):
         self.symbol = symbol
         self.timeframe = timeframe
@@ -108,7 +108,11 @@ class StrategySearcher:
         self.monkey_n_simulations = monkey_n_simulations
         self.monkey_alpha = monkey_alpha
         self.filter_mode = (filter_mode or 'mapie-causal').lower()
-        self.bocpd_level = bocpd_level.lower() if isinstance(bocpd_level, str) else 'medium'
+        # Nivel de agresividad del Robust Changepoint Guard
+        lvl = (robust_cp_level or 'medium').lower()
+        if lvl not in ('low', 'medium', 'high'):
+            lvl = 'medium'
+        self.robust_cp_level = lvl
 
         # Configuración de logging para optuna
         optuna.logging.set_verbosity(optuna.logging.WARNING)
@@ -952,7 +956,7 @@ class StrategySearcher:
             
             try:
                 if self.debug:
-                    print(f"🔍 DEBUG - fit_final_models: Inicializando backtest IN-SAMPLE y OOS")
+                    print(f"🔍 DEBUG - fit_final_models: Inicializando backtest IS y OOS")
                 full_ds = pd.concat([full_ds_is, full_ds_oos]).sort_index()
                 test_train_time_start = time.time()
                 score, equity_curve, _, _ = tester(
@@ -981,7 +985,7 @@ class StrategySearcher:
                     return None, None, None, None
             except Exception as e_tester:
                 if self.debug:
-                    print(f"⚠️ ERROR - fit_final_models: Error en IN-SAMPLE tester: {e_tester}")
+                    print(f"⚠️ ERROR - fit_final_models: Error en IS y OOS tester: {e_tester}")
                 return None, None, None, None
 
             try:
@@ -1087,64 +1091,6 @@ class StrategySearcher:
                 if self.debug:
                     print(f"⚠️ ERROR - fit_final_models: Error en REAL tester: {e_tester}")
                 return None, None, None, None
-            # ── BOCPD guard: antes del Monkey Test
-            try:
-                if self.debug:
-                    print(f"🔍 DEBUG - fit_final_models: Inicializando BOCPD guard")
-                cumulative_pnl_real = np.cumsum(returns_series_real.astype(np.float64))
-                # Agresividad por defecto (media) con posibilidad de ajustar por nivel
-                T_real = len(cumulative_pnl_real)
-                # Heurísticas base
-                burn_in = max(30, int(0.15 * T_real))
-                # Configurar parámetros según nivel
-                level = getattr(self, 'bocpd_level', 'medium')
-                if level == 'low':
-                    lam = max(burn_in + 10, int(T_real / 2.0))
-                    kill_thr = 0.60
-                    l_min = max(15, int(lam * 0.20))
-                    m_consec = max(5, int(l_min * 0.20))
-                elif level == 'high':
-                    lam = max(burn_in + 10, int(T_real / 4.0))
-                    kill_thr = 0.40
-                    l_min = max(15, int(lam * 0.35))
-                    m_consec = max(5, int(l_min * 0.40))
-                else:  # medium
-                    lam = max(burn_in + 10, int(T_real / 3.0))
-                    kill_thr = 0.50
-                    l_min = max(15, int(lam * 0.25))
-                    m_consec = max(5, int(l_min * 0.30))
-                bocpd_params = {
-                    'burn_in_period': burn_in,
-                    'expected_run_length': int(lam),
-                    'kill_threshold': float(kill_thr),
-                    'l_min': int(l_min),
-                    'm_consecutive': int(m_consec),
-                }
-                test_bocpd_time_start = time.time()
-                bocpd_res = bocpd_guard(cumulative_pnl=cumulative_pnl_real, params=bocpd_params, debug=self.debug)
-                test_bocpd_time_end = time.time()
-                if self.debug:
-                    print(f"🔍 DEBUG - fit_final_models: Tiempo de test BOCPD: {test_bocpd_time_end - test_bocpd_time_start:.2f} segundos")
-                    print(f"🔍 DEBUG - fit_final_models: Resultado BOCPD: {bocpd_res}")
-            except Exception as e_bocpd:
-                if self.debug:
-                    print(f"⚠️ ERROR - fit_final_models: Error en BOCPD guard: {e_bocpd}")
-                return None, None, None, None
-
-            bocpd_pass_real = bocpd_res['regime_stable']
-            if not bocpd_pass_real:
-                if self.debug:
-                    print("🔍 DEBUG - fit_final_models: BOCPD estrategia rechazada por cambio de régimen")
-                return None, None, None, None
-            else:
-                bocpd_info = {
-                    'bocpd_cp_prob_last': float(bocpd_res['changepoint_probs'][-1]) if len(bocpd_res['changepoint_probs']) else None,
-                    'bocpd_erl_last': float(bocpd_res['exp_run_lengths'][-1]) if len(bocpd_res['exp_run_lengths']) else None,
-                    'bocpd_kill_shock': bool(bocpd_res['kill_signals_shock'].any()) if isinstance(bocpd_res.get('kill_signals_shock'), np.ndarray) else None,
-                    'bocpd_kill_erosion': bool(bocpd_res['kill_signals_erosion'].any()) if isinstance(bocpd_res.get('kill_signals_erosion'), np.ndarray) else None,
-                }
-                if self.debug:
-                    print(f"🔍 DEBUG - fit_final_models: BOCPD info: {bocpd_info}")
 
             try:
                 price_series_real = full_ds_real['open'].to_numpy(dtype='float64')
@@ -1180,25 +1126,61 @@ class StrategySearcher:
                     print(f"🔍 DEBUG - fit_final_models: Monkey p_value: {monkey_p_value_real}")
                     print(f"🔍 DEBUG - fit_final_models: Monkey percentile: {monkey_percentile_real}")
                     print(f"🔍 DEBUG - fit_final_models: Monkey pass: {monkey_pass_real}")
+                if not monkey_pass_real:
+                    if self.debug:
+                        print(f"🔍 DEBUG - fit_final_models: Monkey Test NO superado (p={monkey_p_value_real:.4f} >= {self.monkey_alpha}) → score := -1.0")
+                    return None, None, None, None
             except Exception as e_monkey:
                 if self.debug:
-                    print(f"⚠️ ERROR - fit_final_models: Error en Monkey Test: {e_monkey}")
+                    print(f"⚠️ ERROR - fit_final_models: Error en Monkey Test Real: {e_monkey}")
                 return None, None, None, None
 
-            # 3) Si falla, forzar score -1.0 para evitar autoengaño
-            if not monkey_pass_real:
-                if self.debug:
-                    print(f"🔍 DEBUG - fit_final_models: Monkey Test NO superado (p={monkey_p_value_real:.4f} >= {self.monkey_alpha}) → score := -1.0")
-                return None, None, None, None
-            else:
-                # Añadir detalles y métricas por ventana si se construyeron
-                monkey_info = {
-                    'monkey_pass_real': monkey_pass_real,
-                    'monkey_p_value_real': monkey_p_value_real,
-                    'monkey_percentile_real': monkey_percentile_real,
+            # ── Robust Changepoint Guard (después de Monkey Test en REAL) ─────────
+            try:
+                # Configurar parámetros según nivel de agresividad
+                level = getattr(self, 'robust_cp_level', 'medium')
+                if level == 'low':
+                    burn_in = 40
+                    shock_z = 3.5
+                    erosion_window = 96
+                    l_min = 30
+                    m_consecutive = 5
+                elif level == 'high':
+                    burn_in = 20
+                    shock_z = 2.5
+                    erosion_window = 48
+                    l_min = 15
+                    m_consecutive = 2
+                else:  # 'medium' por defecto
+                    burn_in = 30
+                    shock_z = 3.0
+                    erosion_window = 64
+                    l_min = 20
+                    m_consecutive = 3
+
+                guard_params = {
+                    'use_series': 'pnl',        # usar equity acumulado (diff interno)
+                    'burn_in': burn_in,
+                    'shock_z': shock_z,
+                    'erosion_window': erosion_window,
+                    'l_min': l_min,
+                    'm_consecutive': m_consecutive,
                 }
+                cp_res = robust_cp_guard(
+                    cumulative_pnl=np.asarray(equity_curve_real, dtype=np.float64),
+                    params=guard_params,
+                    debug=self.debug
+                )
                 if self.debug:
-                    print(f"🔍 DEBUG - fit_final_models: Monkey info: {monkey_info}")
+                    print(f"🔍 DEBUG - fit_final_models: Robust CP result: {cp_res}")
+                if bool(cp_res.get('kill_shock', False)) or bool(cp_res.get('kill_erosion', False)):
+                    if self.debug:
+                        print(f"🔍 DEBUG - fit_final_models: Robust CP guard activado → descartar estrategia")
+                    return None, None, None, None
+            except Exception as e_rcp:
+                if self.debug:
+                    print(f"⚠️ ERROR - fit_final_models: Error en robust_cp_guard: {e_rcp}")
+                return None, None, None, None
 
             full_ds_with_labels_path = None
             if self.debug:

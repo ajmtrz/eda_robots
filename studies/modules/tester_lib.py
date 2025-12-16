@@ -983,6 +983,232 @@ def _robust_median_mad(x: np.ndarray) -> tuple:
         scale = 1.0
     return med, scale
 
+def _winsorize_by_mad(x: np.ndarray, k: float = 6.0) -> np.ndarray:
+    """
+    Winsoriza/clipea una serie usando mediana y MAD (escala robusta).
+    Esto reduce la influencia de outliers (colas gordas) antes de segmentar.
+    """
+    x = np.asarray(x, dtype=np.float64)
+    if x.size == 0:
+        return x
+    med, scale = _robust_median_mad(x)
+    lo = med - float(k) * float(scale)
+    hi = med + float(k) * float(scale)
+    return np.clip(x, lo, hi)
+
+def _biweight_mean(x: np.ndarray, K: float = 2.5, max_iter: int = 20, tol: float = 1e-6) -> float:
+    """
+    Media robusta tipo Tukey biweight (bisquare) con IRLS simple.
+    - K controla cuán agresivo es el downweight de outliers.
+    """
+    x = np.asarray(x, dtype=np.float64)
+    n = x.size
+    if n == 0:
+        return 0.0
+    m, s = _robust_median_mad(x)
+    if not np.isfinite(s) or s <= 1e-12:
+        return float(np.mean(x))
+    m = float(m)
+    s = float(s)
+    K = float(K)
+    for _ in range(int(max_iter)):
+        u = (x - m) / (K * s)
+        mask = np.abs(u) < 1.0
+        if not np.any(mask):
+            break
+        uu = u[mask]
+        w = (1.0 - uu * uu)
+        w = w * w
+        xs = x[mask]
+        den = float(np.sum(w))
+        if den <= 1e-12:
+            break
+        m_new = float(np.sum(w * xs) / den)
+        if abs(m_new - m) <= tol * s:
+            m = m_new
+            break
+        m = m_new
+    return float(m)
+
+def _pelt_mean_l2(x: np.ndarray, penalty: float, min_seg_len: int) -> list[int]:
+    """
+    Segmentación exacta (DP) para cambios en media con coste L2 (SSE).
+    - Más robusto que un PELT con pruning mal calibrado.
+    - Complejidad O(n^2): aceptable para series de tamaño típico (cientos / pocos miles).
+
+    Segmentos: [s, t) con t en 0..n, retornando changepoints internos (excluye 0 y n).
+    """
+    x = np.asarray(x, dtype=np.float64)
+    n = int(x.size)
+    if n <= 2 * int(min_seg_len):
+        return []
+    msl = max(2, int(min_seg_len))
+    pen = float(penalty)
+
+    # Prefix sums para coste O(1)
+    S1 = np.zeros(n + 1, dtype=np.float64)
+    S2 = np.zeros(n + 1, dtype=np.float64)
+    S1[1:] = np.cumsum(x)
+    S2[1:] = np.cumsum(x * x)
+
+    def cost(s: int, t: int) -> float:
+        L = t - s
+        if L <= 1:
+            return 0.0
+        sum1 = S1[t] - S1[s]
+        sum2 = S2[t] - S2[s]
+        return float(sum2 - (sum1 * sum1) / float(L))
+
+    # DP exacto
+    F = np.full(n + 1, np.inf, dtype=np.float64)
+    prev = np.full(n + 1, -1, dtype=np.int64)
+    F[0] = -pen
+
+    for t in range(msl, n + 1):
+        best = np.inf
+        best_s = -1
+        # s debe permitir segmento [s,t) con longitud >= msl
+        for s in range(0, t - msl + 1):
+            if (t - s) < msl:
+                continue
+            val = F[s] + cost(s, t) + pen
+            if val < best:
+                best = val
+                best_s = s
+        F[t] = best
+        prev[t] = best_s
+
+    # Reconstrucción de changepoints
+    cps_out: list[int] = []
+    t = n
+    while t > 0:
+        s = int(prev[t])
+        if s <= 0:
+            break
+        cps_out.append(s)
+        t = s
+    cps_out = sorted(set(cps_out))
+    cps_out = [c for c in cps_out if 0 < c < n]
+    return cps_out
+
+def _switch_off_from_segments(x: np.ndarray,
+                              changepoints: list[int],
+                              mean_kind: str = "biweight",
+                              K: float = 2.5,
+                              rel_drop: float = 0.6,
+                              abs_threshold: float = 0.0,
+                              min_bad_len: int = 20,
+                              min_seg_len: int | None = None) -> dict:
+    """
+    Regla “switch-off” inspirada en el artículo:
+    - segmenta en regímenes
+    - estima la calidad por media robusta por régimen
+    - dispara si el último régimen es suficientemente largo y muestra degradación
+    """
+    x = np.asarray(x, dtype=np.float64)
+    n = int(x.size)
+    if n == 0:
+        return {"switch_off": False, "reason": "empty_series"}
+    bounds = [0] + [int(c) for c in changepoints if 0 < int(c) < n] + [n]
+    bounds = sorted(set(bounds))
+    segs = [(bounds[i], bounds[i + 1]) for i in range(len(bounds) - 1) if (bounds[i + 1] - bounds[i]) > 0]
+    if len(segs) <= 1:
+        # Fallback robusto: aunque no haya changepoints explícitos,
+        # podemos evaluar degradación con ventanas rodantes.
+        mbl = int(min_bad_len)
+        if n < max(2 * mbl, mbl + 5):
+            return {"switch_off": False, "reason": "only_one_regime_short", "segments": segs}
+
+        win_prev = int(min_seg_len) if (min_seg_len is not None and int(min_seg_len) >= 5) else mbl
+        win_prev = max(5, min(win_prev, n - mbl))
+        step = max(1, win_prev // 2)
+
+        last_seg = x[n - mbl:n]
+        if mean_kind == "l2":
+            last_mean = float(np.mean(last_seg)) if last_seg.size else 0.0
+        else:
+            last_mean = float(_biweight_mean(last_seg, K=K))
+
+        best_prev_mean = -np.inf
+        # barrido de ventanas previas (evita mirar el mismo tramo final)
+        end_limit = n - mbl
+        for s in range(0, max(1, end_limit - win_prev + 1), step):
+            seg = x[s:s + win_prev]
+            if seg.size < 5:
+                continue
+            if mean_kind == "l2":
+                m = float(np.mean(seg))
+            else:
+                m = float(_biweight_mean(seg, K=K))
+            if m > best_prev_mean:
+                best_prev_mean = m
+        if not np.isfinite(best_prev_mean):
+            best_prev_mean = float(np.mean(x[:end_limit])) if end_limit > 5 else float(np.mean(x))
+
+        cond_len = mbl >= int(min_bad_len)
+        cond_rel = (best_prev_mean > 0.0) and (last_mean <= float(rel_drop) * best_prev_mean)
+        cond_abs = (last_mean <= float(abs_threshold))
+        switch_off = bool(cond_len and (cond_rel or cond_abs))
+
+        if cond_rel and cond_abs:
+            reason = "rolling_relative_drop_and_absolute_failure"
+        elif cond_rel:
+            reason = "rolling_relative_drop"
+        elif cond_abs:
+            reason = "rolling_absolute_failure"
+        else:
+            reason = "rolling_no_degradation"
+
+        return {
+            "switch_off": switch_off,
+            "reason": reason,
+            "segments": segs,
+            "means": np.asarray([np.nan], dtype=np.float64),
+            "lengths": np.asarray([n], dtype=np.int64),
+            "last_mean": float(last_mean),
+            "best_prev_mean": float(best_prev_mean),
+        }
+
+    means = np.zeros(len(segs), dtype=np.float64)
+    lens = np.zeros(len(segs), dtype=np.int64)
+    for i, (s, e) in enumerate(segs):
+        lens[i] = int(e - s)
+        seg = x[s:e]
+        if mean_kind == "l2":
+            means[i] = float(np.mean(seg)) if seg.size else 0.0
+        else:
+            means[i] = float(_biweight_mean(seg, K=K))
+
+    last_mean = float(means[-1])
+    last_len = int(lens[-1])
+    best_prev_mean = float(np.max(means[:-1]))
+
+    cond_len = last_len >= int(min_bad_len)
+    cond_rel = (best_prev_mean > 0.0) and (last_mean <= float(rel_drop) * best_prev_mean)
+    cond_abs = (last_mean <= float(abs_threshold))
+    switch_off = bool(cond_len and (cond_rel or cond_abs))
+
+    if not cond_len:
+        reason = f"current_regime_too_short(len={last_len}, min_bad_len={int(min_bad_len)})"
+    elif cond_rel and cond_abs:
+        reason = "relative_drop_and_absolute_failure"
+    elif cond_rel:
+        reason = "relative_drop"
+    elif cond_abs:
+        reason = "absolute_failure"
+    else:
+        reason = "no_degradation"
+
+    return {
+        "switch_off": switch_off,
+        "reason": reason,
+        "segments": segs,
+        "means": means,
+        "lengths": lens,
+        "last_mean": last_mean,
+        "best_prev_mean": best_prev_mean,
+    }
+
 @njit(cache=True)
 def _ewma(x: np.ndarray, alpha: float) -> np.ndarray:
     n = x.size
@@ -1041,9 +1267,17 @@ def robust_cp_guard(cumulative_pnl: np.ndarray,
                     params: dict | None = None,
                     debug: bool = False) -> dict:
     """
-    Guardia robusta de cambio de régimen con dos gatillos:
-      - Shock: retorno instantáneo con z-score robusto < -z_thr tras burn-in
-      - Erosión: secuencia de señal EWMA negativa sostenida tras un periodo de gracia
+    Guardia robusta de cambio de régimen inspirada en el protocolo “switch-off”:
+      - Segmenta la serie (robusta a outliers) para estimar regímenes.
+      - Decide “switch_off” si el último régimen (suficientemente largo) muestra
+        degradación relativa y/o fallo absoluto.
+
+    Nota importante: un “shock” aislado NO debería matar automáticamente un sistema
+    en presencia de colas gordas; por eso aquí lo tratamos como señal informativa,
+    y el criterio principal es `switch_off`.
+
+    Referencia conceptual: “Switch-off: Robust changepoint protocol”:
+    https://www.quantbeckman.com/p/with-code-switch-off-robust-changepoint?utm_source=post-email-title&publication_id=3833331&post_id=180103121&utm_campaign=email-post-title&isFreemail=true&r=cx4yj&triedRedirect=true&utm_medium=email
     Args:
         cumulative_pnl: Serie de PnL acumulado (REAL).
         params: {
@@ -1079,6 +1313,17 @@ def robust_cp_guard(cumulative_pnl: np.ndarray,
         erosion_window = int(p.get('erosion_window', 64))
         l_min = int(p.get('l_min', 20))
         m_consecutive = int(p.get('m_consecutive', 3))
+        # Segmentación / switch-off (defaults conservadores)
+        winsor_k = float(p.get("winsor_k", 6.0))
+        mean_kind = str(p.get("mean_kind", "biweight"))
+        biweight_K = float(p.get("biweight_K", 2.5))
+        rel_drop = float(p.get("rel_drop", 0.6))
+        abs_threshold = float(p.get("abs_threshold", 0.0))
+        min_bad_len = int(p.get("min_bad_len", l_min))
+        min_seg_len = int(p.get("min_seg_len", max(10, burn_in)))
+        # Multiplicador del penalty para PELT:
+        # Usamos una escala ~ var * log(n) (clásica para cambios en media con SSE).
+        penalty_mult = float(p.get("penalty_mult", 8.0))
         # Serie analizada: retornos por barra
         if use_series == 'returns':
             # Si el usuario desea pasar retornos directamente, asúmelos en pnl
@@ -1087,32 +1332,62 @@ def robust_cp_guard(cumulative_pnl: np.ndarray,
             # Por defecto: diferenciar PnL acumulado
             returns = np.zeros(n, dtype=np.float64)
             returns[1:] = pnl[1:] - pnl[:-1]
-        # Escala robusta global para normalizar (reduce falsos positivos por volatilidad)
-        _, scale_global = _robust_median_mad(returns[:max(burn_in, 1)])
-        # Detección de shock y erosión (numba jitted kernels)
-        idx_shock = _detect_shock(returns, burn_in, shock_z, shock_window)
-        idx_erosion = _detect_erosion(returns, burn_in, erosion_window, l_min, m_consecutive, scale_global)
-        kill_shock = (idx_shock >= 0)
-        kill_erosion = (idx_erosion >= 0)
-        reason = "stable"
-        if kill_shock and kill_erosion:
-            reason = "shock_and_erosion"
-        elif kill_shock:
-            reason = "shock"
-        elif kill_erosion:
-            reason = "erosion"
+        # Si la serie viene de diff(PnL), el primer punto es 0.0; no aporta
+        if returns.size >= 2 and abs(float(returns[0])) <= 0.0:
+            returns_eff = returns[1:]
+        else:
+            returns_eff = returns
+
+        # Señales auxiliares (informativas) – NO criterio principal
+        _, scale_global = _robust_median_mad(returns_eff[:max(burn_in, 1)])
+        idx_shock = _detect_shock(returns_eff, burn_in, shock_z, shock_window)
+        idx_erosion = _detect_erosion(returns_eff, burn_in, erosion_window, l_min, m_consecutive, scale_global)
+        kill_shock = bool(idx_shock >= 0)
+        kill_erosion = bool(idx_erosion >= 0)
+
+        # Switch-off principal: robustificar (winsor) y segmentar
+        x_rob = _winsorize_by_mad(returns_eff, k=winsor_k)
+        # penalty escala con var*log(n) (más estable que var*min_seg_len)
+        v = float(np.var(x_rob)) if x_rob.size > 1 else 0.0
+        n_eff = int(x_rob.size)
+        base_pen = max(1e-12, penalty_mult * v * float(np.log(max(3, n_eff))))
+        penalty = float(p.get("penalty", base_pen))
+        cps = _pelt_mean_l2(x_rob, penalty=penalty, min_seg_len=min_seg_len)
+        dec = _switch_off_from_segments(
+            x_rob,
+            changepoints=cps,
+            mean_kind=mean_kind,
+            K=biweight_K,
+            rel_drop=rel_drop,
+            abs_threshold=abs_threshold,
+            min_bad_len=min_bad_len,
+            min_seg_len=min_seg_len,
+        )
+
+        switch_off = bool(dec.get("switch_off", False))
+        reason = str(dec.get("reason", "stable"))
         if debug:
-            print(f"🔍 DEBUG - robust_cp_guard: n={n}, burn_in={burn_in}, shock_z={shock_z}, shock_window={shock_window}, erosion_window={erosion_window}, l_min={l_min}, m={m_consecutive}")
-            print(f"🔍 DEBUG - robust_cp_guard: idx_shock={idx_shock}, idx_erosion={idx_erosion}, scale_global={scale_global}")
+            print(f"🔍 DEBUG - robust_cp_guard: n_eff={int(returns_eff.size)}, burn_in={burn_in}, shock_z={shock_z}, shock_window={shock_window}, erosion_window={erosion_window}, l_min={l_min}, m={m_consecutive}")
+            print(f"🔍 DEBUG - robust_cp_guard: idx_shock={int(idx_shock)}, idx_erosion={int(idx_erosion)}, scale_global={scale_global}")
+            print(f"🔍 DEBUG - robust_cp_guard: penalty={penalty:.6g}, min_seg_len={min_seg_len}, rel_drop={rel_drop}, abs_threshold={abs_threshold}, min_bad_len={min_bad_len}")
+            if isinstance(dec, dict):
+                print(f"🔍 DEBUG - robust_cp_guard: switch_off={switch_off}, reason={reason}")
         return {
+            # Señales auxiliares (compatibilidad)
             'kill_shock': bool(kill_shock),
             'kill_erosion': bool(kill_erosion),
             'idx_shock': int(idx_shock) if kill_shock else None,
             'idx_erosion': int(idx_erosion) if kill_erosion else None,
-            'stable': not (kill_shock or kill_erosion),
-            'reason': reason,
+            # Señal principal (nuevo)
+            'switch_off': bool(switch_off),
+            'switch_reason': reason,
+            # estable = no hay degradación estructural detectada
+            'stable': not bool(switch_off),
+            # detalles (útiles para debug/ajuste)
+            'changepoints': cps,
+            'decision': dec,
         }
     except Exception as e:
         if debug:
             print(f"⚠️ ERROR - robust_cp_guard: {e}")
-        return {'kill_shock': False, 'kill_erosion': False, 'idx_shock': None, 'idx_erosion': None, 'stable': True, 'reason': 'error'}
+        return {'kill_shock': False, 'kill_erosion': False, 'idx_shock': None, 'idx_erosion': None, 'switch_off': False, 'switch_reason': 'error', 'stable': True, 'reason': 'error'}

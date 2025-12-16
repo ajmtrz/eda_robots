@@ -118,6 +118,90 @@ class StrategySearcher:
         optuna.logging.set_verbosity(optuna.logging.WARNING)
 
     # =========================================================================
+    # Robust Changepoint Guard - parametrización por timeframe
+    # =========================================================================
+
+    @staticmethod
+    def _timeframe_to_minutes(timeframe: str) -> int:
+        """
+        Convierte timeframes típicos (M5, M15, M30, H1, H4, D1) a minutos.
+        Si no se reconoce, asume H1.
+        """
+        tf = (timeframe or "H1").strip().upper()
+        if tf.startswith("M"):
+            try:
+                return int(tf[1:])
+            except Exception:
+                return 60
+        if tf.startswith("H"):
+            try:
+                return int(tf[1:]) * 60
+            except Exception:
+                return 60
+        if tf == "D1":
+            # En muchos mercados se opera ~1 vela diaria; usamos 24h como aproximación.
+            return 24 * 60
+        return 60
+
+    def _robust_cp_guard_params(self, level: str, timeframe: str, n_equity_points: int | None = None) -> dict:
+        """
+        Devuelve params para robust_cp_guard escalados por timeframe y nivel.
+
+        Nota: el guard trabaja sobre una serie derivada de `equity_curve_real` (por trade),
+        así que el scaling por timeframe es heurístico. Para evitar sobre-sensibilidad:
+        - timeframes más cortos tienden a ser más ruidosos → ventanas mínimas algo mayores.
+        """
+        lvl = (level or "medium").lower().strip()
+        if lvl not in ("low", "medium", "high"):
+            lvl = "medium"
+
+        minutes = self._timeframe_to_minutes(timeframe)
+        # Escala: M5 => ~3.46; H1 => 1.0; H4 => 0.5
+        # Intuición: a menor timeframe, pedimos más evidencia (ventanas más largas).
+        tf_scale = float(np.sqrt(60.0 / max(1.0, float(minutes))))
+        tf_scale = float(np.clip(tf_scale, 0.35, 4.0))
+
+        # Base (calibrado mentalmente para H1)
+        base = {
+            "low":    dict(burn_in=40, shock_z=3.5, erosion_window=96, l_min=30, m_consecutive=5, rel_drop=0.50),
+            "medium": dict(burn_in=30, shock_z=3.0, erosion_window=64, l_min=20, m_consecutive=3, rel_drop=0.65),
+            "high":   dict(burn_in=20, shock_z=2.5, erosion_window=48, l_min=15, m_consecutive=2, rel_drop=0.80),
+        }[lvl]
+
+        # Escalar ventanas (en "puntos" de la serie de equity por trade)
+        burn_in = int(max(10, round(base["burn_in"] * tf_scale)))
+        erosion_window = int(max(16, round(base["erosion_window"] * tf_scale)))
+        l_min = int(max(10, round(base["l_min"] * tf_scale)))
+        m_consecutive = int(max(2, base["m_consecutive"]))
+
+        # Si la curva es muy corta, no tiene sentido exigir ventanas gigantes
+        if n_equity_points is not None and int(n_equity_points) > 0:
+            n = int(n_equity_points)
+            burn_in = min(burn_in, max(10, n // 4))
+            erosion_window = min(erosion_window, max(16, n // 2))
+            l_min = min(l_min, max(10, n // 5))
+
+        params = {
+            # Señales auxiliares (diagnóstico)
+            "use_series": "pnl",
+            "burn_in": burn_in,
+            "shock_z": float(base["shock_z"]),
+            "erosion_window": erosion_window,
+            "l_min": l_min,
+            "m_consecutive": m_consecutive,
+            # Señal principal: switch-off por degradación estructural
+            "abs_threshold": 0.0,
+            "rel_drop": float(base["rel_drop"]),
+            "min_seg_len": max(10, burn_in),
+            "min_bad_len": l_min,
+            "winsor_k": 6.0,
+            "mean_kind": "biweight",
+            "biweight_K": 2.5,
+            "penalty_mult": 8.0,
+        }
+        return params
+
+    # =========================================================================
     # Método principal
     # =========================================================================
 
@@ -1137,35 +1221,12 @@ class StrategySearcher:
 
             # ── Robust Changepoint Guard (después de Monkey Test en REAL) ─────────
             try:
-                # Configurar parámetros según nivel de agresividad
                 level = getattr(self, 'robust_cp_level', 'medium')
-                if level == 'low':
-                    burn_in = 40
-                    shock_z = 3.5
-                    erosion_window = 96
-                    l_min = 30
-                    m_consecutive = 5
-                elif level == 'high':
-                    burn_in = 20
-                    shock_z = 2.5
-                    erosion_window = 48
-                    l_min = 15
-                    m_consecutive = 2
-                else:  # 'medium' por defecto
-                    burn_in = 30
-                    shock_z = 3.0
-                    erosion_window = 64
-                    l_min = 20
-                    m_consecutive = 3
-
-                guard_params = {
-                    'use_series': 'pnl',        # usar equity acumulado (diff interno)
-                    'burn_in': burn_in,
-                    'shock_z': shock_z,
-                    'erosion_window': erosion_window,
-                    'l_min': l_min,
-                    'm_consecutive': m_consecutive,
-                }
+                guard_params = self._robust_cp_guard_params(
+                    level=level,
+                    timeframe=getattr(self, "timeframe", "H1"),
+                    n_equity_points=int(len(equity_curve_real)) if equity_curve_real is not None else None,
+                )
                 cp_res = robust_cp_guard(
                     cumulative_pnl=np.asarray(equity_curve_real, dtype=np.float64),
                     params=guard_params,
@@ -1173,9 +1234,11 @@ class StrategySearcher:
                 )
                 if self.debug:
                     print(f"🔍 DEBUG - fit_final_models: Robust CP result: {cp_res}")
-                if bool(cp_res.get('kill_shock', False)) or bool(cp_res.get('kill_erosion', False)):
+                # Criterio principal: degradación estructural (switch_off)
+                # Señales auxiliares: shock/erosion NO deberían descartar por sí solas en colas gordas
+                if bool(cp_res['switch_off']):
                     if self.debug:
-                        print(f"🔍 DEBUG - fit_final_models: Robust CP guard activado → descartar estrategia")
+                        print(f"🔍 DEBUG - fit_final_models: Robust CP switch_off activado ({cp_res.get('switch_reason')}) → descartar estrategia")
                     return None, None, None, None
             except Exception as e_rcp:
                 if self.debug:

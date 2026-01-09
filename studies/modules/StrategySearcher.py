@@ -71,15 +71,15 @@ class StrategySearcher:
         models_export_path: str = r'/mnt/c/Users/Administrador/AppData/Roaming/MetaQuotes/Terminal/6C3C6A11D1C3791DD4DBF45421BF8028/MQL5/Files/',
         include_export_path: str = r'/mnt/c/Users/Administrador/AppData/Roaming/MetaQuotes/Terminal/6C3C6A11D1C3791DD4DBF45421BF8028/MQL5/Include/ajmtrz/include/Dmitrievsky',
         history_path: str = r"/mnt/c/Users/Administrador/AppData/Roaming/MetaQuotes/Terminal/Common/Files/",
-        search_type: str = 'clusters',
-        search_subtype: str = 'kmeans',
+        search_type: str = 'reliability',
+        search_subtype: str = '',
         label_method: str = 'random',
         tag: str = "",
         debug: bool = False,
         decimal_precision: int = 8,
         monkey_n_simulations: int = 5000,
         monkey_alpha: float = 0.05,
-        filter_mode: str = 'mapie-causal',
+        filter_mode: str = 'none',
         robust_cp_level: str = 'medium',
     ):
         self.symbol = symbol
@@ -107,7 +107,7 @@ class StrategySearcher:
         self.decimal_precision = decimal_precision  # NUEVO ATRIBUTO
         self.monkey_n_simulations = monkey_n_simulations
         self.monkey_alpha = monkey_alpha
-        self.filter_mode = (filter_mode or 'mapie-causal').lower()
+        self.filter_mode = (filter_mode or 'none').lower()
         # Nivel de agresividad del Robust Changepoint Guard
         lvl = (robust_cp_level or 'medium').lower()
         if lvl not in ('low', 'medium', 'high'):
